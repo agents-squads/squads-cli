@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 
 export interface Agent {
@@ -14,6 +14,12 @@ export interface Pipeline {
   agents: string[];
 }
 
+export interface Goal {
+  description: string;
+  completed: boolean;
+  progress?: string;
+}
+
 export interface Squad {
   name: string;
   mission: string;
@@ -26,6 +32,7 @@ export interface Squad {
   };
   dependencies: string[];
   outputPath: string;
+  goals: Goal[];
 }
 
 export function findSquadsDir(): string | null {
@@ -102,7 +109,8 @@ export function parseSquadFile(filePath: string): Squad {
     pipelines: [],
     triggers: { scheduled: [], event: [], manual: [] },
     dependencies: [],
-    outputPath: ''
+    outputPath: '',
+    goals: []
   };
 
   let currentSection = '';
@@ -194,6 +202,29 @@ export function parseSquadFile(filePath: string): Squad {
         squad.outputPath = match[1].replace(/\/$/, '');
       }
     }
+
+    // Parse goals (checkbox format: - [ ] or - [x])
+    if (currentSection === 'goals') {
+      const goalMatch = line.match(/^-\s*\[([ x])\]\s*(.+)$/);
+      if (goalMatch) {
+        const completed = goalMatch[1] === 'x';
+        let description = goalMatch[2].trim();
+        let progress: string | undefined;
+
+        // Check for progress annotation
+        const progressMatch = description.match(/\(progress:\s*([^)]+)\)/i);
+        if (progressMatch) {
+          progress = progressMatch[1];
+          description = description.replace(progressMatch[0], '').trim();
+        }
+
+        squad.goals.push({
+          description,
+          completed,
+          progress
+        });
+      }
+    }
   }
 
   return squad;
@@ -212,4 +243,101 @@ export function loadSquad(squadName: string): Squad | null {
 export function loadAgentDefinition(agentPath: string): string {
   if (!existsSync(agentPath)) return '';
   return readFileSync(agentPath, 'utf-8');
+}
+
+export function addGoalToSquad(squadName: string, goal: string): boolean {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return false;
+
+  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
+  if (!existsSync(squadFile)) return false;
+
+  let content = readFileSync(squadFile, 'utf-8');
+
+  // Check if Goals section exists
+  if (!content.includes('## Goals')) {
+    // Add Goals section before Dependencies or at end
+    const insertPoint = content.indexOf('## Dependencies');
+    if (insertPoint > 0) {
+      content = content.slice(0, insertPoint) + `## Goals\n\n- [ ] ${goal}\n\n` + content.slice(insertPoint);
+    } else {
+      content += `\n## Goals\n\n- [ ] ${goal}\n`;
+    }
+  } else {
+    // Add to existing Goals section
+    const goalsIdx = content.indexOf('## Goals');
+    const nextSectionIdx = content.indexOf('\n## ', goalsIdx + 1);
+    const endIdx = nextSectionIdx > 0 ? nextSectionIdx : content.length;
+
+    // Find last goal line or section header
+    const goalsSection = content.slice(goalsIdx, endIdx);
+    const lastGoalMatch = goalsSection.match(/^-\s*\[[ x]\].+$/gm);
+
+    if (lastGoalMatch) {
+      // Add after last goal
+      const lastGoal = lastGoalMatch[lastGoalMatch.length - 1];
+      const lastGoalIdx = content.lastIndexOf(lastGoal, endIdx);
+      const insertPos = lastGoalIdx + lastGoal.length;
+      content = content.slice(0, insertPos) + `\n- [ ] ${goal}` + content.slice(insertPos);
+    } else {
+      // No goals yet, add after section header
+      const headerEnd = goalsIdx + '## Goals'.length;
+      content = content.slice(0, headerEnd) + `\n\n- [ ] ${goal}` + content.slice(headerEnd);
+    }
+  }
+
+  writeFileSync(squadFile, content);
+  return true;
+}
+
+export function updateGoalInSquad(
+  squadName: string,
+  goalIndex: number,
+  updates: { completed?: boolean; progress?: string }
+): boolean {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return false;
+
+  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
+  if (!existsSync(squadFile)) return false;
+
+  let content = readFileSync(squadFile, 'utf-8');
+  const lines = content.split('\n');
+
+  let currentSection = '';
+  let goalCount = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith('## ')) {
+      currentSection = line.replace('## ', '').trim().toLowerCase();
+      continue;
+    }
+
+    if (currentSection === 'goals') {
+      const goalMatch = line.match(/^-\s*\[([ x])\]\s*(.+)$/);
+      if (goalMatch) {
+        if (goalCount === goalIndex) {
+          let newLine = '- [' + (updates.completed ? 'x' : ' ') + '] ' + goalMatch[2];
+
+          // Handle progress update
+          if (updates.progress !== undefined) {
+            // Remove existing progress annotation
+            newLine = newLine.replace(/\s*\(progress:\s*[^)]+\)/i, '');
+            if (updates.progress) {
+              newLine += ` (progress: ${updates.progress})`;
+            }
+          }
+
+          lines[i] = newLine;
+          writeFileSync(squadFile, lines.join('\n'));
+          return true;
+        }
+        goalCount++;
+      }
+    }
+  }
+
+  return false;
 }

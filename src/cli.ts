@@ -11,6 +11,17 @@ import {
   memoryUpdateCommand,
   memoryListCommand
 } from './commands/memory.js';
+import {
+  goalSetCommand,
+  goalListCommand,
+  goalCompleteCommand,
+  goalProgressCommand
+} from './commands/goal.js';
+import {
+  feedbackAddCommand,
+  feedbackShowCommand,
+  feedbackStatsCommand
+} from './commands/feedback.js';
 
 const program = new Command();
 
@@ -79,6 +90,55 @@ memory
   .description('List all memory entries')
   .action(memoryListCommand);
 
+// Goal command group
+const goal = program
+  .command('goal')
+  .description('Manage squad goals');
+
+goal
+  .command('set <squad> <description>')
+  .description('Set a goal for a squad')
+  .option('-m, --metric <metrics...>', 'Metrics to track')
+  .action(goalSetCommand);
+
+goal
+  .command('list [squad]')
+  .description('List goals for squad(s)')
+  .option('-a, --all', 'Show completed goals too')
+  .action(goalListCommand);
+
+goal
+  .command('complete <squad> <index>')
+  .description('Mark a goal as completed')
+  .action(goalCompleteCommand);
+
+goal
+  .command('progress <squad> <index> <progress>')
+  .description('Update goal progress')
+  .action(goalProgressCommand);
+
+// Feedback command group
+const feedback = program
+  .command('feedback')
+  .description('Record and view execution feedback');
+
+feedback
+  .command('add <squad> <rating> <feedback>')
+  .description('Add feedback for last execution (rating 1-5)')
+  .option('-l, --learning <learnings...>', 'Learnings to extract')
+  .action(feedbackAddCommand);
+
+feedback
+  .command('show <squad>')
+  .description('Show feedback history')
+  .option('-n, --limit <n>', 'Number of entries to show', '5')
+  .action(feedbackShowCommand);
+
+feedback
+  .command('stats')
+  .description('Show feedback summary across all squads')
+  .action(feedbackStatsCommand);
+
 // Parse arguments
 program.parse();
 
@@ -88,15 +148,19 @@ if (!process.argv.slice(2).length) {
 ${chalk.bold.magenta('squads')} - AI agent squad management
 
 ${chalk.dim('Quick start:')}
-  ${chalk.cyan('squads init')}              Initialize a new project
-  ${chalk.cyan('squads run <squad>')}       Run a squad (e.g., squads run intel-squad)
-  ${chalk.cyan('squads status')}            View all squads status
-  ${chalk.cyan('squads memory query')}      Search squad memory
+  ${chalk.cyan('squads status')}                  View all squads status
+  ${chalk.cyan('squads run <squad>')}             Run a squad
+  ${chalk.cyan('squads memory query "<term>"')}   Search squad memory
+
+${chalk.dim('Goals & Feedback:')}
+  ${chalk.cyan('squads goal set <squad> "<goal>"')}    Set a goal
+  ${chalk.cyan('squads goal list')}                    View active goals
+  ${chalk.cyan('squads feedback add <squad> 4 "msg"')} Rate last execution
 
 ${chalk.dim('Examples:')}
-  ${chalk.cyan('squads run website')}       Run the website squad
-  ${chalk.cyan('squads status intel')}      View intel squad status
-  ${chalk.cyan('squads memory query "MCP"')} Search for MCP across all memory
+  ${chalk.cyan('squads run website')}                  Run website squad
+  ${chalk.cyan('squads goal set finance "Track costs"')} Set finance goal
+  ${chalk.cyan('squads feedback stats')}               View feedback summary
 
 ${chalk.dim('Run')} ${chalk.cyan('squads --help')} ${chalk.dim('for all commands.')}
 `);

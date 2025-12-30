@@ -2,18 +2,81 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
   listAgents,
   loadAgentDefinition
 } from '../lib/squad-parser.js';
+import { findMemoryDir } from '../lib/memory.js';
 
 interface RunOptions {
   verbose?: boolean;
   dryRun?: boolean;
   agent?: string;
+}
+
+interface ExecutionRecord {
+  squadName: string;
+  agentName: string;
+  startTime: string;
+  endTime?: string;
+  status: 'running' | 'completed' | 'failed';
+  outcome?: string;
+}
+
+function getExecutionLogPath(squadName: string, agentName: string): string | null {
+  const memoryDir = findMemoryDir();
+  if (!memoryDir) return null;
+  return join(memoryDir, squadName, agentName, 'executions.md');
+}
+
+function logExecution(record: ExecutionRecord): void {
+  const logPath = getExecutionLogPath(record.squadName, record.agentName);
+  if (!logPath) return;
+
+  const dir = dirname(logPath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  let content = '';
+  if (existsSync(logPath)) {
+    content = readFileSync(logPath, 'utf-8');
+  } else {
+    content = `# ${record.squadName}/${record.agentName} - Execution Log\n\n`;
+  }
+
+  const entry = `
+---
+**${record.startTime}** | Status: ${record.status}
+${record.endTime ? `Completed: ${record.endTime}` : ''}
+${record.outcome ? `Outcome: ${record.outcome}` : ''}
+`;
+
+  writeFileSync(logPath, content + entry);
+}
+
+function updateExecutionStatus(
+  squadName: string,
+  agentName: string,
+  status: 'completed' | 'failed',
+  outcome?: string
+): void {
+  const logPath = getExecutionLogPath(squadName, agentName);
+  if (!logPath || !existsSync(logPath)) return;
+
+  let content = readFileSync(logPath, 'utf-8');
+  const endTime = new Date().toISOString();
+
+  // Update the last "running" entry
+  content = content.replace(
+    /Status: running\n$/,
+    `Status: ${status}\nCompleted: ${endTime}\n${outcome ? `Outcome: ${outcome}\n` : ''}`
+  );
+
+  writeFileSync(logPath, content);
 }
 
 export async function runCommand(
@@ -39,7 +102,11 @@ export async function runCommand(
     const agent = agents.find(a => a.name === target);
 
     if (agent && agent.filePath) {
-      await runAgent(agent.name, agent.filePath, options);
+      // Extract squad name from path
+      const pathParts = agent.filePath.split('/');
+      const squadIdx = pathParts.indexOf('squads');
+      const squadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
+      await runAgent(agent.name, agent.filePath, squadName, options);
     } else {
       console.error(chalk.red(`Squad or agent "${target}" not found.`));
       console.log(chalk.dim('Run `squads list` to see available squads and agents.'));
@@ -55,9 +122,12 @@ async function runSquad(
 ): Promise<void> {
   if (!squad) return;
 
+  const startTime = new Date().toISOString();
+
   console.log(`
 ${chalk.bold.magenta('Running Squad:')} ${chalk.cyan(squad.name)}
 ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
+${chalk.dim('Started:')} ${startTime}
 `);
 
   // If there's a pipeline, run agents in order
@@ -72,7 +142,7 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
 
       if (existsSync(agentPath)) {
         console.log(chalk.dim(`[${i + 1}/${pipeline.agents.length}]`));
-        await runAgent(agentName, agentPath, options);
+        await runAgent(agentName, agentPath, squad.name, options);
         console.log();
       } else {
         console.log(chalk.yellow(`  ⚠ Agent ${agentName} not found, skipping`));
@@ -87,7 +157,7 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
     if (orchestrator) {
       const agentPath = join(squadsDir, squad.name, `${orchestrator.name}.md`);
       if (existsSync(agentPath)) {
-        await runAgent(orchestrator.name, agentPath, options);
+        await runAgent(orchestrator.name, agentPath, squad.name, options);
       }
     } else {
       console.log(chalk.dim('No pipeline defined. Available agents:'));
@@ -99,14 +169,19 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
       console.log(`  ${chalk.cyan(`squads run ${squad.name} --agent <name>`)}`);
     }
   }
+
+  console.log(chalk.dim(`\nAfter execution, record outcome with:`));
+  console.log(`  ${chalk.cyan(`squads feedback ${squad.name} <1-5> "<feedback>"`)}`);
 }
 
 async function runAgent(
   agentName: string,
   agentPath: string,
+  squadName: string,
   options: RunOptions
 ): Promise<void> {
   const spinner = ora(`Running agent: ${agentName}`).start();
+  const startTime = new Date().toISOString();
 
   const definition = loadAgentDefinition(agentPath);
 
@@ -118,6 +193,14 @@ async function runAgent(
     }
     return;
   }
+
+  // Log execution start
+  logExecution({
+    squadName,
+    agentName,
+    startTime,
+    status: 'running',
+  });
 
   // Generate the Claude Code command
   const prompt = `Execute the agent defined in ${agentPath}
@@ -137,6 +220,7 @@ After completion, update the agent's memory in .agents/memory/ if it exists.`;
 
   // For now, show the command to run with Claude Code
   spinner.succeed(`Agent ${chalk.cyan(agentName)} ready`);
+  console.log(chalk.dim(`  Execution logged: ${startTime}`));
 
   console.log(`
 ${chalk.dim('To execute with Claude Code:')}
