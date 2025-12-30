@@ -1,15 +1,25 @@
-import chalk from 'chalk';
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
-import { findMemoryDir, searchMemory } from '../lib/memory.js';
+import { findMemoryDir } from '../lib/memory.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  progressBar,
+  box,
+  padEnd,
+  truncate,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 interface SquadMetrics {
   name: string;
   mission: string;
   goals: Goal[];
   lastActivity: string;
-  keyMetrics: { name: string; value: string }[];
   status: 'active' | 'stale' | 'needs-goal';
 }
 
@@ -18,7 +28,7 @@ function getLastActivityDate(squadName: string): string {
   if (!memoryDir) return 'unknown';
 
   const squadMemory = join(memoryDir, squadName);
-  if (!existsSync(squadMemory)) return 'no memory';
+  if (!existsSync(squadMemory)) return '—';
 
   let latestTime = 0;
 
@@ -39,82 +49,24 @@ function getLastActivityDate(squadName: string): string {
       }
     }
   } catch {
-    return 'error';
+    return '—';
   }
 
-  if (latestTime === 0) return 'no activity';
+  if (latestTime === 0) return '—';
 
   const ageMs = Date.now() - latestTime;
   const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
 
   if (ageDays === 0) return 'today';
-  if (ageDays === 1) return 'yesterday';
-  if (ageDays < 7) return `${ageDays}d ago`;
-  return `${Math.floor(ageDays / 7)}w ago`;
+  if (ageDays === 1) return '1d';
+  if (ageDays < 7) return `${ageDays}d`;
+  return `${Math.floor(ageDays / 7)}w`;
 }
 
-function extractKeyMetrics(squadName: string): { name: string; value: string }[] {
-  const metrics: { name: string; value: string }[] = [];
-  const memoryDir = findMemoryDir();
-  if (!memoryDir) return metrics;
-
-  // Define what metrics to look for per squad
-  const metricPatterns: Record<string, { pattern: RegExp; name: string }[]> = {
-    finance: [
-      { pattern: /MRR[:\s|]+\$?([\d,.]+|Unknown|\d+)/i, name: 'MRR' },
-      { pattern: /Revenue[:\s|]+\$?([\d,.]+|Unknown)/i, name: 'Revenue' },
-      { pattern: /Runway[:\s|]+([\w\s]+)/i, name: 'Runway' },
-    ],
-    customer: [
-      { pattern: /Identified[:\s|]+(\d+)/i, name: 'Leads' },
-      { pattern: /Pipeline[:\s|]+([\w\s]+)/i, name: 'Pipeline' },
-    ],
-    product: [
-      { pattern: /Version[:\s|]+([\d.]+)/i, name: 'CLI Version' },
-      { pattern: /npm publish[:\s|]+([\w\s]+)/i, name: 'npm' },
-    ],
-    intelligence: [
-      { pattern: /Gen AI spend[:\s|]+\$?([\d.]+B?)/i, name: 'Market Size' },
-      { pattern: /Pilot.*Production[:\s|]+<?(\d+%)/i, name: 'Pilot Success' },
-    ],
-    website: [
-      { pattern: /Completion rate[:\s|]+(\d+%)/i, name: 'Tasks Done' },
-    ],
-  };
-
-  const patterns = metricPatterns[squadName] || [];
-  const squadMemory = join(memoryDir, squadName);
-
-  if (!existsSync(squadMemory)) return metrics;
-
-  try {
-    const agents = readdirSync(squadMemory, { withFileTypes: true })
-      .filter(e => e.isDirectory());
-
-    for (const agent of agents) {
-      const statePath = join(squadMemory, agent.name, 'state.md');
-      if (!existsSync(statePath)) continue;
-
-      const content = readFileSync(statePath, 'utf-8');
-
-      for (const { pattern, name } of patterns) {
-        const match = content.match(pattern);
-        if (match && !metrics.find(m => m.name === name)) {
-          metrics.push({ name, value: match[1].trim() });
-        }
-      }
-    }
-  } catch {
-    // ignore errors
-  }
-
-  return metrics;
-}
-
-export async function dashboardCommand(options: { verbose?: boolean } = {}): Promise<void> {
+export async function dashboardCommand(_options: { verbose?: boolean } = {}): Promise<void> {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
-    console.error(chalk.red('No .agents/squads directory found'));
+    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
     return;
   }
 
@@ -126,12 +78,12 @@ export async function dashboardCommand(options: { verbose?: boolean } = {}): Pro
     if (!squad) continue;
 
     const lastActivity = getLastActivityDate(name);
-    const keyMetrics = extractKeyMetrics(name);
 
     let status: SquadMetrics['status'] = 'active';
-    if (squad.goals.filter(g => !g.completed).length === 0) {
+    const activeGoals = squad.goals.filter(g => !g.completed);
+    if (activeGoals.length === 0) {
       status = 'needs-goal';
-    } else if (lastActivity.includes('w ago') || lastActivity === 'no activity') {
+    } else if (lastActivity.includes('w') || lastActivity === '—') {
       status = 'stale';
     }
 
@@ -140,131 +92,119 @@ export async function dashboardCommand(options: { verbose?: boolean } = {}): Pro
       mission: squad.mission,
       goals: squad.goals,
       lastActivity,
-      keyMetrics,
       status,
     });
   }
 
-  // Print header
-  console.log(`
-${chalk.bold.magenta('AGENTS SQUADS DASHBOARD')}
-${chalk.dim('─'.repeat(70))}
-`);
+  // Stats
+  const totalGoals = squadData.reduce((sum, s) => sum + s.goals.length, 0);
+  const activeGoals = squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0);
+  const completedGoals = totalGoals - activeGoals;
+  const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
+  const activeSquads = squadData.filter(s => s.status === 'active').length;
 
-  // Goals Matrix
-  console.log(chalk.bold.cyan('Goals by Domain\n'));
-  console.log(chalk.dim('Domain          Goal                                    Value              Status'));
-  console.log(chalk.dim('─'.repeat(70)));
+  // Render
+  writeLine();
 
+  // Header
+  writeLine(`  ${gradient('squads')} ${colors.dim}v1.0.0${RESET}`);
+  writeLine();
+
+  // Stats row
+  const stats = [
+    `${colors.cyan}${activeSquads}${RESET}/${squadData.length} active`,
+    `${colors.green}${completedGoals}${RESET}/${totalGoals} done`,
+    `${colors.purple}${activeGoals}${RESET} in progress`,
+  ].join(`  ${colors.dim}│${RESET}  `);
+  writeLine(`  ${stats}`);
+  writeLine();
+
+  // Progress
+  writeLine(`  ${progressBar(completionRate, 32)} ${colors.dim}${completionRate}%${RESET}`);
+  writeLine();
+
+  // Table header
+  const w = { name: 14, status: 8, goals: 5, activity: 6, bar: 16 };
+  const tableWidth = w.name + w.status + w.goals + w.activity + w.bar + 10;
+
+  writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+
+  const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+    `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
+    `${bold}${padEnd('STATUS', w.status)}${RESET}` +
+    `${bold}${padEnd('GOALS', w.goals)}${RESET}` +
+    `${bold}${padEnd('LAST', w.activity)}${RESET}` +
+    `${bold}PROGRESS${RESET}` +
+    ` ${colors.purple}${box.vertical}${RESET}`;
+  writeLine(header);
+
+  writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+
+  // Table rows
   for (const squad of squadData) {
-    const activeGoals = squad.goals.filter(g => !g.completed);
+    const activeCount = squad.goals.filter(g => !g.completed).length;
+    const totalCount = squad.goals.length;
+    const pct = totalCount > 0 ? Math.round(((totalCount - activeCount) / totalCount) * 100) : 0;
 
-    if (activeGoals.length === 0) {
-      // Show squad without goals
-      const statusIcon = chalk.yellow('⚠');
-      const metricStr = squad.keyMetrics.length > 0
-        ? squad.keyMetrics.map(m => `${m.value}`).join(', ').slice(0, 18)
-        : chalk.dim('null');
-
-      console.log(
-        `${chalk.cyan(squad.name.padEnd(15))} ` +
-        `${chalk.dim('(no goals set)'.padEnd(39))} ` +
-        `${metricStr.padEnd(18)} ` +
-        `${statusIcon} Needs goal`
-      );
+    let statusIcon: string;
+    let statusText: string;
+    if (squad.status === 'active') {
+      statusIcon = icons.active;
+      statusText = `${colors.green}active${RESET}`;
+    } else if (squad.status === 'stale') {
+      statusIcon = icons.error;
+      statusText = `${colors.red}stale${RESET}`;
     } else {
-      // Show each goal
-      for (let i = 0; i < activeGoals.length; i++) {
-        const goal = activeGoals[i];
-        const domainCol = i === 0 ? chalk.cyan(squad.name.padEnd(15)) : ' '.repeat(15);
-        const goalText = goal.description.slice(0, 37).padEnd(39);
-        const valueText = goal.progress
-          ? goal.progress.slice(0, 16).padEnd(18)
-          : chalk.dim('null'.padEnd(18));
-        const statusIcon = goal.progress ? chalk.blue('⏳') : chalk.yellow('○');
-
-        console.log(`${domainCol} ${goalText} ${valueText} ${statusIcon}`);
-      }
+      statusIcon = icons.warning;
+      statusText = `${colors.yellow}—${RESET}`;
     }
+
+    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${colors.cyan}${padEnd(squad.name, w.name)}${RESET}` +
+      `${statusIcon} ${padEnd(statusText, w.status - 2)}` +
+      `${padEnd(`${activeCount}/${totalCount}`, w.goals)}` +
+      `${colors.dim}${padEnd(squad.lastActivity, w.activity)}${RESET}` +
+      `${progressBar(pct, 12)}` +
+      ` ${colors.purple}${box.vertical}${RESET}`;
+
+    writeLine(row);
   }
 
-  // Key Metrics Summary
-  console.log(`\n${chalk.bold.cyan('Key Metrics\n')}`);
-  console.log(chalk.dim('Metric                Value              Source'));
-  console.log(chalk.dim('─'.repeat(50)));
+  writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  writeLine();
 
-  const allMetrics: { metric: string; value: string; source: string }[] = [];
+  // Active goals (compact)
+  const allActiveGoals = squadData.flatMap(s =>
+    s.goals.filter(g => !g.completed).map(g => ({ squad: s.name, goal: g }))
+  );
 
-  for (const squad of squadData) {
-    for (const m of squad.keyMetrics) {
-      allMetrics.push({ metric: m.name, value: m.value, source: squad.name });
-    }
-  }
+  if (allActiveGoals.length > 0) {
+    writeLine(`  ${bold}Goals${RESET}`);
+    writeLine();
 
-  // Add computed metrics
-  const totalGoals = squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0);
-  const completedGoals = squadData.reduce((sum, s) => sum + s.goals.filter(g => g.completed).length, 0);
-  const squadsWithGoals = squadData.filter(s => s.goals.length > 0).length;
-  const staleSquads = squadData.filter(s => s.status === 'stale').length;
+    const maxGoals = 6;
+    for (const { squad, goal } of allActiveGoals.slice(0, maxGoals)) {
+      const hasProgress = goal.progress && goal.progress.length > 0;
+      const icon = hasProgress ? icons.progress : icons.empty;
+      const squadLabel = `${colors.dim}${squad}${RESET}`;
+      const goalText = truncate(goal.description, 48);
 
-  allMetrics.push({ metric: 'Active Goals', value: String(totalGoals), source: 'system' });
-  allMetrics.push({ metric: 'Completed Goals', value: String(completedGoals), source: 'system' });
-  allMetrics.push({ metric: 'Squads w/ Goals', value: `${squadsWithGoals}/${squadData.length}`, source: 'system' });
+      writeLine(`  ${icon} ${squadLabel} ${goalText}`);
 
-  for (const m of allMetrics) {
-    console.log(
-      `${m.metric.padEnd(20)} ` +
-      `${m.value.padEnd(18)} ` +
-      `${chalk.dim(m.source)}`
-    );
-  }
-
-  // Squad Health
-  console.log(`\n${chalk.bold.cyan('Squad Health\n')}`);
-  console.log(chalk.dim('Squad           Last Activity    Status'));
-  console.log(chalk.dim('─'.repeat(45)));
-
-  for (const squad of squadData) {
-    const statusIcon = squad.status === 'active'
-      ? chalk.green('●')
-      : squad.status === 'stale'
-        ? chalk.red('●')
-        : chalk.yellow('○');
-
-    const statusText = squad.status === 'active'
-      ? chalk.green('Active')
-      : squad.status === 'stale'
-        ? chalk.red('Stale')
-        : chalk.yellow('Needs goal');
-
-    console.log(
-      `${squad.name.padEnd(15)} ` +
-      `${squad.lastActivity.padEnd(16)} ` +
-      `${statusIcon} ${statusText}`
-    );
-  }
-
-  // Recommendations
-  const needsGoals = squadData.filter(s => s.status === 'needs-goal');
-  const stale = squadData.filter(s => s.status === 'stale');
-
-  if (needsGoals.length > 0 || stale.length > 0) {
-    console.log(`\n${chalk.bold.cyan('Recommendations\n')}`);
-
-    if (needsGoals.length > 0) {
-      console.log(chalk.yellow(`⚠ ${needsGoals.length} squad(s) need goals:`));
-      for (const s of needsGoals) {
-        console.log(chalk.dim(`  squads goal set ${s.name} "<goal>"`));
+      if (hasProgress) {
+        const progressText = truncate(goal.progress!, 52);
+        writeLine(`    ${colors.dim}└${RESET} ${colors.green}${progressText}${RESET}`);
       }
     }
 
-    if (stale.length > 0) {
-      console.log(chalk.red(`\n● ${stale.length} squad(s) are stale:`));
-      for (const s of stale) {
-        console.log(chalk.dim(`  squads run ${s.name}`));
-      }
+    if (allActiveGoals.length > maxGoals) {
+      writeLine(`  ${colors.dim}  +${allActiveGoals.length - maxGoals} more${RESET}`);
     }
+    writeLine();
   }
 
-  console.log();
+  // Quick actions
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
+  writeLine();
 }

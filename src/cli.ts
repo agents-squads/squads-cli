@@ -23,6 +23,7 @@ import {
   feedbackStatsCommand
 } from './commands/feedback.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 
 const program = new Command();
 
@@ -44,6 +45,7 @@ program
   .description('Run a squad or agent')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
+  .option('-e, --execute', 'Execute agent via Claude CLI (requires claude installed)')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .action(runCommand);
 
@@ -147,6 +149,22 @@ feedback
   .command('stats')
   .description('Show feedback summary across all squads')
   .action(feedbackStatsCommand);
+
+// Auth commands
+program
+  .command('login')
+  .description('Log in to Squads (Pro & Enterprise)')
+  .action(loginCommand);
+
+program
+  .command('logout')
+  .description('Log out from Squads')
+  .action(logoutCommand);
+
+program
+  .command('whoami')
+  .description('Show current logged in user')
+  .action(whoamiCommand);
 
 // Parse arguments
 program.parse();

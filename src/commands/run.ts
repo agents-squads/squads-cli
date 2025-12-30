@@ -10,6 +10,7 @@ import {
   loadAgentDefinition
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
+import { track, Events } from '../lib/telemetry.js';
 
 interface RunOptions {
   verbose?: boolean;
@@ -95,6 +96,7 @@ export async function runCommand(
   const squad = loadSquad(target);
 
   if (squad) {
+    await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
     await runSquad(squad, squadsDir, options);
   } else {
     // Try to find as an agent
@@ -178,7 +180,7 @@ async function runAgent(
   agentName: string,
   agentPath: string,
   squadName: string,
-  options: RunOptions
+  options: RunOptions & { execute?: boolean }
 ): Promise<void> {
   const spinner = ora(`Running agent: ${agentName}`).start();
   const startTime = new Date().toISOString();
@@ -202,36 +204,117 @@ async function runAgent(
     status: 'running',
   });
 
-  // Generate the Claude Code command
-  const prompt = `Execute the agent defined in ${agentPath}
+  // Generate the Claude Code prompt
+  const prompt = `Execute the ${agentName} agent from squad ${squadName}.
 
-Read the agent definition and follow its instructions exactly. The agent definition contains:
+Read the agent definition at ${agentPath} and follow its instructions exactly.
+
+The agent definition contains:
 - Purpose/role
-- Tools it can use
+- Tools it can use (MCP servers, skills)
 - Step-by-step instructions
 - Expected output format
 
-After completion, update the agent's memory in .agents/memory/ if it exists.`;
+After completion:
+1. Update the agent's memory in .agents/memory/${squadName}/${agentName}/state.md
+2. Log any learnings to learnings.md
+3. Report what was accomplished`;
 
-  if (options.verbose) {
-    spinner.info(`Agent path: ${agentPath}`);
-    console.log(chalk.dim('Prompt:'), prompt.slice(0, 200) + '...');
-  }
+  // Check if Claude CLI is available
+  const claudeAvailable = await checkClaudeCliAvailable();
 
-  // For now, show the command to run with Claude Code
-  spinner.succeed(`Agent ${chalk.cyan(agentName)} ready`);
-  console.log(chalk.dim(`  Execution logged: ${startTime}`));
+  if (options.execute && claudeAvailable) {
+    spinner.text = `Executing ${agentName} with Claude Code...`;
 
-  console.log(`
+    try {
+      const result = await executeWithClaude(prompt, options.verbose);
+      spinner.succeed(`Agent ${chalk.cyan(agentName)} completed`);
+      updateExecutionStatus(squadName, agentName, 'completed', 'Executed via Claude CLI');
+
+      if (result) {
+        console.log(chalk.dim('\nOutput:'));
+        console.log(result.slice(0, 500));
+        if (result.length > 500) console.log(chalk.dim('... (truncated)'));
+      }
+    } catch (error) {
+      spinner.fail(`Agent ${chalk.cyan(agentName)} failed`);
+      updateExecutionStatus(squadName, agentName, 'failed', String(error));
+      console.error(chalk.red(String(error)));
+    }
+  } else {
+    // Show instructions for manual execution
+    spinner.succeed(`Agent ${chalk.cyan(agentName)} ready`);
+    console.log(chalk.dim(`  Execution logged: ${startTime}`));
+
+    if (!claudeAvailable) {
+      console.log(chalk.yellow('\n  Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code'));
+    }
+
+    console.log(`
 ${chalk.dim('To execute with Claude Code:')}
-  ${chalk.cyan(`claude "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`)}
+  ${chalk.cyan(`claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ').slice(0, 100)}..."`)}
+
+${chalk.dim('Or run with --execute flag:')}
+  ${chalk.cyan(`squads run ${squadName} --execute`)}
 
 ${chalk.dim('Or in Claude Code session:')}
   ${chalk.cyan(`Run the ${agentName} agent from ${agentPath}`)}
 `);
+  }
+}
 
-  // In the future, we could auto-execute via Claude Code CLI
-  // const claude = spawn('claude', ['--prompt', prompt], { stdio: 'inherit' });
+async function checkClaudeCliAvailable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const check = spawn('which', ['claude'], { stdio: 'pipe' });
+    check.on('close', (code) => resolve(code === 0));
+    check.on('error', () => resolve(false));
+  });
+}
+
+async function executeWithClaude(prompt: string, verbose?: boolean): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = ['--print', prompt];
+    if (verbose) {
+      console.log(chalk.dim('Spawning: claude'), args.slice(0, 1).join(' '), '...');
+    }
+
+    const claude = spawn('claude', args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+
+    let output = '';
+    let error = '';
+
+    claude.stdout?.on('data', (data) => {
+      output += data.toString();
+      if (verbose) {
+        process.stdout.write(chalk.dim(data.toString()));
+      }
+    });
+
+    claude.stderr?.on('data', (data) => {
+      error += data.toString();
+    });
+
+    claude.on('close', (code) => {
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(error || `Claude exited with code ${code}`));
+      }
+    });
+
+    claude.on('error', (err) => {
+      reject(err);
+    });
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      claude.kill();
+      reject(new Error('Execution timed out after 5 minutes'));
+    }, 5 * 60 * 1000);
+  });
 }
 
 export async function runSquadCommand(
