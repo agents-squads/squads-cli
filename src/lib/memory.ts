@@ -67,6 +67,47 @@ export function listMemoryEntries(memoryDir: string): MemoryEntry[] {
   return entries;
 }
 
+// Semantic expansions for common business terms
+const SEMANTIC_EXPANSIONS: Record<string, string[]> = {
+  'pricing': ['price', 'cost', '$', 'revenue', 'fee', 'rate'],
+  'price': ['pricing', 'cost', '$', 'fee'],
+  'revenue': ['income', 'sales', 'mrr', 'arr', '$'],
+  'cost': ['expense', 'spend', 'budget', '$', 'price'],
+  'customer': ['client', 'lead', 'prospect', 'user'],
+  'client': ['customer', 'lead', 'prospect'],
+  'lead': ['prospect', 'customer', 'client', 'pipeline'],
+  'agent': ['squad', 'bot', 'ai'],
+  'squad': ['team', 'agent', 'group'],
+  'status': ['state', 'progress', 'health'],
+  'bug': ['issue', 'error', 'problem', 'fix'],
+  'feature': ['capability', 'function', 'ability'],
+};
+
+function expandQuery(query: string): string[] {
+  const words = query.toLowerCase().split(/\s+/);
+  const expanded = new Set(words);
+
+  for (const word of words) {
+    if (SEMANTIC_EXPANSIONS[word]) {
+      SEMANTIC_EXPANSIONS[word].forEach(syn => expanded.add(syn));
+    }
+  }
+
+  return Array.from(expanded);
+}
+
+function getFileAge(filePath: string): number {
+  try {
+    const { statSync } = require('fs');
+    const stats = statSync(filePath);
+    const ageMs = Date.now() - stats.mtimeMs;
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    return ageDays;
+  } catch {
+    return 999;
+  }
+}
+
 export function searchMemory(query: string, memoryDir?: string): SearchResult[] {
   const dir = memoryDir || findMemoryDir();
   if (!dir) return [];
@@ -74,21 +115,35 @@ export function searchMemory(query: string, memoryDir?: string): SearchResult[] 
   const entries = listMemoryEntries(dir);
   const results: SearchResult[] = [];
   const queryLower = query.toLowerCase();
-  const queryWords = queryLower.split(/\s+/);
+  const expandedTerms = expandQuery(queryLower);
 
   for (const entry of entries) {
     const contentLower = entry.content.toLowerCase();
+    const lines = entry.content.split('\n');
     const matches: string[] = [];
     let score = 0;
+    let directHits = 0;
+    let expandedHits = 0;
 
-    // Check if query appears in content
-    for (const word of queryWords) {
+    // Check direct query words first
+    const directWords = queryLower.split(/\s+/);
+    for (const word of directWords) {
       if (contentLower.includes(word)) {
-        score += 1;
-        // Find matching lines
-        const lines = entry.content.split('\n');
-        for (const line of lines) {
-          if (line.toLowerCase().includes(word) && !matches.includes(line.trim())) {
+        directHits += 1;
+        score += 2; // Direct matches worth more
+      }
+    }
+
+    // Check expanded terms
+    for (const term of expandedTerms) {
+      if (contentLower.includes(term)) {
+        expandedHits += 1;
+        score += 0.5; // Expanded matches worth less but still count
+
+        // Find matching lines with context
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.toLowerCase().includes(term) && line.trim() && !matches.includes(line.trim())) {
             matches.push(line.trim());
           }
         }
@@ -100,13 +155,27 @@ export function searchMemory(query: string, memoryDir?: string): SearchResult[] 
       score += 5;
     }
 
-    // Boost state files (most important)
-    if (entry.type === 'state') {
-      score *= 1.5;
+    // Recency boost - files updated recently are more relevant
+    const ageDays = getFileAge(entry.path);
+    if (ageDays < 1) {
+      score *= 1.5; // Updated today
+    } else if (ageDays < 7) {
+      score *= 1.2; // Updated this week
+    } else if (ageDays > 30) {
+      score *= 0.8; // Stale data penalty
     }
 
-    if (score > 0) {
-      results.push({ entry, matches: matches.slice(0, 5), score });
+    // Type weighting - balanced across types
+    const typeWeights: Record<string, number> = {
+      'state': 1.2,      // Current state slightly preferred
+      'learnings': 1.1,  // Learnings are valuable
+      'output': 1.0,     // Recent outputs
+      'feedback': 0.9,   // Feedback less commonly needed
+    };
+    score *= typeWeights[entry.type] || 1.0;
+
+    if (score > 0 && (directHits > 0 || expandedHits > 1)) {
+      results.push({ entry, matches: matches.slice(0, 7), score });
     }
   }
 
