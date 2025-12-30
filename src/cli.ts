@@ -22,6 +22,7 @@ import {
   feedbackShowCommand,
   feedbackStatsCommand
 } from './commands/feedback.js';
+import { dashboardCommand } from './commands/dashboard.js';
 
 const program = new Command();
 
@@ -60,6 +61,14 @@ program
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
   .action(statusCommand);
+
+// Dashboard command
+program
+  .command('dashboard')
+  .alias('dash')
+  .description('Show comprehensive goals and metrics dashboard')
+  .option('-v, --verbose', 'Show additional details')
+  .action(dashboardCommand);
 
 // Memory command group
 const memory = program
