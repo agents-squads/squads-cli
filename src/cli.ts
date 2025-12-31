@@ -26,6 +26,8 @@ import {
 import { dashboardCommand } from './commands/dashboard.js';
 import { issuesCommand } from './commands/issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
+import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
+import { resultsCommand } from './commands/results.js';
 
 const program = new Command();
 
@@ -82,6 +84,32 @@ program
   .option('-o, --org <org>', 'GitHub organization', 'agents-squads')
   .option('-r, --repos <repos>', 'Comma-separated repo names')
   .action(issuesCommand);
+
+// Progress command - track agent task progress
+const progress = program
+  .command('progress')
+  .description('Track active and completed agent tasks')
+  .option('-v, --verbose', 'Show more activity')
+  .action(progressCommand);
+
+progress
+  .command('start <squad> <description>')
+  .description('Register a new active task')
+  .action(progressStartCommand);
+
+progress
+  .command('complete <taskId>')
+  .description('Mark a task as completed')
+  .option('-f, --failed', 'Mark as failed instead')
+  .action(progressCompleteCommand);
+
+// Results command - KPI goals vs actuals
+program
+  .command('results [squad]')
+  .description('Show squad results: git activity + KPI goals vs actuals')
+  .option('-d, --days <days>', 'Days to look back', '7')
+  .option('-v, --verbose', 'Show detailed KPIs per goal')
+  .action((squad, options) => resultsCommand({ ...options, squad }));
 
 // Memory command group
 const memory = program
