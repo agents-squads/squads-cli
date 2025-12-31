@@ -25,6 +25,8 @@ import {
 } from './commands/feedback.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { issuesCommand } from './commands/issues.js';
+import { solveIssuesCommand } from './commands/solve-issues.js';
+import { openIssuesCommand } from './commands/open-issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
@@ -84,6 +86,26 @@ program
   .option('-o, --org <org>', 'GitHub organization', 'agents-squads')
   .option('-r, --repos <repos>', 'Comma-separated repo names')
   .action(issuesCommand);
+
+// Solve issues command - close issues by creating PRs
+program
+  .command('solve-issues')
+  .description('Solve ready-to-fix issues by creating PRs')
+  .option('-r, --repo <repo>', 'Target repo (hq, agents-squads-web)')
+  .option('-i, --issue <number>', 'Specific issue number', parseInt)
+  .option('-d, --dry-run', 'Show what would be solved')
+  .option('-e, --execute', 'Execute with Claude CLI')
+  .action(solveIssuesCommand);
+
+// Open issues command - run evaluators to find new issues
+program
+  .command('open-issues')
+  .description('Run evaluators/critics to find and create issues')
+  .option('-s, --squad <squad>', 'Target squad (website, engineering, etc.)')
+  .option('-a, --agent <agent>', 'Specific evaluator agent')
+  .option('-d, --dry-run', 'Show what would run')
+  .option('-e, --execute', 'Execute with Claude CLI')
+  .action(openIssuesCommand);
 
 // Progress command - track agent task progress
 const progress = program
