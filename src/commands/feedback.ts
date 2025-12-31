@@ -1,8 +1,17 @@
-import chalk from 'chalk';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { findMemoryDir, appendToMemory } from '../lib/memory.js';
 import { loadSquad } from '../lib/squad-parser.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  box,
+  padEnd,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 export interface FeedbackEntry {
   date: string;
@@ -104,13 +113,13 @@ export async function feedbackAddCommand(
 ): Promise<void> {
   const feedbackPath = getFeedbackPath(squadName);
   if (!feedbackPath) {
-    console.error(chalk.red('Error: Could not find memory directory'));
+    writeLine(`  ${colors.red}Could not find memory directory${RESET}`);
     return;
   }
 
   const ratingNum = parseInt(rating);
   if (isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5) {
-    console.error(chalk.red('Error: Rating must be 1-5'));
+    writeLine(`  ${colors.red}Rating must be 1-5${RESET}`);
     return;
   }
 
@@ -156,13 +165,16 @@ export async function feedbackAddCommand(
   writeFileSync(feedbackPath, existing + entry);
 
   // Display
-  const stars = '★'.repeat(ratingNum) + '☆'.repeat(5 - ratingNum);
-  console.log(chalk.green(`✓ Feedback recorded for ${squadName}`));
-  console.log(`  Rating: ${chalk.yellow(stars)}`);
-  console.log(`  ${feedback}`);
+  const stars = `${colors.yellow}${'★'.repeat(ratingNum)}${'☆'.repeat(5 - ratingNum)}${RESET}`;
+
+  writeLine();
+  writeLine(`  ${icons.success} Feedback recorded for ${colors.cyan}${squadName}${RESET}`);
+  writeLine(`  Rating: ${stars}`);
+  writeLine(`  ${feedback}`);
   if (options.learning && options.learning.length > 0) {
-    console.log(chalk.dim(`  + ${options.learning.length} learning(s) added`));
+    writeLine(`  ${colors.dim}+ ${options.learning.length} learning(s) added${RESET}`);
   }
+  writeLine();
 }
 
 export async function feedbackShowCommand(
@@ -171,7 +183,7 @@ export async function feedbackShowCommand(
 ): Promise<void> {
   const feedbackPath = getFeedbackPath(squadName);
   if (!feedbackPath || !existsSync(feedbackPath)) {
-    console.log(chalk.yellow(`No feedback recorded for ${squadName}`));
+    writeLine(`  ${colors.yellow}No feedback recorded for ${squadName}${RESET}`);
     return;
   }
 
@@ -181,46 +193,64 @@ export async function feedbackShowCommand(
   const limit = options.limit ? parseInt(options.limit) : 5;
   const recent = entries.slice(-limit).reverse();
 
-  console.log(chalk.bold.cyan(`\n${squadName} - Recent Feedback\n`));
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}feedback${RESET} ${colors.cyan}${squadName}${RESET}`);
+  writeLine();
 
   if (recent.length === 0) {
-    console.log(chalk.dim('No feedback entries yet'));
+    writeLine(`  ${colors.dim}No feedback entries yet${RESET}`);
     return;
   }
 
   // Calculate average rating
   const avgRating = entries.reduce((sum, e) => sum + e.rating, 0) / entries.length;
 
-  console.log(chalk.dim(`Average rating: ${avgRating.toFixed(1)}/5 (${entries.length} entries)\n`));
+  writeLine(`  ${colors.dim}Average: ${avgRating.toFixed(1)}/5 (${entries.length} entries)${RESET}`);
+  writeLine();
 
   for (const entry of recent) {
-    const stars = '★'.repeat(entry.rating) + '☆'.repeat(5 - entry.rating);
-    console.log(`${chalk.dim(entry.date)} ${chalk.yellow(stars)}`);
-    console.log(`  ${entry.feedback}`);
+    const stars = `${colors.yellow}${'★'.repeat(entry.rating)}${'☆'.repeat(5 - entry.rating)}${RESET}`;
+    writeLine(`  ${colors.dim}${entry.date}${RESET} ${stars}`);
+    writeLine(`  ${entry.feedback}`);
     if (entry.learnings && entry.learnings.length > 0) {
       for (const learning of entry.learnings) {
-        console.log(chalk.green(`  → ${learning}`));
+        writeLine(`  ${colors.green}→ ${learning}${RESET}`);
       }
     }
-    console.log();
+    writeLine();
   }
 }
 
 export async function feedbackStatsCommand(): Promise<void> {
   const memoryDir = findMemoryDir();
   if (!memoryDir) {
-    console.error(chalk.red('Error: Could not find memory directory'));
+    writeLine(`  ${colors.red}Could not find memory directory${RESET}`);
     return;
   }
 
-  console.log(chalk.bold.cyan('\nFeedback Summary\n'));
-  console.log('────────────────────────────────────────');
-  console.log(chalk.dim('Squad               Avg     Count  Trend'));
-  console.log('────────────────────────────────────────');
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}feedback stats${RESET}`);
+  writeLine();
 
   const squads = readdirSync(memoryDir, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .map(e => e.name);
+
+  // Table
+  const w = { squad: 18, avg: 12, count: 8, trend: 6 };
+  const tableWidth = w.squad + w.avg + w.count + w.trend + 4;
+
+  writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+
+  const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+    `${bold}${padEnd('SQUAD', w.squad)}${RESET}` +
+    `${bold}${padEnd('AVG', w.avg)}${RESET}` +
+    `${bold}${padEnd('COUNT', w.count)}${RESET}` +
+    `${bold}TREND${RESET}` +
+    ` ${colors.purple}${box.vertical}${RESET}`;
+  writeLine(header);
+
+  writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
   for (const squad of squads) {
     const feedbackPath = getFeedbackPath(squad);
@@ -236,19 +266,31 @@ export async function feedbackStatsCommand(): Promise<void> {
     const avgRating = entries.reduce((sum, e) => sum + e.rating, 0) / entries.length;
 
     // Calculate trend (last 3 vs previous)
-    let trend = '→';
+    let trend = `${colors.dim}→${RESET}`;
     if (entries.length >= 4) {
       const recent = entries.slice(-3).reduce((s, e) => s + e.rating, 0) / 3;
       const older = entries.slice(-6, -3).reduce((s, e) => s + e.rating, 0) / Math.min(3, entries.slice(-6, -3).length);
-      if (recent > older + 0.3) trend = chalk.green('↑');
-      else if (recent < older - 0.3) trend = chalk.red('↓');
+      if (recent > older + 0.3) trend = `${colors.green}↑${RESET}`;
+      else if (recent < older - 0.3) trend = `${colors.red}↓${RESET}`;
     }
 
-    const stars = '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating));
-    console.log(
-      `${squad.padEnd(18)} ${chalk.yellow(stars.slice(0, 5))}   ${String(entries.length).padStart(3)}    ${trend}`
-    );
+    const stars = `${colors.yellow}${'★'.repeat(Math.round(avgRating))}${'☆'.repeat(5 - Math.round(avgRating))}${RESET}`;
+
+    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${colors.cyan}${padEnd(squad, w.squad)}${RESET}` +
+      `${padEnd(stars, w.avg + 20)}` + // extra for color codes
+      `${padEnd(String(entries.length), w.count)}` +
+      `${trend}` +
+      ` ${colors.purple}${box.vertical}${RESET}`;
+
+    writeLine(row);
   }
 
-  console.log('────────────────────────────────────────');
+  writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  writeLine();
+
+  // Commands
+  writeLine(`  ${colors.dim}$${RESET} squads feedback show ${colors.cyan}<squad>${RESET}   ${colors.dim}View squad feedback${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}<squad>${RESET}    ${colors.dim}Add new feedback${RESET}`);
+  writeLine();
 }

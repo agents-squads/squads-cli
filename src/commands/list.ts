@@ -1,6 +1,18 @@
-import chalk from 'chalk';
-import fs from 'fs/promises';
-import path from 'path';
+import {
+  findSquadsDir,
+  listSquads,
+  listAgents
+} from '../lib/squad-parser.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  box,
+  padEnd,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 interface ListOptions {
   squads?: boolean;
@@ -8,47 +20,77 @@ interface ListOptions {
 }
 
 export async function listCommand(options: ListOptions): Promise<void> {
-  const cwd = process.cwd();
-  const squadsDir = path.join(cwd, '.agents/squads');
+  const squadsDir = findSquadsDir();
 
-  try {
-    // Check if squads directory exists
-    await fs.access(squadsDir);
-
-    // Read all .md files in squads directory
-    const files = await fs.readdir(squadsDir);
-    const agentFiles = files.filter((f) => f.endsWith('.md'));
-
-    if (agentFiles.length === 0) {
-      console.log(chalk.yellow('No agents found.'));
-      console.log(`Run ${chalk.cyan('squads init')} to create example agents.`);
-      return;
-    }
-
-    console.log(`
-${chalk.bold('Agents')} ${chalk.dim(`(${agentFiles.length})`)}
-`);
-
-    for (const file of agentFiles) {
-      const name = file.replace('.md', '');
-      const content = await fs.readFile(path.join(squadsDir, file), 'utf-8');
-
-      // Extract model from content
-      const modelMatch = content.match(/##\s*Model\s*\n([^\n#]+)/i);
-      const model = modelMatch ? modelMatch[1].trim() : 'unknown';
-
-      console.log(`  ${chalk.cyan(name)} ${chalk.dim(`(${model})`)}`);
-    }
-
-    console.log('');
-
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      console.log(chalk.yellow('No squad project found in current directory.'));
-      console.log(`Run ${chalk.cyan('squads init')} to initialize a project.`);
-    } else {
-      console.error(chalk.red(error));
-      process.exit(1);
-    }
+  if (!squadsDir) {
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
+    process.exit(1);
   }
+
+  const squads = listSquads(squadsDir);
+  const allAgents = listAgents(squadsDir);
+
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}list${RESET}`);
+  writeLine();
+
+  // Stats
+  writeLine(`  ${colors.cyan}${squads.length}${RESET} squads  ${colors.dim}│${RESET}  ${colors.cyan}${allAgents.length}${RESET} agents`);
+  writeLine();
+
+  if (!options.agents) {
+    // Show squads table
+    const w = { name: 16, agents: 8, lead: 24 };
+    const tableWidth = w.name + w.agents + w.lead + 4;
+
+    writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+
+    const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
+      `${bold}${padEnd('AGENTS', w.agents)}${RESET}` +
+      `${bold}LEAD${RESET}` +
+      ` ${colors.purple}${box.vertical}${RESET}`;
+    writeLine(header);
+
+    writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+
+    for (const squadName of squads) {
+      const agents = listAgents(squadsDir, squadName);
+      const lead = agents.find(a => a.name.includes('lead'))?.name || agents[0]?.name || '-';
+
+      const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+        `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +
+        `${padEnd(String(agents.length), w.agents)}` +
+        `${colors.dim}${padEnd(lead, w.lead)}${RESET}` +
+        `${colors.purple}${box.vertical}${RESET}`;
+
+      writeLine(row);
+    }
+
+    writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+    writeLine();
+  }
+
+  if (!options.squads && options.agents) {
+    // Show agents list
+    writeLine(`  ${bold}Agents${RESET}`);
+    writeLine();
+
+    for (const agent of allAgents) {
+      const squadPart = agent.squad ? `${colors.dim}${agent.squad}/${RESET}` : '';
+      const statusIcon = agent.status?.toLowerCase() === 'active' ? icons.active : icons.pending;
+
+      writeLine(`  ${statusIcon} ${squadPart}${colors.white}${agent.name}${RESET}`);
+      if (agent.role) {
+        writeLine(`    ${colors.dim}└ ${agent.role}${RESET}`);
+      }
+    }
+    writeLine();
+  }
+
+  // Commands
+  writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}<squad>${RESET}   ${colors.dim}Squad details${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}      ${colors.dim}Execute a squad${RESET}`);
+  writeLine();
 }

@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 import ora from 'ora';
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
@@ -11,6 +10,15 @@ import {
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track, Events } from '../lib/telemetry.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  box,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 interface RunOptions {
   verbose?: boolean;
@@ -87,8 +95,8 @@ export async function runCommand(
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
-    console.error(chalk.red('No .agents/squads directory found.'));
-    console.log(chalk.dim('Run `squads init` to create one.'));
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
     process.exit(1);
   }
 
@@ -110,8 +118,8 @@ export async function runCommand(
       const squadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
       await runAgent(agent.name, agent.filePath, squadName, options);
     } else {
-      console.error(chalk.red(`Squad or agent "${target}" not found.`));
-      console.log(chalk.dim('Run `squads list` to see available squads and agents.'));
+      writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
+      writeLine(`  ${colors.dim}Run \`squads list\` to see available squads and agents.${RESET}`);
       process.exit(1);
     }
   }
@@ -126,28 +134,32 @@ async function runSquad(
 
   const startTime = new Date().toISOString();
 
-  console.log(`
-${chalk.bold.magenta('Running Squad:')} ${chalk.cyan(squad.name)}
-${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
-${chalk.dim('Started:')} ${startTime}
-`);
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET} ${colors.cyan}${squad.name}${RESET}`);
+  writeLine();
+  if (squad.mission) {
+    writeLine(`  ${colors.dim}${squad.mission}${RESET}`);
+    writeLine();
+  }
+  writeLine(`  ${colors.dim}Started: ${startTime}${RESET}`);
+  writeLine();
 
   // If there's a pipeline, run agents in order
   if (squad.pipelines.length > 0) {
     const pipeline = squad.pipelines[0];
-    console.log(chalk.dim('Pipeline:'), pipeline.agents.join(' → '));
-    console.log();
+    writeLine(`  ${bold}Pipeline${RESET} ${colors.dim}${pipeline.agents.join(' → ')}${RESET}`);
+    writeLine();
 
     for (let i = 0; i < pipeline.agents.length; i++) {
       const agentName = pipeline.agents[i];
       const agentPath = join(squadsDir, squad.name, `${agentName}.md`);
 
       if (existsSync(agentPath)) {
-        console.log(chalk.dim(`[${i + 1}/${pipeline.agents.length}]`));
+        writeLine(`  ${colors.dim}[${i + 1}/${pipeline.agents.length}]${RESET}`);
         await runAgent(agentName, agentPath, squad.name, options);
-        console.log();
+        writeLine();
       } else {
-        console.log(chalk.yellow(`  ⚠ Agent ${agentName} not found, skipping`));
+        writeLine(`  ${icons.warning} ${colors.yellow}Agent ${agentName} not found, skipping${RESET}`);
       }
     }
   } else {
@@ -162,18 +174,20 @@ ${chalk.dim('Started:')} ${startTime}
         await runAgent(orchestrator.name, agentPath, squad.name, options);
       }
     } else {
-      console.log(chalk.dim('No pipeline defined. Available agents:'));
+      writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
       for (const agent of squad.agents) {
-        console.log(`  ${chalk.cyan(agent.name)} - ${agent.role}`);
+        writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
       }
-      console.log();
-      console.log(chalk.dim('Run a specific agent with:'));
-      console.log(`  ${chalk.cyan(`squads run ${squad.name} --agent <name>`)}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
     }
   }
 
-  console.log(chalk.dim(`\nAfter execution, record outcome with:`));
-  console.log(`  ${chalk.cyan(`squads feedback ${squad.name} <1-5> "<feedback>"`)}`);
+  writeLine();
+  writeLine(`  ${colors.dim}After execution, record outcome:${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.name}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
+  writeLine();
 }
 
 async function runAgent(
@@ -190,8 +204,8 @@ async function runAgent(
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     if (options.verbose) {
-      console.log(chalk.dim('\nAgent definition:'));
-      console.log(chalk.dim(definition.slice(0, 500) + '...'));
+      writeLine(`  ${colors.dim}Agent definition:${RESET}`);
+      writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
     }
     return;
   }
@@ -228,38 +242,39 @@ After completion:
 
     try {
       const result = await executeWithClaude(prompt, options.verbose);
-      spinner.succeed(`Agent ${chalk.cyan(agentName)} completed`);
+      spinner.succeed(`Agent ${agentName} completed`);
       updateExecutionStatus(squadName, agentName, 'completed', 'Executed via Claude CLI');
 
       if (result) {
-        console.log(chalk.dim('\nOutput:'));
-        console.log(result.slice(0, 500));
-        if (result.length > 500) console.log(chalk.dim('... (truncated)'));
+        writeLine(`  ${colors.dim}Output:${RESET}`);
+        writeLine(`  ${result.slice(0, 500)}`);
+        if (result.length > 500) writeLine(`  ${colors.dim}... (truncated)${RESET}`);
       }
     } catch (error) {
-      spinner.fail(`Agent ${chalk.cyan(agentName)} failed`);
+      spinner.fail(`Agent ${agentName} failed`);
       updateExecutionStatus(squadName, agentName, 'failed', String(error));
-      console.error(chalk.red(String(error)));
+      writeLine(`  ${colors.red}${String(error)}${RESET}`);
     }
   } else {
     // Show instructions for manual execution
-    spinner.succeed(`Agent ${chalk.cyan(agentName)} ready`);
-    console.log(chalk.dim(`  Execution logged: ${startTime}`));
+    spinner.succeed(`Agent ${agentName} ready`);
+    writeLine(`  ${colors.dim}Execution logged: ${startTime}${RESET}`);
 
     if (!claudeAvailable) {
-      console.log(chalk.yellow('\n  Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code'));
+      writeLine();
+      writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
+      writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
     }
 
-    console.log(`
-${chalk.dim('To execute with Claude Code:')}
-  ${chalk.cyan(`claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ').slice(0, 100)}..."`)}
-
-${chalk.dim('Or run with --execute flag:')}
-  ${chalk.cyan(`squads run ${squadName} --execute`)}
-
-${chalk.dim('Or in Claude Code session:')}
-  ${chalk.cyan(`Run the ${agentName} agent from ${agentPath}`)}
-`);
+    writeLine();
+    writeLine(`  ${colors.dim}To execute with Claude Code:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ').slice(0, 80)}..."`);
+    writeLine();
+    writeLine(`  ${colors.dim}Or run with --execute flag:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} --execute`);
+    writeLine();
+    writeLine(`  ${colors.dim}Or in Claude Code session:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} Run the ${colors.cyan}${agentName}${RESET} agent from ${agentPath}`);
   }
 }
 
@@ -275,7 +290,7 @@ async function executeWithClaude(prompt: string, verbose?: boolean): Promise<str
   return new Promise((resolve, reject) => {
     const args = ['--print', prompt];
     if (verbose) {
-      console.log(chalk.dim('Spawning: claude'), args.slice(0, 1).join(' '), '...');
+      writeLine(`  ${colors.dim}Spawning: claude ${args.slice(0, 1).join(' ')} ...${RESET}`);
     }
 
     const claude = spawn('claude', args, {
@@ -289,7 +304,7 @@ async function executeWithClaude(prompt: string, verbose?: boolean): Promise<str
     claude.stdout?.on('data', (data) => {
       output += data.toString();
       if (verbose) {
-        process.stdout.write(chalk.dim(data.toString()));
+        process.stdout.write(data.toString());
       }
     });
 

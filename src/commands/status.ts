@@ -119,9 +119,9 @@ async function showOverallStatus(
     const row = `  ${colors.purple}${box.vertical}${RESET} ` +
       `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +
       `${padEnd(String(agents.length), w.agents)}` +
-      `${padEnd(memoryStatus, w.memory + 10)}` + // extra for color codes
-      `${activityColor}${lastActivity}${RESET}` +
-      ` ${colors.purple}${box.vertical}${RESET}`;
+      `${padEnd(memoryStatus, w.memory)}` +
+      `${padEnd(`${activityColor}${lastActivity}${RESET}`, w.activity)}` +
+      `${colors.purple}${box.vertical}${RESET}`;
 
     writeLine(row);
   }

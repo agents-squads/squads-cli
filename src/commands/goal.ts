@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 import {
   loadSquad,
   findSquadsDir,
@@ -7,6 +6,17 @@ import {
   updateGoalInSquad,
   Goal
 } from '../lib/squad-parser.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  box,
+  padEnd,
+  truncate,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 export async function goalSetCommand(
   squadName: string,
@@ -15,7 +25,7 @@ export async function goalSetCommand(
 ): Promise<void> {
   const squad = loadSquad(squadName);
   if (!squad) {
-    console.error(chalk.red(`Squad "${squadName}" not found`));
+    writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);
     return;
   }
 
@@ -27,15 +37,17 @@ export async function goalSetCommand(
 
   const success = addGoalToSquad(squadName, goalText);
 
+  writeLine();
   if (success) {
-    console.log(chalk.green(`✓ Goal added to ${squadName}`));
-    console.log(`  ${chalk.bold(description)}`);
+    writeLine(`  ${icons.success} Goal added to ${colors.cyan}${squadName}${RESET}`);
+    writeLine(`  ${bold}${description}${RESET}`);
     if (options.metric && options.metric.length > 0) {
-      console.log(chalk.dim(`  Metrics: ${options.metric.join(', ')}`));
+      writeLine(`  ${colors.dim}Metrics: ${options.metric.join(', ')}${RESET}`);
     }
   } else {
-    console.error(chalk.red('Failed to add goal'));
+    writeLine(`  ${colors.red}Failed to add goal${RESET}`);
   }
+  writeLine();
 }
 
 export async function goalListCommand(
@@ -44,7 +56,7 @@ export async function goalListCommand(
 ): Promise<void> {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
-    console.error(chalk.red('Error: No .agents/squads directory found'));
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
     return;
   }
 
@@ -54,11 +66,15 @@ export async function goalListCommand(
   let totalCompleted = 0;
   let hasGoals = false;
 
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}goal list${RESET}`);
+  writeLine();
+
   for (const name of squadsToCheck) {
     const squad = loadSquad(name);
     if (!squad || squad.goals.length === 0) {
       if (squadName) {
-        console.log(chalk.yellow(`No goals set for ${name}`));
+        writeLine(`  ${colors.yellow}No goals set for ${name}${RESET}`);
       }
       continue;
     }
@@ -72,31 +88,37 @@ export async function goalListCommand(
 
     if (activeGoals.length === 0 && !options.all) continue;
 
-    console.log(chalk.bold.cyan(`\n${name}`));
-    console.log(chalk.dim(`  Mission: ${squad.mission}`));
+    writeLine(`  ${colors.cyan}${name}${RESET}`);
+    if (squad.mission) {
+      writeLine(`  ${colors.dim}${truncate(squad.mission, 60)}${RESET}`);
+    }
+    writeLine();
 
-    activeGoals.forEach((goal, idx) => {
+    for (const goal of activeGoals) {
       const globalIdx = squad.goals.indexOf(goal) + 1;
-      console.log(`  ${chalk.green('○')} [${globalIdx}] ${goal.description}`);
+      writeLine(`  ${icons.active} ${colors.dim}[${globalIdx}]${RESET} ${goal.description}`);
       if (goal.progress) {
-        console.log(chalk.dim(`      Progress: ${goal.progress}`));
+        writeLine(`    ${colors.dim}└ ${goal.progress}${RESET}`);
       }
-    });
+    }
 
     if (options.all && completedGoals.length > 0) {
-      completedGoals.forEach((goal) => {
+      for (const goal of completedGoals) {
         const globalIdx = squad.goals.indexOf(goal) + 1;
-        console.log(chalk.dim(`  ✓ [${globalIdx}] ${goal.description}`));
-      });
+        writeLine(`  ${icons.success} ${colors.dim}[${globalIdx}] ${goal.description}${RESET}`);
+      }
     }
+    writeLine();
   }
 
   if (hasGoals) {
-    console.log(chalk.dim(`\nTotal: ${totalActive} active, ${totalCompleted} completed`));
+    writeLine(`  ${colors.green}${totalActive}${RESET} active  ${colors.dim}│${RESET}  ${colors.dim}${totalCompleted} completed${RESET}`);
   } else if (!squadName) {
-    console.log(chalk.yellow('\nNo goals defined yet.'));
-    console.log(chalk.dim('Add a goal: squads goal set <squad> "<goal>"'));
+    writeLine(`  ${colors.yellow}No goals defined yet${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}$${RESET} squads goal set ${colors.cyan}<squad>${RESET} ${colors.cyan}"<goal>"${RESET}`);
   }
+  writeLine();
 }
 
 export async function goalCompleteCommand(
@@ -105,24 +127,26 @@ export async function goalCompleteCommand(
 ): Promise<void> {
   const squad = loadSquad(squadName);
   if (!squad) {
-    console.error(chalk.red(`Squad "${squadName}" not found`));
+    writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);
     return;
   }
 
   const idx = parseInt(goalIndex) - 1;
   if (idx < 0 || idx >= squad.goals.length) {
-    console.error(chalk.red(`Invalid goal index: ${goalIndex}`));
-    console.log(chalk.dim(`Squad has ${squad.goals.length} goal(s)`));
+    writeLine(`  ${colors.red}Invalid goal index: ${goalIndex}${RESET}`);
+    writeLine(`  ${colors.dim}Squad has ${squad.goals.length} goal(s)${RESET}`);
     return;
   }
 
   const success = updateGoalInSquad(squadName, idx, { completed: true });
 
+  writeLine();
   if (success) {
-    console.log(chalk.green(`✓ Goal completed: ${squad.goals[idx].description}`));
+    writeLine(`  ${icons.success} Goal completed: ${colors.cyan}${squad.goals[idx].description}${RESET}`);
   } else {
-    console.error(chalk.red('Failed to update goal'));
+    writeLine(`  ${colors.red}Failed to update goal${RESET}`);
   }
+  writeLine();
 }
 
 export async function goalProgressCommand(
@@ -132,22 +156,24 @@ export async function goalProgressCommand(
 ): Promise<void> {
   const squad = loadSquad(squadName);
   if (!squad) {
-    console.error(chalk.red(`Squad "${squadName}" not found`));
+    writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);
     return;
   }
 
   const idx = parseInt(goalIndex) - 1;
   if (idx < 0 || idx >= squad.goals.length) {
-    console.error(chalk.red(`Invalid goal index: ${goalIndex}`));
+    writeLine(`  ${colors.red}Invalid goal index: ${goalIndex}${RESET}`);
     return;
   }
 
   const success = updateGoalInSquad(squadName, idx, { progress });
 
+  writeLine();
   if (success) {
-    console.log(chalk.green(`✓ Progress updated: ${squad.goals[idx].description}`));
-    console.log(chalk.dim(`  ${progress}`));
+    writeLine(`  ${icons.success} Progress updated: ${colors.cyan}${squad.goals[idx].description}${RESET}`);
+    writeLine(`  ${colors.dim}${progress}${RESET}`);
   } else {
-    console.error(chalk.red('Failed to update progress'));
+    writeLine(`  ${colors.red}Failed to update progress${RESET}`);
   }
+  writeLine();
 }
