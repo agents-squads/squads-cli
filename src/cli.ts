@@ -11,6 +11,7 @@ import {
   memoryUpdateCommand,
   memoryListCommand
 } from './commands/memory.js';
+import { syncCommand } from './commands/sync.js';
 import {
   goalSetCommand,
   goalListCommand,
@@ -109,6 +110,12 @@ memory
   .command('list')
   .description('List all memory entries')
   .action(memoryListCommand);
+
+memory
+  .command('sync')
+  .description('Sync memory from recent git commits (auto-update)')
+  .option('-v, --verbose', 'Show detailed commit info')
+  .action(syncCommand);
 
 // Goal command group
 const goal = program
