@@ -1,5 +1,4 @@
-import chalk from 'chalk';
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { join } from 'path';
 import {
   findSquadsDir,
@@ -8,6 +7,16 @@ import {
   listAgents
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  box,
+  padEnd,
+  icons,
+  writeLine,
+} from '../lib/terminal.js';
 
 interface StatusOptions {
   verbose?: boolean;
@@ -20,8 +29,8 @@ export async function statusCommand(
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
-    console.error(chalk.red('No .agents/squads directory found.'));
-    console.log(chalk.dim('Run `squads init` to create one.'));
+    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
     process.exit(1);
   }
 
@@ -34,35 +43,50 @@ export async function statusCommand(
 
 async function showOverallStatus(
   squadsDir: string,
-  options: StatusOptions
+  _options: StatusOptions
 ): Promise<void> {
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
 
-  console.log(chalk.bold.magenta('\nSquads Status Overview\n'));
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
+  writeLine();
 
-  console.log(chalk.dim('─'.repeat(60)));
-  console.log(
-    chalk.bold('Squad'.padEnd(20)) +
-    chalk.bold('Agents'.padEnd(10)) +
-    chalk.bold('Memory'.padEnd(15)) +
-    chalk.bold('Last Activity')
-  );
-  console.log(chalk.dim('─'.repeat(60)));
+  // Stats row
+  const totalSquads = squads.length;
+  const activeCount = squads.length; // All loaded squads are "active"
+  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}`);
+  writeLine();
+
+  // Table
+  const w = { name: 16, agents: 8, memory: 14, activity: 12 };
+  const tableWidth = w.name + w.agents + w.memory + w.activity + 6;
+
+  writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+
+  const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+    `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
+    `${bold}${padEnd('AGENTS', w.agents)}${RESET}` +
+    `${bold}${padEnd('MEMORY', w.memory)}${RESET}` +
+    `${bold}ACTIVITY${RESET}` +
+    ` ${colors.purple}${box.vertical}${RESET}`;
+  writeLine(header);
+
+  writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
   for (const squadName of squads) {
-    const squad = loadSquad(squadName);
     const agents = listAgents(squadsDir, squadName);
 
     // Check memory
-    let memoryStatus = chalk.dim('none');
-    let lastActivity = chalk.dim('unknown');
+    let memoryStatus = `${colors.dim}none${RESET}`;
+    let lastActivity = `${colors.dim}—${RESET}`;
+    let activityColor = colors.dim;
 
     if (memoryDir) {
       const squadMemoryPath = join(memoryDir, squadName);
       if (existsSync(squadMemoryPath)) {
         const states = getSquadState(squadName);
-        memoryStatus = chalk.green(`${states.length} entries`);
+        memoryStatus = `${colors.green}${states.length} entries${RESET}`;
 
         // Find most recent file
         let mostRecent = 0;
@@ -74,36 +98,42 @@ async function showOverallStatus(
         }
 
         if (mostRecent > 0) {
-          const date = new Date(mostRecent);
           const daysAgo = Math.floor((Date.now() - mostRecent) / (1000 * 60 * 60 * 24));
           if (daysAgo === 0) {
-            lastActivity = chalk.green('today');
+            lastActivity = 'today';
+            activityColor = colors.green;
           } else if (daysAgo === 1) {
-            lastActivity = chalk.green('yesterday');
+            lastActivity = 'yesterday';
+            activityColor = colors.green;
           } else if (daysAgo < 7) {
-            lastActivity = chalk.yellow(`${daysAgo}d ago`);
+            lastActivity = `${daysAgo}d ago`;
+            activityColor = colors.yellow;
           } else {
-            lastActivity = chalk.dim(`${daysAgo}d ago`);
+            lastActivity = `${daysAgo}d ago`;
+            activityColor = colors.dim;
           }
         }
       }
     }
 
-    console.log(
-      chalk.cyan(squadName.padEnd(20)) +
-      String(agents.length).padEnd(10) +
-      memoryStatus.padEnd(24) +  // extra for color codes
-      lastActivity
-    );
+    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +
+      `${padEnd(String(agents.length), w.agents)}` +
+      `${padEnd(memoryStatus, w.memory + 10)}` + // extra for color codes
+      `${activityColor}${lastActivity}${RESET}` +
+      ` ${colors.purple}${box.vertical}${RESET}`;
+
+    writeLine(row);
   }
 
-  console.log(chalk.dim('─'.repeat(60)));
-  console.log();
+  writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  writeLine();
 
-  console.log(chalk.dim('Commands:'));
-  console.log(`  ${chalk.cyan('squads status <squad>')}  View detailed squad status`);
-  console.log(`  ${chalk.cyan('squads run <squad>')}     Run a squad`);
-  console.log(`  ${chalk.cyan('squads memory query')}    Search squad memory`);
+  // Commands
+  writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}<squad>${RESET}    ${colors.dim}Squad details${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads dash             ${colors.dim}Full dashboard${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}       ${colors.dim}Execute a squad${RESET}`);
+  writeLine();
 }
 
 async function showSquadStatus(
@@ -114,35 +144,55 @@ async function showSquadStatus(
   const squad = loadSquad(squadName);
 
   if (!squad) {
-    console.error(chalk.red(`Squad "${squadName}" not found.`));
+    writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
     process.exit(1);
   }
 
-  console.log(`
-${chalk.bold.magenta('Squad:')} ${chalk.cyan(squad.name)}
-${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
-`);
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET} ${colors.cyan}${squad.name}${RESET}`);
+  writeLine();
 
-  // Agents
-  console.log(chalk.bold('Agents:'));
+  // Mission
+  if (squad.mission) {
+    writeLine(`  ${colors.dim}${squad.mission}${RESET}`);
+    writeLine();
+  }
+
+  // Agents table
   const agents = listAgents(squadsDir, squadName);
+  const w = { name: 24, role: 36 };
+  const tableWidth = w.name + w.role + 4;
+
+  writeLine(`  ${bold}Agents${RESET} ${colors.dim}(${agents.length})${RESET}`);
+  writeLine();
+
+  writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
 
   for (const agent of agents) {
     const status = agent.status?.toLowerCase() === 'active'
-      ? chalk.green('●')
-      : chalk.dim('○');
-    console.log(`  ${status} ${chalk.white(agent.name)}`);
-    if (options.verbose && agent.role) {
-      console.log(chalk.dim(`      ${agent.role}`));
-    }
+      ? icons.active
+      : icons.pending;
+
+    const role = options.verbose && agent.role
+      ? `${colors.dim}${agent.role.substring(0, w.role - 2)}${RESET}`
+      : '';
+
+    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${status} ${padEnd(agent.name, w.name - 2)}` +
+      `${padEnd(role, w.role)}` +
+      `${colors.purple}${box.vertical}${RESET}`;
+
+    writeLine(row);
   }
+
+  writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
 
   // Pipelines
   if (squad.pipelines.length > 0) {
-    console.log();
-    console.log(chalk.bold('Pipelines:'));
+    writeLine();
+    writeLine(`  ${bold}Pipelines${RESET}`);
     for (const pipeline of squad.pipelines) {
-      console.log(`  ${chalk.dim(pipeline.agents.join(' → '))}`);
+      writeLine(`  ${colors.dim}${pipeline.agents.join(' → ')}${RESET}`);
     }
   }
 
@@ -152,21 +202,15 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
     const states = getSquadState(squadName);
 
     if (states.length > 0) {
-      console.log();
-      console.log(chalk.bold('Memory:'));
+      writeLine();
+      writeLine(`  ${bold}Memory${RESET} ${colors.dim}(${states.length} entries)${RESET}`);
+      writeLine();
 
       for (const state of states) {
-        // Extract key info from state
-        const lines = state.content.split('\n').filter(l => l.trim());
-        const title = lines.find(l => l.startsWith('#'))?.replace('#', '').trim() || state.agent;
-
-        // Find "Updated" line
         const updated = state.content.match(/Updated:\s*(\S+)/)?.[1] || 'unknown';
+        writeLine(`  ${icons.progress} ${colors.white}${state.agent}${RESET}`);
+        writeLine(`    ${colors.dim}└ updated: ${updated}${RESET}`);
 
-        console.log(`  ${chalk.white(state.agent)}`);
-        console.log(chalk.dim(`    Last updated: ${updated}`));
-
-        // Show signals or key state
         if (options.verbose) {
           const signalsMatch = state.content.match(/## Active Signals([\s\S]*?)(?=##|$)/);
           if (signalsMatch) {
@@ -176,7 +220,7 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
               .slice(0, 3);
 
             for (const sig of signalLines) {
-              console.log(chalk.dim(`    ${sig.trim()}`));
+              writeLine(`    ${colors.dim}  ${sig.trim()}${RESET}`);
             }
           }
         }
@@ -184,10 +228,9 @@ ${chalk.dim('Mission:')} ${squad.mission || 'Not defined'}
     }
   }
 
-  // Suggested commands
-  console.log();
-  console.log(chalk.dim('Commands:'));
-  console.log(`  ${chalk.cyan(`squads run ${squadName}`)}           Run the squad`);
-  console.log(`  ${chalk.cyan(`squads memory show ${squadName}`)}   View full memory`);
-  console.log(`  ${chalk.cyan(`squads status ${squadName} -v`)}     Verbose status`);
+  writeLine();
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET}           ${colors.dim}Run the squad${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads memory show ${colors.cyan}${squadName}${RESET}   ${colors.dim}View full memory${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}${squadName}${RESET} -v     ${colors.dim}Verbose status${RESET}`);
+  writeLine();
 }

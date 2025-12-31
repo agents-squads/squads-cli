@@ -23,6 +23,7 @@ import {
   feedbackStatsCommand
 } from './commands/feedback.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { issuesCommand } from './commands/issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 
 const program = new Command();
@@ -71,6 +72,14 @@ program
   .description('Show comprehensive goals and metrics dashboard')
   .option('-v, --verbose', 'Show additional details')
   .action(dashboardCommand);
+
+// Issues command
+program
+  .command('issues')
+  .description('Show GitHub issues across repos')
+  .option('-o, --org <org>', 'GitHub organization', 'agents-squads')
+  .option('-r, --repos <repos>', 'Comma-separated repo names')
+  .action(issuesCommand);
 
 // Memory command group
 const memory = program
