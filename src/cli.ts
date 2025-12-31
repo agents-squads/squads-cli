@@ -72,6 +72,7 @@ program
   .alias('dash')
   .description('Show comprehensive goals and metrics dashboard')
   .option('-v, --verbose', 'Show additional details')
+  .option('-c, --ceo', 'Executive summary with priorities and blockers')
   .action(dashboardCommand);
 
 // Issues command

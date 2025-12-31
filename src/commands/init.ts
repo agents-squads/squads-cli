@@ -47,11 +47,45 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/squads',
       '.agents/memory',
       '.agents/outputs',
+      '.claude',
     ];
 
     for (const dir of dirs) {
       await fs.mkdir(path.join(cwd, dir), { recursive: true });
     }
+
+    // Create Claude Code settings with hooks
+    const claudeSettings = {
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'squads status',
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'squads memory sync',
+                timeout: 15,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await fs.writeFile(
+      path.join(cwd, '.claude/settings.json'),
+      JSON.stringify(claudeSettings, null, 2)
+    );
 
     // Create example agent
     const exampleAgent = `# Example Agent
@@ -90,10 +124,33 @@ Markdown summary of actions taken.
         claudeMdPath,
         `# Project Instructions
 
-## Squads
-This project uses AI agent squads for automation.
+## Squads CLI
 
-Run agents with: \`squads run <agent-name>\`
+This project uses AI agent squads. The \`squads\` CLI provides persistent memory across sessions.
+
+### Key Commands
+
+| Command | Purpose |
+|---------|---------|
+| \`squads status\` | Overview of all squads (runs on session start) |
+| \`squads dash\` | Full operational dashboard |
+| \`squads dash --ceo\` | Executive summary with P0/P1 priorities |
+| \`squads goal list\` | View all active goals |
+| \`squads memory query "<topic>"\` | Search squad memory before researching |
+| \`squads run <squad>\` | Execute a squad |
+
+### Workflow
+
+1. **Session Start**: \`squads status\` runs automatically via hook
+2. **Before Research**: Query memory to avoid re-doing work
+3. **Session End**: Memory syncs automatically from git commits
+
+### For Reports
+
+Always use CLI commands for status reports:
+- Executive summary: \`squads dash --ceo\`
+- Operational view: \`squads dash\`
+- Goals: \`squads goal list\`
 `
       );
     }
