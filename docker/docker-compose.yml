@@ -20,11 +20,14 @@ services:
       POSTGRES_USER: squads
       POSTGRES_PASSWORD: squads_local_dev
       POSTGRES_DB: squads
+      # Create both databases on init
+      POSTGRES_MULTIPLE_DATABASES: langfuse
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - squads_postgres_data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-squads.sql:ro
+      - ./init-langfuse-db.sh:/docker-entrypoint-initdb.d/00-init-langfuse.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U squads -d squads"]
       interval: 5s
@@ -64,7 +67,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/squads
+      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/langfuse
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-squads-local-dev-secret}
       NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
       SALT: ${LANGFUSE_SALT:-squads-local-salt}
