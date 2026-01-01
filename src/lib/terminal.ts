@@ -160,3 +160,52 @@ export function write(str: string): void {
 export function writeLine(str = ''): void {
   process.stdout.write(str + '\n');
 }
+
+// Sparkline chart using block characters
+export function sparkline(values: number[], width?: number): string {
+  if (values.length === 0) return '';
+
+  const blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+  const max = Math.max(...values, 1);
+
+  let result = '';
+  for (const val of values) {
+    const normalized = val / max;
+    const blockIndex = Math.min(Math.floor(normalized * blocks.length), blocks.length - 1);
+    const intensity = normalized;
+
+    // Color gradient from dim to cyan to green based on value
+    if (normalized === 0) {
+      result += colors.dim + blocks[0];
+    } else if (normalized < 0.5) {
+      result += colors.cyan + blocks[blockIndex];
+    } else {
+      result += colors.green + blocks[blockIndex];
+    }
+  }
+
+  return result + RESET;
+}
+
+// Bar chart (horizontal)
+export function barChart(value: number, max: number, width: number = 20, label?: string): string {
+  const filled = Math.round((value / max) * width);
+  const empty = width - filled;
+
+  let bar = '';
+  for (let i = 0; i < filled; i++) {
+    const t = i / Math.max(filled - 1, 1);
+    // Green to cyan gradient
+    const r = Math.round(16 + (6 - 16) * t);
+    const g = Math.round(185 + (182 - 185) * t);
+    const b = Math.round(129 + (212 - 129) * t);
+    bar += rgb(r, g, b) + '━';
+  }
+
+  bar += colors.dim + '━'.repeat(empty) + RESET;
+
+  if (label) {
+    return `${bar} ${label}`;
+  }
+  return bar;
+}
