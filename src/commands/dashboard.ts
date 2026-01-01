@@ -1,8 +1,10 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar } from '../lib/costs.js';
+import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats } from '../lib/git.js';
 import {
   colors,
   bold,
@@ -14,6 +16,8 @@ import {
   truncate,
   icons,
   writeLine,
+  sparkline,
+  barChart,
 } from '../lib/terminal.js';
 
 interface SquadMetrics {
@@ -22,6 +26,8 @@ interface SquadMetrics {
   goals: Goal[];
   lastActivity: string;
   status: 'active' | 'stale' | 'needs-goal';
+  github: SquadGitHubStats | null;
+  goalProgress: number; // 0-100
 }
 
 function getLastActivityDate(squadName: string): string {
@@ -80,11 +86,16 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const squadNames = listSquads(squadsDir);
   const squadData: SquadMetrics[] = [];
 
+  // Fetch GitHub stats
+  const baseDir = findAgentsSquadsDir();
+  const ghStats = baseDir ? getGitHubStats(baseDir, 30) : null;
+
   for (const name of squadNames) {
     const squad = loadSquad(name);
     if (!squad) continue;
 
     const lastActivity = getLastActivityDate(name);
+    const github = ghStats?.bySquad.get(name) || null;
 
     let status: SquadMetrics['status'] = 'active';
     const activeGoals = squad.goals.filter(g => !g.completed);
@@ -94,12 +105,23 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
       status = 'stale';
     }
 
+    // Calculate goal progress based on work done
+    const totalGoals = squad.goals.length;
+    const completedGoals = squad.goals.filter(g => g.completed).length;
+    const hasProgress = squad.goals.filter(g => g.progress).length;
+    // Progress = completed + half credit for in-progress
+    const goalProgress = totalGoals > 0
+      ? Math.round(((completedGoals + hasProgress * 0.3) / totalGoals) * 100)
+      : 0;
+
     squadData.push({
       name,
       mission: squad.mission,
       goals: squad.goals,
       lastActivity,
       status,
+      github,
+      goalProgress,
     });
   }
 
@@ -110,68 +132,85 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
   const activeSquads = squadData.filter(s => s.status === 'active').length;
 
+  // GitHub totals
+  const totalPRs = ghStats ? ghStats.prsMerged : 0;
+  const totalIssuesClosed = ghStats ? ghStats.issuesClosed : 0;
+  const totalIssuesOpen = ghStats ? ghStats.issuesOpen : 0;
+
   // Render
   writeLine();
 
   // Header
-  writeLine(`  ${gradient('squads')} ${colors.dim}v1.0.0${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
   writeLine();
 
   // Stats row
   const stats = [
-    `${colors.cyan}${activeSquads}${RESET}/${squadData.length} active`,
-    `${colors.green}${completedGoals}${RESET}/${totalGoals} done`,
-    `${colors.purple}${activeGoals}${RESET} in progress`,
+    `${colors.cyan}${activeSquads}${RESET}/${squadData.length} squads`,
+    `${colors.green}${totalPRs}${RESET} PRs merged`,
+    `${colors.purple}${totalIssuesClosed}${RESET} closed`,
+    `${colors.yellow}${totalIssuesOpen}${RESET} open`,
   ].join(`  ${colors.dim}│${RESET}  `);
   writeLine(`  ${stats}`);
   writeLine();
 
-  // Progress
-  writeLine(`  ${progressBar(completionRate, 32)} ${colors.dim}${completionRate}%${RESET}`);
+  // Overall progress
+  const overallProgress = squadData.length > 0
+    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
+    : 0;
+  writeLine(`  ${progressBar(overallProgress, 32)} ${colors.dim}${overallProgress}% goal progress${RESET}`);
   writeLine();
 
-  // Table header
-  const w = { name: 14, status: 8, goals: 5, activity: 6, bar: 16 };
-  const tableWidth = w.name + w.status + w.goals + w.activity + w.bar + 10;
+  // Table header - enhanced with metrics
+  const w = { name: 13, commits: 7, prs: 4, issues: 6, goals: 6, bar: 10 };
+  const tableWidth = w.name + w.commits + w.prs + w.issues + w.goals + w.bar + 12;
 
   writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
 
   const header = `  ${colors.purple}${box.vertical}${RESET} ` +
     `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
-    `${bold}${padEnd('STATUS', w.status)}${RESET}` +
+    `${bold}${padEnd('COMMITS', w.commits)}${RESET}` +
+    `${bold}${padEnd('PRs', w.prs)}${RESET}` +
+    `${bold}${padEnd('ISSUES', w.issues)}${RESET}` +
     `${bold}${padEnd('GOALS', w.goals)}${RESET}` +
-    `${bold}${padEnd('LAST', w.activity)}${RESET}` +
     `${bold}PROGRESS${RESET}` +
     ` ${colors.purple}${box.vertical}${RESET}`;
   writeLine(header);
 
   writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
-  // Table rows
-  for (const squad of squadData) {
+  // Table rows - sorted by activity
+  const sortedSquads = [...squadData].sort((a, b) => {
+    const aActivity = (a.github?.commits || 0) + (a.github?.prsMerged || 0) * 5;
+    const bActivity = (b.github?.commits || 0) + (b.github?.prsMerged || 0) * 5;
+    return bActivity - aActivity;
+  });
+
+  for (const squad of sortedSquads) {
+    const gh = squad.github;
+    const commits = gh?.commits || 0;
+    const prs = gh?.prsMerged || 0;
+    const issuesClosed = gh?.issuesClosed || 0;
+    const issuesOpen = gh?.issuesOpen || 0;
+
     const activeCount = squad.goals.filter(g => !g.completed).length;
     const totalCount = squad.goals.length;
-    const pct = totalCount > 0 ? Math.round(((totalCount - activeCount) / totalCount) * 100) : 0;
 
-    let statusIcon: string;
-    let statusText: string;
-    if (squad.status === 'active') {
-      statusIcon = icons.active;
-      statusText = `${colors.green}active${RESET}`;
-    } else if (squad.status === 'stale') {
-      statusIcon = icons.error;
-      statusText = `${colors.red}stale${RESET}`;
-    } else {
-      statusIcon = icons.warning;
-      statusText = `${colors.yellow}—${RESET}`;
-    }
+    // Color coding based on activity
+    const commitColor = commits > 10 ? colors.green : commits > 0 ? colors.cyan : colors.dim;
+    const prColor = prs > 0 ? colors.green : colors.dim;
+    const issueColor = issuesClosed > 0 ? colors.green : colors.dim;
+
+    // Issues display: closed/open
+    const issuesDisplay = `${issuesClosed}/${issuesOpen}`;
 
     const row = `  ${colors.purple}${box.vertical}${RESET} ` +
       `${colors.cyan}${padEnd(squad.name, w.name)}${RESET}` +
-      `${statusIcon} ${padEnd(statusText, w.status - 2)}` +
+      `${commitColor}${padEnd(String(commits), w.commits)}${RESET}` +
+      `${prColor}${padEnd(String(prs), w.prs)}${RESET}` +
+      `${issueColor}${padEnd(issuesDisplay, w.issues)}${RESET}` +
       `${padEnd(`${activeCount}/${totalCount}`, w.goals)}` +
-      `${colors.dim}${padEnd(squad.lastActivity, w.activity)}${RESET}` +
-      `${progressBar(pct, 12)}` +
+      `${progressBar(squad.goalProgress, 8)}` +
       ` ${colors.purple}${box.vertical}${RESET}`;
 
     writeLine(row);
@@ -179,6 +218,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
+
+  // Git Performance
+  await renderGitPerformance();
 
   // Token Economics
   await renderTokenEconomics(squadData.map(s => s.name));
@@ -217,6 +259,88 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
   writeLine();
+}
+
+// Find agents-squads base directory
+function findAgentsSquadsDir(): string | null {
+  const candidates = [
+    join(process.cwd(), '..'),
+    join(homedir(), 'agents-squads'),
+  ];
+
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'hq'))) {
+      return dir;
+    }
+  }
+  return null;
+}
+
+async function renderGitPerformance(): Promise<void> {
+  const baseDir = findAgentsSquadsDir();
+
+  if (!baseDir) {
+    writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no repos found)${RESET}`);
+    writeLine();
+    return;
+  }
+
+  const stats = getMultiRepoGitStats(baseDir, 30);
+  const activity = getActivitySparkline(baseDir, 14);
+
+  if (stats.totalCommits === 0) {
+    writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no commits in 30d)${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(30d)${RESET}`);
+  writeLine();
+
+  // Sparkline for last 14 days
+  const spark = sparkline(activity);
+  writeLine(`  ${colors.dim}Last 14d:${RESET} ${spark}`);
+  writeLine();
+
+  // Key metrics row
+  const metrics = [
+    `${colors.cyan}${stats.totalCommits}${RESET} commits`,
+    `${colors.green}${stats.avgCommitsPerDay}${RESET}/day`,
+    `${colors.purple}${stats.activeDays}${RESET} active days`,
+  ];
+  if (stats.peakDay) {
+    metrics.push(`${colors.yellow}${stats.peakDay.count}${RESET} peak ${colors.dim}(${stats.peakDay.date})${RESET}`);
+  }
+  writeLine(`  ${metrics.join(`  ${colors.dim}│${RESET}  `)}`);
+  writeLine();
+
+  // Repos by commits (top 5)
+  const sortedRepos = Array.from(stats.commitsByRepo.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  if (sortedRepos.length > 0) {
+    const maxRepoCommits = sortedRepos[0][1];
+
+    for (const [repo, commits] of sortedRepos) {
+      const bar = barChart(commits, maxRepoCommits, 12);
+      writeLine(`  ${colors.cyan}${padEnd(repo, 20)}${RESET}${bar} ${colors.dim}${commits}${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Authors (top 3)
+  const sortedAuthors = Array.from(stats.commitsByAuthor.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+
+  if (sortedAuthors.length > 0) {
+    const authorLine = sortedAuthors
+      .map(([author, count]) => `${colors.dim}${truncate(author, 15)}${RESET} ${colors.cyan}${count}${RESET}`)
+      .join(`  ${colors.dim}│${RESET}  `);
+    writeLine(`  ${colors.dim}By author:${RESET} ${authorLine}`);
+    writeLine();
+  }
 }
 
 async function renderTokenEconomics(squadNames: string[]): Promise<void> {
