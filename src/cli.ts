@@ -1,6 +1,24 @@
+import { config } from 'dotenv';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { version } from './version.js';
+
+// Load .env from multiple locations (first found wins)
+const envPaths = [
+  join(process.cwd(), '.env'),
+  join(process.cwd(), '..', 'hq', '.env'),
+  join(homedir(), 'agents-squads', 'hq', '.env'),
+];
+
+for (const envPath of envPaths) {
+  if (existsSync(envPath)) {
+    config({ path: envPath, quiet: true });
+    break;
+  }
+}
 import { initCommand } from './commands/init.js';
 import { runCommand } from './commands/run.js';
 import { listCommand } from './commands/list.js';

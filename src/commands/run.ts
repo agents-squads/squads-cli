@@ -293,9 +293,17 @@ async function executeWithClaude(prompt: string, verbose?: boolean): Promise<str
       writeLine(`  ${colors.dim}Spawning: claude ${args.slice(0, 1).join(' ')} ...${RESET}`);
     }
 
+    // Extract squad/agent from prompt for telemetry tagging
+    const squadMatch = prompt.match(/squad (\w+)/);
+    const agentMatch = prompt.match(/(\w+) agent/);
+
     const claude = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        SQUADS_SQUAD: squadMatch?.[1] || 'unknown',
+        SQUADS_AGENT: agentMatch?.[1] || 'unknown',
+      },
     });
 
     let output = '';
