@@ -1,0 +1,111 @@
+# Squads Local Stack
+# Postgres + Langfuse for local telemetry and analytics
+#
+# Usage:
+#   cd docker && docker-compose up -d
+#
+# Access:
+#   Langfuse UI: http://localhost:3000
+#   Postgres:    localhost:5432
+
+services:
+  # =============================================================================
+  # PostgreSQL - Primary data store for Langfuse and squads metrics
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: squads-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: squads
+      POSTGRES_PASSWORD: squads_local_dev
+      POSTGRES_DB: squads
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"  # Use 5433 to avoid conflicts
+    volumes:
+      - squads_postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U squads -d squads"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Langfuse - Telemetry, tracing, and LLM observability
+  # =============================================================================
+  langfuse:
+    image: langfuse/langfuse:2  # v2 uses Postgres only, v3 needs ClickHouse
+    container_name: squads-langfuse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/squads
+
+      # Auth - local dev (no external auth required)
+      NEXTAUTH_SECRET: squads-local-dev-secret-change-in-prod
+      NEXTAUTH_URL: http://localhost:3000
+
+      # Telemetry ingestion
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+
+      # Salt for API key hashing
+      SALT: squads-local-salt
+
+      # Disable telemetry to Langfuse cloud
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "${LANGFUSE_PORT:-3100}:3000"  # Use 3100 to avoid conflicts
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Redis - Caching and job queues (for background agent coordination)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: squads-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - squads_redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Neo4j - Graph database for agent memory and relationships (future)
+  # Uncomment when ready to implement memory graph
+  # =============================================================================
+  # neo4j:
+  #   image: neo4j:5-community
+  #   container_name: squads-neo4j
+  #   restart: unless-stopped
+  #   environment:
+  #     NEO4J_AUTH: neo4j/squads_local_dev
+  #     NEO4J_PLUGINS: '["apoc"]'
+  #   ports:
+  #     - "7474:7474"  # HTTP
+  #     - "7687:7687"  # Bolt
+  #   volumes:
+  #     - squads_neo4j_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+volumes:
+  squads_postgres_data:
+  squads_redis_data:
+  # squads_neo4j_data:

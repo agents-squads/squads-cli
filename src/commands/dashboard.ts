@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
+import { fetchCostSummary, formatCostBar } from '../lib/costs.js';
 import {
   colors,
   bold,
@@ -179,6 +180,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
 
+  // Token Economics
+  await renderTokenEconomics(squadData.map(s => s.name));
+
   // Active goals (compact)
   const allActiveGoals = squadData.flatMap(s =>
     s.goals.filter(g => !g.completed).map(g => ({ squad: s.name, goal: g }))
@@ -213,6 +217,50 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
   writeLine();
+}
+
+async function renderTokenEconomics(squadNames: string[]): Promise<void> {
+  const costs = await fetchCostSummary(100);
+
+  if (!costs) {
+    // No Langfuse config or API error - show hint
+    writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(no data)${RESET}`);
+    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for cost tracking${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(last 100 calls)${RESET}`);
+  writeLine();
+
+  // Budget bar
+  const barWidth = 32;
+  const costBar = formatCostBar(costs.usedPercent, barWidth);
+  writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
+  writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
+  writeLine();
+
+  // Per-squad costs (compact)
+  if (costs.bySquad.length > 0) {
+    const maxSquads = 5;
+    for (const squad of costs.bySquad.slice(0, maxSquads)) {
+      const pct = ((squad.cost / costs.dailyBudget) * 100).toFixed(1);
+      const tokens = squad.inputTokens + squad.outputTokens;
+      const tokensK = (tokens / 1000).toFixed(1);
+
+      // Model mix
+      const opus = squad.models['claude-opus-4-5-20251101'] || 0;
+      const haiku = squad.models['claude-haiku-4-5-20251001'] || 0;
+      const modelMix = `${colors.dim}${opus}o/${haiku}h${RESET}`;
+
+      writeLine(`  ${colors.cyan}${padEnd(squad.squad, 12)}${RESET} $${squad.cost.toFixed(2).padStart(6)} ${colors.dim}${tokensK.padStart(6)}k${RESET} ${modelMix}`);
+    }
+
+    if (costs.bySquad.length > maxSquads) {
+      writeLine(`  ${colors.dim}+${costs.bySquad.length - maxSquads} more${RESET}`);
+    }
+    writeLine();
+  }
 }
 
 // Priority keywords that indicate high priority goals
@@ -287,6 +335,13 @@ async function renderCeoReport(squadsDir: string): Promise<void> {
   writeLine(`  ${colors.purple}${box.vertical}${RESET} ${padEnd('P0 Goals', w.label)}${colors.red}${padEnd(String(p0Goals.length), w.value)}${RESET}${colors.purple}${box.vertical}${RESET}`);
   writeLine(`  ${colors.purple}${box.vertical}${RESET} ${padEnd('P1 Goals', w.label)}${colors.yellow}${padEnd(String(p1Goals.length), w.value)}${RESET}${colors.purple}${box.vertical}${RESET}`);
   writeLine(`  ${colors.purple}${box.vertical}${RESET} ${padEnd('Blockers', w.label)}${blockers.length > 0 ? colors.red : colors.green}${padEnd(String(blockers.length), w.value)}${RESET}${colors.purple}${box.vertical}${RESET}`);
+
+  // Token Economics (add to metrics table)
+  const costs = await fetchCostSummary(100);
+  if (costs) {
+    const spendStr = `$${costs.totalCost.toFixed(2)} / $${costs.dailyBudget}`;
+    writeLine(`  ${colors.purple}${box.vertical}${RESET} ${padEnd('Daily Spend', w.label)}${colors.green}${padEnd(spendStr, w.value)}${RESET}${colors.purple}${box.vertical}${RESET}`);
+  }
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
