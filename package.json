@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.1.0",
-  "description": "CLI for managing AI agent squads",
+  "description": "A CLI for humans and agents",
   "type": "module",
   "bin": {
     "squads": "./dist/cli.js"
@@ -50,6 +50,10 @@
   "engines": {
     "node": ">=18"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
     "chalk": "^5.3.0",
@@ -61,10 +65,15 @@
     "pg": "^8.16.3"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@types/node": "^20.19.27",
     "@types/pg": "^8.16.0",
+    "@typescript-eslint/eslint-plugin": "^8.51.0",
+    "@typescript-eslint/parser": "^8.51.0",
+    "eslint": "^9.39.2",
     "tsup": "^8.0.1",
     "typescript": "^5.3.0",
+    "typescript-eslint": "^8.51.0",
     "vitest": "^4.0.16"
   }
 }
