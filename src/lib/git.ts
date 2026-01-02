@@ -355,9 +355,9 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
     }
 
     try {
-      // Get commits from this repo
+      // Get commits from this repo (use %aN to respect .mailmap)
       const logOutput = execSync(
-        `git log --since="${days} days ago" --format="%H|%an|%ad|%s" --date=short 2>/dev/null`,
+        `git log --since="${days} days ago" --format="%H|%aN|%ad|%s" --date=short 2>/dev/null`,
         { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
 

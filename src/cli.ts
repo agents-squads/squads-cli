@@ -48,6 +48,7 @@ import { openIssuesCommand } from './commands/open-issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
+import { workersCommand } from './commands/workers.js';
 
 const program = new Command();
 
@@ -151,6 +152,14 @@ program
   .option('-v, --verbose', 'Show detailed KPIs per goal')
   .action((squad, options) => resultsCommand({ ...options, squad }));
 
+// Workers command - show running processes and tasks
+program
+  .command('workers')
+  .description('Show active workers: Claude sessions, tasks, dev servers')
+  .option('-v, --verbose', 'Show more details')
+  .option('-k, --kill <pid>', 'Kill a process by PID')
+  .action(workersCommand);
+
 // Memory command group
 const memory = program
   .command('memory')
@@ -251,8 +260,8 @@ program
   .description('Show current logged in user')
   .action(whoamiCommand);
 
-// Parse arguments
-program.parse();
+// Parse arguments (use parseAsync to properly await async actions)
+await program.parseAsync();
 
 // Show help if no command provided
 if (!process.argv.slice(2).length) {

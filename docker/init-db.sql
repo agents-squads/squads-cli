@@ -127,6 +127,94 @@ CREATE TABLE IF NOT EXISTS squads.dashboard_snapshots (
 -- Index for time-series queries
 CREATE INDEX IF NOT EXISTS idx_dashboard_snapshots_date ON squads.dashboard_snapshots(captured_at DESC);
 
+-- =============================================================================
+-- Telemetry Tables - Primary data store (Langfuse is optional forwarding)
+-- =============================================================================
+
+-- LLM generations - every API call to Claude/OpenAI
+CREATE TABLE IF NOT EXISTS squads.llm_generations (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) NOT NULL,
+    trace_id VARCHAR(255),
+
+    -- Context
+    squad VARCHAR(100) DEFAULT 'hq',
+    agent VARCHAR(100) DEFAULT 'coo',
+    user_id VARCHAR(255),
+
+    -- Model info
+    model VARCHAR(100) NOT NULL,
+
+    -- Token counts
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+
+    -- Cost
+    cost_usd NUMERIC(10,6) DEFAULT 0,
+
+    -- Timing
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    duration_ms INTEGER,
+
+    -- Metadata (prompt summary, response summary, etc)
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+-- Tool executions - every tool call
+CREATE TABLE IF NOT EXISTS squads.tool_executions (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) NOT NULL,
+    trace_id VARCHAR(255),
+
+    -- Context
+    squad VARCHAR(100) DEFAULT 'hq',
+    agent VARCHAR(100) DEFAULT 'coo',
+
+    -- Tool info
+    tool_name VARCHAR(255) NOT NULL,
+    success BOOLEAN DEFAULT true,
+
+    -- Timing
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    duration_ms INTEGER,
+
+    -- Metadata (parameters, result summary)
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+-- Sessions - groups related generations/tools
+CREATE TABLE IF NOT EXISTS squads.sessions (
+    id VARCHAR(255) PRIMARY KEY,
+    squad VARCHAR(100) DEFAULT 'hq',
+    agent VARCHAR(100) DEFAULT 'coo',
+    user_id VARCHAR(255),
+
+    -- Aggregated metrics (updated on each event)
+    total_input_tokens INTEGER DEFAULT 0,
+    total_output_tokens INTEGER DEFAULT 0,
+    total_cost_usd NUMERIC(10,6) DEFAULT 0,
+    generation_count INTEGER DEFAULT 0,
+    tool_count INTEGER DEFAULT 0,
+
+    -- Timing
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Status
+    status VARCHAR(50) DEFAULT 'active' -- active, completed, failed
+);
+
+-- Indexes for telemetry queries
+CREATE INDEX IF NOT EXISTS idx_llm_generations_session ON squads.llm_generations(session_id);
+CREATE INDEX IF NOT EXISTS idx_llm_generations_squad ON squads.llm_generations(squad, agent);
+CREATE INDEX IF NOT EXISTS idx_llm_generations_created ON squads.llm_generations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON squads.tool_executions(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_executions_tool ON squads.tool_executions(tool_name);
+CREATE INDEX IF NOT EXISTS idx_sessions_squad ON squads.sessions(squad, agent);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON squads.sessions(status);
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON SCHEMA squads TO squads;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA squads TO squads;

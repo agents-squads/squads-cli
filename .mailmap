@@ -1,0 +1,11 @@
+# Git author name consolidation
+# Format: Proper Name <proper@email> Commit Name <commit@email>
+
+# Consolidate all Jorge's identities
+Jorge Vidaurre <jorge@agents-squads.com> kokevidaurre <kokevidaurre@users.noreply.github.com>
+Jorge Vidaurre <jorge@agents-squads.com> Jorge Vidaurre <3512039+kokevidaurre@users.noreply.github.com>
+Jorge Vidaurre <jorge@agents-squads.com> Jorge Vidaurre <vidaurre.jorge@gmail.com>
+Jorge Vidaurre <jorge@agents-squads.com> andes-afk <andesmoves@gmail.com>
+
+# AI Contributors (for commits made by agents)
+Agents Squads <agents@agents-squads.com> Agents Squads <agents@agents-squads.com>

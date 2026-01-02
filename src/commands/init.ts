@@ -54,6 +54,62 @@ export async function initCommand(options: InitOptions): Promise<void> {
       await fs.mkdir(path.join(cwd, dir), { recursive: true });
     }
 
+    // Create git commit template
+    const commitTemplate = `
+
+# ────────────────────────────────────────────────────────────
+# Commit message format (delete this comment block):
+#
+# <type>(<scope>): <subject>
+#
+# <body>
+#
+# 🤖 Generated with [Agents Squads](https://agents-squads.com)
+#
+# Co-Authored-By: <model> <email>
+# ────────────────────────────────────────────────────────────
+# AI Models (add those that contributed to this commit):
+#
+# Model               | Email                      | API Key
+# --------------------|----------------------------|------------------
+# Claude Opus 4.5     | <noreply@anthropic.com>    | ANTHROPIC_API_KEY
+# Claude Sonnet 4     | <noreply@anthropic.com>    | ANTHROPIC_API_KEY
+# Claude Haiku 3.5    | <noreply@anthropic.com>    | ANTHROPIC_API_KEY
+# GPT-4o              | <noreply@openai.com>       | OPENAI_API_KEY
+# GPT-o1              | <noreply@openai.com>       | OPENAI_API_KEY
+# Gemini 2.0 Flash    | <noreply@google.com>       | GEMINI_API_KEY
+# Grok 3              | <noreply@x.ai>             | XAI_API_KEY
+# Perplexity          | <noreply@perplexity.ai>    | PERPLEXITY_API_KEY
+# Manus AI            | <noreply@manus.im>         | MANUS_API_KEY
+#
+# Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+# Co-Authored-By: Claude Sonnet 4 <noreply@anthropic.com>
+# Co-Authored-By: Claude Haiku 3.5 <noreply@anthropic.com>
+# Co-Authored-By: GPT-4o <noreply@openai.com>
+# Co-Authored-By: GPT-o1 <noreply@openai.com>
+# Co-Authored-By: Gemini 2.0 Flash <noreply@google.com>
+# Co-Authored-By: Grok 3 <noreply@x.ai>
+# Co-Authored-By: Perplexity <noreply@perplexity.ai>
+# Co-Authored-By: Manus AI <noreply@manus.im>
+# ────────────────────────────────────────────────────────────
+`;
+
+    await fs.writeFile(
+      path.join(cwd, '.agents/commit-template.txt'),
+      commitTemplate
+    );
+
+    // Create .mailmap for author consolidation
+    const mailmap = `# Git author name consolidation
+# Format: Proper Name <proper@email> Commit Name <commit@email>
+# Add entries to consolidate multiple git identities
+
+# AI Contributors
+Agents Squads <agents@agents-squads.com> Agents Squads <agents@agents-squads.com>
+`;
+
+    await fs.writeFile(path.join(cwd, '.mailmap'), mailmap);
+
     // Create Claude Code settings with hooks
     const claudeSettings = {
       hooks: {
@@ -145,6 +201,34 @@ This project uses AI agent squads. The \`squads\` CLI provides persistent memory
 2. **Before Research**: Query memory to avoid re-doing work
 3. **Session End**: Memory syncs automatically from git commits
 
+### Git Commit Format
+
+All commits should use the Agents Squads format:
+
+\`\`\`
+<type>(<scope>): <subject>
+
+<body>
+
+🤖 Generated with [Agents Squads](https://agents-squads.com)
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+\`\`\`
+
+**AI Models** (include those that contributed):
+
+| Model | Co-Author Email | API Key Required |
+|-------|-----------------|------------------|
+| Claude Opus 4.5 | \`<noreply@anthropic.com>\` | \`ANTHROPIC_API_KEY\` |
+| Claude Sonnet 4 | \`<noreply@anthropic.com>\` | \`ANTHROPIC_API_KEY\` |
+| Claude Haiku 3.5 | \`<noreply@anthropic.com>\` | \`ANTHROPIC_API_KEY\` |
+| GPT-4o | \`<noreply@openai.com>\` | \`OPENAI_API_KEY\` |
+| GPT-o1 | \`<noreply@openai.com>\` | \`OPENAI_API_KEY\` |
+| Gemini 2.0 Flash | \`<noreply@google.com>\` | \`GEMINI_API_KEY\` |
+| Grok 3 | \`<noreply@x.ai>\` | \`XAI_API_KEY\` |
+| Perplexity | \`<noreply@perplexity.ai>\` | \`PERPLEXITY_API_KEY\` |
+| Manus AI | \`<noreply@manus.im>\` | \`MANUS_API_KEY\` |
+
 ### For Reports
 
 Always use CLI commands for status reports:
@@ -168,9 +252,16 @@ Always use CLI commands for status reports:
 ${chalk.green('Success!')} Created squad project structure:
 
   ${chalk.cyan('.agents/')}
-  ${chalk.dim('├──')} ${chalk.cyan('squads/')}      Squad & agent definitions
-  ${chalk.dim('├──')} ${chalk.cyan('memory/')}      Persistent squad memory
-  ${chalk.dim('└──')} ${chalk.cyan('outputs/')}     Squad outputs
+  ${chalk.dim('├──')} ${chalk.cyan('squads/')}           Squad & agent definitions
+  ${chalk.dim('├──')} ${chalk.cyan('memory/')}           Persistent squad memory
+  ${chalk.dim('├──')} ${chalk.cyan('outputs/')}          Squad outputs
+  ${chalk.dim('└──')} ${chalk.cyan('commit-template.txt')} Git commit format
+
+  ${chalk.cyan('.mailmap')}              Author name consolidation
+
+${chalk.dim('Commit format:')}
+  🤖 Generated with [Agents Squads](https://agents-squads.com)
+  Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 
 ${chalk.dim('Next steps:')}
   ${chalk.cyan('1.')} Create a squad: ${chalk.yellow('mkdir .agents/squads/my-squad && touch .agents/squads/my-squad/SQUAD.md')}

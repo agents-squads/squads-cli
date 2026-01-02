@@ -97,29 +97,40 @@ services:
     ports:
       - "${OTEL_PORT:-4318}:4318"
     depends_on:
-      - langfuse-bridge
+      - squads-bridge
     networks:
       - squads
 
   # =============================================================================
-  # Langfuse Bridge - Converts OTel to Langfuse format
+  # Squads Bridge - Telemetry storage (postgres first, Langfuse optional)
   # =============================================================================
-  langfuse-bridge:
+  squads-bridge:
     build:
-      context: ./bridge
+      context: ./squads-bridge
       dockerfile: Dockerfile
-    container_name: squads-langfuse-bridge
+    container_name: squads-bridge
     restart: unless-stopped
     environment:
       PORT: 8080
-      # Use local Langfuse by default, override with env vars for cloud
+      DEBUG: "1"
+      # Primary storage: PostgreSQL (durable)
+      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/squads
+      # Cache: Redis (real-time stats, session cache)
+      REDIS_URL: redis://redis:6379/0
+      # Budget tracking
+      SQUADS_DAILY_BUDGET: ${SQUADS_DAILY_BUDGET:-50.0}
+      # Optional: Forward to Langfuse (set LANGFUSE_ENABLED=true to enable)
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "${BRIDGE_PORT:-8088}:8080"
     depends_on:
-      - langfuse
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - squads
 

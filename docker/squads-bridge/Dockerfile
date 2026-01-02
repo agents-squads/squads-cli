@@ -7,8 +7,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY langfuse_bridge.py .
+COPY squads_bridge.py .
 
 EXPOSE 8080
 
-CMD ["python", "langfuse_bridge.py"]
+CMD ["python", "squads_bridge.py"]

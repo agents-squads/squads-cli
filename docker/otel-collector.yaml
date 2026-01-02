@@ -10,9 +10,9 @@ processors:
     send_batch_size: 100
 
 exporters:
-  # Forward to our Langfuse bridge
+  # Forward to Squads bridge (postgres primary, Langfuse optional)
   otlphttp:
-    endpoint: http://langfuse-bridge:8080
+    endpoint: http://squads-bridge:8080
     encoding: json
     headers: {}
     tls:

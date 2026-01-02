@@ -27,7 +27,7 @@ interface SolveOptions {
 }
 
 const DEFAULT_ORG = 'agents-squads';
-const DEFAULT_REPOS = ['hq', 'agents-squads-web'];
+const DEFAULT_REPOS = ['hq', 'agents-squads-web', 'squads-cli', 'agents-squads'];
 
 export async function solveIssuesCommand(options: SolveOptions = {}): Promise<void> {
   const repos = options.repo ? [options.repo] : DEFAULT_REPOS;

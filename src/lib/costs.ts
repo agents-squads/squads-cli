@@ -1,13 +1,8 @@
 /**
- * Cost tracking via Langfuse API
- * Fetches token usage and calculates costs by squad
+ * Cost tracking via Squads Bridge (postgres) or Langfuse
+ * Primary: Squads Bridge API → PostgreSQL
+ * Fallback: Langfuse API (if bridge unavailable)
  */
-
-interface LangfuseConfig {
-  publicKey: string;
-  secretKey: string;
-  host: string;
-}
 
 interface SquadCosts {
   squad: string;
@@ -18,12 +13,13 @@ interface SquadCosts {
   models: Record<string, number>;
 }
 
-interface CostSummary {
+export interface CostSummary {
   totalCost: number;
   dailyBudget: number;
   usedPercent: number;
   idleBudget: number;
   bySquad: SquadCosts[];
+  source: 'postgres' | 'langfuse' | 'none';
 }
 
 // Model pricing (per 1M tokens)
@@ -37,8 +33,56 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 };
 
 const DEFAULT_DAILY_BUDGET = 50.0;
+const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
 
-function getLangfuseConfig(): LangfuseConfig | null {
+function calcCost(model: string, inputTokens: number, outputTokens: number): number {
+  const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
+  return (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
+}
+
+/**
+ * Fetch cost summary from Squads Bridge (postgres)
+ */
+async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promise<CostSummary | null> {
+  try {
+    const response = await fetch(`${BRIDGE_URL}/api/cost/summary?period=${period}`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json() as { totals?: { cost_usd?: number }; by_squad?: Record<string, unknown>[] };
+    const dailyBudget = parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET;
+    const totalCost = data.totals?.cost_usd || 0;
+
+    const bySquad: SquadCosts[] = (data.by_squad || []).map((s: Record<string, unknown>) => ({
+      squad: s.squad as string,
+      calls: s.generations as number,
+      inputTokens: s.input_tokens as number,
+      outputTokens: s.output_tokens as number,
+      cost: s.cost_usd as number,
+      models: {},
+    }));
+
+    return {
+      totalCost,
+      dailyBudget,
+      usedPercent: (totalCost / dailyBudget) * 100,
+      idleBudget: dailyBudget - totalCost,
+      bySquad,
+      source: 'postgres',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch cost summary from Langfuse API (fallback)
+ */
+async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
   const secretKey = process.env.LANGFUSE_SECRET_KEY;
   const host = process.env.LANGFUSE_HOST || process.env.LANGFUSE_BASE_URL || 'https://us.cloud.langfuse.com';
@@ -47,23 +91,9 @@ function getLangfuseConfig(): LangfuseConfig | null {
     return null;
   }
 
-  return { publicKey, secretKey, host };
-}
-
-function calcCost(model: string, inputTokens: number, outputTokens: number): number {
-  const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
-  return (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
-}
-
-export async function fetchCostSummary(limit = 100): Promise<CostSummary | null> {
-  const config = getLangfuseConfig();
-  if (!config) {
-    return null;
-  }
-
   try {
-    const auth = Buffer.from(`${config.publicKey}:${config.secretKey}`).toString('base64');
-    const url = `${config.host}/api/public/observations?limit=${limit}`;
+    const auth = Buffer.from(`${publicKey}:${secretKey}`).toString('base64');
+    const url = `${host}/api/public/observations?limit=${limit}`;
 
     const response = await fetch(url, {
       headers: {
@@ -76,7 +106,13 @@ export async function fetchCostSummary(limit = 100): Promise<CostSummary | null>
       return null;
     }
 
-    const data = await response.json();
+    interface LangfuseObs {
+      type?: string;
+      model?: string;
+      metadata?: { squad?: string };
+      usage?: { input?: number; output?: number };
+    }
+    const data = await response.json() as { data?: LangfuseObs[] };
     const observations = data.data || [];
 
     // Group by squad
@@ -122,10 +158,41 @@ export async function fetchCostSummary(limit = 100): Promise<CostSummary | null>
       usedPercent: (totalCost / dailyBudget) * 100,
       idleBudget: dailyBudget - totalCost,
       bySquad: squadList,
+      source: 'langfuse',
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Fetch cost summary - tries postgres first, falls back to Langfuse
+ */
+export async function fetchCostSummary(
+  limit = 100,
+  period: 'day' | 'week' | 'month' = 'day'
+): Promise<CostSummary | null> {
+  // Try postgres (via bridge) first
+  const bridgeResult = await fetchFromBridge(period);
+  if (bridgeResult) {
+    return bridgeResult;
+  }
+
+  // Fall back to Langfuse
+  const langfuseResult = await fetchFromLangfuse(limit);
+  if (langfuseResult) {
+    return langfuseResult;
+  }
+
+  // No data source available
+  return {
+    totalCost: 0,
+    dailyBudget: parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET,
+    usedPercent: 0,
+    idleBudget: parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET,
+    bySquad: [],
+    source: 'none',
+  };
 }
 
 export function formatCostBar(usedPercent: number, width = 20): string {
