@@ -303,7 +303,7 @@ export function updateGoalInSquad(
   const squadFile = join(squadsDir, squadName, 'SQUAD.md');
   if (!existsSync(squadFile)) return false;
 
-  let content = readFileSync(squadFile, 'utf-8');
+  const content = readFileSync(squadFile, 'utf-8');
   const lines = content.split('\n');
 
   let currentSection = '';
