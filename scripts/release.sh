@@ -99,9 +99,10 @@ echo -e "\n${YELLOW}[5/7] Committing and tagging...${NC}"
 git add package.json package-lock.json
 git commit -m "chore: release v$NEW_VERSION
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+🤖 Generated with [Agents Squads](https://agents-squads.com)
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Gemini 3 🍌 <noreply@google.com>"
 git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
 echo -e "${GREEN}✓ Tagged v$NEW_VERSION${NC}"
 
