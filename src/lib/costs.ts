@@ -323,3 +323,151 @@ export async function fetchRateLimits(): Promise<RateLimits> {
     return { limits: {}, source: 'none' };
   }
 }
+
+/**
+ * Task and quality insights
+ */
+export interface TaskMetrics {
+  squad: string;
+  tasksTotal: number;
+  tasksCompleted: number;
+  tasksFailed: number;
+  successRate: number;
+  totalRetries: number;
+  tasksWithRetries: number;
+  avgRetries: number;
+  avgDurationMs: number;
+  avgTokens: number;
+  avgCost: number;
+  avgContextPct: number;
+  maxContextTokens: number;
+}
+
+export interface ToolMetrics {
+  toolName: string;
+  usageCount: number;
+  successRate: number;
+  avgDurationMs: number;
+}
+
+export interface QualityMetrics {
+  squad: string;
+  feedbackCount: number;
+  avgQuality: number;
+  helpfulPct: number;
+  fixRequiredPct: number;
+}
+
+export interface Insights {
+  period: string;
+  days: number;
+  taskMetrics: TaskMetrics[];
+  qualityMetrics: QualityMetrics[];
+  topTools: ToolMetrics[];
+  toolFailureRate: number;
+  source: 'bridge' | 'none';
+}
+
+/**
+ * Fetch insights from the bridge
+ */
+export async function fetchInsights(period: 'day' | 'week' | 'month' = 'week'): Promise<Insights> {
+  try {
+    const response = await fetch(`${BRIDGE_URL}/api/insights?period=${period}`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      return {
+        period,
+        days: period === 'day' ? 1 : period === 'week' ? 7 : 30,
+        taskMetrics: [],
+        qualityMetrics: [],
+        topTools: [],
+        toolFailureRate: 0,
+        source: 'none',
+      };
+    }
+
+    interface InsightsResponse {
+      period: string;
+      days: number;
+      task_metrics?: Array<{
+        squad: string;
+        tasks_total: number;
+        tasks_completed: number;
+        tasks_failed: number;
+        success_rate: number;
+        total_retries: number;
+        tasks_with_retries: number;
+        avg_retries: number;
+        avg_duration_ms: number;
+        avg_tokens: number;
+        avg_cost: number;
+        avg_context_pct: number;
+        max_context_tokens: number;
+      }>;
+      quality_metrics?: Array<{
+        squad: string;
+        feedback_count: number;
+        avg_quality: number;
+        helpful_pct: number;
+        fix_required_pct: number;
+      }>;
+      top_tools?: Array<{
+        tool_name: string;
+        usage_count: number;
+        success_rate: number;
+        avg_duration_ms: number;
+      }>;
+      tool_failure_rate?: number;
+    }
+
+    const data = await response.json() as InsightsResponse;
+
+    return {
+      period: data.period || period,
+      days: data.days || 7,
+      taskMetrics: (data.task_metrics || []).map(t => ({
+        squad: t.squad,
+        tasksTotal: t.tasks_total || 0,
+        tasksCompleted: t.tasks_completed || 0,
+        tasksFailed: t.tasks_failed || 0,
+        successRate: t.success_rate || 0,
+        totalRetries: t.total_retries || 0,
+        tasksWithRetries: t.tasks_with_retries || 0,
+        avgRetries: t.avg_retries || 0,
+        avgDurationMs: t.avg_duration_ms || 0,
+        avgTokens: t.avg_tokens || 0,
+        avgCost: t.avg_cost || 0,
+        avgContextPct: t.avg_context_pct || 0,
+        maxContextTokens: t.max_context_tokens || 0,
+      })),
+      qualityMetrics: (data.quality_metrics || []).map(q => ({
+        squad: q.squad,
+        feedbackCount: q.feedback_count || 0,
+        avgQuality: q.avg_quality || 0,
+        helpfulPct: q.helpful_pct || 0,
+        fixRequiredPct: q.fix_required_pct || 0,
+      })),
+      topTools: (data.top_tools || []).map(t => ({
+        toolName: t.tool_name,
+        usageCount: t.usage_count || 0,
+        successRate: t.success_rate || 0,
+        avgDurationMs: t.avg_duration_ms || 0,
+      })),
+      toolFailureRate: data.tool_failure_rate || 0,
+      source: 'bridge',
+    };
+  } catch {
+    return {
+      period,
+      days: period === 'day' ? 1 : period === 'week' ? 7 : 30,
+      taskMetrics: [],
+      qualityMetrics: [],
+      topTools: [],
+      toolFailureRate: 0,
+      source: 'none',
+    };
+  }
+}

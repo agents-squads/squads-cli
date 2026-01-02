@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
@@ -228,6 +228,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // Historical Trends (if database available)
   await renderHistoricalTrends();
+
+  // Agent Insights (task completion, quality, tools)
+  await renderInsights();
 
   // Active goals (compact)
   const allActiveGoals = squadData.flatMap(s =>
@@ -612,6 +615,98 @@ async function renderHistoricalTrends(): Promise<void> {
 
   writeLine(`  ${colors.dim}Goals:${RESET} ${sparkline(goalProgress)}  ${colors.purple}${latestProgress}%${RESET}  ${progressColor}${progressSign}${progressDelta.toFixed(0)}%${RESET}${colors.dim} vs start${RESET}`);
   writeLine();
+}
+
+async function renderInsights(): Promise<void> {
+  const insights = await fetchInsights('week');
+
+  if (insights.source === 'none' || insights.taskMetrics.length === 0) {
+    // No insights data available - skip section entirely
+    return;
+  }
+
+  writeLine(`  ${bold}Agent Insights${RESET} ${colors.dim}(${insights.days}d)${RESET}`);
+  writeLine();
+
+  // Task completion metrics (aggregated)
+  const totals = insights.taskMetrics.reduce(
+    (acc, t) => ({
+      tasks: acc.tasks + t.tasksTotal,
+      completed: acc.completed + t.tasksCompleted,
+      failed: acc.failed + t.tasksFailed,
+      retries: acc.retries + t.totalRetries,
+      withRetries: acc.withRetries + t.tasksWithRetries,
+    }),
+    { tasks: 0, completed: 0, failed: 0, retries: 0, withRetries: 0 }
+  );
+
+  if (totals.tasks > 0) {
+    const successRate = totals.tasks > 0 ? ((totals.completed / totals.tasks) * 100).toFixed(0) : '0';
+    const successColor = parseInt(successRate) >= 80 ? colors.green : parseInt(successRate) >= 60 ? colors.yellow : colors.red;
+
+    // Task completion row
+    writeLine(`  ${colors.dim}Tasks:${RESET} ${colors.green}${totals.completed}${RESET}${colors.dim}/${totals.tasks} completed${RESET}  ${successColor}${successRate}%${RESET}${colors.dim} success${RESET}  ${colors.red}${totals.failed}${RESET}${colors.dim} failed${RESET}`);
+
+    // Retry metrics
+    if (totals.retries > 0) {
+      const retryRate = totals.tasks > 0 ? ((totals.withRetries / totals.tasks) * 100).toFixed(0) : '0';
+      const retryColor = parseInt(retryRate) > 30 ? colors.red : parseInt(retryRate) > 15 ? colors.yellow : colors.green;
+      writeLine(`  ${colors.dim}Retries:${RESET} ${retryColor}${totals.retries}${RESET}${colors.dim} total${RESET}  ${retryColor}${retryRate}%${RESET}${colors.dim} of tasks needed retry${RESET}`);
+    }
+  }
+
+  // Quality metrics (if feedback exists)
+  const qualityTotals = insights.qualityMetrics.reduce(
+    (acc, q) => ({
+      feedback: acc.feedback + q.feedbackCount,
+      qualitySum: acc.qualitySum + (q.avgQuality * q.feedbackCount),
+      helpfulSum: acc.helpfulSum + (q.helpfulPct * q.feedbackCount / 100),
+      fixSum: acc.fixSum + (q.fixRequiredPct * q.feedbackCount / 100),
+    }),
+    { feedback: 0, qualitySum: 0, helpfulSum: 0, fixSum: 0 }
+  );
+
+  if (qualityTotals.feedback > 0) {
+    const avgQuality = qualityTotals.qualitySum / qualityTotals.feedback;
+    const helpfulPct = (qualityTotals.helpfulSum / qualityTotals.feedback) * 100;
+    const fixPct = (qualityTotals.fixSum / qualityTotals.feedback) * 100;
+
+    const qualityColor = avgQuality >= 4 ? colors.green : avgQuality >= 3 ? colors.yellow : colors.red;
+    const stars = '★'.repeat(Math.round(avgQuality)) + '☆'.repeat(5 - Math.round(avgQuality));
+
+    writeLine(`  ${colors.dim}Quality:${RESET} ${qualityColor}${stars}${RESET} ${colors.dim}(${avgQuality.toFixed(1)}/5)${RESET}  ${colors.green}${helpfulPct.toFixed(0)}%${RESET}${colors.dim} helpful${RESET}  ${fixPct > 20 ? colors.red : colors.dim}${fixPct.toFixed(0)}% needed fixes${RESET}`);
+  }
+
+  // Context window utilization
+  const contextMetrics = insights.taskMetrics.filter(t => t.avgContextPct > 0);
+  if (contextMetrics.length > 0) {
+    const avgContext = contextMetrics.reduce((sum, t) => sum + t.avgContextPct, 0) / contextMetrics.length;
+    const maxContext = Math.max(...contextMetrics.map(t => t.maxContextTokens));
+
+    // Context utilization colors: green < 40%, yellow 40-70%, red > 70%
+    const contextColor = avgContext < 40 ? colors.green : avgContext < 70 ? colors.yellow : colors.red;
+    const contextStatus = avgContext < 40 ? 'lean' : avgContext < 70 ? 'moderate' : 'heavy';
+
+    writeLine(`  ${colors.dim}Context:${RESET} ${contextColor}${avgContext.toFixed(0)}%${RESET}${colors.dim} avg utilization (${contextStatus})${RESET}  ${colors.dim}peak ${formatK(maxContext)} tokens${RESET}`);
+  }
+
+  writeLine();
+
+  // Top tools (compact)
+  if (insights.topTools.length > 0) {
+    const toolLine = insights.topTools.slice(0, 5).map(t => {
+      const successColor = t.successRate >= 95 ? colors.green : t.successRate >= 80 ? colors.yellow : colors.red;
+      return `${colors.dim}${t.toolName.replace('mcp__', '').slice(0, 12)}${RESET} ${successColor}${t.successRate.toFixed(0)}%${RESET}`;
+    }).join('  ');
+
+    writeLine(`  ${colors.dim}Tools:${RESET} ${toolLine}`);
+
+    // Tool failure alert
+    if (insights.toolFailureRate > 5) {
+      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}${insights.toolFailureRate.toFixed(1)}% tool failure rate${RESET}`);
+    }
+    writeLine();
+  }
 }
 
 // Priority keywords that indicate high priority goals
