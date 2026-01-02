@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, CostSummary } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
@@ -505,21 +505,45 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   const dailyProjection = hourlyRate * 24;
   const monthlyProjection = dailyProjection * 30;
 
+  // Fetch real rate limits from proxy (if available)
+  const rateLimits = await fetchRateLimits();
+  const hasRealLimits = rateLimits.source === 'proxy' && Object.keys(rateLimits.limits).length > 0;
+
   // Display rate limits section
-  writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
+  if (hasRealLimits) {
+    writeLine(`  ${colors.dim}Rate Limits${RESET} ${colors.green}(live)${RESET}`);
 
-  const sortedModels = Object.entries(modelStats).sort((a, b) => b[1].calls - a[1].calls);
-  for (const [model, stats] of sortedModels.slice(0, 3)) {
-    const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
-    const family = modelToFamily[model] || 'sonnet';
-    const limits = tokenLimits[tier]?.[family] || { itpm: 1000000, otpm: 200000 };
+    for (const [family, limits] of Object.entries(rateLimits.limits)) {
+      const name = family === 'opus' ? 'opus' : family === 'sonnet' ? 'sonnet' : family === 'haiku' ? 'haiku' : family;
 
-    // RPM
-    const rpmPct = (stats.calls / rpmLimit) * 100;
-    const rpmColor = rpmPct > 80 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
+      // Request rate usage
+      const reqUsed = limits.requestsLimit - limits.requestsRemaining;
+      const reqPct = limits.requestsLimit > 0 ? (reqUsed / limits.requestsLimit) * 100 : 0;
+      const reqColor = reqPct > 80 ? colors.red : reqPct > 50 ? colors.yellow : colors.green;
 
-    // Format: model [RPM bar] calls  [ITPM] input  [OTPM] output
-    writeLine(`  ${colors.cyan}${padEnd(name, 11)}${RESET} ${rpmColor}${String(stats.calls).padStart(4)}${RESET}${colors.dim}rpm${RESET}  ${colors.dim}${formatK(stats.input)}${RESET}${colors.dim}/${formatK(limits.itpm)}i${RESET}  ${colors.dim}${formatK(stats.output)}${RESET}${colors.dim}/${formatK(limits.otpm)}o${RESET}`);
+      // Token rate usage
+      const tokUsed = limits.tokensLimit - limits.tokensRemaining;
+      const tokPct = limits.tokensLimit > 0 ? (tokUsed / limits.tokensLimit) * 100 : 0;
+      const tokColor = tokPct > 80 ? colors.red : tokPct > 50 ? colors.yellow : colors.green;
+
+      writeLine(`  ${colors.cyan}${padEnd(name, 8)}${RESET} ${reqColor}${String(reqUsed).padStart(4)}${RESET}${colors.dim}/${limits.requestsLimit}req${RESET}  ${tokColor}${formatK(tokUsed)}${RESET}${colors.dim}/${formatK(limits.tokensLimit)}tok${RESET}`);
+    }
+  } else {
+    writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
+
+    const sortedModels = Object.entries(modelStats).sort((a, b) => b[1].calls - a[1].calls);
+    for (const [model, stats] of sortedModels.slice(0, 3)) {
+      const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
+      const family = modelToFamily[model] || 'sonnet';
+      const limits = tokenLimits[tier]?.[family] || { itpm: 1000000, otpm: 200000 };
+
+      // RPM
+      const rpmPct = (stats.calls / rpmLimit) * 100;
+      const rpmColor = rpmPct > 80 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
+
+      // Format: model [RPM bar] calls  [ITPM] input  [OTPM] output
+      writeLine(`  ${colors.cyan}${padEnd(name, 11)}${RESET} ${rpmColor}${String(stats.calls).padStart(4)}${RESET}${colors.dim}rpm${RESET}  ${colors.dim}${formatK(stats.input)}${RESET}${colors.dim}/${formatK(limits.itpm)}i${RESET}  ${colors.dim}${formatK(stats.output)}${RESET}${colors.dim}/${formatK(limits.otpm)}o${RESET}`);
+    }
   }
   writeLine();
 
