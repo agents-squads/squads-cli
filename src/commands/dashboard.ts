@@ -5,7 +5,7 @@ import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, CostSummary } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
-import { saveDashboardSnapshot, isDatabaseAvailable, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
+import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
   colors,
   bold,
@@ -225,6 +225,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // Token Economics
   await renderTokenEconomics(squadData.map(s => s.name));
+
+  // Historical Trends (if database available)
+  await renderHistoricalTrends();
 
   // Active goals (compact)
   const allActiveGoals = squadData.flatMap(s =>
@@ -547,6 +550,44 @@ function formatK(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
   if (n >= 1000) return (n / 1000).toFixed(0) + 'k';
   return String(n);
+}
+
+async function renderHistoricalTrends(): Promise<void> {
+  // Check if database is available
+  const dbAvailable = await isDatabaseAvailable();
+  if (!dbAvailable) return;
+
+  const history = await getDashboardHistory(14);
+  if (history.length < 2) return; // Need at least 2 data points
+
+  writeLine(`  ${bold}Usage Trends${RESET} ${colors.dim}(${history.length}d history)${RESET}`);
+  writeLine();
+
+  // Daily cost sparkline (most recent first, so reverse for left-to-right)
+  const dailyCosts = history.map(h => h.costUsd).reverse();
+  const costSparkStr = sparkline(dailyCosts);
+  const totalSpend = dailyCosts.reduce((sum, c) => sum + c, 0);
+  const avgDaily = totalSpend / dailyCosts.length;
+
+  writeLine(`  ${colors.dim}Cost:${RESET} ${costSparkStr}  ${colors.green}$${totalSpend.toFixed(2)}${RESET} total  ${colors.dim}($${avgDaily.toFixed(2)}/day avg)${RESET}`);
+
+  // Token usage trend
+  const inputTokens = history.map(h => h.inputTokens).reverse();
+  const totalInput = inputTokens.reduce((sum, t) => sum + t, 0);
+  const tokenSparkStr = sparkline(inputTokens);
+
+  writeLine(`  ${colors.dim}Tokens:${RESET} ${tokenSparkStr}  ${colors.cyan}${formatK(totalInput)}${RESET} input  ${colors.dim}(${formatK(Math.round(totalInput / inputTokens.length))}/day)${RESET}`);
+
+  // Goal progress trend
+  const goalProgress = history.map(h => h.goalProgressPct).reverse();
+  const latestProgress = goalProgress[goalProgress.length - 1] || 0;
+  const earliestProgress = goalProgress[0] || 0;
+  const progressDelta = latestProgress - earliestProgress;
+  const progressColor = progressDelta > 0 ? colors.green : progressDelta < 0 ? colors.red : colors.dim;
+  const progressSign = progressDelta > 0 ? '+' : '';
+
+  writeLine(`  ${colors.dim}Goals:${RESET} ${sparkline(goalProgress)}  ${colors.purple}${latestProgress}%${RESET}  ${progressColor}${progressSign}${progressDelta.toFixed(0)}%${RESET}${colors.dim} vs start${RESET}`);
+  writeLine();
 }
 
 // Priority keywords that indicate high priority goals
