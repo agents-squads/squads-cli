@@ -3,8 +3,9 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar } from '../lib/costs.js';
-import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats } from '../lib/git.js';
+import { fetchCostSummary, formatCostBar, CostSummary } from '../lib/costs.js';
+import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
+import { saveDashboardSnapshot, isDatabaseAvailable, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
   colors,
   bold,
@@ -259,6 +260,84 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
   writeLine();
+
+  // Save snapshot to local postgres (silent on failure)
+  await saveSnapshot(squadData, ghStats, baseDir);
+}
+
+/**
+ * Save dashboard snapshot to local PostgreSQL for historical tracking
+ */
+async function saveSnapshot(
+  squadData: SquadMetrics[],
+  ghStats: GitHubStats | null,
+  baseDir: string | null
+): Promise<void> {
+  // Check if database is available
+  const dbAvailable = await isDatabaseAvailable();
+  if (!dbAvailable) return;
+
+  // Fetch additional data for snapshot
+  const gitStats = baseDir ? getMultiRepoGitStats(baseDir, 30) : null;
+  const costs = await fetchCostSummary(100);
+
+  // Build squad snapshot data
+  const squadsData: SquadSnapshotData[] = squadData.map(s => ({
+    name: s.name,
+    commits: s.github?.commits || 0,
+    prsOpened: s.github?.prsOpened || 0,
+    prsMerged: s.github?.prsMerged || 0,
+    issuesClosed: s.github?.issuesClosed || 0,
+    issuesOpen: s.github?.issuesOpen || 0,
+    goalsActive: s.goals.filter(g => !g.completed).length,
+    goalsTotal: s.goals.length,
+    progress: s.goalProgress,
+  }));
+
+  // Build authors data
+  const authorsData = gitStats
+    ? Array.from(gitStats.commitsByAuthor.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([name, commits]) => ({ name, commits }))
+    : [];
+
+  // Build repos data
+  const reposData = gitStats
+    ? Array.from(gitStats.commitsByRepo.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, commits]) => ({ name, commits }))
+    : [];
+
+  // Calculate totals
+  const totalInputTokens = costs?.bySquad.reduce((sum, s) => sum + s.inputTokens, 0) || 0;
+  const totalOutputTokens = costs?.bySquad.reduce((sum, s) => sum + s.outputTokens, 0) || 0;
+  const overallProgress = squadData.length > 0
+    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
+    : 0;
+
+  const snapshot: DashboardSnapshot = {
+    totalSquads: squadData.length,
+    totalCommits: gitStats?.totalCommits || 0,
+    totalPrsMerged: ghStats?.prsMerged || 0,
+    totalIssuesClosed: ghStats?.issuesClosed || 0,
+    totalIssuesOpen: ghStats?.issuesOpen || 0,
+    goalProgressPct: overallProgress,
+    costUsd: costs?.totalCost || 0,
+    dailyBudgetUsd: costs?.dailyBudget || 50,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    commits30d: gitStats?.totalCommits || 0,
+    avgCommitsPerDay: gitStats?.avgCommitsPerDay || 0,
+    activeDays: gitStats?.activeDays || 0,
+    peakCommits: gitStats?.peakDay?.count || 0,
+    peakDate: gitStats?.peakDay?.date || null,
+    squadsData,
+    authorsData,
+    reposData,
+  };
+
+  await saveDashboardSnapshot(snapshot);
 }
 
 // Find agents-squads base directory

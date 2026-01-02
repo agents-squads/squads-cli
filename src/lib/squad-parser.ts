@@ -7,6 +7,7 @@ export interface Agent {
   trigger: string;
   status?: string;
   filePath?: string;
+  squad?: string;
 }
 
 export interface Pipeline {
@@ -18,6 +19,7 @@ export interface Goal {
   description: string;
   completed: boolean;
   progress?: string;
+  metrics?: string[];
 }
 
 export interface Squad {
