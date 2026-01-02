@@ -216,9 +216,9 @@ export async function syncCommand(options: { verbose?: boolean } = {}): Promise<
   const squadsDir = findSquadsDir();
 
   if (!memoryDir) {
-    writeLine(`  ${colors.red}No .agents/memory directory found${RESET}`);
+    writeLine(`  ${colors.yellow}No .agents/memory directory found${RESET}`);
     writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
-    process.exit(1);
+    return; // Graceful exit - don't fail hooks
   }
 
   writeLine();
