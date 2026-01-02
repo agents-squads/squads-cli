@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 interface TelemetryEvent {
   event: string;
   timestamp: string;
-  properties?: Record<string, string | number | boolean>;
+  properties?: Record<string, string | number | boolean | undefined>;
 }
 
 interface TelemetryConfig {
@@ -19,8 +19,13 @@ const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
 const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
-// Telemetry endpoint (when ready)
-const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_URL || null;
+// Telemetry endpoint - bridge or cloud
+const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_URL ||
+  (process.env.SQUADS_BRIDGE_URL ? `${process.env.SQUADS_BRIDGE_URL}/api/telemetry` : null);
+
+// Event queue for batch flushing
+let eventQueue: TelemetryEvent[] = [];
+let flushScheduled = false;
 
 function ensureDir(): void {
   if (!existsSync(TELEMETRY_DIR)) {
@@ -81,7 +86,7 @@ export function getAnonymousId(): string {
   return getConfig().anonymousId;
 }
 
-export async function track(event: string, properties?: Record<string, string | number | boolean>): Promise<void> {
+export async function track(event: string, properties?: Record<string, string | number | boolean | undefined>): Promise<void> {
   if (!isEnabled()) return;
 
   const config = getConfig();
@@ -99,18 +104,83 @@ export async function track(event: string, properties?: Record<string, string | 
   // Store locally (for debugging/review)
   storeEventLocally(telemetryEvent);
 
-  // Send to endpoint if configured
-  if (TELEMETRY_ENDPOINT) {
-    try {
-      await fetch(TELEMETRY_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetryEvent),
-      }).catch(() => {}); // Silent fail - telemetry should never break the CLI
-    } catch {
-      // Silent fail
-    }
+  // Queue for batch sending
+  eventQueue.push(telemetryEvent);
+
+  // Schedule flush if not already scheduled
+  if (TELEMETRY_ENDPOINT && !flushScheduled) {
+    flushScheduled = true;
+    // Flush on next tick to batch events from same command
+    setImmediate(() => {
+      flushEvents().catch(() => {});
+    });
   }
+}
+
+/**
+ * Flush queued events to the telemetry endpoint
+ */
+export async function flushEvents(): Promise<void> {
+  if (!TELEMETRY_ENDPOINT || eventQueue.length === 0) {
+    flushScheduled = false;
+    return;
+  }
+
+  const batch = [...eventQueue];
+  eventQueue = [];
+  flushScheduled = false;
+
+  try {
+    await fetch(TELEMETRY_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: batch }),
+    });
+  } catch {
+    // Restore events on failure (will retry on next track)
+    eventQueue = [...batch, ...eventQueue].slice(-100); // Keep max 100
+  }
+}
+
+/**
+ * Track an error event
+ */
+export async function trackError(
+  command: string,
+  error: Error,
+  context?: Record<string, string | number | boolean>
+): Promise<void> {
+  await track(Events.CLI_ERROR, {
+    command,
+    errorType: error.constructor.name,
+    errorMessage: error.message.slice(0, 100), // Truncate for privacy
+    ...context,
+  });
+}
+
+/**
+ * Wrap an async command function with telemetry
+ */
+export function instrumentCommand<T>(
+  name: string,
+  fn: () => Promise<T>
+): () => Promise<T> {
+  return async () => {
+    const start = Date.now();
+    try {
+      const result = await fn();
+      await track(`cli.${name}`, {
+        durationMs: Date.now() - start,
+        success: true,
+      });
+      return result;
+    } catch (error) {
+      await trackError(name, error as Error, {
+        durationMs: Date.now() - start,
+      });
+      throw error;
+    }
+  };
 }
 
 function storeEventLocally(event: TelemetryEvent): void {
@@ -137,17 +207,40 @@ function storeEventLocally(event: TelemetryEvent): void {
 
 // Pre-defined events for consistency
 export const Events = {
+  // Lifecycle
   CLI_INIT: 'cli.init',
+  CLI_ERROR: 'cli.error',
+
+  // Commands
   CLI_RUN: 'cli.run',
   CLI_STATUS: 'cli.status',
   CLI_DASHBOARD: 'cli.dashboard',
+  CLI_WORKERS: 'cli.workers',
+
+  // Goals
   CLI_GOAL_SET: 'cli.goal.set',
+  CLI_GOAL_LIST: 'cli.goal.list',
   CLI_GOAL_COMPLETE: 'cli.goal.complete',
+  CLI_GOAL_PROGRESS: 'cli.goal.progress',
+
+  // Memory
   CLI_MEMORY_QUERY: 'cli.memory.query',
+  CLI_MEMORY_SHOW: 'cli.memory.show',
+  CLI_MEMORY_UPDATE: 'cli.memory.update',
+  CLI_MEMORY_LIST: 'cli.memory.list',
+  CLI_MEMORY_SYNC: 'cli.memory.sync',
+
+  // Feedback
   CLI_FEEDBACK_ADD: 'cli.feedback.add',
+  CLI_FEEDBACK_SHOW: 'cli.feedback.show',
+  CLI_FEEDBACK_STATS: 'cli.feedback.stats',
+
+  // Auth
+  CLI_LOGIN: 'cli.login',
+  CLI_LOGOUT: 'cli.logout',
 } as const;
 
-// Track command execution time
+// Track command execution time (legacy helper)
 export function trackCommand(command: string): () => void {
   const start = Date.now();
 
@@ -155,4 +248,34 @@ export function trackCommand(command: string): () => void {
     const duration = Date.now() - start;
     track(`cli.${command}`, { durationMs: duration });
   };
+}
+
+// Register exit handler to flush remaining events
+let exitHandlerRegistered = false;
+
+export function registerExitHandler(): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+
+  const cleanup = () => {
+    // Synchronous flush attempt on exit
+    if (eventQueue.length > 0 && TELEMETRY_ENDPOINT) {
+      // Can't do async on exit, so just log
+      storeEventLocally({
+        event: 'cli.exit',
+        timestamp: new Date().toISOString(),
+        properties: { pendingEvents: eventQueue.length },
+      });
+    }
+  };
+
+  process.on('exit', cleanup);
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    cleanup();
+    process.exit(0);
+  });
 }
