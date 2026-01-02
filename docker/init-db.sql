@@ -278,6 +278,121 @@ CREATE INDEX IF NOT EXISTS idx_cli_events_name ON squads.cli_events(event_name);
 CREATE INDEX IF NOT EXISTS idx_cli_events_received ON squads.cli_events(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cli_events_anonymous ON squads.cli_events(anonymous_id);
 
+-- =============================================================================
+-- Task Tracking - Track task completion, retries, and quality
+-- =============================================================================
+
+-- Tasks - track goal/task completion
+CREATE TABLE IF NOT EXISTS squads.tasks (
+    id SERIAL PRIMARY KEY,
+    task_id VARCHAR(255) UNIQUE NOT NULL, -- External ID for deduplication
+    session_id VARCHAR(255),
+
+    -- Context
+    squad VARCHAR(100) NOT NULL,
+    agent VARCHAR(100),
+
+    -- Task info
+    task_type VARCHAR(50) DEFAULT 'goal', -- goal, issue, pr, command
+    description TEXT,
+
+    -- Completion tracking
+    status VARCHAR(50) DEFAULT 'started', -- started, completed, failed, cancelled
+    success BOOLEAN,
+    retry_count INTEGER DEFAULT 0,
+
+    -- Output
+    output_type VARCHAR(50), -- commit, pr, issue, file, none
+    output_ref VARCHAR(500), -- URL or reference
+
+    -- Cost
+    total_tokens INTEGER DEFAULT 0,
+    total_cost_usd NUMERIC(10,6) DEFAULT 0,
+
+    -- Context window
+    peak_context_tokens INTEGER DEFAULT 0, -- Max context size during task
+    context_utilization_pct NUMERIC(5,2), -- Peak % of context window used
+
+    -- Timing
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    duration_ms INTEGER,
+
+    -- Metadata
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+-- User feedback on task quality
+CREATE TABLE IF NOT EXISTS squads.task_feedback (
+    id SERIAL PRIMARY KEY,
+    task_id VARCHAR(255) REFERENCES squads.tasks(task_id),
+
+    -- Rating
+    quality_score INTEGER CHECK (quality_score >= 1 AND quality_score <= 5), -- 1-5 stars
+
+    -- Detailed feedback
+    was_helpful BOOLEAN,
+    required_fixes BOOLEAN DEFAULT false,
+    fix_description TEXT,
+
+    -- Tags
+    tags VARCHAR(50)[], -- ['accurate', 'fast', 'needed-revision', etc]
+
+    -- Timing
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Free-form notes
+    notes TEXT
+);
+
+-- Aggregated insights per squad/agent (materialized for fast queries)
+CREATE TABLE IF NOT EXISTS squads.agent_insights (
+    id SERIAL PRIMARY KEY,
+    captured_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    period VARCHAR(20) NOT NULL, -- 'day', 'week', 'month'
+    period_start DATE NOT NULL,
+
+    -- Context
+    squad VARCHAR(100) NOT NULL,
+    agent VARCHAR(100),
+
+    -- Task metrics
+    tasks_started INTEGER DEFAULT 0,
+    tasks_completed INTEGER DEFAULT 0,
+    tasks_failed INTEGER DEFAULT 0,
+    success_rate NUMERIC(5,2), -- percentage
+
+    -- Retry metrics
+    total_retries INTEGER DEFAULT 0,
+    avg_retries_per_task NUMERIC(5,2),
+    tasks_with_retries INTEGER DEFAULT 0,
+
+    -- Quality metrics (from feedback)
+    avg_quality_score NUMERIC(3,2),
+    feedback_count INTEGER DEFAULT 0,
+    helpful_pct NUMERIC(5,2),
+    fix_required_pct NUMERIC(5,2),
+
+    -- Efficiency metrics
+    avg_duration_ms INTEGER,
+    avg_tokens_per_task INTEGER,
+    avg_cost_per_task NUMERIC(10,6),
+    avg_context_utilization NUMERIC(5,2),
+
+    -- Tool usage
+    top_tools JSONB DEFAULT '[]'::jsonb, -- [{name, count, success_rate}]
+    tool_failure_rate NUMERIC(5,2),
+
+    UNIQUE(period, period_start, squad, agent)
+);
+
+-- Indexes for insights queries
+CREATE INDEX IF NOT EXISTS idx_tasks_squad ON squads.tasks(squad, agent);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON squads.tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON squads.tasks(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_feedback_task ON squads.task_feedback(task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_insights_lookup ON squads.agent_insights(squad, period, period_start DESC);
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON SCHEMA squads TO squads;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA squads TO squads;

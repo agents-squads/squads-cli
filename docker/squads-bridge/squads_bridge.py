@@ -1105,6 +1105,342 @@ def debug_logs():
     }), 200
 
 
+# =============================================================================
+# Task Tracking API - Track task completion, retries, quality
+# =============================================================================
+
+@app.route("/api/tasks", methods=["POST"])
+def create_or_update_task():
+    """Create or update a task."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data"}), 400
+
+        task_id = data.get("task_id")
+        if not task_id:
+            return jsonify({"error": "task_id required"}), 400
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Check if task exists
+            cur.execute("SELECT id, retry_count FROM squads.tasks WHERE task_id = %s", (task_id,))
+            existing = cur.fetchone()
+
+            if existing:
+                # Update existing task
+                retry_count = existing["retry_count"]
+                if data.get("status") == "started" and data.get("is_retry"):
+                    retry_count += 1
+
+                cur.execute("""
+                    UPDATE squads.tasks SET
+                        status = COALESCE(%s, status),
+                        success = COALESCE(%s, success),
+                        retry_count = %s,
+                        output_type = COALESCE(%s, output_type),
+                        output_ref = COALESCE(%s, output_ref),
+                        total_tokens = COALESCE(%s, total_tokens),
+                        total_cost_usd = COALESCE(%s, total_cost_usd),
+                        peak_context_tokens = GREATEST(peak_context_tokens, COALESCE(%s, 0)),
+                        context_utilization_pct = GREATEST(context_utilization_pct, COALESCE(%s, 0)),
+                        completed_at = CASE WHEN %s IN ('completed', 'failed', 'cancelled') THEN NOW() ELSE completed_at END,
+                        duration_ms = CASE WHEN %s IN ('completed', 'failed', 'cancelled')
+                            THEN EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000 ELSE duration_ms END,
+                        metadata = metadata || %s::jsonb
+                    WHERE task_id = %s
+                    RETURNING *
+                """, (
+                    data.get("status"),
+                    data.get("success"),
+                    retry_count,
+                    data.get("output_type"),
+                    data.get("output_ref"),
+                    data.get("total_tokens"),
+                    data.get("total_cost_usd"),
+                    data.get("peak_context_tokens"),
+                    data.get("context_utilization_pct"),
+                    data.get("status"),
+                    data.get("status"),
+                    json.dumps(data.get("metadata", {})),
+                    task_id,
+                ))
+                result = cur.fetchone()
+                action = "updated"
+            else:
+                # Create new task
+                cur.execute("""
+                    INSERT INTO squads.tasks
+                        (task_id, session_id, squad, agent, task_type, description,
+                         status, output_type, output_ref, total_tokens, total_cost_usd,
+                         peak_context_tokens, context_utilization_pct, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                """, (
+                    task_id,
+                    data.get("session_id"),
+                    data.get("squad", "hq"),
+                    data.get("agent"),
+                    data.get("task_type", "goal"),
+                    data.get("description"),
+                    data.get("status", "started"),
+                    data.get("output_type"),
+                    data.get("output_ref"),
+                    data.get("total_tokens", 0),
+                    data.get("total_cost_usd", 0),
+                    data.get("peak_context_tokens", 0),
+                    data.get("context_utilization_pct"),
+                    json.dumps(data.get("metadata", {})),
+                ))
+                result = cur.fetchone()
+                action = "created"
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "action": action,
+            "task": {
+                "task_id": result["task_id"],
+                "squad": result["squad"],
+                "status": result["status"],
+                "retry_count": result["retry_count"],
+            }
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tasks/<task_id>/feedback", methods=["POST"])
+def add_task_feedback(task_id):
+    """Add feedback for a task."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data"}), 400
+
+        conn = get_db()
+        with conn.cursor() as cur:
+            # Verify task exists
+            cur.execute("SELECT id FROM squads.tasks WHERE task_id = %s", (task_id,))
+            if not cur.fetchone():
+                conn.close()
+                return jsonify({"error": f"Task {task_id} not found"}), 404
+
+            # Insert feedback
+            tags = data.get("tags", [])
+            cur.execute("""
+                INSERT INTO squads.task_feedback
+                    (task_id, quality_score, was_helpful, required_fixes, fix_description, tags, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                task_id,
+                data.get("quality_score"),
+                data.get("was_helpful"),
+                data.get("required_fixes", False),
+                data.get("fix_description"),
+                tags if tags else None,
+                data.get("notes"),
+            ))
+            feedback_id = cur.fetchone()[0]
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "feedback_id": feedback_id,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/insights", methods=["GET"])
+def get_insights():
+    """Get aggregated insights for dashboard."""
+    try:
+        squad = request.args.get("squad")
+        period = request.args.get("period", "week")  # day, week, month
+        days = {"day": 1, "week": 7, "month": 30}.get(period, 7)
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Squad filter
+            squad_filter = "AND t.squad = %s" if squad else ""
+            params = [days, squad] if squad else [days]
+
+            # Task completion metrics
+            cur.execute(f"""
+                SELECT
+                    COALESCE(t.squad, 'all') as squad,
+                    COUNT(*) as tasks_total,
+                    COUNT(*) FILTER (WHERE t.status = 'completed') as tasks_completed,
+                    COUNT(*) FILTER (WHERE t.status = 'failed') as tasks_failed,
+                    COUNT(*) FILTER (WHERE t.success = true) as tasks_successful,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE t.success = true) / NULLIF(COUNT(*), 0), 1) as success_rate,
+                    SUM(t.retry_count) as total_retries,
+                    COUNT(*) FILTER (WHERE t.retry_count > 0) as tasks_with_retries,
+                    ROUND(AVG(t.retry_count)::numeric, 2) as avg_retries,
+                    ROUND(AVG(t.duration_ms)::numeric, 0) as avg_duration_ms,
+                    ROUND(AVG(t.total_tokens)::numeric, 0) as avg_tokens,
+                    ROUND(AVG(t.total_cost_usd)::numeric, 4) as avg_cost,
+                    ROUND(AVG(t.context_utilization_pct)::numeric, 1) as avg_context_pct,
+                    MAX(t.peak_context_tokens) as max_context_tokens
+                FROM squads.tasks t
+                WHERE t.started_at >= NOW() - INTERVAL '%s days' {squad_filter}
+                GROUP BY t.squad
+                ORDER BY tasks_total DESC
+            """, params)
+            task_metrics = cur.fetchall()
+
+            # Quality metrics from feedback
+            cur.execute(f"""
+                SELECT
+                    COALESCE(t.squad, 'all') as squad,
+                    COUNT(f.id) as feedback_count,
+                    ROUND(AVG(f.quality_score)::numeric, 2) as avg_quality,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE f.was_helpful = true) / NULLIF(COUNT(*), 0), 1) as helpful_pct,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE f.required_fixes = true) / NULLIF(COUNT(*), 0), 1) as fix_required_pct
+                FROM squads.tasks t
+                LEFT JOIN squads.task_feedback f ON t.task_id = f.task_id
+                WHERE t.started_at >= NOW() - INTERVAL '%s days' {squad_filter}
+                    AND f.id IS NOT NULL
+                GROUP BY t.squad
+            """, params)
+            quality_metrics = cur.fetchall()
+
+            # Tool usage metrics
+            cur.execute(f"""
+                SELECT
+                    tool_name,
+                    COUNT(*) as usage_count,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / NULLIF(COUNT(*), 0), 1) as success_rate,
+                    ROUND(AVG(duration_ms)::numeric, 0) as avg_duration_ms
+                FROM squads.tool_executions
+                WHERE created_at >= NOW() - INTERVAL '%s days'
+                GROUP BY tool_name
+                ORDER BY usage_count DESC
+                LIMIT 15
+            """, [days])
+            top_tools = cur.fetchall()
+
+            # Overall tool failure rate
+            cur.execute("""
+                SELECT
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE success = false) / NULLIF(COUNT(*), 0), 1) as failure_rate
+                FROM squads.tool_executions
+                WHERE created_at >= NOW() - INTERVAL '%s days'
+            """, [days])
+            tool_failure = cur.fetchone()
+
+            # Session efficiency
+            cur.execute(f"""
+                SELECT
+                    COALESCE(squad, 'all') as squad,
+                    COUNT(*) as sessions,
+                    ROUND(AVG(total_cost_usd)::numeric, 4) as avg_session_cost,
+                    ROUND(AVG(generation_count)::numeric, 1) as avg_generations,
+                    ROUND(AVG(tool_count)::numeric, 1) as avg_tools
+                FROM squads.sessions
+                WHERE started_at >= NOW() - INTERVAL '%s days' {squad_filter.replace('t.', '')}
+                GROUP BY squad
+            """, params)
+            session_metrics = cur.fetchall()
+
+        conn.close()
+
+        return jsonify({
+            "period": period,
+            "days": days,
+            "squad_filter": squad,
+            "task_metrics": [dict(r) for r in task_metrics],
+            "quality_metrics": [dict(r) for r in quality_metrics],
+            "top_tools": [dict(r) for r in top_tools],
+            "tool_failure_rate": float(tool_failure["failure_rate"] or 0) if tool_failure else 0,
+            "session_metrics": [dict(r) for r in session_metrics],
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/insights/compute", methods=["POST"])
+def compute_insights():
+    """Compute and cache insights into agent_insights table."""
+    try:
+        period = request.args.get("period", "day")  # day, week, month
+
+        conn = get_db()
+        with conn.cursor() as cur:
+            # Compute for each squad
+            cur.execute("""
+                INSERT INTO squads.agent_insights
+                    (period, period_start, squad, agent,
+                     tasks_started, tasks_completed, tasks_failed, success_rate,
+                     total_retries, avg_retries_per_task, tasks_with_retries,
+                     avg_quality_score, feedback_count, helpful_pct, fix_required_pct,
+                     avg_duration_ms, avg_tokens_per_task, avg_cost_per_task, avg_context_utilization,
+                     top_tools, tool_failure_rate)
+                SELECT
+                    %s as period,
+                    CURRENT_DATE as period_start,
+                    t.squad,
+                    t.agent,
+                    COUNT(*) as tasks_started,
+                    COUNT(*) FILTER (WHERE t.status = 'completed') as tasks_completed,
+                    COUNT(*) FILTER (WHERE t.status = 'failed') as tasks_failed,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE t.success = true) / NULLIF(COUNT(*), 0), 2),
+                    SUM(t.retry_count),
+                    ROUND(AVG(t.retry_count)::numeric, 2),
+                    COUNT(*) FILTER (WHERE t.retry_count > 0),
+                    (SELECT ROUND(AVG(f.quality_score)::numeric, 2) FROM squads.task_feedback f WHERE f.task_id = ANY(ARRAY_AGG(t.task_id))),
+                    (SELECT COUNT(*) FROM squads.task_feedback f WHERE f.task_id = ANY(ARRAY_AGG(t.task_id))),
+                    NULL, NULL,
+                    ROUND(AVG(t.duration_ms)::numeric, 0),
+                    ROUND(AVG(t.total_tokens)::numeric, 0),
+                    ROUND(AVG(t.total_cost_usd)::numeric, 6),
+                    ROUND(AVG(t.context_utilization_pct)::numeric, 2),
+                    '[]'::jsonb,
+                    NULL
+                FROM squads.tasks t
+                WHERE t.started_at >= CURRENT_DATE - INTERVAL '1 day' * %s
+                GROUP BY t.squad, t.agent
+                ON CONFLICT (period, period_start, squad, agent) DO UPDATE SET
+                    tasks_started = EXCLUDED.tasks_started,
+                    tasks_completed = EXCLUDED.tasks_completed,
+                    tasks_failed = EXCLUDED.tasks_failed,
+                    success_rate = EXCLUDED.success_rate,
+                    total_retries = EXCLUDED.total_retries,
+                    avg_retries_per_task = EXCLUDED.avg_retries_per_task,
+                    tasks_with_retries = EXCLUDED.tasks_with_retries,
+                    avg_quality_score = EXCLUDED.avg_quality_score,
+                    feedback_count = EXCLUDED.feedback_count,
+                    avg_duration_ms = EXCLUDED.avg_duration_ms,
+                    avg_tokens_per_task = EXCLUDED.avg_tokens_per_task,
+                    avg_cost_per_task = EXCLUDED.avg_cost_per_task,
+                    avg_context_utilization = EXCLUDED.avg_context_utilization,
+                    captured_at = NOW()
+            """, (period, {"day": 1, "week": 7, "month": 30}.get(period, 7)))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({"status": "ok", "period": period}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting Squads Bridge on port {port}")
