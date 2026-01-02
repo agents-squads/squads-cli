@@ -822,6 +822,71 @@ def cost_summary():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/rate-limits", methods=["GET"])
+def get_rate_limits():
+    """Get current rate limits from Redis (captured by anthropic proxy)."""
+    if not redis_client:
+        return jsonify({"error": "Redis not available", "source": "none"}), 503
+
+    try:
+        # Get all rate limit keys
+        keys = redis_client.keys("ratelimit:latest:*")
+        limits = {}
+
+        for key in keys:
+            family = key.split(":")[-1]
+            data = redis_client.get(key)
+            if data:
+                limits[family] = json.loads(data)
+
+        return jsonify({
+            "rate_limits": limits,
+            "source": "redis",
+            "fetched_at": datetime.now().isoformat(),
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/telemetry", methods=["POST"])
+def receive_cli_telemetry():
+    """Receive anonymous CLI telemetry events."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data"}), 400
+
+        events = data.get("events", [data])  # Support single event or batch
+
+        conn = get_db()
+        with conn.cursor() as cur:
+            for event in events:
+                cur.execute("""
+                    INSERT INTO squads.cli_events
+                        (anonymous_id, event_name, cli_version, properties)
+                    VALUES (%s, %s, %s, %s)
+                """, (
+                    event.get("properties", {}).get("anonymousId", ""),
+                    event.get("event", "unknown"),
+                    event.get("properties", {}).get("cliVersion", "unknown"),
+                    json.dumps(event.get("properties", {})),
+                ))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "received": len(events),
+        }), 200
+
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"[TELEMETRY] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 # =============================================================================
 # Conversations API - Captures from engram hook
 # =============================================================================

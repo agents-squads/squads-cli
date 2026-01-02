@@ -135,6 +135,30 @@ services:
       - squads
 
   # =============================================================================
+  # Anthropic Proxy - Captures rate limit headers
+  # =============================================================================
+  anthropic-proxy:
+    build:
+      context: ./squads-bridge
+      dockerfile: Dockerfile.proxy
+    container_name: squads-anthropic-proxy
+    restart: unless-stopped
+    profiles: ["proxy"]  # Only start with: docker-compose --profile proxy up
+    environment:
+      PORT: 8089
+      DEBUG: "${DEBUG:-0}"
+      ANTHROPIC_API_URL: https://api.anthropic.com
+      REDIS_URL: redis://redis:6379/0
+      SQUADS_BRIDGE_URL: http://squads-bridge:8080
+    ports:
+      - "${ANTHROPIC_PROXY_PORT:-8089}:8089"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
   # Neo4j - Graph database for agent memory (future)
   # =============================================================================
   neo4j:

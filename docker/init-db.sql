@@ -254,6 +254,30 @@ CREATE INDEX IF NOT EXISTS idx_conversations_created ON squads.conversations(cre
 CREATE INDEX IF NOT EXISTS idx_conversations_type ON squads.conversations(message_type);
 CREATE INDEX IF NOT EXISTS idx_conversations_importance ON squads.conversations(importance);
 
+-- =============================================================================
+-- CLI Events - Anonymous telemetry from squads-cli
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS squads.cli_events (
+    id SERIAL PRIMARY KEY,
+    received_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Anonymous identification
+    anonymous_id VARCHAR(100),
+
+    -- Event data
+    event_name VARCHAR(100) NOT NULL,
+    cli_version VARCHAR(20),
+
+    -- Properties (flexible JSON)
+    properties JSONB DEFAULT '{}'::jsonb
+);
+
+-- Indexes for analytics queries
+CREATE INDEX IF NOT EXISTS idx_cli_events_name ON squads.cli_events(event_name);
+CREATE INDEX IF NOT EXISTS idx_cli_events_received ON squads.cli_events(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cli_events_anonymous ON squads.cli_events(anonymous_id);
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON SCHEMA squads TO squads;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA squads TO squads;
