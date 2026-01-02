@@ -1,0 +1,17 @@
+
+# <type>(<scope>): <subject>
+
+# <body>
+
+🤖 Generated with [Agents Squads](https://agents-squads.com)
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Gemini 3 🍌 <noreply@google.com>
+# ────────────────────────────────────────────────────────────
+# Available AI Models (uncomment/add as needed):
+#
+# Co-Authored-By: Claude Sonnet 4 <noreply@anthropic.com>
+# Co-Authored-By: Claude Haiku 3.5 <noreply@anthropic.com>
+# Co-Authored-By: GPT-4o <noreply@openai.com>
+# Co-Authored-By: Gemini 2.0 Flash <noreply@google.com>
+# ────────────────────────────────────────────────────────────
