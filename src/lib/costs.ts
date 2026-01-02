@@ -243,3 +243,83 @@ export function formatCostBar(usedPercent: number, width = 20): string {
   const empty = width - filled;
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
+
+/**
+ * Rate limit data from Anthropic API headers
+ */
+export interface RateLimitInfo {
+  model: string;
+  requestsLimit: number;
+  requestsRemaining: number;
+  requestsReset?: string;
+  tokensLimit: number;
+  tokensRemaining: number;
+  tokensReset?: string;
+  inputTokensLimit?: number;
+  inputTokensRemaining?: number;
+  outputTokensLimit?: number;
+  outputTokensRemaining?: number;
+  capturedAt: string;
+}
+
+export interface RateLimits {
+  limits: Record<string, RateLimitInfo>;
+  source: 'proxy' | 'none';
+}
+
+/**
+ * Fetch real rate limits from the Anthropic proxy (via bridge)
+ */
+export async function fetchRateLimits(): Promise<RateLimits> {
+  try {
+    const response = await fetch(`${BRIDGE_URL}/api/rate-limits`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      return { limits: {}, source: 'none' };
+    }
+
+    interface RateLimitResponse {
+      rate_limits?: Record<string, {
+        model?: string;
+        requests_limit?: number;
+        requests_remaining?: number;
+        requests_reset?: string;
+        tokens_limit?: number;
+        tokens_remaining?: number;
+        tokens_reset?: string;
+        input_tokens_limit?: number;
+        input_tokens_remaining?: number;
+        output_tokens_limit?: number;
+        output_tokens_remaining?: number;
+        captured_at?: string;
+      }>;
+    }
+
+    const data = await response.json() as RateLimitResponse;
+    const rateLimits = data.rate_limits || {};
+
+    const limits: Record<string, RateLimitInfo> = {};
+    for (const [key, value] of Object.entries(rateLimits)) {
+      limits[key] = {
+        model: value.model || key,
+        requestsLimit: value.requests_limit || 0,
+        requestsRemaining: value.requests_remaining || 0,
+        requestsReset: value.requests_reset,
+        tokensLimit: value.tokens_limit || 0,
+        tokensRemaining: value.tokens_remaining || 0,
+        tokensReset: value.tokens_reset,
+        inputTokensLimit: value.input_tokens_limit,
+        inputTokensRemaining: value.input_tokens_remaining,
+        outputTokensLimit: value.output_tokens_limit,
+        outputTokensRemaining: value.output_tokens_remaining,
+        capturedAt: value.captured_at || new Date().toISOString(),
+      };
+    }
+
+    return { limits, source: 'proxy' };
+  } catch {
+    return { limits: {}, source: 'none' };
+  }
+}
