@@ -451,32 +451,28 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
     }
   }
 
-  // Model limits (Anthropic rate limits per minute, shown as reference)
-  const modelLimits: Record<string, number> = {
-    'claude-opus-4-5-20251101': 1000,
-    'claude-sonnet-4-20250514': 2000,
-    'claude-haiku-4-5-20251001': 4000,
-    'claude-3-5-sonnet-20241022': 2000,
-    'claude-3-5-haiku-20241022': 4000,
-  };
+  // Anthropic RPM limits by tier (same for all models within a tier)
+  const tierLimits: Record<number, number> = { 1: 50, 2: 1000, 3: 2000, 4: 4000 };
+  const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
+  const rpmLimit = tierLimits[tier] || 4000;
 
   const modelShortNames: Record<string, string> = {
-    'claude-opus-4-5-20251101': 'opus',
-    'claude-sonnet-4-20250514': 'sonnet',
-    'claude-haiku-4-5-20251001': 'haiku',
+    'claude-opus-4-5-20251101': 'opus-4.5',
+    'claude-sonnet-4-20250514': 'sonnet-4',
+    'claude-haiku-4-5-20251001': 'haiku-4.5',
     'claude-3-5-sonnet-20241022': 'sonnet-3.5',
     'claude-3-5-haiku-20241022': 'haiku-3.5',
   };
 
   if (Object.keys(modelCalls).length > 0) {
+    writeLine(`  ${colors.dim}API Calls (Tier ${tier}: ${rpmLimit} RPM)${RESET}`);
     const sortedModels = Object.entries(modelCalls).sort((a, b) => b[1] - a[1]);
     for (const [model, calls] of sortedModels.slice(0, 4)) {
-      const limit = modelLimits[model] || 1000;
-      const pct = (calls / limit) * 100;
-      const bar = formatCostBar(pct, 16);
+      const pct = (calls / rpmLimit) * 100;
+      const bar = formatCostBar(Math.min(pct, 100), 16);
       const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
       const callsColor = pct > 80 ? colors.red : pct > 50 ? colors.yellow : colors.green;
-      writeLine(`  ${colors.dim}${padEnd(name, 12)}${RESET} [${bar}] ${callsColor}${String(calls).padStart(4)}${RESET}${colors.dim}/${limit}${RESET}`);
+      writeLine(`  ${padEnd(name, 12)} [${bar}] ${callsColor}${String(calls).padStart(4)}${RESET}${colors.dim}/${rpmLimit}${RESET}`);
     }
     writeLine();
   }
