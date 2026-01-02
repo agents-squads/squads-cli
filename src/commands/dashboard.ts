@@ -443,12 +443,43 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
   writeLine();
 
-  // API calls bar
-  const callsBar = formatCostBar(costs.callsPercent, barWidth);
-  const callsColor = costs.callsPercent > 80 ? colors.red : costs.callsPercent > 50 ? colors.yellow : colors.green;
-  writeLine(`  ${colors.dim}Calls  ${costs.dailyCallLimit}${RESET} [${callsBar}] ${costs.callsPercent.toFixed(1)}%`);
-  writeLine(`  ${callsColor}${costs.totalCalls}${RESET} calls  ${colors.dim}│${RESET}  ${colors.cyan}${costs.dailyCallLimit - costs.totalCalls}${RESET} remaining`);
-  writeLine();
+  // API calls by model
+  const modelCalls: Record<string, number> = {};
+  for (const squad of costs.bySquad) {
+    for (const [model, count] of Object.entries(squad.models)) {
+      modelCalls[model] = (modelCalls[model] || 0) + count;
+    }
+  }
+
+  // Model limits (Anthropic rate limits per minute, shown as reference)
+  const modelLimits: Record<string, number> = {
+    'claude-opus-4-5-20251101': 1000,
+    'claude-sonnet-4-20250514': 2000,
+    'claude-haiku-4-5-20251001': 4000,
+    'claude-3-5-sonnet-20241022': 2000,
+    'claude-3-5-haiku-20241022': 4000,
+  };
+
+  const modelShortNames: Record<string, string> = {
+    'claude-opus-4-5-20251101': 'opus',
+    'claude-sonnet-4-20250514': 'sonnet',
+    'claude-haiku-4-5-20251001': 'haiku',
+    'claude-3-5-sonnet-20241022': 'sonnet-3.5',
+    'claude-3-5-haiku-20241022': 'haiku-3.5',
+  };
+
+  if (Object.keys(modelCalls).length > 0) {
+    const sortedModels = Object.entries(modelCalls).sort((a, b) => b[1] - a[1]);
+    for (const [model, calls] of sortedModels.slice(0, 4)) {
+      const limit = modelLimits[model] || 1000;
+      const pct = (calls / limit) * 100;
+      const bar = formatCostBar(pct, 16);
+      const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
+      const callsColor = pct > 80 ? colors.red : pct > 50 ? colors.yellow : colors.green;
+      writeLine(`  ${colors.dim}${padEnd(name, 12)}${RESET} [${bar}] ${callsColor}${String(calls).padStart(4)}${RESET}${colors.dim}/${limit}${RESET}`);
+    }
+    writeLine();
+  }
 
   // Per-squad costs (compact)
   if (costs.bySquad.length > 0) {
