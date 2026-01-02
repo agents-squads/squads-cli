@@ -1,184 +1,164 @@
 # squads-cli
 
 [![npm version](https://img.shields.io/npm/v/squads-cli)](https://www.npmjs.com/package/squads-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 
-**CLI for managing AI agent squads** — organize, run, and track autonomous AI agents with persistent memory.
+**Organize, run, and track autonomous AI agents.** Built for Claude Code.
 
 ```
-squads status
+$ squads dash
 
-┌─────────────────────────────────────────────────────────────────┐
-│ Squad               Agents    Memory         Last Activity      │
-├─────────────────────────────────────────────────────────────────┤
-│ intelligence        16        1 entries      today              │
-│ research            5         1 entries      today              │
-│ website             8         1 entries      today              │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ SQUAD            AGENTS   MEMORY        LAST ACTIVITY      │
+├────────────────────────────────────────────────────────────┤
+│ intelligence     16       12 entries    today              │
+│ engineering      5        8 entries     today              │
+│ research         6        3 entries     yesterday          │
+│ website          9        5 entries     2d ago             │
+└────────────────────────────────────────────────────────────┘
+
+Active Goals: 3 | Memory Entries: 28 | Total Agents: 36
 ```
+
+## Why squads-cli?
+
+AI agents are powerful individually. But real work requires coordination.
+
+- **Squads** — Group agents by domain (engineering, research, marketing)
+- **Memory** — Persistent state that survives across sessions
+- **Goals** — Track objectives and measure progress
+- **Feedback** — Rate executions to improve over time
+
+No complex infrastructure. Just markdown files and a CLI.
 
 ## Installation
 
 ```bash
-# npm
 npm install -g squads-cli
-
-# Or link locally for development
-cd squads-cli && npm link
 ```
 
 ## Quick Start
 
 ```bash
-# View all squads and their status
+# Initialize in your project
+squads init
+
+# See what you have
 squads status
 
 # Run a squad
-squads run website
+squads run engineering
 
-# Search across all squad memory
-squads memory query "deployment"
-
-# Set goals for a squad
-squads goal set finance "Reduce API costs by 20%"
-```
-
-## Commands
-
-### Core Commands
-
-| Command | Description |
-|---------|-------------|
-| `squads status [squad]` | Show squad status and state |
-| `squads run <target>` | Run a squad or agent |
-| `squads list` | List all agents and squads |
-| `squads init` | Initialize a new squad project |
-| `squads dashboard` | Show comprehensive goals and metrics |
-
-### Memory Commands
-
-Squads maintain persistent memory across sessions:
-
-```bash
-# Search all squad memory
+# Search memory
 squads memory query "authentication"
 
-# Search specific squad
-squads memory query "pricing" --squad finance
-
-# View squad memory
-squads memory show intelligence
-
-# Add to memory
-squads memory update research "Completed competitor analysis"
-
-# List all memory entries
-squads memory list
+# Set a goal
+squads goal set engineering "Ship v2.0 by Friday"
 ```
 
-### Goal Commands
+## Core Concepts
 
-Track objectives for each squad:
-
-```bash
-# Set a goal with metrics
-squads goal set finance "Reduce costs" --metric "cost" --metric "savings"
-
-# List active goals
-squads goal list
-
-# Update progress
-squads goal progress finance 0 75
-
-# Mark complete
-squads goal complete finance 0
-```
-
-### Feedback Commands
-
-Rate and improve agent performance:
-
-```bash
-# Rate last execution (1-5)
-squads feedback add research 4 "Good analysis, needs more sources"
-
-# Add learnings
-squads feedback add website 5 "Great work" --learning "Always check mobile"
-
-# View feedback history
-squads feedback show research --limit 10
-
-# Summary stats across all squads
-squads feedback stats
-```
-
-### Authentication (Pro/Enterprise)
-
-```bash
-squads login      # Log in to Squads cloud
-squads logout     # Log out
-squads whoami     # Show current user
-```
-
-## Project Structure
+### Squads = Domain-Aligned Teams
 
 ```
-your-project/
-├── .agents/
-│   ├── squads/           # Squad definitions
-│   │   ├── intelligence/
-│   │   │   ├── SQUAD.md  # Squad config
-│   │   │   └── agents/   # Agent definitions (.md)
-│   │   └── research/
-│   │       └── ...
-│   ├── memory/           # Persistent state per squad
-│   │   ├── intelligence/
-│   │   │   └── state.md
-│   │   └── research/
-│   │       └── state.md
-│   └── outputs/          # Agent outputs
-└── CLAUDE.md             # Project instructions
+.agents/squads/
+├── engineering/
+│   ├── SQUAD.md           # Squad config + goals
+│   └── ci-optimizer.md    # Agent definition
+├── research/
+│   ├── SQUAD.md
+│   └── market-analyst.md
+└── intelligence/
+    └── ...
 ```
 
-## Agent Definition
-
-Agents are defined in markdown files:
+### Agents = Markdown Prompts
 
 ```markdown
-# Market Research Agent
+# CI Optimizer
 
 ## Purpose
-Analyze competitor pricing and positioning.
+Reduce build times and optimize CI/CD pipelines.
 
 ## Model
 claude-sonnet-4
 
 ## Tools
-- WebSearch
+- Bash(gh:*, git:*)
 - Read
-- Write
+- Edit
 
 ## Instructions
-1. Search for competitor pricing pages
-2. Extract pricing tiers and features
-3. Generate comparison report
-
-## Output
-Save analysis to `research/competitor-analysis.md`
+1. Analyze current build configuration
+2. Identify slow steps
+3. Implement caching strategies
+4. Verify improvements
 ```
 
-## Integration with Claude Code
+### Memory = Cross-Session State
 
-Add to your `CLAUDE.md` to auto-inject squad status at session start:
+```bash
+# Agents accumulate knowledge
+squads memory show engineering
+# → "Switched to pnpm for faster installs"
+# → "Build cache reduced CI time by 40%"
+# → "Team prefers explicit over implicit configs"
 
-```markdown
-## Session Start
-Always run: `squads status`
-Query memory before research: `squads memory query "<topic>"`
+# Search across all squads
+squads memory query "performance"
 ```
 
-Or configure as a Claude Code hook in `.claude/settings.json`:
+## Commands
+
+### Status & Dashboard
+
+```bash
+squads status              # All squads overview
+squads status engineering  # Single squad details
+squads status -v           # Verbose with agent list
+squads dash                # Full dashboard with goals
+```
+
+### Running Agents
+
+```bash
+squads run engineering              # Run the whole squad
+squads run engineering/ci-optimizer # Run specific agent
+squads run engineering --dry-run    # Preview what would run
+```
+
+### Memory Management
+
+```bash
+squads memory query "deployment"     # Semantic search
+squads memory show research          # View squad memory
+squads memory update research        # Add to memory
+squads memory list                   # List all entries
+```
+
+### Goal Tracking
+
+```bash
+squads goal set finance "Cut costs 20%"  # Set goal
+squads goal list                          # View all goals
+squads goal progress finance 75           # Update progress
+squads goal complete finance              # Mark done
+```
+
+### Feedback Loop
+
+```bash
+squads feedback add research 4 "Good analysis"   # Rate 1-5
+squads feedback show research                     # View history
+squads feedback stats                             # Summary
+```
+
+## Claude Code Integration
+
+### Option 1: Session Hook (Recommended)
+
+Add to `.claude/settings.json`:
 
 ```json
 {
@@ -194,68 +174,92 @@ Or configure as a Claude Code hook in `.claude/settings.json`:
 }
 ```
 
+Now every Claude Code session starts with squad context.
+
+### Option 2: CLAUDE.md Instructions
+
+```markdown
+## Squads Workflow
+
+Before starting work:
+1. Run `squads status` to see current state
+2. Run `squads memory query "<topic>"` to check existing knowledge
+3. After completing work, update memory via state files
+```
+
+## Project Structure
+
+```
+your-project/
+├── .agents/
+│   ├── squads/              # Squad definitions
+│   │   ├── engineering/
+│   │   │   ├── SQUAD.md     # Config + goals
+│   │   │   └── *.md         # Agent definitions
+│   │   └── research/
+│   ├── memory/              # Persistent state
+│   │   ├── engineering/
+│   │   │   └── state.md
+│   │   └── research/
+│   └── outputs/             # Agent outputs
+├── .claude/
+│   └── settings.json        # Hooks config
+└── CLAUDE.md                # Project instructions
+```
+
 ## Command Reference
 
 ```
-squads status [squad]           Show squad status
-  -v, --verbose                 Show detailed status
+squads status [squad]         Show squad status
+  -v, --verbose               Include agent details
 
-squads run <target>             Run a squad or agent
-  -v, --verbose                 Verbose output
-  -d, --dry-run                 Show what would run
-  -e, --execute                 Execute via Claude CLI
-  -a, --agent <agent>           Run specific agent
+squads run <target>           Run squad or agent
+  -v, --verbose               Verbose output
+  -d, --dry-run               Preview only
+  -e, --execute               Execute via Claude CLI
 
-squads list                     List agents and squads
-  -s, --squads                  List squads only
-  -a, --agents                  List agents only
+squads list                   List all squads/agents
+  -s, --squads                Squads only
+  -a, --agents                Agents only
 
-squads memory query <query>     Search squad memory
-  -s, --squad <squad>           Limit to specific squad
-  -a, --agent <agent>           Limit to specific agent
+squads memory query <q>       Search memory
+  -s, --squad <squad>         Filter by squad
+squads memory show <squad>    View squad memory
+squads memory update <squad>  Add to memory
+squads memory list            List all entries
 
-squads memory show <squad>      Show memory for a squad
-squads memory update <squad>    Add to squad memory
-  -t, --type <type>             Memory type: state|learnings|feedback
-squads memory list              List all memory entries
+squads goal set <squad> <goal>
+squads goal list [squad]
+squads goal progress <squad> <pct>
+squads goal complete <squad>
 
-squads goal set <squad> <desc>  Set a goal
-  -m, --metric <metrics...>     Metrics to track
-squads goal list [squad]        List goals
-  -a, --all                     Show completed goals
-squads goal progress <squad> <index> <progress>
-squads goal complete <squad> <index>
-
-squads feedback add <squad> <rating> <feedback>
-  -l, --learning <learnings...>
+squads feedback add <squad> <rating> <text>
 squads feedback show <squad>
-  -n, --limit <n>
 squads feedback stats
 
-squads dashboard                Show goals and metrics dashboard
-squads init                     Initialize new project
-squads login/logout/whoami      Authentication
+squads dashboard              Full dashboard
+squads init                   Initialize project
+squads login/logout/whoami    Authentication (Pro)
 ```
 
 ## Development
 
 ```bash
-# Install dependencies
+git clone https://github.com/agents-squads/squads-cli
+cd squads-cli
 npm install
-
-# Build
 npm run build
-
-# Watch mode
-npm run dev
-
-# Link globally for testing
-npm link
+npm link  # Test globally
 ```
+
+## Related
+
+- [agents-squads](https://github.com/agents-squads/agents-squads) — Full framework with infrastructure
+- [engram](https://github.com/agents-squads/engram) — Persistent memory for AI agents
 
 ## License
 
-MIT
+[MIT](LICENSE)
 
 ---
 
