@@ -9,6 +9,7 @@ interface SquadCosts {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cachedTokens: number;
   cost: number;
   models: Record<string, number>;
 }
@@ -21,6 +22,9 @@ export interface CostSummary {
   totalCalls: number;
   dailyCallLimit: number;
   callsPercent: number;
+  totalCachedTokens: number;
+  totalInputTokens: number;
+  cacheHitRate: number;
   bySquad: SquadCosts[];
   source: 'postgres' | 'langfuse' | 'none';
 }
@@ -63,15 +67,20 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
 
     const bySquad: SquadCosts[] = (data.by_squad || []).map((s: Record<string, unknown>) => ({
       squad: s.squad as string,
-      calls: s.generations as number,
-      inputTokens: s.input_tokens as number,
-      outputTokens: s.output_tokens as number,
-      cost: s.cost_usd as number,
+      calls: (s.generations as number) || 0,
+      inputTokens: (s.input_tokens as number) || 0,
+      outputTokens: (s.output_tokens as number) || 0,
+      cachedTokens: (s.cached_tokens as number) || 0,
+      cost: (s.cost_usd as number) || 0,
       models: {},
     }));
 
     const totalCalls = bySquad.reduce((sum, s) => sum + s.calls, 0);
     const dailyCallLimit = parseFloat(process.env.SQUADS_DAILY_CALL_LIMIT || '') || DEFAULT_DAILY_CALL_LIMIT;
+    const totalCachedTokens = bySquad.reduce((sum, s) => sum + s.cachedTokens, 0);
+    const totalInputTokens = bySquad.reduce((sum, s) => sum + s.inputTokens, 0);
+    const totalAllInput = totalInputTokens + totalCachedTokens;
+    const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
     return {
       totalCost,
@@ -81,6 +90,9 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
       totalCalls,
       dailyCallLimit,
       callsPercent: (totalCalls / dailyCallLimit) * 100,
+      totalCachedTokens,
+      totalInputTokens,
+      cacheHitRate,
       bySquad,
       source: 'postgres',
     };
@@ -146,6 +158,7 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
           calls: 0,
           inputTokens: 0,
           outputTokens: 0,
+          cachedTokens: 0,
           cost: 0,
           models: {},
         };
@@ -164,6 +177,10 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
 
     const totalCalls = squadList.reduce((sum, s) => sum + s.calls, 0);
     const dailyCallLimit = parseFloat(process.env.SQUADS_DAILY_CALL_LIMIT || '') || DEFAULT_DAILY_CALL_LIMIT;
+    const totalCachedTokens = squadList.reduce((sum, s) => sum + s.cachedTokens, 0);
+    const totalInputTokens = squadList.reduce((sum, s) => sum + s.inputTokens, 0);
+    const totalAllInput = totalInputTokens + totalCachedTokens;
+    const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
     return {
       totalCost,
@@ -173,6 +190,9 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
       totalCalls,
       dailyCallLimit,
       callsPercent: (totalCalls / dailyCallLimit) * 100,
+      totalCachedTokens,
+      totalInputTokens,
+      cacheHitRate,
       bySquad: squadList,
       source: 'langfuse',
     };
@@ -201,11 +221,18 @@ export async function fetchCostSummary(
   }
 
   // No data source available
+  const defaultBudget = parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET;
   return {
     totalCost: 0,
-    dailyBudget: parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET,
+    dailyBudget: defaultBudget,
     usedPercent: 0,
-    idleBudget: parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET,
+    idleBudget: defaultBudget,
+    totalCalls: 0,
+    dailyCallLimit: DEFAULT_DAILY_CALL_LIMIT,
+    callsPercent: 0,
+    totalCachedTokens: 0,
+    totalInputTokens: 0,
+    cacheHitRate: 0,
     bySquad: [],
     source: 'none',
   };

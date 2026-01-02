@@ -443,18 +443,20 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
   writeLine();
 
-  // API calls by model
-  const modelCalls: Record<string, number> = {};
-  for (const squad of costs.bySquad) {
-    for (const [model, count] of Object.entries(squad.models)) {
-      modelCalls[model] = (modelCalls[model] || 0) + count;
-    }
-  }
-
-  // Anthropic RPM limits by tier (same for all models within a tier)
-  const tierLimits: Record<number, number> = { 1: 50, 2: 1000, 3: 2000, 4: 4000 };
+  // Anthropic tier and limits
   const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
-  const rpmLimit = tierLimits[tier] || 4000;
+
+  // RPM limits by tier (same for all models)
+  const rpmByTier: Record<number, number> = { 1: 50, 2: 1000, 3: 2000, 4: 4000 };
+  const rpmLimit = rpmByTier[tier] || 4000;
+
+  // Token limits by tier and model family (ITPM/OTPM per minute)
+  const tokenLimits: Record<number, Record<string, { itpm: number; otpm: number }>> = {
+    1: { opus: { itpm: 30000, otpm: 8000 }, sonnet: { itpm: 30000, otpm: 8000 }, haiku: { itpm: 50000, otpm: 10000 } },
+    2: { opus: { itpm: 450000, otpm: 90000 }, sonnet: { itpm: 450000, otpm: 90000 }, haiku: { itpm: 450000, otpm: 90000 } },
+    3: { opus: { itpm: 800000, otpm: 160000 }, sonnet: { itpm: 800000, otpm: 160000 }, haiku: { itpm: 1000000, otpm: 200000 } },
+    4: { opus: { itpm: 2000000, otpm: 400000 }, sonnet: { itpm: 2000000, otpm: 400000 }, haiku: { itpm: 4000000, otpm: 800000 } },
+  };
 
   const modelShortNames: Record<string, string> = {
     'claude-opus-4-5-20251101': 'opus-4.5',
@@ -464,40 +466,87 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
     'claude-3-5-haiku-20241022': 'haiku-3.5',
   };
 
-  if (Object.keys(modelCalls).length > 0) {
-    writeLine(`  ${colors.dim}API Calls (Tier ${tier}: ${rpmLimit} RPM)${RESET}`);
-    const sortedModels = Object.entries(modelCalls).sort((a, b) => b[1] - a[1]);
-    for (const [model, calls] of sortedModels.slice(0, 4)) {
-      const pct = (calls / rpmLimit) * 100;
-      const bar = formatCostBar(Math.min(pct, 100), 16);
-      const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
-      const callsColor = pct > 80 ? colors.red : pct > 50 ? colors.yellow : colors.green;
-      writeLine(`  ${padEnd(name, 12)} [${bar}] ${callsColor}${String(calls).padStart(4)}${RESET}${colors.dim}/${rpmLimit}${RESET}`);
+  const modelToFamily: Record<string, string> = {
+    'claude-opus-4-5-20251101': 'opus',
+    'claude-sonnet-4-20250514': 'sonnet',
+    'claude-haiku-4-5-20251001': 'haiku',
+    'claude-3-5-sonnet-20241022': 'sonnet',
+    'claude-3-5-haiku-20241022': 'haiku',
+  };
+
+  // Aggregate stats by model
+  const modelStats: Record<string, { calls: number; input: number; output: number; cached: number }> = {};
+  for (const squad of costs.bySquad) {
+    for (const [model, count] of Object.entries(squad.models)) {
+      if (!modelStats[model]) {
+        modelStats[model] = { calls: 0, input: 0, output: 0, cached: 0 };
+      }
+      modelStats[model].calls += count;
     }
+    // Distribute tokens proportionally (approximation since we don't have per-model token breakdown)
+    const totalCalls = Object.values(squad.models).reduce((a, b) => a + b, 0);
+    for (const [model, count] of Object.entries(squad.models)) {
+      const ratio = totalCalls > 0 ? count / totalCalls : 0;
+      modelStats[model].input += Math.round(squad.inputTokens * ratio);
+      modelStats[model].output += Math.round(squad.outputTokens * ratio);
+    }
+  }
+
+  // Total tokens for all models
+  const totalInput = costs.bySquad.reduce((sum, s) => sum + s.inputTokens, 0);
+  const totalOutput = costs.bySquad.reduce((sum, s) => sum + s.outputTokens, 0);
+  const totalCalls = costs.bySquad.reduce((sum, s) => sum + s.calls, 0);
+
+  // Cost projections
+  const hourlyRate = costs.totalCost; // Based on last 100 calls, rough proxy
+  const dailyProjection = hourlyRate * 24;
+  const monthlyProjection = dailyProjection * 30;
+
+  // Display rate limits section
+  writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
+
+  const sortedModels = Object.entries(modelStats).sort((a, b) => b[1].calls - a[1].calls);
+  for (const [model, stats] of sortedModels.slice(0, 3)) {
+    const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
+    const family = modelToFamily[model] || 'sonnet';
+    const limits = tokenLimits[tier]?.[family] || { itpm: 1000000, otpm: 200000 };
+
+    // RPM
+    const rpmPct = (stats.calls / rpmLimit) * 100;
+    const rpmColor = rpmPct > 80 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
+
+    // Format: model [RPM bar] calls  [ITPM] input  [OTPM] output
+    writeLine(`  ${colors.cyan}${padEnd(name, 11)}${RESET} ${rpmColor}${String(stats.calls).padStart(4)}${RESET}${colors.dim}rpm${RESET}  ${colors.dim}${formatK(stats.input)}${RESET}${colors.dim}/${formatK(limits.itpm)}i${RESET}  ${colors.dim}${formatK(stats.output)}${RESET}${colors.dim}/${formatK(limits.otpm)}o${RESET}`);
+  }
+  writeLine();
+
+  // Cache efficiency
+  if (costs.totalCachedTokens > 0 || costs.cacheHitRate > 0) {
+    const cacheColor = costs.cacheHitRate > 50 ? colors.green : costs.cacheHitRate > 20 ? colors.yellow : colors.red;
+    writeLine(`  ${colors.dim}Cache:${RESET} ${cacheColor}${costs.cacheHitRate.toFixed(1)}%${RESET} hit rate  ${colors.dim}(${formatK(costs.totalCachedTokens)} cached / ${formatK(costs.totalInputTokens + costs.totalCachedTokens)} total)${RESET}`);
     writeLine();
   }
 
-  // Per-squad costs (compact)
-  if (costs.bySquad.length > 0) {
-    const maxSquads = 5;
-    for (const squad of costs.bySquad.slice(0, maxSquads)) {
-      const pct = ((squad.cost / costs.dailyBudget) * 100).toFixed(1);
-      const tokens = squad.inputTokens + squad.outputTokens;
-      const tokensK = (tokens / 1000).toFixed(1);
+  // Cost projections
+  writeLine(`  ${colors.dim}Projections${RESET}`);
+  const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
+  writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
 
-      // Model mix
-      const opus = squad.models['claude-opus-4-5-20251101'] || 0;
-      const haiku = squad.models['claude-haiku-4-5-20251001'] || 0;
-      const modelMix = `${colors.dim}${opus}o/${haiku}h${RESET}`;
-
-      writeLine(`  ${colors.cyan}${padEnd(squad.squad, 12)}${RESET} $${squad.cost.toFixed(2).padStart(6)} ${colors.dim}${tokensK.padStart(6)}k${RESET} ${modelMix}`);
-    }
-
-    if (costs.bySquad.length > maxSquads) {
-      writeLine(`  ${colors.dim}+${costs.bySquad.length - maxSquads} more${RESET}`);
-    }
-    writeLine();
+  // Alerts
+  if (dailyProjection > costs.dailyBudget * 0.8) {
+    writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
   }
+  if (costs.usedPercent > 80) {
+    writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
+  }
+  writeLine();
+}
+
+// Format number as K/M
+function formatK(n: number): string {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(0) + 'k';
+  return String(n);
 }
 
 // Priority keywords that indicate high priority goals
