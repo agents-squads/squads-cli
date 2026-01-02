@@ -27,7 +27,8 @@ import {
   memoryQueryCommand,
   memoryShowCommand,
   memoryUpdateCommand,
-  memoryListCommand
+  memoryListCommand,
+  memorySearchCommand
 } from './commands/memory.js';
 import { syncCommand } from './commands/sync.js';
 import {
@@ -54,7 +55,7 @@ const program = new Command();
 
 program
   .name('squads')
-  .description('CLI for managing AI agent squads')
+  .description('A CLI for humans and agents')
   .version(version);
 
 // Init command
@@ -194,6 +195,18 @@ memory
   .description('Sync memory from recent git commits (auto-update)')
   .option('-v, --verbose', 'Show detailed commit info')
   .action(syncCommand);
+
+memory
+  .command('search <query>')
+  .description('Search conversations stored in postgres (via squads-bridge)')
+  .option('-l, --limit <limit>', 'Number of results', '10')
+  .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
+  .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
+  .action((query, opts) => memorySearchCommand(query, {
+    limit: parseInt(opts.limit, 10),
+    role: opts.role,
+    importance: opts.importance
+  }));
 
 // Goal command group
 const goal = program
