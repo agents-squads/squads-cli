@@ -50,6 +50,10 @@ import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js'
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { workersCommand } from './commands/workers.js';
+import { registerExitHandler } from './lib/telemetry.js';
+
+// Register telemetry exit handler early
+registerExitHandler();
 
 const program = new Command();
 
