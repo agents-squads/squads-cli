@@ -443,6 +443,13 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
   writeLine();
 
+  // API calls bar
+  const callsBar = formatCostBar(costs.callsPercent, barWidth);
+  const callsColor = costs.callsPercent > 80 ? colors.red : costs.callsPercent > 50 ? colors.yellow : colors.green;
+  writeLine(`  ${colors.dim}Calls  ${costs.dailyCallLimit}${RESET} [${callsBar}] ${costs.callsPercent.toFixed(1)}%`);
+  writeLine(`  ${callsColor}${costs.totalCalls}${RESET} calls  ${colors.dim}│${RESET}  ${colors.cyan}${costs.dailyCallLimit - costs.totalCalls}${RESET} remaining`);
+  writeLine();
+
   // Per-squad costs (compact)
   if (costs.bySquad.length > 0) {
     const maxSquads = 5;

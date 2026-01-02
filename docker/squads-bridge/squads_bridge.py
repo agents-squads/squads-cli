@@ -2,10 +2,14 @@
 Squads Telemetry Bridge
 Receives OpenTelemetry metrics/logs from Claude Code.
 Saves to PostgreSQL (durable), Redis (real-time), Langfuse (optional).
+Forwards conversations to engram/mem0 for embeddings and graph storage.
 """
 import os
 import json
 import gzip
+import threading
+import time
+import requests
 from datetime import datetime, date
 from collections import deque
 from flask import Flask, request, jsonify
@@ -20,6 +24,11 @@ DEBUG_MODE = os.environ.get("DEBUG", "1") == "1"
 LANGFUSE_ENABLED = os.environ.get("LANGFUSE_ENABLED", "false").lower() == "true"
 DAILY_BUDGET = float(os.environ.get("SQUADS_DAILY_BUDGET", "50.0"))
 recent_logs = deque(maxlen=50)
+
+# Engram/mem0 configuration for memory extraction
+ENGRAM_URL = os.environ.get("ENGRAM_URL", "http://host.docker.internal:8000")
+ENGRAM_ENABLED = os.environ.get("ENGRAM_ENABLED", "false").lower() == "true"
+ENGRAM_USER_ID = os.environ.get("ENGRAM_USER_ID", "local")
 
 # PostgreSQL connection (durable storage)
 DATABASE_URL = os.environ.get(
@@ -143,6 +152,131 @@ def get_cached_session(session_id: str) -> dict | None:
     key = redis_key("session", session_id)
     data = redis_client.hgetall(key)
     return data if data else None
+
+
+# =============================================================================
+# Conversation Buffer (Redis -> Postgres + Engram)
+# =============================================================================
+CONV_BUFFER_KEY = "conversations:pending"
+CONV_RECENT_KEY = "conversations:recent"
+
+def buffer_conversation(conv_data: dict):
+    """Push conversation to Redis buffer for async processing."""
+    if not redis_client:
+        return False
+
+    try:
+        # Add to pending queue
+        redis_client.lpush(CONV_BUFFER_KEY, json.dumps(conv_data))
+
+        # Also add to recent (circular buffer of last 100)
+        redis_client.lpush(CONV_RECENT_KEY, json.dumps(conv_data))
+        redis_client.ltrim(CONV_RECENT_KEY, 0, 99)
+
+        if DEBUG_MODE:
+            print(f"[BUFFER] Queued conversation: {conv_data.get('role')} - {len(conv_data.get('content', ''))} chars")
+        return True
+    except Exception as e:
+        print(f"[BUFFER] Error: {e}")
+        return False
+
+def forward_to_engram(conv_data: dict) -> bool:
+    """Forward conversation to engram/mem0 for extraction."""
+    if not ENGRAM_ENABLED:
+        return False
+
+    try:
+        # Format for mem0 API
+        payload = {
+            "messages": [{"role": conv_data.get("role", "user"), "content": conv_data.get("content", "")}],
+            "user_id": conv_data.get("user_id", ENGRAM_USER_ID),
+            "metadata": {
+                "session_id": conv_data.get("session_id", ""),
+                "type": conv_data.get("message_type", "message"),
+                "importance": conv_data.get("importance", "normal"),
+                "source": "squads-bridge",
+            }
+        }
+
+        response = requests.post(
+            f"{ENGRAM_URL}/memories",
+            json=payload,
+            timeout=30
+        )
+
+        if response.ok:
+            if DEBUG_MODE:
+                print(f"[ENGRAM] Forwarded: {conv_data.get('role')} -> mem0")
+            return True
+        else:
+            print(f"[ENGRAM] Error {response.status_code}: {response.text[:100]}")
+            return False
+
+    except requests.exceptions.ConnectionError:
+        if DEBUG_MODE:
+            print(f"[ENGRAM] Not available at {ENGRAM_URL}")
+        return False
+    except Exception as e:
+        print(f"[ENGRAM] Error: {e}")
+        return False
+
+def process_conversation_queue():
+    """Background worker to process conversation buffer."""
+    print("[WORKER] Conversation processor started")
+
+    while True:
+        try:
+            if not redis_client:
+                time.sleep(5)
+                continue
+
+            # Block-pop from queue (timeout 5s)
+            result = redis_client.brpop(CONV_BUFFER_KEY, timeout=5)
+            if not result:
+                continue
+
+            _, conv_json = result
+            conv_data = json.loads(conv_json)
+
+            # 1. Save to local postgres (for CLI search)
+            try:
+                conn = get_db()
+                save_conversation(
+                    conn,
+                    conv_data.get("session_id", ""),
+                    conv_data.get("user_id", "local"),
+                    conv_data.get("role", "user"),
+                    conv_data.get("content", ""),
+                    conv_data.get("message_type", "message"),
+                    conv_data.get("importance", "normal"),
+                    conv_data.get("metadata", {})
+                )
+                conn.commit()
+                conn.close()
+                if DEBUG_MODE:
+                    print(f"[WORKER] Saved to postgres")
+            except Exception as e:
+                print(f"[WORKER] Postgres error: {e}")
+
+            # 2. Forward to engram/mem0 (for vectors + graph)
+            if ENGRAM_ENABLED:
+                forward_to_engram(conv_data)
+
+        except Exception as e:
+            print(f"[WORKER] Error: {e}")
+            time.sleep(1)
+
+# Start background worker thread
+conv_worker_thread = None
+
+def start_conversation_worker():
+    """Start the background conversation processor."""
+    global conv_worker_thread
+    if conv_worker_thread is None or not conv_worker_thread.is_alive():
+        conv_worker_thread = threading.Thread(target=process_conversation_queue, daemon=True)
+        conv_worker_thread.start()
+        print("[WORKER] Background thread started")
+
 
 # Optional Langfuse client
 langfuse = None
@@ -688,6 +822,212 @@ def cost_summary():
         return jsonify({"error": str(e)}), 500
 
 
+# =============================================================================
+# Conversations API - Captures from engram hook
+# =============================================================================
+
+def save_conversation(conn, session_id, user_id, role, content, message_type, importance, metadata):
+    """Save conversation message to postgres."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO squads.conversations
+                (session_id, user_id, role, content, message_type, importance, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            session_id, user_id or 'local', role, content,
+            message_type, importance, json.dumps(metadata or {})
+        ))
+        return cur.fetchone()[0]
+
+
+@app.route("/api/conversations", methods=["POST"])
+def receive_conversation():
+    """Receive conversation capture from engram hook.
+
+    Fast path: Buffer to Redis, return immediately.
+    Background worker saves to Postgres and forwards to engram/mem0.
+
+    Supports two formats:
+    1. Direct format (new): {session_id, user_id, role, content, message_type, importance, metadata}
+    2. Legacy format (mem0): {messages: [{role, content}], user_id, metadata: {session_id, type, importance}}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data"}), 400
+
+        queued = 0
+
+        # Check for direct format (has content field at top level)
+        if "content" in data:
+            # Direct format from updated engram hook
+            content = data.get("content", "")
+            if content and len(content) >= 5:
+                conv_data = {
+                    "session_id": data.get("session_id", ""),
+                    "user_id": data.get("user_id", "local"),
+                    "role": data.get("role", "user"),
+                    "content": content,
+                    "message_type": data.get("message_type", "message"),
+                    "importance": data.get("importance", "normal"),
+                    "metadata": data.get("metadata", {}),
+                }
+                if data.get("working_dir"):
+                    conv_data["metadata"]["working_dir"] = data.get("working_dir")
+
+                if buffer_conversation(conv_data):
+                    queued += 1
+        else:
+            # Legacy format (mem0 compatible)
+            messages = data.get("messages", [])
+            user_id = data.get("user_id", "local")
+            metadata = data.get("metadata", {})
+            session_id = metadata.get("session_id", "")
+            message_type = metadata.get("type", "message")
+            importance = metadata.get("importance", "normal")
+
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+
+                if not content or len(content) < 5:
+                    continue
+
+                conv_data = {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "role": role,
+                    "content": content,
+                    "message_type": message_type,
+                    "importance": importance,
+                    "metadata": metadata,
+                }
+
+                if buffer_conversation(conv_data):
+                    queued += 1
+
+        return jsonify({
+            "status": "ok",
+            "queued": queued,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        print(f"Error saving conversation: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/conversations/search", methods=["GET"])
+def search_conversations():
+    """Full-text search over conversations."""
+    try:
+        query = request.args.get("q", "")
+        limit = min(int(request.args.get("limit", 20)), 100)
+        user_id = request.args.get("user_id")
+        message_type = request.args.get("type")
+
+        if not query:
+            return jsonify({"error": "Query parameter 'q' required"}), 400
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Build WHERE clause
+            conditions = ["to_tsvector('english', content) @@ plainto_tsquery('english', %s)"]
+            params = [query]
+
+            if user_id:
+                conditions.append("user_id = %s")
+                params.append(user_id)
+
+            if message_type:
+                conditions.append("message_type = %s")
+                params.append(message_type)
+
+            where_clause = " AND ".join(conditions)
+            params.append(limit)
+
+            cur.execute(f"""
+                SELECT
+                    id, session_id, user_id, role, content,
+                    message_type, importance, created_at,
+                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) as rank
+                FROM squads.conversations
+                WHERE {where_clause}
+                ORDER BY rank DESC, created_at DESC
+                LIMIT %s
+            """, [query] + params)
+
+            results = cur.fetchall()
+
+        conn.close()
+
+        return jsonify({
+            "query": query,
+            "count": len(results),
+            "results": [{
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "role": r["role"],
+                "content": r["content"][:500] + "..." if len(r["content"]) > 500 else r["content"],
+                "type": r["message_type"],
+                "importance": r["importance"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "rank": float(r["rank"]),
+            } for r in results],
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/conversations/recent", methods=["GET"])
+def recent_conversations():
+    """Get recent conversations (for debugging/review)."""
+    try:
+        limit = min(int(request.args.get("limit", 20)), 100)
+        user_id = request.args.get("user_id")
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if user_id:
+                cur.execute("""
+                    SELECT id, session_id, user_id, role, content, message_type, importance, created_at
+                    FROM squads.conversations
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (user_id, limit))
+            else:
+                cur.execute("""
+                    SELECT id, session_id, user_id, role, content, message_type, importance, created_at
+                    FROM squads.conversations
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (limit,))
+
+            results = cur.fetchall()
+
+        conn.close()
+
+        return jsonify({
+            "count": len(results),
+            "conversations": [{
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "role": r["role"],
+                "content": r["content"][:300] + "..." if len(r["content"]) > 300 else r["content"],
+                "type": r["message_type"],
+                "importance": r["importance"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            } for r in results],
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/debug/logs", methods=["GET"])
 def debug_logs():
     """Get recent log attributes for debugging."""
@@ -706,5 +1046,11 @@ if __name__ == "__main__":
     print(f"  PostgreSQL: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
     print(f"  Redis:      {'connected' if redis_client else 'disabled'}")
     print(f"  Langfuse:   {'enabled' if LANGFUSE_ENABLED else 'disabled'}")
+    print(f"  Engram:     {'enabled -> ' + ENGRAM_URL if ENGRAM_ENABLED else 'disabled'}")
     print(f"  Budget:     ${DAILY_BUDGET}/day")
+
+    # Start background conversation processor
+    if redis_client:
+        start_conversation_worker()
+
     app.run(host="0.0.0.0", port=port)

@@ -215,6 +215,45 @@ CREATE INDEX IF NOT EXISTS idx_tool_executions_tool ON squads.tool_executions(to
 CREATE INDEX IF NOT EXISTS idx_sessions_squad ON squads.sessions(squad, agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON squads.sessions(status);
 
+-- =============================================================================
+-- Conversations - Captured from Claude Code sessions (engram hook)
+-- =============================================================================
+
+-- Conversations/memories from Claude Code sessions
+CREATE TABLE IF NOT EXISTS squads.conversations (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255),
+    user_id VARCHAR(255) DEFAULT 'local',
+
+    -- Content
+    role VARCHAR(50) NOT NULL, -- user, assistant, thinking
+    content TEXT NOT NULL,
+
+    -- Classification
+    message_type VARCHAR(50) DEFAULT 'message', -- message, thinking, decision, learning
+    importance VARCHAR(20) DEFAULT 'normal', -- low, normal, high
+
+    -- Context
+    squad VARCHAR(100),
+    agent VARCHAR(100),
+    working_dir VARCHAR(500),
+
+    -- Timing
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Metadata (hook info, extracted entities, etc)
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+-- Full-text search on content
+CREATE INDEX IF NOT EXISTS idx_conversations_content_search
+    ON squads.conversations USING gin(to_tsvector('english', content));
+CREATE INDEX IF NOT EXISTS idx_conversations_session ON squads.conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON squads.conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_created ON squads.conversations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_type ON squads.conversations(message_type);
+CREATE INDEX IF NOT EXISTS idx_conversations_importance ON squads.conversations(importance);
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON SCHEMA squads TO squads;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA squads TO squads;

@@ -18,6 +18,9 @@ export interface CostSummary {
   dailyBudget: number;
   usedPercent: number;
   idleBudget: number;
+  totalCalls: number;
+  dailyCallLimit: number;
+  callsPercent: number;
   bySquad: SquadCosts[];
   source: 'postgres' | 'langfuse' | 'none';
 }
@@ -33,6 +36,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 };
 
 const DEFAULT_DAILY_BUDGET = 50.0;
+const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
 const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
 
 function calcCost(model: string, inputTokens: number, outputTokens: number): number {
@@ -66,11 +70,17 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
       models: {},
     }));
 
+    const totalCalls = bySquad.reduce((sum, s) => sum + s.calls, 0);
+    const dailyCallLimit = parseFloat(process.env.SQUADS_DAILY_CALL_LIMIT || '') || DEFAULT_DAILY_CALL_LIMIT;
+
     return {
       totalCost,
       dailyBudget,
       usedPercent: (totalCost / dailyBudget) * 100,
       idleBudget: dailyBudget - totalCost,
+      totalCalls,
+      dailyCallLimit,
+      callsPercent: (totalCalls / dailyCallLimit) * 100,
       bySquad,
       source: 'postgres',
     };
@@ -152,11 +162,17 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
     const totalCost = squadList.reduce((sum, s) => sum + s.cost, 0);
     const dailyBudget = parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET;
 
+    const totalCalls = squadList.reduce((sum, s) => sum + s.calls, 0);
+    const dailyCallLimit = parseFloat(process.env.SQUADS_DAILY_CALL_LIMIT || '') || DEFAULT_DAILY_CALL_LIMIT;
+
     return {
       totalCost,
       dailyBudget,
       usedPercent: (totalCost / dailyBudget) * 100,
       idleBudget: dailyBudget - totalCost,
+      totalCalls,
+      dailyCallLimit,
+      callsPercent: (totalCalls / dailyCallLimit) * 100,
       bySquad: squadList,
       source: 'langfuse',
     };

@@ -17,6 +17,8 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 
+const SQUADS_BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
 interface MemoryOptions {
   squad?: string;
   agent?: string;
@@ -248,4 +250,144 @@ export async function memoryListCommand(): Promise<void> {
   writeLine(`  ${colors.dim}$${RESET} squads memory show ${colors.cyan}<squad>${RESET}     ${colors.dim}View squad memory${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads memory query ${colors.cyan}"<term>"${RESET}   ${colors.dim}Search all memory${RESET}`);
   writeLine();
+}
+
+interface ConversationResult {
+  id: number;
+  session_id: string;
+  role: string;
+  content: string;
+  type: string;  // message_type in the API response
+  importance: string;
+  created_at: string;
+  rank: number;
+}
+
+export async function memorySearchCommand(
+  query: string,
+  options: { limit?: number; role?: string; importance?: string } = {}
+): Promise<void> {
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}memory search${RESET} "${colors.cyan}${query}${RESET}"`);
+  writeLine();
+
+  const limit = options.limit || 10;
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+
+  if (options.role) {
+    params.append('role', options.role);
+  }
+  if (options.importance) {
+    params.append('importance', options.importance);
+  }
+
+  try {
+    const response = await fetch(`${SQUADS_BRIDGE_URL}/api/conversations/search?${params}`);
+
+    if (!response.ok) {
+      if (response.status === 503) {
+        writeLine(`  ${colors.yellow}Database not available${RESET}`);
+        writeLine(`  ${colors.dim}Run: docker compose up -d${RESET}`);
+        writeLine();
+        return;
+      }
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json() as { results: ConversationResult[]; count: number };
+    const conversations = data.results;
+    const total = data.count;
+
+    if (conversations.length === 0) {
+      writeLine(`  ${colors.yellow}No conversations found for "${query}"${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Conversations are captured via hooks. Make sure:${RESET}`);
+      writeLine(`  ${colors.dim}  1. squads-bridge is running (docker compose up)${RESET}`);
+      writeLine(`  ${colors.dim}  2. engram hook is configured in Claude settings${RESET}`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${colors.green}${conversations.length}${RESET} of ${total} results`);
+    writeLine();
+
+    // Table
+    const w = { time: 12, role: 10, type: 10, content: 50 };
+    const tableWidth = w.time + w.role + w.type + w.content + 6;
+
+    writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+
+    const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+      `${bold}${padEnd('TIME', w.time)}${RESET}` +
+      `${bold}${padEnd('ROLE', w.role)}${RESET}` +
+      `${bold}${padEnd('TYPE', w.type)}${RESET}` +
+      `${bold}${padEnd('CONTENT', w.content)}${RESET}` +
+      ` ${colors.purple}${box.vertical}${RESET}`;
+    writeLine(header);
+
+    writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+
+    for (const conv of conversations) {
+      const time = new Date(conv.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const roleColor = conv.role === 'user' ? colors.cyan : conv.role === 'thinking' ? colors.yellow : colors.green;
+      const importanceIcon = conv.importance === 'high' ? icons.success : '';
+
+      // Highlight search term in content
+      const contentPreview = truncate((conv.content || '').replace(/\n/g, ' '), w.content - 2);
+      const highlighted = contentPreview.replace(
+        new RegExp(query, 'gi'),
+        (m) => `${colors.yellow}${m}${RESET}${colors.dim}`
+      );
+
+      const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+        `${colors.dim}${padEnd(time, w.time)}${RESET}` +
+        `${roleColor}${padEnd(conv.role || '', w.role)}${RESET}` +
+        `${colors.dim}${padEnd(conv.type || 'message', w.type)}${RESET}` +
+        `${colors.dim}${padEnd(highlighted + importanceIcon, w.content)}${RESET}` +
+        ` ${colors.purple}${box.vertical}${RESET}`;
+
+      writeLine(row);
+    }
+
+    writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+    writeLine();
+
+    // Expanded view of top results
+    writeLine(`  ${bold}Top Matches${RESET}`);
+    writeLine();
+
+    for (const conv of conversations.slice(0, 3)) {
+      const time = new Date(conv.created_at).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      const roleIcon = conv.role === 'user' ? '👤' : conv.role === 'thinking' ? '💭' : '🤖';
+
+      writeLine(`  ${roleIcon} ${colors.dim}${time}${RESET} ${conv.importance === 'high' ? colors.yellow + '[high]' + RESET : ''}`);
+
+      // Show first 200 chars with highlighted search term
+      const content = conv.content || '';
+      const preview = content.substring(0, 200).replace(/\n/g, ' ');
+      const highlighted = preview.replace(
+        new RegExp(query, 'gi'),
+        (m) => `${colors.yellow}${m}${RESET}`
+      );
+      writeLine(`    ${highlighted}${content.length > 200 ? '...' : ''}`);
+      writeLine();
+    }
+
+    // Commands
+    writeLine(`  ${colors.dim}$${RESET} squads memory search ${colors.cyan}"<term>"${RESET} --role user     ${colors.dim}Filter by role${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads memory search ${colors.cyan}"<term>"${RESET} --importance high   ${colors.dim}Filter by importance${RESET}`);
+    writeLine();
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('ECONNREFUSED')) {
+      writeLine(`  ${colors.yellow}Cannot connect to squads-bridge${RESET}`);
+      writeLine(`  ${colors.dim}Run: docker compose up -d${RESET}`);
+    } else {
+      writeLine(`  ${colors.red}Error searching conversations: ${errorMessage}${RESET}`);
+    }
+    writeLine();
+  }
 }
