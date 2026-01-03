@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: squads
-      POSTGRES_PASSWORD: squads_local_dev
+      POSTGRES_PASSWORD: squads
       POSTGRES_DB: squads
       # Create both databases on init
       POSTGRES_MULTIPLE_DATABASES: langfuse
@@ -69,7 +69,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/langfuse
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/langfuse
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-squads-local-dev-secret}
       NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
       SALT: ${LANGFUSE_SALT:-squads-local-salt}
@@ -116,7 +116,7 @@ services:
       PORT: 8080
       DEBUG: "1"
       # Primary storage: PostgreSQL (durable)
-      DATABASE_URL: postgresql://squads:squads_local_dev@postgres:5432/squads
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
       # Cache: Redis (real-time stats, session cache)
       REDIS_URL: redis://redis:6379/0
       # Budget tracking
