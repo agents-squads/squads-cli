@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
-import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
+import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
   colors,
@@ -71,7 +71,16 @@ function getLastActivityDate(squadName: string): string {
   return `${Math.floor(ageDays / 7)}w`;
 }
 
-export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean } = {}): Promise<void> {
+// Cache for expensive computations within a single run
+interface DashboardCache {
+  gitStats: GitPerformanceStats | null;
+  ghStats: GitHubStats | null;
+  costs: CostSummary | null;
+  bridgeStats: BridgeStats | null;
+  activity: number[];
+}
+
+export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
@@ -84,12 +93,30 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     return;
   }
 
-  const squadNames = listSquads(squadsDir);
-  const squadData: SquadMetrics[] = [];
-
-  // Fetch GitHub stats
   const baseDir = findAgentsSquadsDir();
-  const ghStats = baseDir ? getGitHubStats(baseDir, 30) : null;
+  const squadNames = listSquads(squadsDir);
+  const skipGitHub = options.fast !== false; // Default to fast mode (skip GitHub API)
+
+  // === PHASE 1: Parallel data fetching ===
+  // Fetch all expensive data in parallel to minimize wall time
+  const [gitStats, ghStats, costs, bridgeStats, activity] = await Promise.all([
+    // Git stats (local, ~1s)
+    Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
+    // GitHub stats (network, ~20-30s) - skip by default for fast mode
+    skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
+    // Langfuse costs (network, ~1-2s)
+    fetchCostSummary(100),
+    // Bridge stats (local network, <1s)
+    fetchBridgeStats(),
+    // Activity sparkline (local, <1s)
+    Promise.resolve(baseDir ? getActivitySparkline(baseDir, 14) : []),
+  ]);
+
+  // Create cache for render functions
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity };
+
+  // === PHASE 2: Build squad metrics (sync, fast) ===
+  const squadData: SquadMetrics[] = [];
 
   for (const name of squadNames) {
     const squad = loadSquad(name);
@@ -106,14 +133,47 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
       status = 'stale';
     }
 
-    // Calculate goal progress based on work done
     const totalGoals = squad.goals.length;
     const completedGoals = squad.goals.filter(g => g.completed).length;
     const hasProgress = squad.goals.filter(g => g.progress).length;
-    // Progress = completed + half credit for in-progress
     const goalProgress = totalGoals > 0
       ? Math.round(((completedGoals + hasProgress * 0.3) / totalGoals) * 100)
       : 0;
+
+    // Calculate commit counts from git stats
+    const repoSquadMap: Record<string, string[]> = {
+      website: ['agents-squads-web'],
+      product: ['squads-cli'],
+      engineering: ['hq', 'squads-cli'],
+      research: ['research'],
+      intelligence: ['intelligence'],
+      customer: ['customer'],
+      finance: ['finance'],
+      company: ['company', 'hq'],
+      marketing: ['marketing', 'agents-squads-web'],
+      cli: ['squads-cli'],
+    };
+
+    let squadCommits = 0;
+    if (gitStats) {
+      for (const [repo, commits] of gitStats.commitsByRepo) {
+        if (repoSquadMap[name]?.includes(repo)) {
+          squadCommits += commits;
+        }
+      }
+    }
+
+    // Create github stats object (from ghStats or minimal with just commits)
+    const githubStats: SquadGitHubStats = github || {
+      prsOpened: 0,
+      prsMerged: 0,
+      issuesClosed: 0,
+      issuesOpen: 0,
+      commits: 0,
+      recentIssues: [],
+      recentPRs: [],
+    };
+    githubStats.commits = squadCommits;
 
     squadData.push({
       name,
@@ -121,66 +181,55 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
       goals: squad.goals,
       lastActivity,
       status,
-      github,
+      github: githubStats,
       goalProgress,
     });
   }
 
-  // Stats
-  const totalGoals = squadData.reduce((sum, s) => sum + s.goals.length, 0);
-  const activeGoals = squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0);
-  const completedGoals = totalGoals - activeGoals;
-  const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
+  // === PHASE 3: Render (sync, fast) ===
   const activeSquads = squadData.filter(s => s.status === 'active').length;
-
-  // GitHub totals
   const totalPRs = ghStats ? ghStats.prsMerged : 0;
   const totalIssuesClosed = ghStats ? ghStats.issuesClosed : 0;
   const totalIssuesOpen = ghStats ? ghStats.issuesOpen : 0;
 
-  // Render
   writeLine();
-
-  // Header
   writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
   writeLine();
 
-  // Stats row
-  const stats = [
-    `${colors.cyan}${activeSquads}${RESET}/${squadData.length} squads`,
-    `${colors.green}${totalPRs}${RESET} PRs merged`,
-    `${colors.purple}${totalIssuesClosed}${RESET} closed`,
-    `${colors.yellow}${totalIssuesOpen}${RESET} open`,
-  ].join(`  ${colors.dim}│${RESET}  `);
-  writeLine(`  ${stats}`);
+  // Stats row - show different info based on whether GitHub data is available
+  const statsParts = [`${colors.cyan}${activeSquads}${RESET}/${squadData.length} squads`];
+  if (ghStats) {
+    statsParts.push(`${colors.green}${totalPRs}${RESET} PRs merged`);
+    statsParts.push(`${colors.purple}${totalIssuesClosed}${RESET} closed`);
+    statsParts.push(`${colors.yellow}${totalIssuesOpen}${RESET} open`);
+  } else {
+    statsParts.push(`${colors.cyan}${gitStats?.totalCommits || 0}${RESET} commits`);
+    statsParts.push(`${colors.dim}use -f for PRs/issues${RESET}`);
+  }
+  writeLine(`  ${statsParts.join(`  ${colors.dim}│${RESET}  `)}`);
   writeLine();
 
-  // Overall progress
   const overallProgress = squadData.length > 0
     ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
     : 0;
   writeLine(`  ${progressBar(overallProgress, 32)} ${colors.dim}${overallProgress}% goal progress${RESET}`);
   writeLine();
 
-  // Table header - enhanced with metrics
+  // Squad table
   const w = { name: 13, commits: 7, prs: 4, issues: 6, goals: 6, bar: 10 };
   const tableWidth = w.name + w.commits + w.prs + w.issues + w.goals + w.bar + 12;
 
   writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
-
-  const header = `  ${colors.purple}${box.vertical}${RESET} ` +
+  writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +
     `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
     `${bold}${padEnd('COMMITS', w.commits)}${RESET}` +
     `${bold}${padEnd('PRs', w.prs)}${RESET}` +
     `${bold}${padEnd('ISSUES', w.issues)}${RESET}` +
     `${bold}${padEnd('GOALS', w.goals)}${RESET}` +
     `${bold}PROGRESS${RESET}` +
-    ` ${colors.purple}${box.vertical}${RESET}`;
-  writeLine(header);
-
+    ` ${colors.purple}${box.vertical}${RESET}`);
   writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
-  // Table rows - sorted by activity
   const sortedSquads = [...squadData].sort((a, b) => {
     const aActivity = (a.github?.commits || 0) + (a.github?.prsMerged || 0) * 5;
     const bActivity = (b.github?.commits || 0) + (b.github?.prsMerged || 0) * 5;
@@ -193,49 +242,36 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     const prs = gh?.prsMerged || 0;
     const issuesClosed = gh?.issuesClosed || 0;
     const issuesOpen = gh?.issuesOpen || 0;
-
     const activeCount = squad.goals.filter(g => !g.completed).length;
     const totalCount = squad.goals.length;
 
-    // Color coding based on activity
     const commitColor = commits > 10 ? colors.green : commits > 0 ? colors.cyan : colors.dim;
     const prColor = prs > 0 ? colors.green : colors.dim;
     const issueColor = issuesClosed > 0 ? colors.green : colors.dim;
 
-    // Issues display: closed/open
-    const issuesDisplay = `${issuesClosed}/${issuesOpen}`;
-
-    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+    writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +
       `${colors.cyan}${padEnd(squad.name, w.name)}${RESET}` +
       `${commitColor}${padEnd(String(commits), w.commits)}${RESET}` +
       `${prColor}${padEnd(String(prs), w.prs)}${RESET}` +
-      `${issueColor}${padEnd(issuesDisplay, w.issues)}${RESET}` +
+      `${issueColor}${padEnd(`${issuesClosed}/${issuesOpen}`, w.issues)}${RESET}` +
       `${padEnd(`${activeCount}/${totalCount}`, w.goals)}` +
       `${progressBar(squad.goalProgress, 8)}` +
-      ` ${colors.purple}${box.vertical}${RESET}`;
-
-    writeLine(row);
+      ` ${colors.purple}${box.vertical}${RESET}`);
   }
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
 
-  // Git Performance
-  await renderGitPerformance();
+  // Render sections using cached data (no more network calls)
+  renderGitPerformanceCached(cache);
+  renderTokenEconomicsCached(cache);
+  renderInfrastructureCached(cache);
 
-  // Token Economics
-  await renderTokenEconomics(squadData.map(s => s.name));
-
-  // Infrastructure (bridge, redis, postgres stats)
-  await renderInfrastructure();
-
-  // Historical Trends (if database available)
+  // These still need async but are fast
   await renderHistoricalTrends();
-
-  // Agent Insights (task completion, quality, tools)
   await renderInsights();
 
-  // Active goals (compact)
+  // Goals section
   const allActiveGoals = squadData.flatMap(s =>
     s.goals.filter(g => !g.completed).map(g => ({ squad: s.name, goal: g }))
   );
@@ -248,14 +284,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     for (const { squad, goal } of allActiveGoals.slice(0, maxGoals)) {
       const hasProgress = goal.progress && goal.progress.length > 0;
       const icon = hasProgress ? icons.progress : icons.empty;
-      const squadLabel = `${colors.dim}${squad}${RESET}`;
-      const goalText = truncate(goal.description, 48);
-
-      writeLine(`  ${icon} ${squadLabel} ${goalText}`);
-
+      writeLine(`  ${icon} ${colors.dim}${squad}${RESET} ${truncate(goal.description, 48)}`);
       if (hasProgress) {
-        const progressText = truncate(goal.progress!, 52);
-        writeLine(`    ${colors.dim}└${RESET} ${colors.green}${progressText}${RESET}`);
+        writeLine(`    ${colors.dim}└${RESET} ${colors.green}${truncate(goal.progress!, 52)}${RESET}`);
       }
     }
 
@@ -265,13 +296,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     writeLine();
   }
 
-  // Quick actions
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
   writeLine();
 
-  // Save snapshot to local postgres (silent on failure)
-  await saveSnapshot(squadData, ghStats, baseDir);
+  // Save snapshot in background (don't block)
+  saveSnapshotCached(squadData, cache, baseDir).catch(() => {});
 }
 
 /**
@@ -506,8 +536,10 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   const totalOutput = costs.bySquad.reduce((sum, s) => sum + s.outputTokens, 0);
   const totalCalls = costs.bySquad.reduce((sum, s) => sum + s.calls, 0);
 
-  // Cost projections
-  const hourlyRate = costs.totalCost; // Based on last 100 calls, rough proxy
+  // Cost projections - extrapolate based on hours elapsed today
+  const now = new Date();
+  const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1); // At least 1 hour to avoid division issues
+  const hourlyRate = costs.totalCost / hoursElapsed;
   const dailyProjection = hourlyRate * 24;
   const monthlyProjection = dailyProjection * 30;
 
@@ -759,6 +791,222 @@ async function renderInfrastructure(): Promise<void> {
 
     writeLine();
   }
+}
+
+// === CACHED RENDER FUNCTIONS (use pre-fetched data) ===
+
+function renderGitPerformanceCached(cache: DashboardCache): void {
+  const { gitStats: stats, activity } = cache;
+
+  if (!stats || stats.totalCommits === 0) {
+    writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no commits in 30d)${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(30d)${RESET}`);
+  writeLine();
+
+  // Sparkline for last 14 days
+  if (activity.length > 0) {
+    const spark = sparkline(activity);
+    writeLine(`  ${colors.dim}Last 14d:${RESET} ${spark}`);
+    writeLine();
+  }
+
+  // Key metrics row
+  const metrics = [
+    `${colors.cyan}${stats.totalCommits}${RESET} commits`,
+    `${colors.green}${stats.avgCommitsPerDay}${RESET}/day`,
+    `${colors.purple}${stats.activeDays}${RESET} active days`,
+  ];
+  if (stats.peakDay) {
+    metrics.push(`${colors.yellow}${stats.peakDay.count}${RESET} peak ${colors.dim}(${stats.peakDay.date})${RESET}`);
+  }
+  writeLine(`  ${metrics.join(`  ${colors.dim}│${RESET}  `)}`);
+  writeLine();
+
+  // Repos by commits (top 5)
+  const sortedRepos = Array.from(stats.commitsByRepo.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  if (sortedRepos.length > 0) {
+    const maxRepoCommits = sortedRepos[0][1];
+    for (const [repo, commits] of sortedRepos) {
+      const bar = barChart(commits, maxRepoCommits, 12);
+      writeLine(`  ${colors.cyan}${padEnd(repo, 20)}${RESET}${bar} ${colors.dim}${commits}${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Authors (top 3)
+  const sortedAuthors = Array.from(stats.commitsByAuthor.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+
+  if (sortedAuthors.length > 0) {
+    const authorLine = sortedAuthors
+      .map(([author, count]) => `${colors.dim}${truncate(author, 15)}${RESET} ${colors.cyan}${count}${RESET}`)
+      .join(`  ${colors.dim}│${RESET}  `);
+    writeLine(`  ${colors.dim}By author:${RESET} ${authorLine}`);
+    writeLine();
+  }
+}
+
+function renderTokenEconomicsCached(cache: DashboardCache): void {
+  const costs = cache.costs;
+
+  if (!costs) {
+    writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(no data)${RESET}`);
+    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for cost tracking${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(last 100 calls)${RESET}`);
+  writeLine();
+
+  // Budget bar
+  const barWidth = 32;
+  const costBar = formatCostBar(costs.usedPercent, barWidth);
+  writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
+  writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
+  writeLine();
+
+  // Rate limits (simplified - skip the async fetch)
+  const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
+  writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
+  writeLine();
+
+  // Cost projections - extrapolate based on hours elapsed today
+  const now = new Date();
+  const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
+  const hourlyRate = costs.totalCost / hoursElapsed;
+  const dailyProjection = hourlyRate * 24;
+  const monthlyProjection = dailyProjection * 30;
+
+  writeLine(`  ${colors.dim}Projections${RESET}`);
+  const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
+  writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
+
+  if (dailyProjection > costs.dailyBudget * 0.8) {
+    writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
+  }
+  if (costs.usedPercent > 80) {
+    writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
+  }
+  writeLine();
+}
+
+function renderInfrastructureCached(cache: DashboardCache): void {
+  const stats = cache.bridgeStats;
+
+  if (!stats) {
+    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
+    writeLine(`  ${colors.dim}Start with: cd docker && docker-compose up -d${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(${stats.source})${RESET}`);
+  writeLine();
+
+  // Health status row
+  const pgStatus = stats.health.postgres === 'connected' ? `${colors.green}●${RESET}` : `${colors.red}●${RESET}`;
+  const redisStatus = stats.health.redis === 'connected' ? `${colors.green}●${RESET}` : stats.health.redis === 'disabled' ? `${colors.dim}○${RESET}` : `${colors.red}●${RESET}`;
+  const langfuseStatus = stats.health.langfuse === 'enabled' ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
+
+  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${langfuseStatus} langfuse`);
+  writeLine();
+
+  // Today's real-time metrics
+  if (stats.today.generations > 0 || stats.today.costUsd > 0) {
+    const costColor = stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green;
+    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
+
+    // Model breakdown
+    if (stats.byModel && stats.byModel.length > 0) {
+      const modelLine = stats.byModel.map(m => {
+        const shortName = m.model.includes('opus') ? 'opus' :
+                          m.model.includes('sonnet') ? 'sonnet' :
+                          m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
+        return `${colors.dim}${shortName}${RESET} ${colors.cyan}${m.generations}${RESET}`;
+      }).join('  ');
+      writeLine(`  ${colors.dim}Models:${RESET} ${modelLine}`);
+    }
+
+    writeLine();
+  }
+}
+
+async function saveSnapshotCached(
+  squadData: SquadMetrics[],
+  cache: DashboardCache,
+  baseDir: string | null
+): Promise<void> {
+  const dbAvailable = await isDatabaseAvailable();
+  if (!dbAvailable) return;
+
+  const { gitStats, ghStats, costs } = cache;
+
+  // Build squad snapshot data
+  const squadsData: SquadSnapshotData[] = squadData.map(s => ({
+    name: s.name,
+    commits: s.github?.commits || 0,
+    prsOpened: s.github?.prsOpened || 0,
+    prsMerged: s.github?.prsMerged || 0,
+    issuesClosed: s.github?.issuesClosed || 0,
+    issuesOpen: s.github?.issuesOpen || 0,
+    goalsActive: s.goals.filter(g => !g.completed).length,
+    goalsTotal: s.goals.length,
+    progress: s.goalProgress,
+  }));
+
+  // Build authors data
+  const authorsData = gitStats
+    ? Array.from(gitStats.commitsByAuthor.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([name, commits]) => ({ name, commits }))
+    : [];
+
+  // Build repos data
+  const reposData = gitStats
+    ? Array.from(gitStats.commitsByRepo.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, commits]) => ({ name, commits }))
+    : [];
+
+  // Calculate totals
+  const totalInputTokens = costs?.bySquad.reduce((sum, s) => sum + s.inputTokens, 0) || 0;
+  const totalOutputTokens = costs?.bySquad.reduce((sum, s) => sum + s.outputTokens, 0) || 0;
+  const overallProgress = squadData.length > 0
+    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
+    : 0;
+
+  const snapshot: DashboardSnapshot = {
+    totalSquads: squadData.length,
+    totalCommits: gitStats?.totalCommits || 0,
+    totalPrsMerged: ghStats?.prsMerged || 0,
+    totalIssuesClosed: ghStats?.issuesClosed || 0,
+    totalIssuesOpen: ghStats?.issuesOpen || 0,
+    goalProgressPct: overallProgress,
+    costUsd: costs?.totalCost || 0,
+    dailyBudgetUsd: costs?.dailyBudget || 50,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    commits30d: gitStats?.totalCommits || 0,
+    avgCommitsPerDay: gitStats?.avgCommitsPerDay || 0,
+    activeDays: gitStats?.activeDays || 0,
+    peakCommits: gitStats?.peakDay?.count || 0,
+    peakDate: gitStats?.peakDay?.date || null,
+    squadsData,
+    authorsData,
+    reposData,
+  };
+
+  await saveDashboardSnapshot(snapshot);
 }
 
 // Priority keywords that indicate high priority goals
