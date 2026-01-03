@@ -114,8 +114,23 @@ echo -e "${GREEN}✓ Pushed to GitHub${NC}"
 
 # Create GitHub release
 echo -e "\n${YELLOW}[7/7] Creating GitHub release...${NC}"
-RELEASE_NOTES=$(cat <<EOF
-## squads-cli v$NEW_VERSION
+
+# Generate changelog from commits
+PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+if [[ -n "$PREV_TAG" ]]; then
+  COMMITS=$(git log "$PREV_TAG"..HEAD~1 --pretty=format:"- %s" --no-merges | grep -v "^- chore: release")
+else
+  COMMITS=$(git log --oneline -20 --pretty=format:"- %s" --no-merges | grep -v "^- chore: release" | head -15)
+fi
+
+# Categorize commits
+FEAT_COMMITS=$(echo "$COMMITS" | grep "^- feat" | sed 's/^- feat[^:]*: /- /' || true)
+FIX_COMMITS=$(echo "$COMMITS" | grep "^- fix" | sed 's/^- fix[^:]*: /- /' || true)
+OTHER_COMMITS=$(echo "$COMMITS" | grep -v "^- feat\|^- fix\|^- chore\|^- docs\|^- test\|^- ci" || true)
+
+RELEASE_NOTES="## squads-cli v$NEW_VERSION
+
+A CLI for humans and agents - manage AI agent squads with comprehensive dashboards, telemetry, and team coordination.
 
 ### Installation
 
@@ -123,11 +138,35 @@ RELEASE_NOTES=$(cat <<EOF
 npm install -g squads-cli
 \`\`\`
 
-### Changes
+### What's New
+"
+
+[[ -n "$FEAT_COMMITS" ]] && RELEASE_NOTES+="
+#### Features
+$FEAT_COMMITS
+"
+
+[[ -n "$FIX_COMMITS" ]] && RELEASE_NOTES+="
+#### Bug Fixes
+$FIX_COMMITS
+"
+
+[[ -n "$OTHER_COMMITS" ]] && RELEASE_NOTES+="
+#### Other Changes
+$OTHER_COMMITS
+"
+
+RELEASE_NOTES+="
+### Full Changelog
 
 See [commits since v$CURRENT_VERSION](https://github.com/agents-squads/squads-cli/compare/v$CURRENT_VERSION...v$NEW_VERSION)
-EOF
-)
+
+---
+
+🤖 Generated with [Agents Squads](https://agents-squads.com)
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Gemini 3 🍌 <noreply@google.com>"
 
 gh release create "v$NEW_VERSION" "$TARBALL" \
   --title "v$NEW_VERSION" \
