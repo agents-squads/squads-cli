@@ -24,6 +24,7 @@ interface RunOptions {
   verbose?: boolean;
   dryRun?: boolean;
   agent?: string;
+  timeout?: number; // minutes, default 30
 }
 
 interface ExecutionRecord {
@@ -241,7 +242,7 @@ After completion:
     spinner.text = `Executing ${agentName} with Claude Code...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose);
+      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30);
       spinner.succeed(`Agent ${agentName} completed`);
       updateExecutionStatus(squadName, agentName, 'completed', 'Executed via Claude CLI');
 
@@ -286,11 +287,13 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
   });
 }
 
-async function executeWithClaude(prompt: string, verbose?: boolean): Promise<string> {
+async function executeWithClaude(prompt: string, verbose?: boolean, timeoutMinutes: number = 30): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = ['--print', prompt];
+    // Load user's MCP config so agents have access to MCPs like chrome-devtools
+    const userConfigPath = join(process.env.HOME || '', '.claude.json');
+    const args = ['--print', '--mcp-config', userConfigPath, prompt];
     if (verbose) {
-      writeLine(`  ${colors.dim}Spawning: claude ${args.slice(0, 1).join(' ')} ...${RESET}`);
+      writeLine(`  ${colors.dim}Spawning: claude ${args.slice(0, 2).join(' ')} ...${RESET}`);
     }
 
     // Extract squad/agent from prompt for telemetry tagging
@@ -332,11 +335,11 @@ async function executeWithClaude(prompt: string, verbose?: boolean): Promise<str
       reject(err);
     });
 
-    // Timeout after 5 minutes
+    // Timeout (default 30 minutes)
     setTimeout(() => {
       claude.kill();
-      reject(new Error('Execution timed out after 5 minutes'));
-    }, 5 * 60 * 1000);
+      reject(new Error(`Execution timed out after ${timeoutMinutes} minutes`));
+    }, timeoutMinutes * 60 * 1000);
   });
 }
 

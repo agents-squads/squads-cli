@@ -274,6 +274,17 @@ export interface BridgeStats {
     outputTokens: number;
     costUsd: number;
   };
+  week?: {
+    generations: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    byModel?: Array<{
+      model: string;
+      generations: number;
+      costUsd: number;
+    }>;
+  };
   budget: {
     daily: number;
     used: number;
@@ -348,12 +359,14 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
 
     const health = healthResponse.ok ? await healthResponse.json() as HealthData : {};
 
-    // Fetch cost summary for model breakdown
-    const costResponse = await fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=day`, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
+    // Fetch cost summaries for model breakdown (day and week in parallel)
     interface CostData {
+      totals?: {
+        generations?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        cost_usd?: number;
+      };
       by_model?: Array<{
         model?: string;
         generations?: number;
@@ -361,7 +374,17 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
       }>;
     }
 
+    const [costResponse, weekResponse] = await Promise.all([
+      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=day`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=week`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ]);
+
     const costData = costResponse.ok ? await costResponse.json() as CostData : {};
+    const weekData = weekResponse.ok ? await weekResponse.json() as CostData : {};
 
     return {
       status: stats.status || 'unknown',
@@ -372,6 +395,17 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
         outputTokens: stats.today?.output_tokens || 0,
         costUsd: stats.today?.cost_usd || 0,
       },
+      week: weekData.totals ? {
+        generations: weekData.totals.generations || 0,
+        inputTokens: weekData.totals.input_tokens || 0,
+        outputTokens: weekData.totals.output_tokens || 0,
+        costUsd: weekData.totals.cost_usd || 0,
+        byModel: (weekData.by_model || []).map(m => ({
+          model: m.model || 'unknown',
+          generations: m.generations || 0,
+          costUsd: m.cost_usd || 0,
+        })),
+      } : undefined,
       budget: {
         daily: stats.budget?.daily || DEFAULT_DAILY_BUDGET,
         used: stats.budget?.used || 0,

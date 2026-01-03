@@ -788,9 +788,11 @@ async function renderInfrastructure(): Promise<void> {
   // Health status row
   const pgStatus = stats.health.postgres === 'connected' ? `${colors.green}●${RESET}` : `${colors.red}●${RESET}`;
   const redisStatus = stats.health.redis === 'connected' ? `${colors.green}●${RESET}` : stats.health.redis === 'disabled' ? `${colors.dim}○${RESET}` : `${colors.red}●${RESET}`;
-  const langfuseStatus = stats.health.langfuse === 'enabled' ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
+  // OTel pipeline is working if we have data flowing (postgres connected + generations > 0)
+  const otelWorking = stats.health.postgres === 'connected' && stats.today.generations > 0;
+  const otelStatus = otelWorking ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
 
-  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${langfuseStatus} langfuse`);
+  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${otelStatus} otel`);
   writeLine();
 
   // Today's real-time metrics
@@ -816,9 +818,20 @@ async function renderInfrastructure(): Promise<void> {
       ).join('  ');
       writeLine(`  ${colors.dim}Squads:${RESET} ${squadLine}`);
     }
-
-    writeLine();
   }
+
+  // Week totals
+  if (stats.week && stats.week.generations > 0) {
+    const weekModelLine = stats.week.byModel?.map(m => {
+      const shortName = m.model.includes('opus') ? 'opus' :
+                        m.model.includes('sonnet') ? 'sonnet' :
+                        m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
+      return `${colors.dim}${shortName}${RESET} ${colors.purple}$${m.costUsd.toFixed(0)}${RESET}`;
+    }).join('  ') || '';
+    writeLine(`  ${colors.dim}Week:${RESET}  ${colors.cyan}${stats.week.generations}${RESET}${colors.dim} calls${RESET}  ${colors.purple}$${stats.week.costUsd.toFixed(2)}${RESET}  ${weekModelLine}`);
+  }
+
+  writeLine();
 }
 
 // === CACHED RENDER FUNCTIONS (use pre-fetched data) ===
@@ -943,9 +956,11 @@ function renderInfrastructureCached(cache: DashboardCache): void {
   // Health status row
   const pgStatus = stats.health.postgres === 'connected' ? `${colors.green}●${RESET}` : `${colors.red}●${RESET}`;
   const redisStatus = stats.health.redis === 'connected' ? `${colors.green}●${RESET}` : stats.health.redis === 'disabled' ? `${colors.dim}○${RESET}` : `${colors.red}●${RESET}`;
-  const langfuseStatus = stats.health.langfuse === 'enabled' ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
+  // OTel pipeline is working if we have data flowing (postgres connected + generations > 0)
+  const otelWorking = stats.health.postgres === 'connected' && stats.today.generations > 0;
+  const otelStatus = otelWorking ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
 
-  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${langfuseStatus} langfuse`);
+  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${otelStatus} otel`);
   writeLine();
 
   // Today's real-time metrics
@@ -963,9 +978,20 @@ function renderInfrastructureCached(cache: DashboardCache): void {
       }).join('  ');
       writeLine(`  ${colors.dim}Models:${RESET} ${modelLine}`);
     }
-
-    writeLine();
   }
+
+  // Week totals
+  if (stats.week && stats.week.generations > 0) {
+    const weekModelLine = stats.week.byModel?.map(m => {
+      const shortName = m.model.includes('opus') ? 'opus' :
+                        m.model.includes('sonnet') ? 'sonnet' :
+                        m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
+      return `${colors.dim}${shortName}${RESET} ${colors.purple}$${m.costUsd.toFixed(0)}${RESET}`;
+    }).join('  ') || '';
+    writeLine(`  ${colors.dim}Week:${RESET}  ${colors.cyan}${stats.week.generations}${RESET}${colors.dim} calls${RESET}  ${colors.purple}$${stats.week.costUsd.toFixed(2)}${RESET}  ${weekModelLine}`);
+  }
+
+  writeLine();
 }
 
 async function saveSnapshotCached(

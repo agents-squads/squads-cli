@@ -79,7 +79,8 @@ program
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-e, --execute', 'Execute agent via Claude CLI (requires claude installed)')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
-  .action(runCommand);
+  .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
+  .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
 program
