@@ -19,9 +19,10 @@ const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
 const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
-// Telemetry endpoint - bridge or cloud
+// Telemetry endpoint - Supabase Edge Function → Pub/Sub → BigQuery
+const DEFAULT_TELEMETRY_ENDPOINT = 'https://qzayrjwxiznkqfvmjxyy.supabase.co/functions/v1/telemetry-ingest';
 const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_URL ||
-  (process.env.SQUADS_BRIDGE_URL ? `${process.env.SQUADS_BRIDGE_URL}/api/telemetry` : null);
+  (process.env.SQUADS_BRIDGE_URL ? `${process.env.SQUADS_BRIDGE_URL}/api/telemetry` : DEFAULT_TELEMETRY_ENDPOINT);
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];

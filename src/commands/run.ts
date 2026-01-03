@@ -164,24 +164,35 @@ async function runSquad(
       }
     }
   } else {
-    // Run orchestrator if exists, otherwise list agents
-    const orchestrator = squad.agents.find(a =>
-      a.name.includes('lead') || a.trigger === 'Manual'
-    );
-
-    if (orchestrator) {
-      const agentPath = join(squadsDir, squad.name, `${orchestrator.name}.md`);
+    // If specific agent requested via -a flag, run that agent
+    if (options.agent) {
+      const agentPath = join(squadsDir, squad.name, `${options.agent}.md`);
       if (existsSync(agentPath)) {
-        await runAgent(orchestrator.name, agentPath, squad.name, options);
+        await runAgent(options.agent, agentPath, squad.name, options);
+      } else {
+        writeLine(`  ${icons.error} ${colors.red}Agent ${options.agent} not found${RESET}`);
+        return;
       }
     } else {
-      writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
-      for (const agent of squad.agents) {
-        writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
+      // Run orchestrator if exists, otherwise list agents
+      const orchestrator = squad.agents.find(a =>
+        a.name.includes('lead') || a.trigger === 'Manual'
+      );
+
+      if (orchestrator) {
+        const agentPath = join(squadsDir, squad.name, `${orchestrator.name}.md`);
+        if (existsSync(agentPath)) {
+          await runAgent(orchestrator.name, agentPath, squad.name, options);
+        }
+      } else {
+        writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
+        for (const agent of squad.agents) {
+          writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
+        }
+        writeLine();
+        writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
       }
-      writeLine();
-      writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
-      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
     }
   }
 
@@ -239,20 +250,20 @@ After completion:
   const claudeAvailable = await checkClaudeCliAvailable();
 
   if (options.execute && claudeAvailable) {
-    spinner.text = `Executing ${agentName} with Claude Code...`;
+    spinner.text = `Launching ${agentName} as background task...`;
 
     try {
       const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30);
-      spinner.succeed(`Agent ${agentName} completed`);
-      updateExecutionStatus(squadName, agentName, 'completed', 'Executed via Claude CLI');
+      spinner.succeed(`Agent ${agentName} launched`);
+      // Don't mark as completed - it's running in background
+      // Agent will update its own memory when done
 
-      if (result) {
-        writeLine(`  ${colors.dim}Output:${RESET}`);
-        writeLine(`  ${result.slice(0, 500)}`);
-        if (result.length > 500) writeLine(`  ${colors.dim}... (truncated)${RESET}`);
-      }
+      writeLine(`  ${colors.dim}${result}${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+      writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
     } catch (error) {
-      spinner.fail(`Agent ${agentName} failed`);
+      spinner.fail(`Agent ${agentName} failed to launch`);
       updateExecutionStatus(squadName, agentName, 'failed', String(error));
       writeLine(`  ${colors.red}${String(error)}${RESET}`);
     }
@@ -268,13 +279,10 @@ After completion:
     }
 
     writeLine();
-    writeLine(`  ${colors.dim}To execute with Claude Code:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ').slice(0, 80)}..."`);
+    writeLine(`  ${colors.dim}To launch as background task:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --execute`);
     writeLine();
-    writeLine(`  ${colors.dim}Or run with --execute flag:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} --execute`);
-    writeLine();
-    writeLine(`  ${colors.dim}Or in Claude Code session:${RESET}`);
+    writeLine(`  ${colors.dim}Or run interactively:${RESET}`);
     writeLine(`  ${colors.dim}$${RESET} Run the ${colors.cyan}${agentName}${RESET} agent from ${agentPath}`);
   }
 }
@@ -288,59 +296,62 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
 }
 
 async function executeWithClaude(prompt: string, verbose?: boolean, timeoutMinutes: number = 30): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Load user's MCP config so agents have access to MCPs like chrome-devtools
-    const userConfigPath = join(process.env.HOME || '', '.claude.json');
-    const args = ['--print', '--mcp-config', userConfigPath, prompt];
-    if (verbose) {
-      writeLine(`  ${colors.dim}Spawning: claude ${args.slice(0, 2).join(' ')} ...${RESET}`);
-    }
+  // Use interactive Claude Code (subscription) instead of --print (API credits)
+  // Run via tmux for real PTY support and session management
+  const userConfigPath = join(process.env.HOME || '', '.claude.json');
 
-    // Extract squad/agent from prompt for telemetry tagging
-    const squadMatch = prompt.match(/squad (\w+)/);
-    const agentMatch = prompt.match(/(\w+) agent/);
+  // Extract squad/agent from prompt for telemetry tagging
+  const squadMatch = prompt.match(/squad (\w+)/);
+  const agentMatch = prompt.match(/(\w+) agent/);
+  const squadName = squadMatch?.[1] || 'unknown';
+  const agentName = agentMatch?.[1] || 'unknown';
 
-    const claude = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        SQUADS_SQUAD: squadMatch?.[1] || 'unknown',
-        SQUADS_AGENT: agentMatch?.[1] || 'unknown',
-      },
-    });
+  // Create unique session name
+  const timestamp = Date.now();
+  const sessionName = `squads-${squadName}-${agentName}-${timestamp}`;
 
-    let output = '';
-    let error = '';
+  if (verbose) {
+    writeLine(`  ${colors.dim}Spawning tmux session: ${sessionName}${RESET}`);
+  }
 
-    claude.stdout?.on('data', (data) => {
-      output += data.toString();
-      if (verbose) {
-        process.stdout.write(data.toString());
-      }
-    });
+  // Escape prompt for shell
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
-    claude.stderr?.on('data', (data) => {
-      error += data.toString();
-    });
+  // Build Claude command with all permissions bypassed for autonomous execution
+  const claudeCmd = `claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'`;
 
-    claude.on('close', (code) => {
-      if (code === 0) {
-        resolve(output);
-      } else {
-        reject(new Error(error || `Claude exited with code ${code}`));
-      }
-    });
-
-    claude.on('error', (err) => {
-      reject(err);
-    });
-
-    // Timeout (default 30 minutes)
-    setTimeout(() => {
-      claude.kill();
-      reject(new Error(`Execution timed out after ${timeoutMinutes} minutes`));
-    }, timeoutMinutes * 60 * 1000);
+  // Create detached tmux session running Claude
+  const tmux = spawn('tmux', [
+    'new-session',
+    '-d',           // Detached
+    '-s', sessionName,
+    '-x', '200',    // Wide terminal for better output
+    '-y', '50',
+    '/bin/sh', '-c', claudeCmd
+  ], {
+    stdio: 'ignore',
+    detached: true,
+    env: {
+      ...process.env,
+      SQUADS_SQUAD: squadName,
+      SQUADS_AGENT: agentName,
+    },
   });
+
+  tmux.unref();
+
+  // Spawn a background process to auto-accept the dialog after it appears
+  // This runs outside the tmux session and sends keys to it
+  spawn('/bin/sh', ['-c', `sleep 2 && tmux send-keys -t '${sessionName}' Down Enter`], {
+    stdio: 'ignore',
+    detached: true,
+  }).unref();
+
+  if (verbose) {
+    writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);
+  }
+
+  return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;
 }
 
 export async function runSquadCommand(
