@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
 import {
@@ -225,6 +225,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // Token Economics
   await renderTokenEconomics(squadData.map(s => s.name));
+
+  // Infrastructure (bridge, redis, postgres stats)
+  await renderInfrastructure();
 
   // Historical Trends (if database available)
   await renderHistoricalTrends();
@@ -705,6 +708,55 @@ async function renderInsights(): Promise<void> {
     if (insights.toolFailureRate > 5) {
       writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}${insights.toolFailureRate.toFixed(1)}% tool failure rate${RESET}`);
     }
+    writeLine();
+  }
+}
+
+async function renderInfrastructure(): Promise<void> {
+  const stats = await fetchBridgeStats();
+
+  if (!stats) {
+    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
+    writeLine(`  ${colors.dim}Start with: cd docker && docker-compose up -d${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(${stats.source})${RESET}`);
+  writeLine();
+
+  // Health status row
+  const pgStatus = stats.health.postgres === 'connected' ? `${colors.green}●${RESET}` : `${colors.red}●${RESET}`;
+  const redisStatus = stats.health.redis === 'connected' ? `${colors.green}●${RESET}` : stats.health.redis === 'disabled' ? `${colors.dim}○${RESET}` : `${colors.red}●${RESET}`;
+  const langfuseStatus = stats.health.langfuse === 'enabled' ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
+
+  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${langfuseStatus} langfuse`);
+  writeLine();
+
+  // Today's real-time metrics
+  if (stats.today.generations > 0 || stats.today.costUsd > 0) {
+    const costColor = stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green;
+    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
+
+    // Model breakdown
+    if (stats.byModel && stats.byModel.length > 0) {
+      const modelLine = stats.byModel.map(m => {
+        const shortName = m.model.includes('opus') ? 'opus' :
+                          m.model.includes('sonnet') ? 'sonnet' :
+                          m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
+        return `${colors.dim}${shortName}${RESET} ${colors.cyan}${m.generations}${RESET}`;
+      }).join('  ');
+      writeLine(`  ${colors.dim}Models:${RESET} ${modelLine}`);
+    }
+
+    // Squad breakdown
+    if (stats.bySquad.length > 1) {
+      const squadLine = stats.bySquad.slice(0, 4).map(s =>
+        `${colors.dim}${s.squad}${RESET} ${colors.green}$${s.costUsd.toFixed(2)}${RESET}`
+      ).join('  ');
+      writeLine(`  ${colors.dim}Squads:${RESET} ${squadLine}`);
+    }
+
     writeLine();
   }
 }
