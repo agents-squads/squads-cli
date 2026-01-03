@@ -101,7 +101,8 @@ program
   .description('Show comprehensive goals and metrics dashboard')
   .option('-v, --verbose', 'Show additional details')
   .option('-c, --ceo', 'Executive summary with priorities and blockers')
-  .action(dashboardCommand);
+  .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
+  .action((options) => dashboardCommand({ ...options, fast: !options.full }));
 
 // Issues command
 program

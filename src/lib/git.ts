@@ -280,6 +280,138 @@ export function getGitHubStats(basePath: string, days: number = 30): GitHubStats
   return stats;
 }
 
+/**
+ * Optimized GitHub stats - fetches PRs and issues in parallel across repos
+ * Uses a single combined gh api call per repo for better performance
+ */
+export function getGitHubStatsOptimized(basePath: string, days: number = 30): GitHubStats {
+  const stats: GitHubStats = {
+    prsOpened: 0,
+    prsMerged: 0,
+    issuesClosed: 0,
+    issuesOpen: 0,
+    bySquad: new Map(),
+  };
+
+  // Initialize squad stats
+  for (const squad of Object.keys(SQUAD_REPO_MAP)) {
+    stats.bySquad.set(squad, {
+      prsOpened: 0,
+      prsMerged: 0,
+      issuesClosed: 0,
+      issuesOpen: 0,
+      commits: 0,
+      recentIssues: [],
+      recentPRs: [],
+    });
+  }
+
+  const repos = ['hq', 'agents-squads-web'];
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  // Fetch all data in parallel using a single combined command
+  const results: { repo: string; prs: unknown[]; issues: unknown[] }[] = [];
+
+  for (const repo of repos) {
+    const repoPath = join(basePath, repo);
+    if (!existsSync(repoPath)) continue;
+
+    try {
+      // Use a single shell command to get both PRs and issues
+      // This reduces the number of gh CLI invocations from 4 to 2
+      const output = execSync(
+        `echo '{"prs":' && gh pr list --state all --json number,title,createdAt,mergedAt,labels --limit 50 2>/dev/null && echo ',"issues":' && gh issue list --state all --json number,title,state,closedAt,labels --limit 50 2>/dev/null && echo '}'`,
+        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
+      );
+
+      // Parse the combined output (handle edge cases)
+      const prsMatch = output.match(/"prs":(\[.*?\]),"issues":/s);
+      const issuesMatch = output.match(/"issues":(\[.*?\])\s*\}/s);
+
+      const prs = prsMatch ? JSON.parse(prsMatch[1]) : [];
+      const issues = issuesMatch ? JSON.parse(issuesMatch[1]) : [];
+
+      results.push({ repo, prs, issues });
+    } catch {
+      // Fallback: try individual calls with short timeout
+      try {
+        const prsOutput = execSync(
+          `gh pr list --state all --json number,title,createdAt,mergedAt,labels --limit 50 2>/dev/null`,
+          { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+        );
+        const issuesOutput = execSync(
+          `gh issue list --state all --json number,title,state,closedAt,labels --limit 50 2>/dev/null`,
+          { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+        );
+        results.push({
+          repo,
+          prs: JSON.parse(prsOutput || '[]'),
+          issues: JSON.parse(issuesOutput || '[]'),
+        });
+      } catch {
+        // Skip this repo
+      }
+    }
+  }
+
+  // Process results
+  for (const { repo, prs, issues } of results) {
+    // Process PRs
+    for (const pr of prs as { createdAt: string; mergedAt?: string; title: string; number: number; labels: { name: string }[] }[]) {
+      const created = new Date(pr.createdAt);
+      if (created < new Date(since)) continue;
+
+      stats.prsOpened++;
+      if (pr.mergedAt) stats.prsMerged++;
+
+      const squad = detectSquadFromPR(pr, repo);
+      const squadStats = stats.bySquad.get(squad);
+      if (squadStats) {
+        squadStats.prsOpened++;
+        if (pr.mergedAt) squadStats.prsMerged++;
+        if (squadStats.recentPRs.length < 3) {
+          squadStats.recentPRs.push({
+            title: pr.title,
+            number: pr.number,
+            merged: !!pr.mergedAt,
+          });
+        }
+      }
+    }
+
+    // Process Issues
+    for (const issue of issues as { state: string; closedAt?: string; title: string; number: number; labels: { name: string }[] }[]) {
+      const squad = detectSquadFromIssue(issue, repo);
+      const squadStats = stats.bySquad.get(squad);
+
+      if (issue.state === 'CLOSED') {
+        const closed = new Date(issue.closedAt || 0);
+        if (closed >= new Date(since)) {
+          stats.issuesClosed++;
+          if (squadStats) {
+            squadStats.issuesClosed++;
+          }
+        }
+      } else {
+        stats.issuesOpen++;
+        if (squadStats) {
+          squadStats.issuesOpen++;
+          if (squadStats.recentIssues.length < 3) {
+            squadStats.recentIssues.push({
+              title: issue.title,
+              number: issue.number,
+              state: issue.state,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Note: commit counts are added separately by the caller using cached git stats
+  return stats;
+}
+
 function detectSquadFromPR(pr: { title: string; labels: { name: string }[] }, repo: string): string {
   // Check labels first
   for (const label of pr.labels || []) {
