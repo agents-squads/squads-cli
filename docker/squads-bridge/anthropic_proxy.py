@@ -2,10 +2,12 @@
 Anthropic API Proxy
 Forwards requests to Anthropic API and captures rate limit headers.
 Stores rate limits in Redis for real-time dashboard display.
+Includes rate limiting queue to prevent parallel agents from hitting limits.
 """
 import os
 import json
 import time
+import threading
 import requests
 from datetime import datetime
 from flask import Flask, request, Response, jsonify
@@ -18,6 +20,16 @@ ANTHROPIC_API_URL = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.c
 BRIDGE_URL = os.environ.get("SQUADS_BRIDGE_URL", "http://squads-bridge:8080")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 DEBUG_MODE = os.environ.get("DEBUG", "0") == "1"
+
+# Rate limiting configuration
+RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "1") == "1"
+MIN_REQUESTS_REMAINING = int(os.environ.get("MIN_REQUESTS_REMAINING", "10"))  # Queue if fewer remaining
+MIN_TOKENS_REMAINING = int(os.environ.get("MIN_TOKENS_REMAINING", "10000"))  # Queue if fewer remaining
+QUEUE_WAIT_TIME = float(os.environ.get("QUEUE_WAIT_TIME", "5.0"))  # Seconds between queued requests
+
+# Thread-safe request queue
+request_lock = threading.Lock()
+last_request_time = 0
 
 # Redis connection
 redis_client = None
@@ -94,6 +106,56 @@ def store_rate_limits(model: str, headers: dict):
         print(f"[PROXY] Rate limits stored for {model}: {rate_limits}")
 
 
+def check_rate_limits(model: str) -> dict:
+    """Check current rate limits and return status."""
+    if not redis_client:
+        return {"should_wait": False, "reason": "no_redis"}
+
+    family = extract_model_family(model)
+    key = f"ratelimit:latest:{family}"
+    data = redis_client.get(key)
+
+    if not data:
+        return {"should_wait": False, "reason": "no_data"}
+
+    limits = json.loads(data)
+    requests_remaining = limits.get("requests_remaining", 999)
+    tokens_remaining = limits.get("tokens_remaining", 999999)
+
+    if requests_remaining < MIN_REQUESTS_REMAINING:
+        return {
+            "should_wait": True,
+            "reason": f"requests_remaining={requests_remaining} < {MIN_REQUESTS_REMAINING}",
+            "wait_until": limits.get("requests_reset"),
+        }
+
+    if tokens_remaining < MIN_TOKENS_REMAINING:
+        return {
+            "should_wait": True,
+            "reason": f"tokens_remaining={tokens_remaining} < {MIN_TOKENS_REMAINING}",
+            "wait_until": limits.get("tokens_reset"),
+        }
+
+    return {"should_wait": False, "reason": "ok"}
+
+
+def wait_for_rate_limit():
+    """Enforce minimum time between requests (queue)."""
+    global last_request_time
+
+    with request_lock:
+        now = time.time()
+        elapsed = now - last_request_time
+
+        if elapsed < QUEUE_WAIT_TIME:
+            wait_time = QUEUE_WAIT_TIME - elapsed
+            if DEBUG_MODE:
+                print(f"[PROXY] Rate limit queue: waiting {wait_time:.2f}s")
+            time.sleep(wait_time)
+
+        last_request_time = time.time()
+
+
 @app.route("/v1/messages", methods=["POST"])
 def proxy_messages():
     """Proxy /v1/messages endpoint to Anthropic API."""
@@ -101,6 +163,18 @@ def proxy_messages():
         # Get request data
         body = request.get_json()
         model = body.get("model", "unknown") if body else "unknown"
+
+        # Rate limiting check
+        if RATE_LIMIT_ENABLED:
+            limit_status = check_rate_limits(model)
+            if limit_status["should_wait"]:
+                if DEBUG_MODE:
+                    print(f"[PROXY] Rate limit warning: {limit_status['reason']}")
+                # Add extra delay when approaching limits
+                time.sleep(QUEUE_WAIT_TIME * 2)
+
+            # Enforce queue spacing
+            wait_for_rate_limit()
 
         # Forward headers (except Host)
         forward_headers = {
