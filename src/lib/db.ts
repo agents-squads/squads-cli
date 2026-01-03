@@ -23,7 +23,7 @@ function getPool(): InstanceType<typeof Pool> {
       connectionString: DATABASE_URL,
       max: 5,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 1500, // Fast timeout for CLI responsiveness
     });
 
     // Handle pool errors

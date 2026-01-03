@@ -50,6 +50,8 @@ import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js'
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { workersCommand } from './commands/workers.js';
+import { sessionsCommand, sessionsHistoryCommand } from './commands/sessions.js';
+import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
 
 // Register telemetry exit handler early
@@ -197,9 +199,11 @@ memory
 
 memory
   .command('sync')
-  .description('Sync memory from recent git commits (auto-update)')
+  .description('Sync memory from git: pull remote changes, process commits, optionally push')
   .option('-v, --verbose', 'Show detailed commit info')
-  .action(syncCommand);
+  .option('-p, --push', 'Push local memory changes to remote after sync')
+  .option('--no-pull', 'Skip pulling from remote')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull }));
 
 memory
   .command('search <query>')
@@ -261,6 +265,56 @@ feedback
   .command('stats')
   .description('Show feedback summary across all squads')
   .action(feedbackStatsCommand);
+
+// Sessions command group - list active sessions and history
+const sessions = program
+  .command('sessions')
+  .description('Show active Claude Code sessions across squads')
+  .option('-v, --verbose', 'Show session details')
+  .option('-j, --json', 'Output as JSON')
+  .action(sessionsCommand);
+
+sessions
+  .command('history')
+  .description('Show session history and statistics')
+  .option('-d, --days <days>', 'Days of history to show', '7')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => sessionsHistoryCommand({
+    days: parseInt(options.days, 10),
+    squad: options.squad,
+    json: options.json,
+  }));
+
+// Session command group - lifecycle management
+const session = program
+  .command('session')
+  .description('Manage current session lifecycle');
+
+session
+  .command('start')
+  .description('Register a new session')
+  .option('-s, --squad <squad>', 'Override squad detection')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionStartCommand({ squad: options.squad, quiet: options.quiet }));
+
+session
+  .command('stop')
+  .description('End current session')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionStopCommand({ quiet: options.quiet }));
+
+session
+  .command('heartbeat')
+  .description('Update session heartbeat')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionHeartbeatCommand({ quiet: options.quiet }));
+
+// Detect squad command - useful for hooks
+program
+  .command('detect-squad')
+  .description('Detect current squad based on cwd (for use in hooks)')
+  .action(detectSquadCommand);
 
 // Auth commands
 program

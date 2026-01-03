@@ -5,7 +5,8 @@ import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
-import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData } from '../lib/db.js';
+import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
+import { getSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
 import {
   colors,
   bold,
@@ -78,6 +79,9 @@ interface DashboardCache {
   costs: CostSummary | null;
   bridgeStats: BridgeStats | null;
   activity: number[];
+  dbAvailable: boolean;
+  history: DashboardSnapshot[];
+  insights: Insights | null;
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
@@ -99,21 +103,31 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // === PHASE 1: Parallel data fetching ===
   // Fetch all expensive data in parallel to minimize wall time
-  const [gitStats, ghStats, costs, bridgeStats, activity] = await Promise.all([
+  // Wrap slow calls with race timeout to ensure CLI responsiveness
+  const timeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
+
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights] = await Promise.all([
     // Git stats (local, ~1s)
     Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
     skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
-    // Langfuse costs (network, ~1-2s)
-    fetchCostSummary(100),
-    // Bridge stats (local network, <1s)
-    fetchBridgeStats(),
+    // Langfuse costs (network, 2s timeout)
+    timeout(fetchCostSummary(100), 2000, null),
+    // Bridge stats (local network, 2s timeout)
+    timeout(fetchBridgeStats(), 2000, null),
     // Activity sparkline (local, <1s)
     Promise.resolve(baseDir ? getActivitySparkline(baseDir, 14) : []),
+    // Database availability check (1.5s timeout)
+    timeout(isDatabaseAvailable(), 1500, false),
+    // Dashboard history (1.5s timeout)
+    timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
+    // Insights (2s timeout)
+    timeout(fetchInsights('week').catch(() => null), 2000, null),
   ]);
 
   // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity };
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights };
 
   // === PHASE 2: Build squad metrics (sync, fast) ===
   const squadData: SquadMetrics[] = [];
@@ -192,8 +206,19 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const totalIssuesClosed = ghStats ? ghStats.issuesClosed : 0;
   const totalIssuesOpen = ghStats ? ghStats.issuesOpen : 0;
 
+  // Get active sessions
+  cleanupStaleSessions();
+  const sessionSummary = getSessionSummary();
+
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
+
+  // Session indicator line (only if there are active sessions)
+  if (sessionSummary.totalSessions > 0) {
+    const sessionText = sessionSummary.totalSessions === 1 ? 'session' : 'sessions';
+    const squadText = sessionSummary.squadCount === 1 ? 'squad' : 'squads';
+    writeLine(`  ${colors.green}${icons.active}${RESET} ${colors.white}${sessionSummary.totalSessions}${RESET} active ${sessionText} ${colors.dim}across${RESET} ${colors.cyan}${sessionSummary.squadCount}${RESET} ${squadText}`);
+  }
   writeLine();
 
   // Stats row - show different info based on whether GitHub data is available
@@ -268,8 +293,8 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   renderInfrastructureCached(cache);
 
   // These still need async but are fast
-  await renderHistoricalTrends();
-  await renderInsights();
+  renderHistoricalTrendsCached(cache);
+  renderInsightsCached(cache);
 
   // Goals section
   const allActiveGoals = squadData.flatMap(s =>
@@ -302,6 +327,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // Save snapshot in background (don't block)
   saveSnapshotCached(squadData, cache, baseDir).catch(() => {});
+
+  // Close database pool to allow process to exit immediately
+  await closeDatabase();
 }
 
 /**
@@ -945,8 +973,8 @@ async function saveSnapshotCached(
   cache: DashboardCache,
   baseDir: string | null
 ): Promise<void> {
-  const dbAvailable = await isDatabaseAvailable();
-  if (!dbAvailable) return;
+  // Use cached dbAvailable check - don't make another slow connection attempt
+  if (!cache.dbAvailable) return;
 
   const { gitStats, ghStats, costs } = cache;
 
@@ -1006,7 +1034,9 @@ async function saveSnapshotCached(
     reposData,
   };
 
-  await saveDashboardSnapshot(snapshot);
+  // Save with timeout - don't block the CLI exit
+  const saveTimeout = new Promise<void>(resolve => setTimeout(resolve, 2000));
+  await Promise.race([saveDashboardSnapshot(snapshot), saveTimeout]);
 }
 
 // Priority keywords that indicate high priority goals
@@ -1145,5 +1175,80 @@ async function renderCeoReport(squadsDir: string): Promise<void> {
   // Commands
   writeLine(`  ${colors.dim}$${RESET} squads dash              ${colors.dim}Full operational view${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal list         ${colors.dim}All active goals${RESET}`);
+  writeLine();
+}
+
+function renderHistoricalTrendsCached(cache: DashboardCache): void {
+  if (!cache.dbAvailable) return;
+
+  const history = cache.history;
+  if (history.length < 2) return; // Need at least 2 data points
+
+  writeLine(`  ${bold}Usage Trends${RESET} ${colors.dim}(${history.length}d history)${RESET}`);
+  writeLine();
+
+  // Daily cost sparkline (most recent first, so reverse for left-to-right)
+  const dailyCosts = history.map(h => h.costUsd).reverse();
+  const costSparkStr = sparkline(dailyCosts);
+  const totalSpend = dailyCosts.reduce((sum, c) => sum + c, 0);
+  const avgDaily = totalSpend / dailyCosts.length;
+
+  writeLine(`  ${colors.dim}Cost:${RESET} ${costSparkStr}  ${colors.green}$${totalSpend.toFixed(2)}${RESET} total  ${colors.dim}($${avgDaily.toFixed(2)}/day avg)${RESET}`);
+
+  // Token usage trend
+  const inputTokens = history.map(h => h.inputTokens).reverse();
+  const totalInput = inputTokens.reduce((sum, t) => sum + t, 0);
+  const tokenSparkStr = sparkline(inputTokens);
+
+  writeLine(`  ${colors.dim}Tokens:${RESET} ${tokenSparkStr}  ${colors.cyan}${formatK(totalInput)}${RESET} input  ${colors.dim}(${formatK(Math.round(totalInput / inputTokens.length))}/day)${RESET}`);
+
+  // Goal progress trend
+  const goalProgress = history.map(h => h.goalProgressPct).reverse();
+  const latestProgress = goalProgress[goalProgress.length - 1] || 0;
+  const earliestProgress = goalProgress[0] || 0;
+  const progressDelta = latestProgress - earliestProgress;
+  const progressColor = progressDelta > 0 ? colors.green : progressDelta < 0 ? colors.red : colors.dim;
+  const progressSign = progressDelta > 0 ? '+' : '';
+
+  writeLine(`  ${colors.dim}Goals:${RESET} ${sparkline(goalProgress)}  ${colors.purple}${latestProgress}%${RESET}  ${progressColor}${progressSign}${progressDelta.toFixed(0)}%${RESET}${colors.dim} vs start${RESET}`);
+  writeLine();
+}
+
+function renderInsightsCached(cache: DashboardCache): void {
+  const insights = cache.insights;
+
+  if (!insights || insights.source === 'none' || insights.taskMetrics.length === 0) {
+    return;
+  }
+
+  writeLine(`  ${bold}Agent Insights${RESET} ${colors.dim}(${insights.days}d)${RESET}`);
+  writeLine();
+
+  // Task completion metrics (aggregated)
+  const totals = insights.taskMetrics.reduce(
+    (acc, t) => ({
+      tasks: acc.tasks + t.tasksTotal,
+      completed: acc.completed + t.tasksCompleted,
+      failed: acc.failed + t.tasksFailed,
+      retries: acc.retries + t.totalRetries,
+      withRetries: acc.withRetries + t.tasksWithRetries,
+    }),
+    { tasks: 0, completed: 0, failed: 0, retries: 0, withRetries: 0 }
+  );
+
+  if (totals.tasks > 0) {
+    const successRate = totals.tasks > 0 ? ((totals.completed / totals.tasks) * 100).toFixed(0) : '0';
+    const successColor = parseInt(successRate) >= 80 ? colors.green : parseInt(successRate) >= 60 ? colors.yellow : colors.red;
+
+    writeLine(`  ${colors.dim}Tasks:${RESET} ${colors.green}${totals.completed}${RESET}${colors.dim}/${totals.tasks} completed${RESET}  ${successColor}${successRate}%${RESET}${colors.dim} success${RESET}  ${colors.red}${totals.failed}${RESET}${colors.dim} failed${RESET}`);
+
+    if (totals.retries > 0) {
+      const retryRate = totals.tasks > 0 ? ((totals.withRetries / totals.tasks) * 100).toFixed(0) : '0';
+      const retryColor = parseInt(retryRate) > 30 ? colors.red : parseInt(retryRate) > 15 ? colors.yellow : colors.green;
+      writeLine(`  ${colors.dim}Retries:${RESET} ${retryColor}${totals.retries}${RESET}${colors.dim} total${RESET}  ${retryColor}${retryRate}%${RESET}${colors.dim} of tasks needed retry${RESET}`);
+    }
+  }
+
+  // Skip quality metrics for brevity in cached version
   writeLine();
 }
