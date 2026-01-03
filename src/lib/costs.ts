@@ -245,6 +245,143 @@ export function formatCostBar(usedPercent: number, width = 20): string {
 }
 
 /**
+ * Bridge stats from /stats endpoint (Redis real-time or Postgres fallback)
+ */
+export interface BridgeStats {
+  status: string;
+  source: 'redis' | 'postgres' | 'none';
+  today: {
+    generations: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  };
+  budget: {
+    daily: number;
+    used: number;
+    remaining: number;
+    usedPct: number;
+  };
+  bySquad: Array<{
+    squad: string;
+    costUsd: number;
+    generations: number;
+  }>;
+  byModel?: Array<{
+    model: string;
+    generations: number;
+    costUsd: number;
+  }>;
+  health: {
+    postgres: string;
+    redis: string;
+    langfuse: string;
+  };
+}
+
+/**
+ * Fetch real-time stats from Squads Bridge
+ */
+export async function fetchBridgeStats(): Promise<BridgeStats | null> {
+  try {
+    // Fetch /stats for real-time data
+    const statsResponse = await fetch(`${BRIDGE_URL}/stats`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!statsResponse.ok) {
+      return null;
+    }
+
+    interface StatsData {
+      status?: string;
+      source?: string;
+      today?: {
+        generations?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        cost_usd?: number;
+      };
+      budget?: {
+        daily?: number;
+        used?: number;
+        remaining?: number;
+        used_pct?: number;
+      };
+      by_squad?: Array<{
+        squad?: string;
+        cost_usd?: number;
+        generations?: number;
+      }>;
+    }
+
+    const stats = await statsResponse.json() as StatsData;
+
+    // Fetch /health for connection statuses
+    const healthResponse = await fetch(`${BRIDGE_URL}/health`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    interface HealthData {
+      postgres?: string;
+      redis?: string;
+      langfuse?: string;
+    }
+
+    const health = healthResponse.ok ? await healthResponse.json() as HealthData : {};
+
+    // Fetch cost summary for model breakdown
+    const costResponse = await fetch(`${BRIDGE_URL}/api/cost/summary?period=day`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    interface CostData {
+      by_model?: Array<{
+        model?: string;
+        generations?: number;
+        cost_usd?: number;
+      }>;
+    }
+
+    const costData = costResponse.ok ? await costResponse.json() as CostData : {};
+
+    return {
+      status: stats.status || 'unknown',
+      source: (stats.source as 'redis' | 'postgres' | 'none') || 'none',
+      today: {
+        generations: stats.today?.generations || 0,
+        inputTokens: stats.today?.input_tokens || 0,
+        outputTokens: stats.today?.output_tokens || 0,
+        costUsd: stats.today?.cost_usd || 0,
+      },
+      budget: {
+        daily: stats.budget?.daily || DEFAULT_DAILY_BUDGET,
+        used: stats.budget?.used || 0,
+        remaining: stats.budget?.remaining || DEFAULT_DAILY_BUDGET,
+        usedPct: stats.budget?.used_pct || 0,
+      },
+      bySquad: (stats.by_squad || []).map(s => ({
+        squad: s.squad || 'unknown',
+        costUsd: s.cost_usd || 0,
+        generations: s.generations || 0,
+      })),
+      byModel: (costData.by_model || []).map(m => ({
+        model: m.model || 'unknown',
+        generations: m.generations || 0,
+        costUsd: m.cost_usd || 0,
+      })),
+      health: {
+        postgres: health.postgres || 'unknown',
+        redis: health.redis || 'unknown',
+        langfuse: health.langfuse || 'unknown',
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Rate limit data from Anthropic API headers
  */
 export interface RateLimitInfo {

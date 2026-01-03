@@ -8,6 +8,8 @@
 #   Langfuse UI: http://localhost:3100
 #   Postgres:    localhost:5433
 
+name: agents-squads
+
 services:
   # =============================================================================
   # PostgreSQL - Primary data store
