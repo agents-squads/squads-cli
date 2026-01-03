@@ -22,7 +22,7 @@ app = Flask(__name__)
 # Configuration
 DEBUG_MODE = os.environ.get("DEBUG", "1") == "1"
 LANGFUSE_ENABLED = os.environ.get("LANGFUSE_ENABLED", "false").lower() == "true"
-DAILY_BUDGET = float(os.environ.get("SQUADS_DAILY_BUDGET", "50.0"))
+DAILY_BUDGET = float(os.environ.get("SQUADS_DAILY_BUDGET", "200.0"))
 recent_logs = deque(maxlen=50)
 
 # Engram/mem0 configuration for memory extraction

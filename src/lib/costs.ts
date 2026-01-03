@@ -39,7 +39,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   default: { input: 3.0, output: 15.0 },
 };
 
-const DEFAULT_DAILY_BUDGET = 50.0;
+const DEFAULT_DAILY_BUDGET = 200.0;
 const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
 const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
 
