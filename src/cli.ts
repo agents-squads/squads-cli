@@ -50,7 +50,20 @@ import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js'
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { workersCommand } from './commands/workers.js';
+import { sessionsCommand, sessionsHistoryCommand } from './commands/sessions.js';
+import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
+import {
+  stackInitCommand,
+  stackStatusCommand,
+  stackEnvCommand,
+  stackUpCommand,
+  stackDownCommand,
+  applyStackConfig
+} from './commands/stack.js';
+
+// Load stack config from ~/.squadsrc (if exists)
+applyStackConfig();
 
 // Register telemetry exit handler early
 registerExitHandler();
@@ -77,7 +90,8 @@ program
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-e, --execute', 'Execute agent via Claude CLI (requires claude installed)')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
-  .action(runCommand);
+  .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
+  .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
 program
@@ -197,9 +211,11 @@ memory
 
 memory
   .command('sync')
-  .description('Sync memory from recent git commits (auto-update)')
+  .description('Sync memory from git: pull remote changes, process commits, optionally push')
   .option('-v, --verbose', 'Show detailed commit info')
-  .action(syncCommand);
+  .option('-p, --push', 'Push local memory changes to remote after sync')
+  .option('--no-pull', 'Skip pulling from remote')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull }));
 
 memory
   .command('search <query>')
@@ -261,6 +277,86 @@ feedback
   .command('stats')
   .description('Show feedback summary across all squads')
   .action(feedbackStatsCommand);
+
+// Sessions command group - list active sessions and history
+const sessions = program
+  .command('sessions')
+  .description('Show active Claude Code sessions across squads')
+  .option('-v, --verbose', 'Show session details')
+  .option('-j, --json', 'Output as JSON')
+  .action(sessionsCommand);
+
+sessions
+  .command('history')
+  .description('Show session history and statistics')
+  .option('-d, --days <days>', 'Days of history to show', '7')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => sessionsHistoryCommand({
+    days: parseInt(options.days, 10),
+    squad: options.squad,
+    json: options.json,
+  }));
+
+// Session command group - lifecycle management
+const session = program
+  .command('session')
+  .description('Manage current session lifecycle');
+
+session
+  .command('start')
+  .description('Register a new session')
+  .option('-s, --squad <squad>', 'Override squad detection')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionStartCommand({ squad: options.squad, quiet: options.quiet }));
+
+session
+  .command('stop')
+  .description('End current session')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionStopCommand({ quiet: options.quiet }));
+
+session
+  .command('heartbeat')
+  .description('Update session heartbeat')
+  .option('-q, --quiet', 'Suppress output')
+  .action((options) => sessionHeartbeatCommand({ quiet: options.quiet }));
+
+// Detect squad command - useful for hooks
+program
+  .command('detect-squad')
+  .description('Detect current squad based on cwd (for use in hooks)')
+  .action(detectSquadCommand);
+
+// Stack command group - manage local Docker stack
+const stack = program
+  .command('stack')
+  .description('Manage local Docker stack (postgres, redis, langfuse, bridge)');
+
+stack
+  .command('init')
+  .description('Auto-detect Docker containers and configure CLI connection')
+  .action(stackInitCommand);
+
+stack
+  .command('status')
+  .description('Show container health and connection status')
+  .action(stackStatusCommand);
+
+stack
+  .command('env')
+  .description('Print environment variables for shell export')
+  .action(stackEnvCommand);
+
+stack
+  .command('up')
+  .description('Start Docker containers via docker-compose')
+  .action(stackUpCommand);
+
+stack
+  .command('down')
+  .description('Stop Docker containers')
+  .action(stackDownCommand);
 
 // Auth commands
 program

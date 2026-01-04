@@ -211,7 +211,72 @@ function appendToSquadMemory(
   return true;
 }
 
-export async function syncCommand(options: { verbose?: boolean } = {}): Promise<void> {
+/**
+ * Pull latest memory changes from git remote
+ */
+function gitPullMemory(): { success: boolean; output: string; behind: number; ahead: number } {
+  try {
+    // First fetch to see what's different
+    execSync('git fetch origin', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+
+    // Check how many commits behind/ahead
+    const status = execSync('git status -sb', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const behindMatch = status.match(/behind (\d+)/);
+    const aheadMatch = status.match(/ahead (\d+)/);
+    const behind = behindMatch ? parseInt(behindMatch[1]) : 0;
+    const ahead = aheadMatch ? parseInt(aheadMatch[1]) : 0;
+
+    if (behind === 0) {
+      return { success: true, output: 'Already up to date', behind: 0, ahead };
+    }
+
+    // Pull with rebase to get latest
+    const output = execSync('git pull --rebase origin main', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    return { success: true, output: output.trim(), behind, ahead };
+  } catch (error) {
+    const err = error as { message?: string };
+    return { success: false, output: err.message || 'Pull failed', behind: 0, ahead: 0 };
+  }
+}
+
+/**
+ * Push local memory changes to git remote
+ */
+function gitPushMemory(): { success: boolean; output: string } {
+  try {
+    // Check if there are uncommitted changes in memory
+    const status = execSync('git status --porcelain .agents/memory/', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+
+    if (status) {
+      // Stage and commit memory changes
+      execSync('git add .agents/memory/', { stdio: ['pipe', 'pipe', 'pipe'] });
+      execSync('git commit -m "chore: sync squad memory"', {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
+
+    // Push to remote
+    const output = execSync('git push origin main', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    return { success: true, output: output.trim() || 'Pushed successfully' };
+  } catch (error) {
+    const err = error as { message?: string };
+    return { success: false, output: err.message || 'Push failed' };
+  }
+}
+
+export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean } = {}): Promise<void> {
   const memoryDir = findMemoryDir();
   const squadsDir = findSquadsDir();
 
@@ -224,6 +289,30 @@ export async function syncCommand(options: { verbose?: boolean } = {}): Promise<
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}memory sync${RESET}`);
   writeLine();
+
+  // Default behavior: pull from remote
+  const doPull = options.pull !== false; // Pull by default unless explicitly disabled
+  const doPush = options.push === true; // Only push if explicitly requested
+
+  // Step 1: Pull from git remote
+  if (doPull) {
+    writeLine(`  ${icons.progress} Pulling from remote...`);
+    const pullResult = gitPullMemory();
+
+    if (pullResult.success) {
+      if (pullResult.behind > 0) {
+        writeLine(`  ${icons.success} Pulled ${colors.cyan}${pullResult.behind}${RESET} commits from remote`);
+      } else {
+        writeLine(`  ${icons.success} ${colors.dim}Already up to date${RESET}`);
+      }
+      if (pullResult.ahead > 0) {
+        writeLine(`  ${colors.dim}  ${pullResult.ahead} local commits to push${RESET}`);
+      }
+    } else {
+      writeLine(`  ${icons.error} ${colors.red}Pull failed: ${pullResult.output}${RESET}`);
+    }
+    writeLine();
+  }
 
   // Get last sync time
   const lastSync = getLastSyncTime(memoryDir);
@@ -282,8 +371,24 @@ export async function syncCommand(options: { verbose?: boolean } = {}): Promise<
   // Update last sync time
   updateLastSyncTime(memoryDir);
 
+  // Step 3: Push to remote if requested
+  if (doPush) {
+    writeLine(`  ${icons.progress} Pushing to remote...`);
+    const pushResult = gitPushMemory();
+
+    if (pushResult.success) {
+      writeLine(`  ${icons.success} ${colors.green}Pushed memory updates to remote${RESET}`);
+    } else {
+      writeLine(`  ${icons.error} ${colors.red}Push failed: ${pushResult.output}${RESET}`);
+    }
+    writeLine();
+  }
+
   // Show helpful commands
   writeLine(`  ${colors.dim}$${RESET} squads memory show ${colors.cyan}<squad>${RESET}   ${colors.dim}View updated memory${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads status               ${colors.dim}See all squads${RESET}`);
+  if (!doPush && updated > 0) {
+    writeLine(`  ${colors.dim}$${RESET} squads memory sync --push   ${colors.dim}Push changes to remote${RESET}`);
+  }
   writeLine();
 }
