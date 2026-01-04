@@ -7,6 +7,7 @@ import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimi
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
+import { checkForUpdate } from '../lib/update.js';
 import {
   colors,
   bold,
@@ -212,6 +213,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
+
+  // Check for updates (cached, non-blocking)
+  const updateInfo = checkForUpdate();
+  if (updateInfo.updateAvailable) {
+    writeLine(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET} ${colors.dim}(npm update -g squads-cli)${RESET}`);
+  }
 
   // Session indicator line (only if there are active sessions)
   if (sessionSummary.totalSessions > 0) {

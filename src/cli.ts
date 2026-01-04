@@ -59,6 +59,8 @@ import {
   stackEnvCommand,
   stackUpCommand,
   stackDownCommand,
+  stackHealthCommand,
+  stackLogsCommand,
   applyStackConfig
 } from './commands/stack.js';
 
@@ -357,6 +359,18 @@ stack
   .command('down')
   .description('Stop Docker containers')
   .action(stackDownCommand);
+
+stack
+  .command('health')
+  .description('Comprehensive health check with diagnostics')
+  .option('-v, --verbose', 'Show logs for unhealthy services')
+  .action((options) => stackHealthCommand(options.verbose));
+
+stack
+  .command('logs <service>')
+  .description('Show logs for a service (postgres, redis, neo4j, bridge, langfuse, mem0, engram)')
+  .option('-n, --tail <lines>', 'Number of lines to show', '50')
+  .action((service, options) => stackLogsCommand(service, parseInt(options.tail, 10)));
 
 // Auth commands
 program
