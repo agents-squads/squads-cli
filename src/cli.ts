@@ -53,6 +53,17 @@ import { workersCommand } from './commands/workers.js';
 import { sessionsCommand, sessionsHistoryCommand } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
+import {
+  stackInitCommand,
+  stackStatusCommand,
+  stackEnvCommand,
+  stackUpCommand,
+  stackDownCommand,
+  applyStackConfig
+} from './commands/stack.js';
+
+// Load stack config from ~/.squadsrc (if exists)
+applyStackConfig();
 
 // Register telemetry exit handler early
 registerExitHandler();
@@ -316,6 +327,36 @@ program
   .command('detect-squad')
   .description('Detect current squad based on cwd (for use in hooks)')
   .action(detectSquadCommand);
+
+// Stack command group - manage local Docker stack
+const stack = program
+  .command('stack')
+  .description('Manage local Docker stack (postgres, redis, langfuse, bridge)');
+
+stack
+  .command('init')
+  .description('Auto-detect Docker containers and configure CLI connection')
+  .action(stackInitCommand);
+
+stack
+  .command('status')
+  .description('Show container health and connection status')
+  .action(stackStatusCommand);
+
+stack
+  .command('env')
+  .description('Print environment variables for shell export')
+  .action(stackEnvCommand);
+
+stack
+  .command('up')
+  .description('Start Docker containers via docker-compose')
+  .action(stackUpCommand);
+
+stack
+  .command('down')
+  .description('Stop Docker containers')
+  .action(stackDownCommand);
 
 // Auth commands
 program
