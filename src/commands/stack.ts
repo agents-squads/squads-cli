@@ -481,6 +481,138 @@ export async function stackUpCommand(): Promise<void> {
 }
 
 /**
+ * squads stack health - comprehensive health check with diagnostics
+ */
+export async function stackHealthCommand(verbose = false): Promise<void> {
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}stack health${RESET}`);
+  writeLine();
+
+  // Check Docker
+  if (!isDockerRunning()) {
+    writeLine(`  ${colors.red}${icons.error}${RESET} Docker is not running`);
+    writeLine();
+    process.exitCode = 1;
+    return;
+  }
+
+  // All containers including engram stack
+  const containers = [
+    { name: 'squads-postgres', service: 'postgres', healthUrl: '', critical: true },
+    { name: 'squads-redis', service: 'redis', healthUrl: '', critical: true },
+    { name: 'squads-neo4j', service: 'neo4j', healthUrl: 'http://localhost:7474', critical: false },
+    { name: 'squads-bridge', service: 'bridge', healthUrl: 'http://localhost:8088/health', critical: true },
+    { name: 'squads-otel-collector', service: 'otel', healthUrl: '', critical: false },
+    { name: 'squads-langfuse', service: 'langfuse', healthUrl: 'http://localhost:3100/api/public/health', critical: false },
+    { name: 'squads-mem0', service: 'mem0', healthUrl: 'http://localhost:8000/health', critical: false },
+    { name: 'squads-engram-mcp', service: 'engram', healthUrl: 'http://localhost:8080/', critical: false },
+  ];
+
+  let hasFailures = false;
+  const results: Array<{ name: string; service: string; ok: boolean; status: string; logs?: string }> = [];
+
+  for (const container of containers) {
+    const status = getContainerStatus(container.name);
+    let ok = status.running && status.healthy;
+    let statusText = '';
+
+    if (!status.running) {
+      statusText = 'stopped';
+      ok = false;
+    } else if (!status.healthy) {
+      statusText = 'unhealthy';
+      ok = false;
+    } else if (container.healthUrl) {
+      // Additional HTTP health check
+      const httpOk = await checkService(container.healthUrl);
+      if (!httpOk) {
+        statusText = 'not responding';
+        ok = false;
+      } else {
+        statusText = 'healthy';
+      }
+    } else {
+      statusText = 'healthy';
+    }
+
+    // Get logs if unhealthy
+    let logs: string | undefined;
+    if (!ok && verbose) {
+      try {
+        logs = execSync(`docker logs ${container.name} --tail 10 2>&1`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch {
+        logs = '(no logs available)';
+      }
+    }
+
+    if (!ok && container.critical) {
+      hasFailures = true;
+    }
+
+    results.push({ name: container.name, service: container.service, ok, status: statusText, logs });
+  }
+
+  // Display results
+  for (const r of results) {
+    const icon = r.ok ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
+    const statusColor = r.ok ? colors.green : colors.red;
+    writeLine(`  ${icon} ${padEnd(r.service, 10)} ${statusColor}${r.status}${RESET}`);
+
+    if (r.logs && !r.ok) {
+      writeLine(`    ${colors.dim}${'-'.repeat(40)}${RESET}`);
+      for (const line of r.logs.split('\n').slice(0, 5)) {
+        writeLine(`    ${colors.dim}${line.substring(0, 70)}${RESET}`);
+      }
+    }
+  }
+
+  writeLine();
+
+  // Summary
+  const healthy = results.filter((r) => r.ok).length;
+  const total = results.length;
+
+  if (hasFailures) {
+    writeLine(`  ${colors.red}${icons.error}${RESET} ${healthy}/${total} services healthy - critical failures`);
+    writeLine(`  ${colors.dim}Run with -v for logs: squads stack health -v${RESET}`);
+    process.exitCode = 1;
+  } else if (healthy < total) {
+    writeLine(`  ${colors.yellow}${icons.warning}${RESET} ${healthy}/${total} services healthy - non-critical issues`);
+  } else {
+    writeLine(`  ${colors.green}${icons.success}${RESET} ${healthy}/${total} services healthy`);
+  }
+
+  writeLine();
+}
+
+/**
+ * squads stack logs - show logs for a specific service
+ */
+export function stackLogsCommand(service: string, tail = 50): void {
+  const containerMap: Record<string, string> = {
+    postgres: 'squads-postgres',
+    redis: 'squads-redis',
+    neo4j: 'squads-neo4j',
+    bridge: 'squads-bridge',
+    otel: 'squads-otel-collector',
+    langfuse: 'squads-langfuse',
+    mem0: 'squads-mem0',
+    engram: 'squads-engram-mcp',
+  };
+
+  const container = containerMap[service] || `squads-${service}`;
+
+  try {
+    execSync(`docker logs ${container} --tail ${tail}`, { stdio: 'inherit' });
+  } catch {
+    writeLine(`  ${colors.red}${icons.error}${RESET} Container ${container} not found`);
+  }
+}
+
+/**
  * squads stack down - stop docker compose
  */
 export async function stackDownCommand(): Promise<void> {

@@ -8,6 +8,7 @@ import {
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import { getLiveSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
+import { checkForUpdate } from '../lib/update.js';
 import {
   colors,
   bold,
@@ -55,6 +56,12 @@ async function showOverallStatus(
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
+
+  // Check for updates (cached, non-blocking)
+  const updateInfo = checkForUpdate();
+  if (updateInfo.updateAvailable) {
+    writeLine(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET} ${colors.dim}(npm update -g squads-cli)${RESET}`);
+  }
 
   // Session indicator line (only if there are active sessions)
   if (sessionSummary.totalSessions > 0) {
