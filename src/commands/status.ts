@@ -7,6 +7,7 @@ import {
   listAgents
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
+import { getSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
 import {
   colors,
   bold,
@@ -48,8 +49,19 @@ async function showOverallStatus(
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
 
+  // Get active sessions
+  cleanupStaleSessions();
+  const sessionSummary = getSessionSummary();
+
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
+
+  // Session indicator line (only if there are active sessions)
+  if (sessionSummary.totalSessions > 0) {
+    const sessionText = sessionSummary.totalSessions === 1 ? 'session' : 'sessions';
+    const squadText = sessionSummary.squadCount === 1 ? 'squad' : 'squads';
+    writeLine(`  ${colors.green}${icons.active}${RESET} ${colors.white}${sessionSummary.totalSessions}${RESET} active ${sessionText} ${colors.dim}across${RESET} ${colors.cyan}${sessionSummary.squadCount}${RESET} ${squadText}`);
+  }
   writeLine();
 
   // Stats row
@@ -86,7 +98,7 @@ async function showOverallStatus(
       const squadMemoryPath = join(memoryDir, squadName);
       if (existsSync(squadMemoryPath)) {
         const states = getSquadState(squadName);
-        memoryStatus = `${colors.green}${states.length} entries${RESET}`;
+        memoryStatus = `${colors.green}${states.length} ${states.length === 1 ? 'entry' : 'entries'}${RESET}`;
 
         // Find most recent file
         let mostRecent = 0;
@@ -203,7 +215,7 @@ async function showSquadStatus(
 
     if (states.length > 0) {
       writeLine();
-      writeLine(`  ${bold}Memory${RESET} ${colors.dim}(${states.length} entries)${RESET}`);
+      writeLine(`  ${bold}Memory${RESET} ${colors.dim}(${states.length} ${states.length === 1 ? 'entry' : 'entries'})${RESET}`);
       writeLine();
 
       for (const state of states) {

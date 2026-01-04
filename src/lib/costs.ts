@@ -42,6 +42,24 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 const DEFAULT_DAILY_BUDGET = 200.0;
 const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
 const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
+
+/**
+ * Fetch with timeout to prevent hanging when services are down
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
 
 function calcCost(model: string, inputTokens: number, outputTokens: number): number {
   const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
@@ -53,7 +71,7 @@ function calcCost(model: string, inputTokens: number, outputTokens: number): num
  */
 async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promise<CostSummary | null> {
   try {
-    const response = await fetch(`${BRIDGE_URL}/api/cost/summary?period=${period}`, {
+    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=${period}`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -117,7 +135,7 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
     const auth = Buffer.from(`${publicKey}:${secretKey}`).toString('base64');
     const url = `${host}/api/public/observations?limit=${limit}`;
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       headers: {
         Authorization: `Basic ${auth}`,
         'Content-Type': 'application/json',
@@ -256,6 +274,17 @@ export interface BridgeStats {
     outputTokens: number;
     costUsd: number;
   };
+  week?: {
+    generations: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    byModel?: Array<{
+      model: string;
+      generations: number;
+      costUsd: number;
+    }>;
+  };
   budget: {
     daily: number;
     used: number;
@@ -285,7 +314,7 @@ export interface BridgeStats {
 export async function fetchBridgeStats(): Promise<BridgeStats | null> {
   try {
     // Fetch /stats for real-time data
-    const statsResponse = await fetch(`${BRIDGE_URL}/stats`, {
+    const statsResponse = await fetchWithTimeout(`${BRIDGE_URL}/stats`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -318,7 +347,7 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
     const stats = await statsResponse.json() as StatsData;
 
     // Fetch /health for connection statuses
-    const healthResponse = await fetch(`${BRIDGE_URL}/health`, {
+    const healthResponse = await fetchWithTimeout(`${BRIDGE_URL}/health`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -330,12 +359,14 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
 
     const health = healthResponse.ok ? await healthResponse.json() as HealthData : {};
 
-    // Fetch cost summary for model breakdown
-    const costResponse = await fetch(`${BRIDGE_URL}/api/cost/summary?period=day`, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
+    // Fetch cost summaries for model breakdown (day and week in parallel)
     interface CostData {
+      totals?: {
+        generations?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        cost_usd?: number;
+      };
       by_model?: Array<{
         model?: string;
         generations?: number;
@@ -343,7 +374,17 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
       }>;
     }
 
+    const [costResponse, weekResponse] = await Promise.all([
+      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=day`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=week`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ]);
+
     const costData = costResponse.ok ? await costResponse.json() as CostData : {};
+    const weekData = weekResponse.ok ? await weekResponse.json() as CostData : {};
 
     return {
       status: stats.status || 'unknown',
@@ -354,6 +395,17 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
         outputTokens: stats.today?.output_tokens || 0,
         costUsd: stats.today?.cost_usd || 0,
       },
+      week: weekData.totals ? {
+        generations: weekData.totals.generations || 0,
+        inputTokens: weekData.totals.input_tokens || 0,
+        outputTokens: weekData.totals.output_tokens || 0,
+        costUsd: weekData.totals.cost_usd || 0,
+        byModel: (weekData.by_model || []).map(m => ({
+          model: m.model || 'unknown',
+          generations: m.generations || 0,
+          costUsd: m.cost_usd || 0,
+        })),
+      } : undefined,
       budget: {
         daily: stats.budget?.daily || DEFAULT_DAILY_BUDGET,
         used: stats.budget?.used || 0,
@@ -409,7 +461,7 @@ export interface RateLimits {
  */
 export async function fetchRateLimits(): Promise<RateLimits> {
   try {
-    const response = await fetch(`${BRIDGE_URL}/api/rate-limits`, {
+    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/rate-limits`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -510,7 +562,7 @@ export interface Insights {
  */
 export async function fetchInsights(period: 'day' | 'week' | 'month' = 'week'): Promise<Insights> {
   try {
-    const response = await fetch(`${BRIDGE_URL}/api/insights?period=${period}`, {
+    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/insights?period=${period}`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
