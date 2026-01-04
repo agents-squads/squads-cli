@@ -6,6 +6,8 @@
 
 **Organize, run, and track autonomous AI agents.** Built for Claude Code.
 
+![squads dashboard](./assets/dashboard.png)
+
 ```
 $ squads status
 
