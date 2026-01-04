@@ -3,7 +3,7 @@
  * Checks npm registry for newer versions and caches result
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
@@ -158,4 +158,46 @@ export function checkForUpdate(): UpdateInfo {
  */
 export function getCurrentVersion(): string {
   return CURRENT_VERSION;
+}
+
+/**
+ * Perform the actual update via npm
+ * Returns true if successful
+ */
+export function performUpdate(): { success: boolean; error?: string } {
+  try {
+    execSync('npm update -g squads-cli', {
+      encoding: 'utf-8',
+      stdio: 'inherit',
+      timeout: 120000, // 2 minutes
+    });
+    // Clear cache so next check fetches fresh
+    try {
+      unlinkSync(CACHE_FILE);
+    } catch {
+      // Ignore
+    }
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Force refresh the version cache (bypass TTL)
+ */
+export function refreshVersionCache(): UpdateInfo {
+  const latestVersion = fetchLatestVersion();
+  if (latestVersion) {
+    writeCache(latestVersion);
+    return {
+      currentVersion: CURRENT_VERSION,
+      latestVersion,
+      updateAvailable: isNewerVersion(CURRENT_VERSION, latestVersion),
+    };
+  }
+  return checkForUpdate();
 }

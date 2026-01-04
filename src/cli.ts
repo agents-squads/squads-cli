@@ -47,6 +47,7 @@ import { issuesCommand } from './commands/issues.js';
 import { solveIssuesCommand } from './commands/solve-issues.js';
 import { openIssuesCommand } from './commands/open-issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
+import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { workersCommand } from './commands/workers.js';
@@ -387,6 +388,14 @@ program
   .command('whoami')
   .description('Show current logged in user')
   .action(whoamiCommand);
+
+// Update command
+program
+  .command('update')
+  .description('Check for and install updates')
+  .option('-y, --yes', 'Auto-confirm update without prompting')
+  .option('-c, --check', 'Check for updates without installing')
+  .action((options) => updateCommand(options));
 
 // Parse arguments (use parseAsync to properly await async actions)
 await program.parseAsync();

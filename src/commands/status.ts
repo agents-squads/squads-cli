@@ -60,7 +60,7 @@ async function showOverallStatus(
   // Check for updates (cached, non-blocking)
   const updateInfo = checkForUpdate();
   if (updateInfo.updateAvailable) {
-    writeLine(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET} ${colors.dim}(npm update -g squads-cli)${RESET}`);
+    writeLine(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET} ${colors.dim}(run \`squads update\`)${RESET}`);
   }
 
   // Session indicator line (only if there are active sessions)
