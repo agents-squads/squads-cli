@@ -1,0 +1,284 @@
+# Squads Local Stack - With Engram Integration
+# Full telemetry pipeline + Memory system
+#
+# Usage:
+#   cd docker && docker-compose -f docker-compose.engram.yml up -d
+#
+# Access:
+#   Langfuse UI:    http://localhost:3100
+#   Neo4j Browser:  http://localhost:7474
+#   Engram MCP:     http://localhost:8080
+#   Mem0 API:       http://localhost:8000
+#   Postgres:       localhost:5433
+
+name: agents-squads
+
+services:
+  # =============================================================================
+  # PostgreSQL with pgvector - Primary data store + Vector search
+  # =============================================================================
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: squads-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: squads
+      POSTGRES_PASSWORD: squads
+      POSTGRES_DB: squads
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - squads_postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-squads.sql:ro
+      - ./init-langfuse-db.sh:/docker-entrypoint-initdb.d/00-init-langfuse.sh:ro
+      - ./init-engram-db.sql:/docker-entrypoint-initdb.d/02-init-engram.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U squads -d squads"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - squads
+
+  # =============================================================================
+  # Redis - Caching and job queues
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: squads-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - squads_redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - squads
+
+  # =============================================================================
+  # Neo4j - Knowledge graph for agent memory
+  # =============================================================================
+  neo4j:
+    image: neo4j:5-community
+    container_name: squads-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-squads_local_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - squads_neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - squads
+
+  # =============================================================================
+  # Langfuse - LLM Observability (local instance)
+  # =============================================================================
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: squads-langfuse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/langfuse
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-squads-local-dev-secret}
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
+      SALT: ${LANGFUSE_SALT:-squads-local-salt}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+    ports:
+      - "${LANGFUSE_PORT:-3100}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/public/health || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    networks:
+      - squads
+
+  # =============================================================================
+  # OpenTelemetry Collector - Receives telemetry from Claude Code
+  # =============================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: squads-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "${OTEL_PORT:-4318}:4318"
+    depends_on:
+      - squads-bridge
+    networks:
+      - squads
+
+  # =============================================================================
+  # Squads Bridge - Telemetry storage (postgres first, Langfuse optional)
+  # =============================================================================
+  squads-bridge:
+    build:
+      context: ./squads-bridge
+      dockerfile: Dockerfile
+    container_name: squads-bridge
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      DEBUG: "1"
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      REDIS_URL: redis://redis:6379/0
+      SQUADS_DAILY_BUDGET: ${SQUADS_DAILY_BUDGET:-50.0}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    ports:
+      - "${BRIDGE_PORT:-8088}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
+  # Anthropic Proxy - Captures rate limit headers
+  # =============================================================================
+  anthropic-proxy:
+    build:
+      context: ./squads-bridge
+      dockerfile: Dockerfile.proxy
+    container_name: squads-anthropic-proxy
+    restart: unless-stopped
+    profiles: ["proxy"]
+    environment:
+      PORT: 8089
+      DEBUG: "${DEBUG:-0}"
+      ANTHROPIC_API_URL: https://api.anthropic.com
+      REDIS_URL: redis://redis:6379/0
+      SQUADS_BRIDGE_URL: http://squads-bridge:8080
+    ports:
+      - "${ANTHROPIC_PROXY_PORT:-8089}:8089"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
+  # Mem0 - Memory extraction API (Engram backend)
+  # =============================================================================
+  mem0:
+    build:
+      context: ../../engram/mem0-server
+      dockerfile: Dockerfile
+    container_name: squads-mem0
+    restart: unless-stopped
+    environment:
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: squads
+      POSTGRES_PASSWORD: squads
+      POSTGRES_DB: engram
+      POSTGRES_COLLECTION_NAME: memories
+      # Neo4j
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-squads_local_dev}
+      # LLM Provider (default: ollama)
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      OLLAMA_EMBEDDING_DIMS: ${OLLAMA_EMBEDDING_DIMS:-1024}
+      # OpenAI (if using)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${MEM0_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - squads
+
+  # =============================================================================
+  # Engram MCP - MCP server for Claude Code memory integration
+  # =============================================================================
+  engram-mcp:
+    build:
+      context: ../../engram/mcp-server
+      dockerfile: Dockerfile
+    container_name: squads-engram-mcp
+    restart: unless-stopped
+    environment:
+      # Mem0 API
+      MEM0_API_URL: http://mem0:8000
+      # Database (for auth)
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: squads
+      POSTGRES_PASSWORD: squads
+      POSTGRES_DB: engram
+      # MCP Server
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8080
+      # Project ID Mode
+      PROJECT_ID_MODE: ${PROJECT_ID_MODE:-auto}
+      DEFAULT_USER_ID: ${DEFAULT_USER_ID:-claude_code_mcp}
+      # Chunking
+      CHUNK_MAX_SIZE: ${CHUNK_MAX_SIZE:-1000}
+      CHUNK_OVERLAP_SIZE: ${CHUNK_OVERLAP_SIZE:-150}
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${ENGRAM_MCP_PORT:-8080}:8080"
+    depends_on:
+      mem0:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - squads
+
+networks:
+  squads:
+    driver: bridge
+
+volumes:
+  squads_postgres_data:
+  squads_redis_data:
+  squads_neo4j_data:

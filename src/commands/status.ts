@@ -7,7 +7,7 @@ import {
   listAgents
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
-import { getSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
+import { getLiveSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
 import {
   colors,
   bold,
@@ -49,9 +49,9 @@ async function showOverallStatus(
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
 
-  // Get active sessions
+  // Get active sessions (real-time process detection)
   cleanupStaleSessions();
-  const sessionSummary = getSessionSummary();
+  const sessionSummary = getLiveSessionSummary();
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
@@ -60,7 +60,17 @@ async function showOverallStatus(
   if (sessionSummary.totalSessions > 0) {
     const sessionText = sessionSummary.totalSessions === 1 ? 'session' : 'sessions';
     const squadText = sessionSummary.squadCount === 1 ? 'squad' : 'squads';
-    writeLine(`  ${colors.green}${icons.active}${RESET} ${colors.white}${sessionSummary.totalSessions}${RESET} active ${sessionText} ${colors.dim}across${RESET} ${colors.cyan}${sessionSummary.squadCount}${RESET} ${squadText}`);
+
+    // Build tool breakdown string (e.g., "claude 4, cursor 2")
+    let toolInfo = '';
+    if (sessionSummary.byTool && Object.keys(sessionSummary.byTool).length > 0) {
+      const toolParts = Object.entries(sessionSummary.byTool)
+        .sort((a, b) => b[1] - a[1]) // Sort by count descending
+        .map(([tool, count]) => `${colors.dim}${tool}${RESET} ${colors.cyan}${count}${RESET}`);
+      toolInfo = ` ${colors.dim}(${RESET}${toolParts.join(` ${colors.dim}·${RESET} `)}${colors.dim})${RESET}`;
+    }
+
+    writeLine(`  ${colors.green}${icons.active}${RESET} ${colors.white}${sessionSummary.totalSessions}${RESET} active ${sessionText} ${colors.dim}across${RESET} ${colors.cyan}${sessionSummary.squadCount}${RESET} ${squadText}${toolInfo}`);
   }
   writeLine();
 
