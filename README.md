@@ -7,18 +7,22 @@
 **Organize, run, and track autonomous AI agents.** Built for Claude Code.
 
 ```
-$ squads dash
+$ squads status
 
-┌────────────────────────────────────────────────────────────┐
-│ SQUAD            AGENTS   MEMORY        LAST ACTIVITY      │
-├────────────────────────────────────────────────────────────┤
-│ intelligence     16       12 entries    today              │
-│ engineering      5        8 entries     today              │
-│ research         6        3 entries     yesterday          │
-│ website          9        5 entries     2d ago             │
-└────────────────────────────────────────────────────────────┘
+  squads status
+  ● 7 active sessions across 1 squad (claude 7)
 
-Active Goals: 3 | Memory Entries: 28 | Total Agents: 36
+  10/10 squads  │  memory: enabled
+
+  ┌────────────────────────────────────────────────────────┐
+  │ SQUAD           AGENTS  MEMORY        ACTIVITY         │
+  ├────────────────────────────────────────────────────────┤
+  │ cli             7       1 entry       today            │
+  │ engineering     6       1 entry       today            │
+  │ intelligence    17      1 entry       4d ago           │
+  │ marketing       4       2 entries     today            │
+  │ website         10      1 entry       5d ago           │
+  └────────────────────────────────────────────────────────┘
 ```
 
 ## Why squads-cli?
@@ -28,7 +32,8 @@ AI agents are powerful individually. But real work requires coordination.
 - **Squads** — Group agents by domain (engineering, research, marketing)
 - **Memory** — Persistent state that survives across sessions
 - **Goals** — Track objectives and measure progress
-- **Feedback** — Rate executions to improve over time
+- **Sessions** — Real-time detection of running AI assistants
+- **Stack** — Local infrastructure for telemetry and memory
 
 No complex infrastructure. Just markdown files and a CLI.
 
@@ -47,6 +52,9 @@ squads init
 # See what you have
 squads status
 
+# Full dashboard with goals and metrics
+squads dash
+
 # Run a squad
 squads run engineering
 
@@ -55,6 +63,110 @@ squads memory query "authentication"
 
 # Set a goal
 squads goal set engineering "Ship v2.0 by Friday"
+```
+
+## Features
+
+### Dashboard
+
+```
+$ squads dash
+
+  squads dashboard
+  ● 7 active sessions across 1 squad (claude 7)
+
+  8/10 squads  │  404 commits  │  use -f for PRs/issues
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35% goal progress
+
+  ┌──────────────────────────────────────────────────────────┐
+  │ SQUAD        COMMITS PRs ISSUES GOALS  PROGRESS          │
+  ├──────────────────────────────────────────────────────────┤
+  │ marketing    203     0   0/0    9/12   ━━━━━━━━          │
+  │ website      203     0   0/0    0/1    ━━━━━━━━          │
+  │ engineering  139     0   0/0    0/1    ━━━━━━━━          │
+  │ cli          48      0   0/0    2/3    ━━━━━━━━          │
+  └──────────────────────────────────────────────────────────┘
+
+  Git Activity (30d)
+  Last 14d: ▁▁▁▁▁▁▁▄▆▄▆▅█▂
+  404 commits  │  13.5/day  │  21 active days
+```
+
+### Memory Search
+
+```
+$ squads memory query "telemetry"
+
+  squads memory query "telemetry"
+
+  5 results found
+
+  ┌──────────────────────────────────────────────────┐
+  │ LOCATION                    TYPE      SCORE     │
+  ├──────────────────────────────────────────────────┤
+  │ cli/cli-lead                state     7.2       │
+  │ engineering/eng-lead        state     7.2       │
+  │ marketing/marketing-lead    state     7.2       │
+  └──────────────────────────────────────────────────┘
+
+  Matches
+  ◇ Telemetry pipeline COMPLETE. Dashboard showing real-time...
+    └ cli/cli-lead
+```
+
+### Session Detection
+
+Real-time detection of running AI coding assistants:
+
+```
+$ squads status
+
+  ● 7 active sessions across 1 squad (claude 7)
+```
+
+Supports multiple tools:
+- Claude Code
+- Cursor
+- Aider
+- Gemini
+- GitHub Copilot
+- Sourcegraph Cody
+- Continue
+
+### Stack Management
+
+Local Docker infrastructure for telemetry and memory:
+
+```
+$ squads stack health
+
+  squads stack health
+
+  ✓ postgres   healthy
+  ✓ redis      healthy
+  ✓ neo4j      healthy
+  ✓ bridge     healthy
+  ✓ langfuse   healthy
+  ✓ mem0       healthy
+  ✓ engram     healthy
+
+  ● 8/8 services healthy
+```
+
+### Auto-Update
+
+```
+$ squads status
+
+  ⬆ Update available: 0.1.2 → 0.2.0 (run `squads update`)
+
+$ squads update
+  Checking npm registry...
+  ⬆ Update available: 0.1.2 → 0.2.0
+  Update now? [y/N]: y
+  Installing update...
+  ● Updated to 0.2.0
 ```
 
 ## Core Concepts
@@ -103,7 +215,6 @@ claude-sonnet-4
 squads memory show engineering
 # → "Switched to pnpm for faster installs"
 # → "Build cache reduced CI time by 40%"
-# → "Team prefers explicit over implicit configs"
 
 # Search across all squads
 squads memory query "performance"
@@ -133,8 +244,8 @@ squads run engineering --dry-run    # Preview what would run
 ```bash
 squads memory query "deployment"     # Semantic search
 squads memory show research          # View squad memory
-squads memory update research        # Add to memory
 squads memory list                   # List all entries
+squads memory sync                   # Sync from git remote
 ```
 
 ### Goal Tracking
@@ -142,8 +253,8 @@ squads memory list                   # List all entries
 ```bash
 squads goal set finance "Cut costs 20%"  # Set goal
 squads goal list                          # View all goals
-squads goal progress finance 75           # Update progress
-squads goal complete finance              # Mark done
+squads goal progress finance 1 75         # Update progress
+squads goal complete finance 1            # Mark done
 ```
 
 ### Feedback Loop
@@ -152,6 +263,24 @@ squads goal complete finance              # Mark done
 squads feedback add research 4 "Good analysis"   # Rate 1-5
 squads feedback show research                     # View history
 squads feedback stats                             # Summary
+```
+
+### Stack Management
+
+```bash
+squads stack status        # Container health
+squads stack up            # Start Docker stack
+squads stack down          # Stop Docker stack
+squads stack health        # Comprehensive diagnostics
+squads stack logs bridge   # View container logs
+```
+
+### Updates
+
+```bash
+squads update              # Interactive update
+squads update -y           # Auto-confirm
+squads update -c           # Check only
 ```
 
 ## Claude Code Integration
@@ -213,6 +342,9 @@ your-project/
 squads status [squad]         Show squad status
   -v, --verbose               Include agent details
 
+squads dash                   Full dashboard with goals
+  -f, --full                  Include PRs and issues
+
 squads run <target>           Run squad or agent
   -v, --verbose               Verbose output
   -d, --dry-run               Preview only
@@ -225,19 +357,28 @@ squads list                   List all squads/agents
 squads memory query <q>       Search memory
   -s, --squad <squad>         Filter by squad
 squads memory show <squad>    View squad memory
-squads memory update <squad>  Add to memory
 squads memory list            List all entries
+squads memory sync            Sync from git remote
 
 squads goal set <squad> <goal>
 squads goal list [squad]
-squads goal progress <squad> <pct>
-squads goal complete <squad>
+squads goal progress <squad> <idx> <pct>
+squads goal complete <squad> <idx>
 
 squads feedback add <squad> <rating> <text>
 squads feedback show <squad>
 squads feedback stats
 
-squads dashboard              Full dashboard
+squads stack status           Container health
+squads stack up               Start Docker stack
+squads stack down             Stop Docker stack
+squads stack health           Comprehensive diagnostics
+squads stack logs <service>   View container logs
+
+squads update                 Interactive update
+  -y, --yes                   Auto-confirm
+  -c, --check                 Check only
+
 squads init                   Initialize project
 squads login/logout/whoami    Authentication (Pro)
 ```
