@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlink
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { createInterface } from 'readline';
+import { execSync } from 'child_process';
 
 export interface SessionState {
   sessionId: string;
@@ -25,6 +26,7 @@ export interface SessionSummary {
   totalSessions: number;
   bySquad: Record<string, number>;
   squadCount: number;
+  byTool?: Record<string, number>; // Optional: breakdown by AI tool
 }
 
 // Event types for JSONL history
@@ -48,6 +50,26 @@ export interface SessionHistoryStats {
   byDate: Record<string, number>; // YYYY-MM-DD -> count
   peakConcurrent: number;
 }
+
+// Live AI coding assistant process info
+export interface AIProcess {
+  pid: number;
+  tty: string;
+  cwd: string;
+  squad: string | null;
+  tool: string; // 'claude', 'cursor', 'aider', 'gemini', etc.
+}
+
+// Supported AI coding tools (process names to detect)
+const AI_TOOL_PATTERNS: { pattern: RegExp; name: string }[] = [
+  { pattern: /^claude$/, name: 'claude' },
+  { pattern: /^cursor$/i, name: 'cursor' },
+  { pattern: /^aider$/, name: 'aider' },
+  { pattern: /^gemini$/i, name: 'gemini' },
+  { pattern: /^copilot$/i, name: 'copilot' },
+  { pattern: /^cody$/i, name: 'cody' },
+  { pattern: /^continue$/i, name: 'continue' },
+];
 
 // Session is stale after 5 minutes without heartbeat
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
@@ -154,6 +176,102 @@ export function detectSquad(cwd: string = process.cwd()): string | null {
     return SQUAD_DIR_MAP[dir] || dir;
   }
   return null;
+}
+
+/**
+ * Detect running AI coding assistant processes (real-time process detection)
+ * Supports: Claude, Cursor, Aider, Gemini, Copilot, Cody, Continue
+ */
+export function detectAIProcesses(): AIProcess[] {
+  const processes: AIProcess[] = [];
+
+  try {
+    // Get all processes - we'll filter for AI tools
+    const psOutput = execSync('ps -eo pid,tty,comm 2>/dev/null', {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+
+    if (!psOutput) return [];
+
+    const lines = psOutput.split('\n').filter(line => line.trim());
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+
+      const pid = parseInt(parts[0], 10);
+      const tty = parts[1];
+      const comm = parts.slice(2).join(' '); // Process name (may have spaces)
+
+      if (isNaN(pid)) continue;
+
+      // Check if this is an AI coding tool
+      let toolName: string | null = null;
+      for (const { pattern, name } of AI_TOOL_PATTERNS) {
+        if (pattern.test(comm)) {
+          toolName = name;
+          break;
+        }
+      }
+
+      if (!toolName) continue;
+
+      // Get the working directory for this process
+      let cwd = '';
+      try {
+        const lsofOutput = execSync(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
+          encoding: 'utf-8',
+          timeout: 3000,
+        }).trim();
+        cwd = lsofOutput || '';
+      } catch {
+        // Can't get cwd, use empty string
+        cwd = '';
+      }
+
+      // Detect squad from working directory
+      const squad = detectSquad(cwd);
+
+      processes.push({
+        pid,
+        tty,
+        cwd,
+        squad,
+        tool: toolName,
+      });
+    }
+  } catch {
+    // Process detection failed (command not found, timeout, etc.)
+    // Return empty array - graceful degradation
+  }
+
+  return processes;
+}
+
+// Backwards compatibility alias
+export const detectClaudeProcesses = detectAIProcesses;
+
+/**
+ * Get live session summary using real process detection
+ */
+export function getLiveSessionSummary(): SessionSummary {
+  const processes = detectAIProcesses();
+  const bySquad: Record<string, number> = {};
+  const byTool: Record<string, number> = {};
+
+  for (const proc of processes) {
+    const squad = proc.squad || 'unknown';
+    bySquad[squad] = (bySquad[squad] || 0) + 1;
+    byTool[proc.tool] = (byTool[proc.tool] || 0) + 1;
+  }
+
+  return {
+    totalSessions: processes.length,
+    bySquad,
+    squadCount: Object.keys(bySquad).length,
+    byTool,
+  };
 }
 
 /**
