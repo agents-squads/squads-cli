@@ -310,18 +310,10 @@ export interface BridgeStats {
 
 /**
  * Fetch real-time stats from Squads Bridge
+ * All HTTP calls are made in parallel for optimal performance
  */
 export async function fetchBridgeStats(): Promise<BridgeStats | null> {
   try {
-    // Fetch /stats for real-time data
-    const statsResponse = await fetchWithTimeout(`${BRIDGE_URL}/stats`, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!statsResponse.ok) {
-      return null;
-    }
-
     interface StatsData {
       status?: string;
       source?: string;
@@ -344,22 +336,12 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
       }>;
     }
 
-    const stats = await statsResponse.json() as StatsData;
-
-    // Fetch /health for connection statuses
-    const healthResponse = await fetchWithTimeout(`${BRIDGE_URL}/health`, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
     interface HealthData {
       postgres?: string;
       redis?: string;
       langfuse?: string;
     }
 
-    const health = healthResponse.ok ? await healthResponse.json() as HealthData : {};
-
-    // Fetch cost summaries for model breakdown (day and week in parallel)
     interface CostData {
       totals?: {
         generations?: number;
@@ -374,7 +356,14 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
       }>;
     }
 
-    const [costResponse, weekResponse] = await Promise.all([
+    // Fetch ALL endpoints in parallel (4 requests -> 1 round trip)
+    const [statsResponse, healthResponse, costResponse, weekResponse] = await Promise.all([
+      fetchWithTimeout(`${BRIDGE_URL}/stats`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      fetchWithTimeout(`${BRIDGE_URL}/health`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
       fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=day`, {
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -383,8 +372,17 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
       }),
     ]);
 
-    const costData = costResponse.ok ? await costResponse.json() as CostData : {};
-    const weekData = weekResponse.ok ? await weekResponse.json() as CostData : {};
+    if (!statsResponse.ok) {
+      return null;
+    }
+
+    // Parse all responses in parallel
+    const [stats, health, costData, weekData] = await Promise.all([
+      statsResponse.json() as Promise<StatsData>,
+      healthResponse.ok ? healthResponse.json() as Promise<HealthData> : Promise.resolve({} as HealthData),
+      costResponse.ok ? costResponse.json() as Promise<CostData> : Promise.resolve({} as CostData),
+      weekResponse.ok ? weekResponse.json() as Promise<CostData> : Promise.resolve({} as CostData),
+    ]);
 
     return {
       status: stats.status || 'unknown',

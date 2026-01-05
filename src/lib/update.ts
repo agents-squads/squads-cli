@@ -118,6 +118,7 @@ function fetchLatestVersion(): string | null {
 
 /**
  * Check for updates (uses cache to avoid frequent npm calls)
+ * Non-blocking: returns cached data immediately, triggers background refresh if stale
  */
 export function checkForUpdate(): UpdateInfo {
   const result: UpdateInfo = {
@@ -130,27 +131,57 @@ export function checkForUpdate(): UpdateInfo {
   const cache = readCache();
   const now = Date.now();
 
-  if (cache && (now - cache.checkedAt) < CACHE_TTL_MS) {
-    // Use cached value
+  if (cache) {
+    // Always use cached value immediately for fast response
     result.latestVersion = cache.latestVersion;
     result.updateAvailable = isNewerVersion(CURRENT_VERSION, cache.latestVersion);
+
+    // If cache is stale, trigger background refresh (non-blocking)
+    if ((now - cache.checkedAt) >= CACHE_TTL_MS) {
+      // Fire and forget - don't await
+      triggerBackgroundRefresh();
+    }
     return result;
   }
 
-  // Fetch from npm (async-ish via cache)
-  const latestVersion = fetchLatestVersion();
-
-  if (latestVersion) {
-    writeCache(latestVersion);
-    result.latestVersion = latestVersion;
-    result.updateAvailable = isNewerVersion(CURRENT_VERSION, latestVersion);
-  } else if (cache) {
-    // Use stale cache if fetch fails
-    result.latestVersion = cache.latestVersion;
-    result.updateAvailable = isNewerVersion(CURRENT_VERSION, cache.latestVersion);
-  }
-
+  // No cache at all - trigger background refresh and return defaults
+  triggerBackgroundRefresh();
   return result;
+}
+
+/**
+ * Trigger a background version check that doesn't block the CLI
+ * Uses spawn to run npm in a detached process
+ */
+function triggerBackgroundRefresh(): void {
+  try {
+    // Use spawn with detached: true to run in background
+    // This won't block the main process
+    const { spawn } = require('child_process') as typeof import('child_process');
+    const child = spawn('npm', ['view', 'squads-cli', 'version'], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      shell: true,
+    });
+
+    // Collect output
+    let output = '';
+    child.stdout?.on('data', (data: Buffer) => {
+      output += data.toString();
+    });
+
+    child.on('close', () => {
+      const version = output.trim();
+      if (version && /^\d+\.\d+\.\d+/.test(version)) {
+        writeCache(version);
+      }
+    });
+
+    // Unref to allow main process to exit
+    child.unref();
+  } catch {
+    // Ignore errors - background refresh is best effort
+  }
 }
 
 /**
