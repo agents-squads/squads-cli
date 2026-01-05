@@ -173,4 +173,4 @@ export function footer(): void {
 }
 
 // Export all terminal utilities for advanced use
-export { colors, bold, RESET, gradient, box, padEnd, truncate, icons } from './terminal.js';
+export { colors, bold, RESET, gradient, box, padEnd, truncate, icons, stripAnsi, isColorEnabled } from './terminal.js';

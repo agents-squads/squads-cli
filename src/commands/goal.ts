@@ -132,9 +132,14 @@ export async function goalCompleteCommand(
   }
 
   const idx = parseInt(goalIndex) - 1;
-  if (idx < 0 || idx >= squad.goals.length) {
+  if (isNaN(idx) || idx < 0 || idx >= squad.goals.length) {
     writeLine(`  ${colors.red}Invalid goal index: ${goalIndex}${RESET}`);
-    writeLine(`  ${colors.dim}Squad has ${squad.goals.length} goal(s)${RESET}`);
+    if (squad.goals.length === 0) {
+      writeLine(`  ${colors.dim}Squad has no goals${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}Valid indexes: 1-${squad.goals.length}${RESET}`);
+      writeLine(`  ${colors.dim}Tip: Run 'squads goal list ${squadName}' to see goals with indexes${RESET}`);
+    }
     return;
   }
 
@@ -161,8 +166,14 @@ export async function goalProgressCommand(
   }
 
   const idx = parseInt(goalIndex) - 1;
-  if (idx < 0 || idx >= squad.goals.length) {
+  if (isNaN(idx) || idx < 0 || idx >= squad.goals.length) {
     writeLine(`  ${colors.red}Invalid goal index: ${goalIndex}${RESET}`);
+    if (squad.goals.length === 0) {
+      writeLine(`  ${colors.dim}Squad has no goals${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}Valid indexes: 1-${squad.goals.length}${RESET}`);
+      writeLine(`  ${colors.dim}Tip: Run 'squads goal list ${squadName}' to see goals with indexes${RESET}`);
+    }
     return;
   }
 

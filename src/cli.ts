@@ -6,6 +6,12 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { version } from './version.js';
 
+// Disable colors when output is piped (not a TTY)
+// This ensures piped output is clean for parsing
+if (!process.stdout.isTTY) {
+  chalk.level = 0;
+}
+
 // Load .env from multiple locations (first found wins)
 const envPaths = [
   join(process.cwd(), '.env'),
@@ -78,7 +84,24 @@ const program = new Command();
 program
   .name('squads')
   .description('A CLI for humans and agents')
-  .version(version);
+  .version(version)
+  // Enable typo suggestions (Commander.js built-in feature)
+  .showSuggestionAfterError(true)
+  // Configure help to exit with code 0 (Unix convention)
+  .configureOutput({
+    outputError: (str, write) => write(str),
+  })
+  .exitOverride((err) => {
+    // Exit code 0 for help display (Unix convention)
+    if (err.code === 'commander.helpDisplayed' || err.code === 'commander.version') {
+      process.exit(0);
+    }
+    // For other commander errors, use the default exit code
+    if (err.exitCode !== undefined) {
+      process.exit(err.exitCode);
+    }
+    throw err;
+  });
 
 // Init command
 program
@@ -451,8 +474,68 @@ program
   .option('-c, --check', 'Check for updates without installing')
   .action((options) => updateCommand(options));
 
+// Version command (following npm/docker pattern)
+program
+  .command('version')
+  .description('Show version information')
+  .action(() => {
+    console.log(`squads-cli ${version}`);
+  });
+
+// Global error handler for uncaught exceptions
+// Provides helpful recovery steps instead of raw stack traces (#31)
+function handleError(error: unknown): void {
+  const err = error instanceof Error ? error : new Error(String(error));
+
+  // Check for common error types and provide helpful messages
+  if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
+    console.error(chalk.red('\nConnection error:'), err.message);
+    console.error(chalk.dim('\nPossible fixes:'));
+    console.error(chalk.dim('  1. Check if Docker containers are running: squads stack status'));
+    console.error(chalk.dim('  2. Start the stack: squads stack up'));
+    console.error(chalk.dim('  3. Check your network connection'));
+  } else if (err.message.includes('ENOENT')) {
+    console.error(chalk.red('\nFile not found:'), err.message);
+    console.error(chalk.dim('\nPossible fixes:'));
+    console.error(chalk.dim('  1. Make sure you are in the correct directory'));
+    console.error(chalk.dim('  2. Initialize the project: squads init'));
+  } else if (err.message.includes('permission denied') || err.message.includes('EACCES')) {
+    console.error(chalk.red('\nPermission denied:'), err.message);
+    console.error(chalk.dim('\nPossible fixes:'));
+    console.error(chalk.dim('  1. Check file permissions'));
+    console.error(chalk.dim('  2. Avoid running with sudo if not needed'));
+  } else if (err.message.includes('rate limit') || err.message.includes('429')) {
+    console.error(chalk.red('\nRate limit exceeded'));
+    console.error(chalk.dim('\nPossible fixes:'));
+    console.error(chalk.dim('  1. Wait a few minutes and try again'));
+    console.error(chalk.dim('  2. Check your API usage: squads dash'));
+  } else {
+    // Generic error with stack trace only in verbose mode
+    console.error(chalk.red('\nError:'), err.message);
+    if (process.env.DEBUG || process.env.VERBOSE) {
+      console.error(chalk.dim('\nStack trace:'));
+      console.error(chalk.dim(err.stack));
+    } else {
+      console.error(chalk.dim('\nRun with DEBUG=1 for more details'));
+    }
+  }
+
+  console.error(chalk.dim('\nIf this persists, please report at:'));
+  console.error(chalk.cyan('  https://github.com/agents-squads/squads-cli/issues\n'));
+
+  process.exit(1);
+}
+
+// Register global error handlers
+process.on('uncaughtException', handleError);
+process.on('unhandledRejection', handleError);
+
 // Parse arguments (use parseAsync to properly await async actions)
-await program.parseAsync();
+try {
+  await program.parseAsync();
+} catch (error) {
+  handleError(error);
+}
 
 // Show help if no command provided
 if (!process.argv.slice(2).length) {
