@@ -201,7 +201,11 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
       cost: bridgeStats.today.costUsd,
     },
     budget: bridgeStats.budget,
-    bySquad: bridgeStats.bySquad,
+    bySquad: bridgeStats.bySquad.map(s => ({
+      squad: s.squad,
+      cost: s.costUsd,
+      generations: s.generations,
+    })),
   } : undefined;
 
   // Build rate limits data
