@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan, detectProvidersFromEnv, ProviderCosts, getProviderDisplayName } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -941,6 +941,18 @@ function renderTokenEconomicsCached(cache: DashboardCache): void {
   const planInfo = detectPlan();
   const planDisplay = planInfo.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
   const confidenceNote = planInfo.confidence === 'inferred' ? ` ${colors.dim}[${planInfo.reason}]${RESET}` : '';
+
+  // Show detected providers
+  const providers = detectProvidersFromEnv();
+  if (providers.length > 0) {
+    const providerLine = providers.map((p) => {
+      const icon = p.provider === 'anthropic' ? colors.green + '●' : colors.dim + '○';
+      const planStr = p.plan ? ` ${colors.dim}(${p.plan})${RESET}` : '';
+      return `${icon}${RESET} ${getProviderDisplayName(p.provider)}${planStr}`;
+    }).join('  ');
+    writeLine(`  ${colors.dim}Providers:${RESET} ${providerLine}`);
+    writeLine();
+  }
 
   if (maxPlan) {
     // Max plan: Show rate limits as primary constraint, cost is informational only

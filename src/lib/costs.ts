@@ -4,6 +4,19 @@
  * Fallback: Langfuse API (if bridge unavailable)
  */
 
+import {
+  ProviderName,
+  ProviderDetection,
+  detectProviderFromModel,
+  detectProvidersFromEnv,
+  getModelPricing,
+  calcCost as calcProviderCost,
+  getProviderDisplayName,
+} from './providers.js';
+
+// Re-export provider types for convenience
+export { ProviderName, ProviderDetection, detectProviderFromModel, detectProvidersFromEnv, getProviderDisplayName };
+
 interface SquadCosts {
   squad: string;
   calls: number;
@@ -12,6 +25,18 @@ interface SquadCosts {
   cachedTokens: number;
   cost: number;
   models: Record<string, number>;
+}
+
+export interface ProviderCosts {
+  provider: ProviderName;
+  displayName: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  plan?: string;
+  confidence?: 'explicit' | 'inferred';
+  reason?: string;
 }
 
 export interface CostSummary {
@@ -26,10 +51,12 @@ export interface CostSummary {
   totalInputTokens: number;
   cacheHitRate: number;
   bySquad: SquadCosts[];
+  byProvider: ProviderCosts[];
   source: 'postgres' | 'langfuse' | 'none';
 }
 
-// Model pricing (per 1M tokens)
+// Legacy MODEL_PRICING kept for backward compatibility
+// New code should use getModelPricing() from providers.ts
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-opus-4-5-20251101': { input: 15.0, output: 75.0 },
   'claude-sonnet-4-20250514': { input: 3.0, output: 15.0 },
@@ -144,8 +171,9 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 }
 
 function calcCost(model: string, inputTokens: number, outputTokens: number): number {
-  const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
-  return (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
+  // Use provider-aware pricing
+  const provider = detectProviderFromModel(model);
+  return calcProviderCost(provider, model, inputTokens, outputTokens);
 }
 
 /**
@@ -182,6 +210,20 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
     const totalAllInput = totalInputTokens + totalCachedTokens;
     const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
+    // Build provider summary from detected providers in env
+    const detectedProviders = detectProvidersFromEnv();
+    const byProvider: ProviderCosts[] = detectedProviders.map((p) => ({
+      provider: p.provider,
+      displayName: getProviderDisplayName(p.provider),
+      calls: 0, // Bridge doesn't track by provider yet
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: p.provider === 'anthropic' ? totalCost : 0, // Assume all cost is Anthropic for now
+      plan: p.plan,
+      confidence: p.confidence,
+      reason: p.reason,
+    }));
+
     return {
       totalCost,
       dailyBudget,
@@ -194,6 +236,7 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
       totalInputTokens,
       cacheHitRate,
       bySquad,
+      byProvider,
       source: 'postgres',
     };
   } catch {
@@ -282,6 +325,38 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
     const totalAllInput = totalInputTokens + totalCachedTokens;
     const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
+    // Build provider summary - Langfuse can track by model, so group by provider
+    const providerMap: Record<string, ProviderCosts> = {};
+    for (const obs of observations) {
+      if (obs.type !== 'GENERATION') continue;
+      const model = obs.model || 'unknown';
+      const provider = detectProviderFromModel(model);
+      const usage = obs.usage || {};
+      const inputTokens = usage.input || 0;
+      const outputTokens = usage.output || 0;
+      const cost = calcCost(model, inputTokens, outputTokens);
+
+      if (!providerMap[provider]) {
+        const detection = detectProvidersFromEnv().find((p) => p.provider === provider);
+        providerMap[provider] = {
+          provider,
+          displayName: getProviderDisplayName(provider),
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          plan: detection?.plan,
+          confidence: detection?.confidence,
+          reason: detection?.reason,
+        };
+      }
+      providerMap[provider].calls += 1;
+      providerMap[provider].inputTokens += inputTokens;
+      providerMap[provider].outputTokens += outputTokens;
+      providerMap[provider].cost += cost;
+    }
+    const byProvider = Object.values(providerMap).sort((a, b) => b.cost - a.cost);
+
     return {
       totalCost,
       dailyBudget,
@@ -294,6 +369,7 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
       totalInputTokens,
       cacheHitRate,
       bySquad: squadList,
+      byProvider,
       source: 'langfuse',
     };
   } catch {
@@ -320,8 +396,21 @@ export async function fetchCostSummary(
     return langfuseResult;
   }
 
-  // No data source available
+  // No data source available - still detect providers from env
   const defaultBudget = parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET;
+  const detectedProviders = detectProvidersFromEnv();
+  const byProvider: ProviderCosts[] = detectedProviders.map((p) => ({
+    provider: p.provider,
+    displayName: getProviderDisplayName(p.provider),
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cost: 0,
+    plan: p.plan,
+    confidence: p.confidence,
+    reason: p.reason,
+  }));
+
   return {
     totalCost: 0,
     dailyBudget: defaultBudget,
@@ -334,6 +423,7 @@ export async function fetchCostSummary(
     totalInputTokens: 0,
     cacheHitRate: 0,
     bySquad: [],
+    byProvider,
     source: 'none',
   };
 }
