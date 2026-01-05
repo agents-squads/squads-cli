@@ -6,9 +6,14 @@
  *
  * Prerequisites:
  *   cd docker && docker-compose -f docker-compose.engram.yml up -d
+ *
+ * Note: These tests are skipped in CI since they require local Docker services.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+
+// Skip infrastructure tests in CI (require local Docker services)
+const describeInfra = process.env.CI ? describe.skip : describe;
 import { execSync } from 'child_process';
 
 const TIMEOUT = 10000;
@@ -92,7 +97,7 @@ function isDockerAvailable(): boolean {
   }
 }
 
-describe('infra', () => {
+describeInfra('infra', () => {
   beforeAll(() => {
     if (!isDockerAvailable()) {
       console.warn('Docker not available - skipping infra tests');
@@ -194,7 +199,7 @@ describe('infra', () => {
   });
 });
 
-describe('squads stack health', () => {
+describeInfra('squads stack health', () => {
   it('CLI command runs without error', () => {
     try {
       execSync('npx squads stack health', {
