@@ -66,6 +66,9 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
+    "@types/blessed": "^0.1.27",
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",

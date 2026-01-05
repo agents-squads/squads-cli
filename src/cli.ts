@@ -61,6 +61,8 @@ import { historyCommand } from './commands/history.js';
 import { healthCommand } from './commands/health.js';
 import { workersCommand } from './commands/workers.js';
 import { contextFeedCommand } from './commands/context-feed.js';
+import { watchCommand } from './commands/watch.js';
+import { liveCommand } from './commands/live.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
@@ -239,6 +241,25 @@ program
   .description('Quick health check for all infrastructure services')
   .option('-v, --verbose', 'Show optional services')
   .action((options) => healthCommand(options));
+
+// Watch command - live refresh any command
+program
+  .command('watch <command> [args...]')
+  .description('Live refresh any squads command (like Unix watch)')
+  .option('-n, --interval <seconds>', 'Refresh interval in seconds', '2')
+  .option('--no-clear', 'Don\'t clear screen between refreshes')
+  .action((command, args, options) => watchCommand(command, args, {
+    interval: parseInt(options.interval, 10),
+    clear: options.clear
+  }));
+
+// Live command - TUI dashboard
+program
+  .command('live')
+  .description('Live TUI dashboard with real-time metrics (like htop)')
+  .option('-m, --minimal', 'Minimal view')
+  .option('-f, --focus <panel>', 'Focus on specific panel (agents, cost, activity, memory)')
+  .action((options) => liveCommand(options));
 
 // Memory command group
 const memory = program
