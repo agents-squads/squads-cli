@@ -1,0 +1,27 @@
+# Source files (only dist is needed)
+src/
+tsconfig.json
+tsup.config.ts
+.eslintrc.json
+
+# Development files
+*.test.ts
+*.spec.ts
+__tests__/
+
+# Docker backups and temp files
+docker/backups/
+docker/*.bak
+docker/*.backup*
+docker/scripts/
+
+# Git and IDE
+.git/
+.github/
+.vscode/
+.idea/
+
+# Misc
+*.log
+*.tgz
+.DS_Store

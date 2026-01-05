@@ -1,7 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { execSync, spawn } from 'child_process';
+import { createInterface } from 'readline';
+import { fileURLToPath } from 'url';
 import {
   colors,
   bold,
@@ -12,6 +14,9 @@ import {
   box,
   padEnd,
 } from '../lib/terminal.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 interface StackConfig {
   SQUADS_DATABASE_URL: string;
@@ -39,6 +44,206 @@ const DEFAULT_CONFIG: StackConfig = {
 };
 
 const CONFIG_PATH = join(homedir(), '.squadsrc');
+const SQUADS_DATA_DIR = join(homedir(), '.squads');
+
+/**
+ * Service requirements and setup guidance
+ */
+interface ServiceInfo {
+  name: string;
+  description: string;
+  required: boolean;
+  healthUrl?: string;
+  envVars: string[];
+  setupGuide: string[];
+}
+
+const SERVICES: Record<string, ServiceInfo> = {
+  bridge: {
+    name: 'Bridge API',
+    description: 'Captures conversations and telemetry',
+    required: true,
+    healthUrl: 'http://localhost:8088/health',
+    envVars: ['SQUADS_BRIDGE_URL'],
+    setupGuide: [
+      'Run: squads stack up',
+      'Or manually: docker compose up -d bridge',
+    ],
+  },
+  postgres: {
+    name: 'PostgreSQL',
+    description: 'Stores conversations and telemetry data',
+    required: true,
+    envVars: ['SQUADS_DATABASE_URL'],
+    setupGuide: [
+      'Run: squads stack up',
+      'Or manually: docker compose up -d postgres',
+    ],
+  },
+  mem0: {
+    name: 'Mem0 (Engram)',
+    description: 'Extracts and stores memories from conversations',
+    required: false,
+    healthUrl: 'http://localhost:8000/health',
+    envVars: ['MEM0_API_URL'],
+    setupGuide: [
+      'Run: squads stack up',
+      'Or manually: docker compose -f docker-compose.engram.yml up -d mem0',
+      '',
+      'Mem0 requires an LLM provider. Configure in docker/.env:',
+      '  LLM_PROVIDER=ollama   # For local (free)',
+      '  LLM_PROVIDER=openai   # Requires OPENAI_API_KEY',
+    ],
+  },
+  langfuse: {
+    name: 'Langfuse',
+    description: 'Telemetry dashboard and cost tracking',
+    required: false,
+    healthUrl: 'http://localhost:3100/api/public/health',
+    envVars: ['LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'],
+    setupGuide: [
+      'Run: squads stack up',
+      'Then get API keys from: http://localhost:3100',
+      '  1. Create account / login',
+      '  2. Create project',
+      '  3. Copy API keys to docker/.env',
+    ],
+  },
+  redis: {
+    name: 'Redis',
+    description: 'Caching and rate limiting',
+    required: false,
+    envVars: ['REDIS_URL'],
+    setupGuide: [
+      'Run: squads stack up',
+    ],
+  },
+};
+
+/**
+ * Check if a service is available and show guidance if not
+ */
+export async function checkServiceAvailable(
+  serviceName: keyof typeof SERVICES,
+  showGuidance = true
+): Promise<boolean> {
+  const service = SERVICES[serviceName];
+  if (!service) return false;
+
+  // Check container
+  const containerName = `squads-${serviceName === 'mem0' ? 'mem0' : serviceName}`;
+  const status = getContainerStatus(containerName);
+
+  if (!status.running) {
+    if (showGuidance) {
+      showServiceSetupGuide(serviceName, 'not running');
+    }
+    return false;
+  }
+
+  // Check HTTP health if available
+  if (service.healthUrl) {
+    const healthy = await checkService(service.healthUrl);
+    if (!healthy) {
+      if (showGuidance) {
+        showServiceSetupGuide(serviceName, 'not responding');
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Show setup guide for a service
+ */
+export function showServiceSetupGuide(
+  serviceName: keyof typeof SERVICES,
+  issue: string
+): void {
+  const service = SERVICES[serviceName];
+  if (!service) return;
+
+  writeLine();
+  writeLine(`  ${colors.yellow}${icons.warning}${RESET} ${bold}${service.name}${RESET} is ${issue}`);
+  writeLine(`  ${colors.dim}${service.description}${RESET}`);
+  writeLine();
+
+  writeLine(`  ${bold}To fix:${RESET}`);
+  for (const step of service.setupGuide) {
+    if (step === '') {
+      writeLine();
+    } else {
+      writeLine(`  ${colors.dim}${step}${RESET}`);
+    }
+  }
+
+  if (service.envVars.length > 0) {
+    writeLine();
+    writeLine(`  ${bold}Environment variables:${RESET}`);
+    for (const envVar of service.envVars) {
+      const value = process.env[envVar];
+      const status = value ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
+      writeLine(`  ${status} ${colors.cyan}${envVar}${RESET}${value ? ` = ${colors.dim}${value}${RESET}` : ''}`);
+    }
+  }
+
+  writeLine();
+  writeLine(`  ${colors.dim}Full setup: squads stack init${RESET}`);
+  writeLine();
+}
+
+/**
+ * Prompt user for input
+ */
+async function prompt(question: string, defaultValue?: string): Promise<string> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const suffix = defaultValue ? ` [${defaultValue}]` : '';
+
+  return new Promise((resolve) => {
+    rl.question(`  ${question}${suffix}: `, (answer) => {
+      rl.close();
+      resolve(answer.trim() || defaultValue || '');
+    });
+  });
+}
+
+/**
+ * Prompt yes/no
+ */
+async function confirm(question: string, defaultYes = true): Promise<boolean> {
+  const suffix = defaultYes ? '[Y/n]' : '[y/N]';
+  const answer = await prompt(`${question} ${suffix}`);
+  if (!answer) return defaultYes;
+  return answer.toLowerCase().startsWith('y');
+}
+
+/**
+ * Find package docker directory (from npm package or local dev)
+ */
+function findPackageDockerDir(): string | null {
+  const candidates = [
+    // From npm package (relative to dist/commands/stack.js)
+    join(__dirname, '..', '..', 'docker'),
+    // Local development
+    join(process.cwd(), 'docker'),
+    join(process.cwd(), '..', 'squads-cli', 'docker'),
+    join(homedir(), 'agents-squads', 'squads-cli', 'docker'),
+  ];
+
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'docker-compose.yml'))) {
+      return dir;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Load config from ~/.squadsrc
@@ -246,37 +451,160 @@ function findDockerComposeDir(): string | null {
 }
 
 /**
- * squads stack init - detect and configure local stack
+ * squads stack init - setup wizard for local stack
  */
 export async function stackInitCommand(): Promise<void> {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}stack init${RESET}`);
   writeLine();
+  writeLine(`  ${bold}Local Infrastructure Setup Wizard${RESET}`);
+  writeLine(`  ${colors.dim}This will configure Docker services for conversation capture,${RESET}`);
+  writeLine(`  ${colors.dim}memory extraction, and telemetry.${RESET}`);
+  writeLine();
 
-  // Check Docker
+  // Step 1: Check Docker
+  writeLine(`  ${bold}Step 1: Docker${RESET}`);
   if (!isDockerRunning()) {
     writeLine(`  ${colors.red}${icons.error}${RESET} Docker is not running`);
-    writeLine(`  ${colors.dim}Start Docker Desktop and try again${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Please start Docker Desktop and run this command again.${RESET}`);
+    writeLine();
+    return;
+  }
+  writeLine(`  ${colors.green}${icons.success}${RESET} Docker is running`);
+  writeLine();
+
+  // Step 2: Find or setup docker compose files
+  writeLine(`  ${bold}Step 2: Docker Compose Files${RESET}`);
+
+  let composeDir = findPackageDockerDir();
+  const targetDir = join(SQUADS_DATA_DIR, 'docker');
+
+  if (!composeDir) {
+    writeLine(`  ${colors.red}${icons.error}${RESET} Docker compose files not found`);
+    writeLine(`  ${colors.dim}This shouldn't happen if you installed via npm.${RESET}`);
+    writeLine(`  ${colors.dim}Try reinstalling: npm install -g squads-cli${RESET}`);
     writeLine();
     return;
   }
 
-  writeLine(`  ${colors.green}${icons.success}${RESET} Docker is running`);
+  // Copy to ~/.squads/docker if not already there
+  if (composeDir !== targetDir && !existsSync(targetDir)) {
+    writeLine(`  ${colors.cyan}${icons.progress}${RESET} Copying docker files to ${colors.dim}~/.squads/docker${RESET}`);
+    try {
+      mkdirSync(SQUADS_DATA_DIR, { recursive: true });
+      mkdirSync(targetDir, { recursive: true });
 
-  // Check containers
+      // Copy essential files
+      const filesToCopy = [
+        'docker-compose.yml',
+        'docker-compose.engram.yml',
+        '.env.example',
+      ];
+
+      for (const file of filesToCopy) {
+        const src = join(composeDir, file);
+        const dst = join(targetDir, file);
+        if (existsSync(src)) {
+          copyFileSync(src, dst);
+        }
+      }
+
+      composeDir = targetDir;
+      writeLine(`  ${colors.green}${icons.success}${RESET} Files copied`);
+    } catch (err) {
+      writeLine(`  ${colors.yellow}${icons.warning}${RESET} Could not copy files, using source location`);
+    }
+  } else if (existsSync(targetDir)) {
+    composeDir = targetDir;
+    writeLine(`  ${colors.green}${icons.success}${RESET} Using ${colors.dim}~/.squads/docker${RESET}`);
+  } else {
+    writeLine(`  ${colors.green}${icons.success}${RESET} Using ${colors.dim}${composeDir}${RESET}`);
+  }
+  writeLine();
+
+  // Step 3: Configure .env
+  writeLine(`  ${bold}Step 3: Environment Configuration${RESET}`);
+
+  const envPath = join(composeDir, '.env');
+  const envExamplePath = join(composeDir, '.env.example');
+
+  if (!existsSync(envPath)) {
+    if (existsSync(envExamplePath)) {
+      copyFileSync(envExamplePath, envPath);
+      writeLine(`  ${colors.cyan}${icons.progress}${RESET} Created .env from template`);
+    } else {
+      // Create minimal .env
+      const minimalEnv = `# Squads Local Stack Configuration
+# Generated by: squads stack init
+
+# Langfuse API Keys (get from http://localhost:3100 after first run)
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=http://langfuse:3000
+
+# Mem0/Engram LLM Provider
+# Options: ollama (free, local), openai (requires API key)
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_LLM_MODEL=qwen3:latest
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text:latest
+
+# For OpenAI (if LLM_PROVIDER=openai)
+# OPENAI_API_KEY=sk-...
+
+# Ports (defaults)
+POSTGRES_PORT=5433
+REDIS_PORT=6379
+LANGFUSE_PORT=3100
+OTEL_PORT=4318
+BRIDGE_PORT=8088
+`;
+      writeFileSync(envPath, minimalEnv);
+      writeLine(`  ${colors.cyan}${icons.progress}${RESET} Created default .env`);
+    }
+  } else {
+    writeLine(`  ${colors.green}${icons.success}${RESET} .env exists`);
+  }
+
+  // Check for required secrets
+  const envContent = readFileSync(envPath, 'utf-8');
+  const missingSecrets: string[] = [];
+
+  // Check LLM provider config
+  const llmProvider = envContent.match(/LLM_PROVIDER=(\w+)/)?.[1] || 'ollama';
+
+  if (llmProvider === 'openai') {
+    if (!envContent.match(/OPENAI_API_KEY=\S+/)) {
+      missingSecrets.push('OPENAI_API_KEY');
+    }
+  }
+
+  if (missingSecrets.length > 0) {
+    writeLine();
+    writeLine(`  ${colors.yellow}${icons.warning}${RESET} Missing secrets in .env:`);
+    for (const secret of missingSecrets) {
+      writeLine(`    ${colors.red}•${RESET} ${secret}`);
+    }
+    writeLine();
+    writeLine(`  ${colors.dim}Edit: ${envPath}${RESET}`);
+  }
+  writeLine();
+
+  // Step 4: Start containers
+  writeLine(`  ${bold}Step 4: Start Services${RESET}`);
+
   const containers = [
-    'squads-postgres',
-    'squads-redis',
-    'squads-bridge',
-    'squads-langfuse',
-    'squads-otel-collector',
+    { name: 'squads-postgres', required: true },
+    { name: 'squads-redis', required: true },
+    { name: 'squads-bridge', required: true },
+    { name: 'squads-langfuse', required: false },
+    { name: 'squads-otel-collector', required: false },
+    { name: 'squads-mem0', required: false },
   ];
 
-  const statuses = containers.map(getContainerStatus);
-  const allRunning = statuses.every((s) => s.running);
-
-  writeLine();
-  writeLine(`  ${bold}Containers${RESET}`);
+  const statuses = containers.map(c => ({ ...c, ...getContainerStatus(c.name) }));
+  const requiredNotRunning = statuses.filter(s => s.required && !s.running);
 
   for (const status of statuses) {
     const icon = status.running
@@ -284,53 +612,79 @@ export async function stackInitCommand(): Promise<void> {
         ? `${colors.green}●${RESET}`
         : `${colors.yellow}●${RESET}`
       : `${colors.red}○${RESET}`;
-    const portInfo = status.port ? `${colors.dim}:${status.port}${RESET}` : '';
-    writeLine(`  ${icon} ${status.name}${portInfo}`);
+    const suffix = status.required ? '' : `${colors.dim}(optional)${RESET}`;
+    writeLine(`  ${icon} ${status.name} ${suffix}`);
+  }
+  writeLine();
+
+  if (requiredNotRunning.length > 0) {
+    const shouldStart = await confirm('Start required services now?');
+
+    if (shouldStart) {
+      writeLine();
+      writeLine(`  ${colors.cyan}${icons.progress}${RESET} Starting containers...`);
+
+      try {
+        execSync('docker compose up -d', {
+          cwd: composeDir,
+          stdio: 'inherit',
+        });
+
+        // Wait for services to be healthy
+        writeLine(`  ${colors.cyan}${icons.progress}${RESET} Waiting for services to be ready...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        writeLine(`  ${colors.green}${icons.success}${RESET} Services started`);
+      } catch (err) {
+        writeLine(`  ${colors.red}${icons.error}${RESET} Failed to start services`);
+        writeLine(`  ${colors.dim}Try manually: cd ${composeDir} && docker compose up -d${RESET}`);
+      }
+    }
+    writeLine();
   }
 
-  if (!allRunning) {
-    writeLine();
-    writeLine(`  ${colors.yellow}${icons.warning}${RESET} Some containers not running`);
-    writeLine(`  ${colors.dim}Run: squads stack up${RESET}`);
-    writeLine();
-    return;
-  }
+  // Step 5: Get Langfuse keys
+  writeLine(`  ${bold}Step 5: Langfuse API Keys${RESET}`);
 
-  // Get Langfuse keys
   const langfuseKeys = getLangfuseKeysFromDockerEnv();
 
-  // Build config
+  if (!langfuseKeys?.publicKey || !langfuseKeys?.secretKey) {
+    writeLine(`  ${colors.yellow}${icons.warning}${RESET} Langfuse API keys not configured`);
+    writeLine();
+    writeLine(`  ${colors.dim}To enable telemetry:${RESET}`);
+    writeLine(`  ${colors.dim}1. Open http://localhost:3100${RESET}`);
+    writeLine(`  ${colors.dim}2. Create account and project${RESET}`);
+    writeLine(`  ${colors.dim}3. Copy API keys to ${envPath}${RESET}`);
+    writeLine(`  ${colors.dim}4. Run: squads stack init (again)${RESET}`);
+  } else {
+    writeLine(`  ${colors.green}${icons.success}${RESET} Langfuse keys configured`);
+  }
+  writeLine();
+
+  // Step 6: Create ~/.squadsrc
+  writeLine(`  ${bold}Step 6: CLI Configuration${RESET}`);
+
   const config: StackConfig = {
     ...DEFAULT_CONFIG,
     LANGFUSE_PUBLIC_KEY: langfuseKeys?.publicKey || '',
     LANGFUSE_SECRET_KEY: langfuseKeys?.secretKey || '',
   };
 
-  // Test connections
-  writeLine();
-  writeLine(`  ${bold}Testing connections${RESET}`);
-
-  const bridgeOk = await checkService(`${config.SQUADS_BRIDGE_URL}/health`);
-  const langfuseOk = await checkService(`${config.LANGFUSE_HOST}/api/public/health`);
-
-  writeLine(
-    `  ${bridgeOk ? colors.green + icons.success : colors.red + icons.error}${RESET} Bridge ${colors.dim}${config.SQUADS_BRIDGE_URL}${RESET}`
-  );
-  writeLine(
-    `  ${langfuseOk ? colors.green + icons.success : colors.red + icons.error}${RESET} Langfuse ${colors.dim}${config.LANGFUSE_HOST}${RESET}`
-  );
-
-  // Save config
   saveStackConfig(config);
-
-  writeLine();
   writeLine(`  ${colors.green}${icons.success}${RESET} Config saved to ${colors.cyan}~/.squadsrc${RESET}`);
   writeLine();
-  writeLine(`  ${colors.dim}To activate in current shell:${RESET}`);
+
+  // Final summary
+  writeLine(`  ${colors.green}${bold}Setup Complete!${RESET}`);
+  writeLine();
+  writeLine(`  ${colors.dim}To activate environment:${RESET}`);
   writeLine(`  ${colors.cyan}source ~/.squadsrc${RESET}`);
   writeLine();
-  writeLine(`  ${colors.dim}Or add to your ~/.zshrc:${RESET}`);
+  writeLine(`  ${colors.dim}Add to ~/.zshrc for persistence:${RESET}`);
   writeLine(`  ${colors.cyan}[ -f ~/.squadsrc ] && source ~/.squadsrc${RESET}`);
+  writeLine();
+  writeLine(`  ${colors.dim}Check status anytime:${RESET}`);
+  writeLine(`  ${colors.cyan}squads stack health${RESET}`);
   writeLine();
 }
 
