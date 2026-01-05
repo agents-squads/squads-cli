@@ -75,8 +75,10 @@ export function gradient(text: string): string {
 
 // Progress bar with gradient fill
 export function progressBar(percent: number, width = 20): string {
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
+  // Clamp values to prevent negative repeat counts
+  const clampedPercent = Math.max(0, Math.min(100, percent));
+  const filled = Math.round((clampedPercent / 100) * width);
+  const empty = Math.max(0, width - filled);
 
   let bar = '';
   for (let i = 0; i < filled; i++) {
