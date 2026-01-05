@@ -58,6 +58,7 @@ import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
+import { healthCommand } from './commands/health.js';
 import { workersCommand } from './commands/workers.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
@@ -218,6 +219,13 @@ program
   .option('-v, --verbose', 'Show more details')
   .option('-k, --kill <pid>', 'Kill a process by PID')
   .action(workersCommand);
+
+// Health command - quick infrastructure check
+program
+  .command('health')
+  .description('Quick health check for all infrastructure services')
+  .option('-v, --verbose', 'Show optional services')
+  .action((options) => healthCommand(options));
 
 // Memory command group
 const memory = program
