@@ -67,9 +67,25 @@ squads memory query "authentication"
 squads goal set engineering "Ship v2.0 by Friday"
 ```
 
+**Expected output after `squads init`:**
+
+```
+  squads init
+
+  ✓ Created .agents/squads/ directory
+  ✓ Created example squad: engineering
+  ✓ Created .agents/memory/ directory
+
+  Next steps:
+  $ squads status     See your new squad
+  $ squads dash       Full dashboard view
+```
+
 ## Features
 
 ### Dashboard
+
+View comprehensive metrics across all squads:
 
 ```
 $ squads dash
@@ -93,6 +109,29 @@ $ squads dash
   Git Activity (30d)
   Last 14d: ▁▁▁▁▁▁▁▄▆▄▆▅█▂
   404 commits  │  13.5/day  │  21 active days
+```
+
+**CEO Mode** provides an executive summary:
+
+```
+$ squads dash --ceo
+
+  squads CEO Report
+  2026-01-05
+
+  ┌─────────────────────────────────────┐
+  │ METRIC              VALUE           │
+  ├─────────────────────────────────────┤
+  │ Active Squads       8/10            │
+  │ P0 Goals            3               │
+  │ P1 Goals            5               │
+  │ Blockers            2               │
+  │ Daily Spend         $12.50 / $50    │
+  └─────────────────────────────────────┘
+
+  P0 Priorities (revenue/launch critical)
+  ✗ customer Generate first consulting revenue
+  ✗ website Launch public website
 ```
 
 ### Memory Search
@@ -156,6 +195,16 @@ $ squads stack health
   ● 8/8 services healthy
 ```
 
+**Valid services for `squads stack logs`:**
+- `postgres` - PostgreSQL database
+- `redis` - Redis cache
+- `neo4j` - Graph database
+- `bridge` - Conversation capture API
+- `langfuse` - Telemetry dashboard
+- `mem0` - Memory extraction
+- `engram` - Memory MCP server
+- `otel` - OpenTelemetry collector
+
 ### Auto-Update
 
 ```
@@ -212,6 +261,20 @@ claude-sonnet-4
 
 ### Memory = Cross-Session State
 
+Memory files are stored at `.agents/memory/<squad>/<agent>/<type>.md`:
+
+```
+.agents/memory/
+├── engineering/
+│   └── eng-lead/
+│       ├── state.md       # Current state
+│       ├── learnings.md   # Accumulated insights
+│       └── feedback.md    # Execution feedback
+└── research/
+    └── analyst/
+        └── state.md
+```
+
 ```bash
 # Agents accumulate knowledge
 squads memory show engineering
@@ -222,67 +285,419 @@ squads memory show engineering
 squads memory query "performance"
 ```
 
+### Goals with Metrics
+
+Goals can include optional metric annotations for tracking KPIs:
+
+```bash
+# Set a goal with metrics
+squads goal set finance "Reduce monthly costs by 20%" --metric "cost_usd" --metric "savings_pct"
+
+# View goals with progress
+squads goal list
+
+  finance
+  ● [1] Reduce monthly costs by 20%
+    └ Current: $450/mo, target: $400/mo
+```
+
+### Learning Extraction
+
+Extract learnings from recent conversations and store in Engram:
+
+```bash
+# Extract memories from last 24 hours
+squads memory extract
+
+# Preview without storing
+squads memory extract --dry-run
+
+# Extract from specific time window
+squads memory extract --hours 48
+```
+
 ## Commands
+
+### Initialization
+
+```bash
+squads init                   # Initialize project with default template
+squads init -t minimal        # Use minimal template
+```
 
 ### Status & Dashboard
 
 ```bash
-squads status              # All squads overview
-squads status engineering  # Single squad details
-squads status -v           # Verbose with agent list
-squads dash                # Full dashboard with goals
+squads status                 # All squads overview
+squads status engineering     # Single squad details
+squads status -v              # Verbose with agent list
+
+squads dash                   # Full dashboard with goals (fast mode)
+squads dash -f                # Include GitHub PR/issue stats (~30s slower)
+squads dash --ceo             # Executive summary with priorities and blockers
+squads dash -v                # Additional details
 ```
 
 ### Running Agents
 
 ```bash
-squads run engineering              # Run the whole squad
-squads run engineering/ci-optimizer # Run specific agent
-squads run engineering --dry-run    # Preview what would run
+squads run engineering                # Run the whole squad
+squads run engineering/ci-optimizer   # Run specific agent (slash notation)
+squads run engineering -a ci-optimizer # Run specific agent (flag notation)
+squads run engineering --dry-run      # Preview what would run
+squads run engineering --execute      # Execute via Claude CLI
+squads run engineering --parallel     # Run all agents in parallel
+squads run engineering --parallel --execute  # Launch all in parallel via Claude
+squads run engineering --timeout 60   # Set timeout in minutes (default: 30)
 ```
 
 ### Memory Management
 
 ```bash
-squads memory query "deployment"     # Semantic search
-squads memory show research          # View squad memory
-squads memory list                   # List all entries
-squads memory sync                   # Sync from git remote
+# Query (semantic search across markdown files)
+squads memory query "deployment"       # Search all memory
+squads memory query "auth" -s website  # Filter by squad
+squads memory query "cache" -a lead    # Filter by agent
+
+# View
+squads memory show research            # View squad memory
+squads memory list                     # List all entries
+
+# Update
+squads memory update cli "Fixed telemetry bug"           # Add to learnings
+squads memory update cli "State: ready" -t state         # Update state
+squads memory update cli "Good" -a cli-lead -t feedback  # Add feedback
+
+# Sync (git-based)
+squads memory sync                     # Pull remote, process commits
+squads memory sync -v                  # Verbose output
+squads memory sync -p                  # Push local changes after sync
+squads memory sync --no-pull           # Skip pulling from remote
+
+# Search (postgres via squads-bridge)
+squads memory search "authentication"         # Search stored conversations
+squads memory search "error" -l 20            # Limit results
+squads memory search "api" -r user            # Filter by role (user/assistant/thinking)
+squads memory search "bug" -i high            # Filter by importance (low/normal/high)
+
+# Extract (conversations → Engram memories)
+squads memory extract                  # Extract from last 24h
+squads memory extract -h 48            # Extract from last 48h
+squads memory extract -s abc123        # Extract specific session
+squads memory extract -d               # Dry run (preview only)
 ```
 
 ### Goal Tracking
 
 ```bash
-squads goal set finance "Cut costs 20%"  # Set goal
-squads goal list                          # View all goals
-squads goal progress finance 1 75         # Update progress
-squads goal complete finance 1            # Mark done
+squads goal set finance "Cut costs 20%"              # Set goal
+squads goal set finance "Track API usage" -m "api_calls" -m "cost_usd"  # With metrics
+squads goal list                                      # View all active goals
+squads goal list -a                                   # Include completed goals
+squads goal list finance                              # View goals for one squad
+squads goal progress finance 1 "Reduced to $400/mo"   # Update progress (index, text)
+squads goal complete finance 1                        # Mark done (by index)
 ```
 
 ### Feedback Loop
 
 ```bash
-squads feedback add research 4 "Good analysis"   # Rate 1-5
-squads feedback show research                     # View history
-squads feedback stats                             # Summary
+squads feedback add research 4 "Good analysis"        # Rate 1-5 with comment
+squads feedback add cli 5 "Excellent" -l "Cache key insight"  # With learning
+squads feedback show research                         # View history
+squads feedback show research -n 10                   # Show more entries
+squads feedback stats                                 # Summary across all squads
+```
+
+### Session Management
+
+```bash
+# List sessions
+squads sessions                        # Show active sessions
+squads sessions -v                     # With session details
+squads sessions -j                     # JSON output
+
+# History
+squads sessions history                # Last 7 days
+squads sessions history -d 30          # Last 30 days
+squads sessions history -s website     # Filter by squad
+squads sessions history -j             # JSON output
+
+# Summary
+squads sessions summary                # Auto-detect current session
+squads sessions summary -f data.json   # From JSON file
+squads sessions summary -j             # Output as JSON
+
+# Lifecycle (for hooks/automation)
+squads session start                   # Register new session
+squads session start -s engineering    # Override squad detection
+squads session start -q                # Quiet mode
+squads session stop                    # End current session
+squads session stop -q                 # Quiet mode
+squads session heartbeat               # Update session activity
+squads session heartbeat -q            # Quiet mode
+
+# Detection
+squads detect-squad                    # Detect current squad from cwd
+```
+
+### Progress Tracking
+
+```bash
+squads progress                        # Show active/completed tasks
+squads progress -v                     # More activity details
+squads progress start engineering "Fixing CI"   # Register task
+squads progress complete abc123        # Mark task completed
+squads progress complete abc123 -f     # Mark as failed
+```
+
+### Results & KPIs
+
+```bash
+squads results                         # All squads, last 7 days
+squads results engineering             # Single squad
+squads results -d 30                   # Last 30 days
+squads results -v                      # Detailed KPIs per goal
+```
+
+### Workers
+
+```bash
+squads workers                         # Show Claude sessions, tasks, dev servers
+squads workers -v                      # More details
+squads workers -k 12345                # Kill process by PID
+```
+
+### Issues Management
+
+```bash
+# View issues
+squads issues                          # Show GitHub issues
+squads issues -o my-org                # Different organization
+squads issues -r repo1,repo2           # Specific repos
+
+# Solve issues (create PRs)
+squads solve-issues                    # Solve ready-to-fix issues
+squads solve-issues -r hq              # Target specific repo
+squads solve-issues -i 123             # Solve specific issue
+squads solve-issues -d                 # Dry run
+squads solve-issues -e                 # Execute with Claude CLI
+
+# Open issues (run evaluators)
+squads open-issues                     # Find new issues via evaluators
+squads open-issues -s website          # Target squad
+squads open-issues -a seo-critic       # Specific evaluator
+squads open-issues -d                  # Dry run
+squads open-issues -e                  # Execute with Claude CLI
 ```
 
 ### Stack Management
 
 ```bash
-squads stack status        # Container health
-squads stack up            # Start Docker stack
-squads stack down          # Stop Docker stack
-squads stack health        # Comprehensive diagnostics
-squads stack logs bridge   # View container logs
+# Setup
+squads stack init                      # Interactive setup wizard
+
+# Status
+squads stack status                    # Container health overview
+squads stack health                    # Comprehensive diagnostics
+squads stack health -v                 # Show logs for unhealthy services
+squads stack env                       # Print export commands
+
+# Control
+squads stack up                        # Start Docker containers
+squads stack down                      # Stop Docker containers
+squads stack logs bridge               # View container logs
+squads stack logs postgres -n 100      # Last 100 lines
+```
+
+### Smart Triggers
+
+Triggers execute agents based on conditions in PostgreSQL:
+
+```bash
+squads trigger list                    # View all triggers
+squads trigger list engineering        # Filter by squad
+squads trigger sync                    # Sync SQUAD.md → Postgres
+squads trigger fire cost-alert         # Manually fire a trigger
+squads trigger enable cost-alert       # Enable a trigger
+squads trigger disable cost-alert      # Disable a trigger
+squads trigger status                  # Scheduler health & stats
+```
+
+**Trigger definition in SQUAD.md:**
+
+```yaml
+triggers:
+  - name: cost-alert
+    agent: cost-tracker
+    condition: |
+      SELECT value > 100
+      FROM latest_metrics
+      WHERE name = 'daily_cost_usd'
+    cooldown: 6 hours
+    priority: 3
+```
+
+### List & Discovery
+
+```bash
+squads list                            # List all squads and agents
+squads list -s                         # Squads only
+squads list -a                         # Agents only
+```
+
+### Authentication (Pro & Enterprise)
+
+```bash
+squads login                           # Log in to Squads cloud
+squads logout                          # Log out
+squads whoami                          # Show current user
 ```
 
 ### Updates
 
 ```bash
-squads update              # Interactive update
-squads update -y           # Auto-confirm
-squads update -c           # Check only
+squads update                          # Interactive update
+squads update -y                       # Auto-confirm
+squads update -c                       # Check only, don't install
+```
+
+## Command Reference
+
+```
+squads init                          Initialize project
+  -t, --template <template>          Project template (default)
+
+squads status [squad]                Show squad status
+  -v, --verbose                      Include agent details
+
+squads dash                          Full dashboard with goals
+  -v, --verbose                      Show additional details
+  -c, --ceo                          Executive summary with priorities
+  -f, --full                         Include GitHub PR/issue stats (~30s)
+
+squads run <target>                  Run squad or agent
+  -v, --verbose                      Verbose output
+  -d, --dry-run                      Preview only
+  -e, --execute                      Execute via Claude CLI
+  -a, --agent <agent>                Run specific agent within squad
+  -t, --timeout <minutes>            Execution timeout (default: 30)
+  --parallel                         Run all agents in parallel
+
+squads list                          List all squads/agents
+  -s, --squads                       Squads only
+  -a, --agents                       Agents only
+
+squads memory query <query>          Search memory
+  -s, --squad <squad>                Filter by squad
+  -a, --agent <agent>                Filter by agent
+squads memory show <squad>           View squad memory
+squads memory update <squad> <text>  Add to memory
+  -a, --agent <agent>                Specific agent (default: squad-lead)
+  -t, --type <type>                  Memory type: state, learnings, feedback
+squads memory list                   List all entries
+squads memory sync                   Sync from git
+  -v, --verbose                      Detailed output
+  -p, --push                         Push after sync
+  --no-pull                          Skip pulling
+squads memory search <query>         Search postgres conversations
+  -l, --limit <n>                    Number of results (default: 10)
+  -r, --role <role>                  Filter: user, assistant, thinking
+  -i, --importance <level>           Filter: low, normal, high
+squads memory extract                Extract memories to Engram
+  -s, --session <id>                 Specific session
+  -h, --hours <n>                    Hours to look back (default: 24)
+  -d, --dry-run                      Preview only
+
+squads goal set <squad> <goal>       Set a goal
+  -m, --metric <metrics...>          Metrics to track
+squads goal list [squad]             List goals
+  -a, --all                          Include completed
+squads goal progress <squad> <idx> <text>  Update progress
+squads goal complete <squad> <idx>   Mark completed
+
+squads feedback add <squad> <1-5> <text>  Rate execution
+  -l, --learning <learnings...>      Extract learnings
+squads feedback show <squad>         View history
+  -n, --limit <n>                    Entries to show (default: 5)
+squads feedback stats                Summary across squads
+
+squads sessions                      List active sessions
+  -v, --verbose                      Session details
+  -j, --json                         JSON output
+squads sessions history              Session history
+  -d, --days <n>                     Days of history (default: 7)
+  -s, --squad <squad>                Filter by squad
+  -j, --json                         JSON output
+squads sessions summary              Pretty session summary
+  -d, --data <json>                  JSON data
+  -f, --file <path>                  JSON file path
+  -j, --json                         JSON output
+
+squads session start                 Register session
+  -s, --squad <squad>                Override detection
+  -q, --quiet                        Suppress output
+squads session stop                  End session
+  -q, --quiet                        Suppress output
+squads session heartbeat             Update activity
+  -q, --quiet                        Suppress output
+
+squads detect-squad                  Detect squad from cwd
+
+squads progress                      Show task progress
+  -v, --verbose                      More details
+squads progress start <squad> <desc> Register task
+squads progress complete <id>        Mark completed
+  -f, --failed                       Mark as failed
+
+squads results [squad]               KPI goals vs actuals
+  -d, --days <n>                     Days to look back (default: 7)
+  -v, --verbose                      Detailed KPIs
+
+squads workers                       Show active workers
+  -v, --verbose                      More details
+  -k, --kill <pid>                   Kill process
+
+squads issues                        GitHub issues
+  -o, --org <org>                    Organization (default: agents-squads)
+  -r, --repos <repos>                Comma-separated repos
+
+squads solve-issues                  Solve issues with PRs
+  -r, --repo <repo>                  Target repo
+  -i, --issue <number>               Specific issue
+  -d, --dry-run                      Preview only
+  -e, --execute                      Execute with Claude
+
+squads open-issues                   Find new issues
+  -s, --squad <squad>                Target squad
+  -a, --agent <agent>                Evaluator agent
+  -d, --dry-run                      Preview only
+  -e, --execute                      Execute with Claude
+
+squads stack init                    Setup wizard
+squads stack status                  Container health
+squads stack health                  Full diagnostics
+  -v, --verbose                      Show logs for failures
+squads stack env                     Print exports
+squads stack up                      Start containers
+squads stack down                    Stop containers
+squads stack logs <service>          View logs
+  -n, --tail <lines>                 Lines to show (default: 50)
+
+squads trigger list [squad]          List triggers
+squads trigger sync                  Sync to scheduler
+squads trigger fire <name>           Fire trigger
+squads trigger enable <name>         Enable trigger
+squads trigger disable <name>        Disable trigger
+squads trigger status                Scheduler stats
+
+squads update                        Interactive update
+  -y, --yes                          Auto-confirm
+  -c, --check                        Check only
+
+squads login                         Log in (Pro)
+squads logout                        Log out
+squads whoami                        Show user
 ```
 
 ## Claude Code Integration
@@ -330,59 +745,17 @@ your-project/
 │   │   └── research/
 │   ├── memory/              # Persistent state
 │   │   ├── engineering/
-│   │   │   └── state.md
+│   │   │   └── eng-lead/
+│   │   │       ├── state.md
+│   │   │       ├── learnings.md
+│   │   │       └── feedback.md
 │   │   └── research/
-│   └── outputs/             # Agent outputs
+│   ├── outputs/             # Agent outputs
+│   └── sessions/
+│       └── history.jsonl    # Session event log
 ├── .claude/
 │   └── settings.json        # Hooks config
 └── CLAUDE.md                # Project instructions
-```
-
-## Command Reference
-
-```
-squads status [squad]         Show squad status
-  -v, --verbose               Include agent details
-
-squads dash                   Full dashboard with goals
-  -f, --full                  Include PRs and issues
-
-squads run <target>           Run squad or agent
-  -v, --verbose               Verbose output
-  -d, --dry-run               Preview only
-  -e, --execute               Execute via Claude CLI
-
-squads list                   List all squads/agents
-  -s, --squads                Squads only
-  -a, --agents                Agents only
-
-squads memory query <q>       Search memory
-  -s, --squad <squad>         Filter by squad
-squads memory show <squad>    View squad memory
-squads memory list            List all entries
-squads memory sync            Sync from git remote
-
-squads goal set <squad> <goal>
-squads goal list [squad]
-squads goal progress <squad> <idx> <pct>
-squads goal complete <squad> <idx>
-
-squads feedback add <squad> <rating> <text>
-squads feedback show <squad>
-squads feedback stats
-
-squads stack status           Container health
-squads stack up               Start Docker stack
-squads stack down             Stop Docker stack
-squads stack health           Comprehensive diagnostics
-squads stack logs <service>   View container logs
-
-squads update                 Interactive update
-  -y, --yes                   Auto-confirm
-  -c, --check                 Check only
-
-squads init                   Initialize project
-squads login/logout/whoami    Authentication (Pro)
 ```
 
 ## Development
@@ -393,6 +766,23 @@ cd squads-cli
 npm install
 npm run build
 npm link  # Test globally
+```
+
+### Testing
+
+```bash
+npm test              # Run tests
+npm run test:watch    # Watch mode
+npm run test:coverage # Coverage report
+```
+
+### Scripts
+
+```bash
+npm run build         # Build with tsup
+npm run dev           # Watch mode
+npm run lint          # ESLint
+npm run typecheck     # TypeScript check
 ```
 
 ## Related
