@@ -6,7 +6,7 @@ import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
-import { getLiveSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
+import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
 import {
   colors,
@@ -83,6 +83,7 @@ interface DashboardCache {
   dbAvailable: boolean;
   history: DashboardSnapshot[];
   insights: Insights | null;
+  sessionSummary: SessionSummary;
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
@@ -108,7 +109,10 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const timeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
     Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
 
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights] = await Promise.all([
+  // Clean up stale file-based sessions (sync, fast)
+  cleanupStaleSessions();
+
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary] = await Promise.all([
     // Git stats (local, ~1s)
     Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
@@ -125,10 +129,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
     // Insights (2s timeout)
     timeout(fetchInsights('week').catch(() => null), 2000, null),
+    // Session summary (parallel lsof, ~1s)
+    getLiveSessionSummaryAsync(),
   ]);
 
   // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights };
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary };
 
   // === PHASE 2: Build squad metrics (sync, fast) ===
   const squadData: SquadMetrics[] = [];
@@ -206,10 +212,6 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const totalPRs = ghStats ? ghStats.prsMerged : 0;
   const totalIssuesClosed = ghStats ? ghStats.issuesClosed : 0;
   const totalIssuesOpen = ghStats ? ghStats.issuesOpen : 0;
-
-  // Get active sessions (real-time process detection)
-  cleanupStaleSessions(); // Clean up stale file-based sessions
-  const sessionSummary = getLiveSessionSummary();
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
