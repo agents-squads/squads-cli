@@ -52,7 +52,7 @@ import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { workersCommand } from './commands/workers.js';
-import { sessionsCommand, sessionsHistoryCommand } from './commands/sessions.js';
+import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
 import {
@@ -65,6 +65,7 @@ import {
   stackLogsCommand,
   applyStackConfig
 } from './commands/stack.js';
+import { registerTriggerCommand } from './commands/trigger.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -314,6 +315,35 @@ sessions
     json: options.json,
   }));
 
+sessions
+  .command('summary')
+  .description('Show pretty session summary (pass JSON via stdin or --data)')
+  .option('-d, --data <json>', 'JSON data for summary')
+  .option('-f, --file <path>', 'Path to JSON file with summary data')
+  .option('-j, --json', 'Output as JSON instead of pretty format')
+  .action(async (options) => {
+    let data: SessionSummaryData;
+
+    if (options.file) {
+      // Read from file
+      const { readFileSync } = await import('fs');
+      data = JSON.parse(readFileSync(options.file, 'utf-8'));
+    } else if (options.data) {
+      // Parse from --data argument
+      data = JSON.parse(options.data);
+    } else {
+      // Read from stdin
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk);
+      }
+      const input = Buffer.concat(chunks).toString('utf-8');
+      data = JSON.parse(input);
+    }
+
+    await sessionsSummaryCommand(data, { json: options.json });
+  });
+
 // Session command group - lifecycle management
 const session = program
   .command('session')
@@ -386,6 +416,9 @@ stack
   .option('-n, --tail <lines>', 'Number of lines to show', '50')
   .action((service, options) => stackLogsCommand(service, parseInt(options.tail, 10)));
 
+// Trigger command group - smart value-driven triggers
+registerTriggerCommand(program);
+
 // Auth commands
 program
   .command('login')
@@ -428,10 +461,15 @@ ${chalk.dim('Goals & Feedback:')}
   ${chalk.cyan('squads goal list')}                    View active goals
   ${chalk.cyan('squads feedback add <squad> 4 "msg"')} Rate last execution
 
+${chalk.dim('Smart Triggers:')}
+  ${chalk.cyan('squads trigger list')}                 View all triggers
+  ${chalk.cyan('squads trigger sync')}                 Sync from SQUAD.md
+  ${chalk.cyan('squads trigger fire <name>')}          Manually fire trigger
+
 ${chalk.dim('Examples:')}
   ${chalk.cyan('squads run website')}                  Run website squad
   ${chalk.cyan('squads goal set finance "Track costs"')} Set finance goal
-  ${chalk.cyan('squads feedback stats')}               View feedback summary
+  ${chalk.cyan('squads trigger status')}               Scheduler health
 
 ${chalk.dim('Run')} ${chalk.cyan('squads --help')} ${chalk.dim('for all commands.')}
 `);
