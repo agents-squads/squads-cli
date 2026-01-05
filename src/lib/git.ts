@@ -1,6 +1,9 @@
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 export interface GitStatus {
   isGitRepo: boolean;
@@ -12,6 +15,9 @@ export interface GitStatus {
   uncommittedCount: number;
 }
 
+/**
+ * Check git status - synchronous version for backwards compatibility
+ */
 export function checkGitStatus(cwd: string = process.cwd()): GitStatus {
   const status: GitStatus = {
     isGitRepo: false,
@@ -28,21 +34,78 @@ export function checkGitStatus(cwd: string = process.cwd()): GitStatus {
   status.isGitRepo = true;
 
   try {
-    // Get current branch
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
-    status.branch = branch;
+    // Run all git commands in parallel using a single combined command
+    // This reduces 3 sequential execSync calls to 1
+    const combined = execSync(
+      'echo "BRANCH:" && git rev-parse --abbrev-ref HEAD && echo "REMOTES:" && git remote -v && echo "STATUS:" && git status --porcelain',
+      { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+    );
 
-    // Check for remote
-    const remotes = execSync('git remote -v', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
+    // Parse combined output
+    const branchMatch = combined.match(/BRANCH:\n(.+)\n/);
+    if (branchMatch) {
+      status.branch = branchMatch[1].trim();
+    }
 
+    const remotesMatch = combined.match(/REMOTES:\n([\s\S]*?)STATUS:/);
+    if (remotesMatch) {
+      const remotes = remotesMatch[1].trim();
+      if (remotes) {
+        status.hasRemote = true;
+        const lines = remotes.split('\n');
+        if (lines.length > 0) {
+          const parts = lines[0].split(/\s+/);
+          status.remoteName = parts[0];
+          status.remoteUrl = parts[1];
+        }
+      }
+    }
+
+    const statusMatch = combined.match(/STATUS:\n([\s\S]*?)$/);
+    if (statusMatch) {
+      const statusOutput = statusMatch[1].trim();
+      if (statusOutput) {
+        status.isDirty = true;
+        status.uncommittedCount = statusOutput.split('\n').filter(l => l.trim()).length;
+      }
+    }
+
+  } catch {
+    // Git commands failed, but we know it's a git repo
+  }
+
+  return status;
+}
+
+/**
+ * Check git status - async version with parallel git commands
+ */
+export async function checkGitStatusAsync(cwd: string = process.cwd()): Promise<GitStatus> {
+  const status: GitStatus = {
+    isGitRepo: false,
+    hasRemote: false,
+    isDirty: false,
+    uncommittedCount: 0,
+  };
+
+  // Check if .git directory exists
+  if (!existsSync(join(cwd, '.git'))) {
+    return status;
+  }
+
+  status.isGitRepo = true;
+
+  try {
+    // Run all git commands in parallel
+    const [branchResult, remotesResult, statusResult] = await Promise.all([
+      execAsync('git rev-parse --abbrev-ref HEAD', { cwd, timeout: 5000 }).catch(() => ({ stdout: '' })),
+      execAsync('git remote -v', { cwd, timeout: 5000 }).catch(() => ({ stdout: '' })),
+      execAsync('git status --porcelain', { cwd, timeout: 5000 }).catch(() => ({ stdout: '' })),
+    ]);
+
+    status.branch = branchResult.stdout.trim();
+
+    const remotes = remotesResult.stdout.trim();
     if (remotes) {
       status.hasRemote = true;
       const lines = remotes.split('\n');
@@ -53,13 +116,7 @@ export function checkGitStatus(cwd: string = process.cwd()): GitStatus {
       }
     }
 
-    // Check for uncommitted changes
-    const statusOutput = execSync('git status --porcelain', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
-
+    const statusOutput = statusResult.stdout.trim();
     if (statusOutput) {
       status.isDirty = true;
       status.uncommittedCount = statusOutput.split('\n').filter(l => l.trim()).length;

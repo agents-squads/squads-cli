@@ -187,9 +187,10 @@ export function detectAIProcesses(): AIProcess[] {
 
   try {
     // Get all processes - we'll filter for AI tools
+    // Short timeout for responsiveness - this is called during dashboard render
     const psOutput = execSync('ps -eo pid,tty,comm 2>/dev/null', {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: 2000, // Reduced from 5s for faster CLI response
     }).trim();
 
     if (!psOutput) return [];
@@ -218,17 +219,10 @@ export function detectAIProcesses(): AIProcess[] {
       if (!toolName) continue;
 
       // Get the working directory for this process
-      let cwd = '';
-      try {
-        const lsofOutput = execSync(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
-          encoding: 'utf-8',
-          timeout: 3000,
-        }).trim();
-        cwd = lsofOutput || '';
-      } catch {
-        // Can't get cwd, use empty string
-        cwd = '';
-      }
+      // Skip cwd detection for performance - lsof is too slow (3+ seconds)
+      // and /proc doesn't exist on macOS. The squad can be inferred from
+      // file-based sessions or the current working directory.
+      const cwd = '';
 
       // Detect squad from working directory
       const squad = detectSquad(cwd);
