@@ -164,7 +164,7 @@ export function writeLine(str = ''): void {
 }
 
 // Sparkline chart using block characters
-export function sparkline(values: number[], width?: number): string {
+export function sparkline(values: number[], _width?: number): string {
   if (values.length === 0) return '';
 
   const blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -174,7 +174,6 @@ export function sparkline(values: number[], width?: number): string {
   for (const val of values) {
     const normalized = val / max;
     const blockIndex = Math.min(Math.floor(normalized * blocks.length), blocks.length - 1);
-    const intensity = normalized;
 
     // Color gradient from dim to cyan to green based on value
     if (normalized === 0) {

@@ -1,10 +1,10 @@
-import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
+import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, CostSummary, fetchRateLimits, RateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
-import { getMultiRepoGitStats, getActivitySparkline, getGitHubStats, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
+import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
@@ -354,10 +354,10 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 /**
  * Save dashboard snapshot to local PostgreSQL for historical tracking
  */
-async function saveSnapshot(
+async function _saveSnapshot(
   squadData: SquadMetrics[],
   ghStats: GitHubStats | null,
-  baseDir: string | null
+  _baseDir: string | null
 ): Promise<void> {
   // Check if database is available
   const dbAvailable = await isDatabaseAvailable();
@@ -441,7 +441,7 @@ function findAgentsSquadsDir(): string | null {
   return null;
 }
 
-async function renderGitPerformance(): Promise<void> {
+async function _renderGitPerformance(): Promise<void> {
   const baseDir = findAgentsSquadsDir();
 
   if (!baseDir) {
@@ -508,7 +508,7 @@ async function renderGitPerformance(): Promise<void> {
   }
 }
 
-async function renderTokenEconomics(squadNames: string[]): Promise<void> {
+async function _renderTokenEconomics(_squadNames: string[]): Promise<void> {
   const costs = await fetchCostSummary(100);
 
   if (!costs) {
@@ -579,9 +579,9 @@ async function renderTokenEconomics(squadNames: string[]): Promise<void> {
   }
 
   // Total tokens for all models
-  const totalInput = costs.bySquad.reduce((sum, s) => sum + s.inputTokens, 0);
-  const totalOutput = costs.bySquad.reduce((sum, s) => sum + s.outputTokens, 0);
-  const totalCalls = costs.bySquad.reduce((sum, s) => sum + s.calls, 0);
+  const _totalInput = costs.bySquad.reduce((sum, s) => sum + s.inputTokens, 0);
+  const _totalOutput = costs.bySquad.reduce((sum, s) => sum + s.outputTokens, 0);
+  const _totalCalls = costs.bySquad.reduce((sum, s) => sum + s.calls, 0);
 
   // Cost projections - extrapolate based on hours elapsed today
   const now = new Date();
@@ -661,7 +661,7 @@ function formatK(n: number): string {
   return String(n);
 }
 
-async function renderHistoricalTrends(): Promise<void> {
+async function _renderHistoricalTrends(): Promise<void> {
   // Check if database is available
   const dbAvailable = await isDatabaseAvailable();
   if (!dbAvailable) return;
@@ -699,7 +699,7 @@ async function renderHistoricalTrends(): Promise<void> {
   writeLine();
 }
 
-async function renderInsights(): Promise<void> {
+async function _renderInsights(): Promise<void> {
   const insights = await fetchInsights('week');
 
   if (insights.source === 'none' || insights.taskMetrics.length === 0) {
@@ -791,7 +791,7 @@ async function renderInsights(): Promise<void> {
   }
 }
 
-async function renderInfrastructure(): Promise<void> {
+async function _renderInfrastructure(): Promise<void> {
   const stats = await fetchBridgeStats();
 
   if (!stats) {
@@ -1016,7 +1016,7 @@ function renderInfrastructureCached(cache: DashboardCache): void {
 async function saveSnapshotCached(
   squadData: SquadMetrics[],
   cache: DashboardCache,
-  baseDir: string | null
+  _baseDir: string | null
 ): Promise<void> {
   // Use cached dbAvailable check - don't make another slow connection attempt
   if (!cache.dbAvailable) return;

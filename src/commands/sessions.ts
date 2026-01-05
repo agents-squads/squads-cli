@@ -9,7 +9,6 @@ import {
   getSessionHistoryStats,
   getRecentSessions,
   SessionState,
-  SessionEvent,
 } from '../lib/sessions.js';
 import {
   colors,

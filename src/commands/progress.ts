@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { findSquadsDir, listSquads, loadSquad } from '../lib/squad-parser.js';
+import '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import {
   colors,

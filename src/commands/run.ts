@@ -15,7 +15,6 @@ import {
   bold,
   RESET,
   gradient,
-  box,
   icons,
   writeLine,
 } from '../lib/terminal.js';
@@ -406,7 +405,7 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
   });
 }
 
-async function executeWithClaude(prompt: string, verbose?: boolean, timeoutMinutes: number = 30): Promise<string> {
+async function executeWithClaude(prompt: string, verbose?: boolean, _timeoutMinutes: number = 30): Promise<string> {
   // Use interactive Claude Code (subscription) instead of --print (API credits)
   // Run via tmux for real PTY support and session management
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
