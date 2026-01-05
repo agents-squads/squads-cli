@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan, detectProvidersFromEnv, ProviderCosts, getProviderDisplayName } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -816,8 +816,13 @@ async function _renderInfrastructure(): Promise<void> {
 
   // Today's real-time metrics
   if (stats.today.generations > 0 || stats.today.costUsd > 0) {
-    const costColor = stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green;
-    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
+    // On Max plan, cost is informational only (green). On usage plan, color by budget usage.
+    const maxPlan = isMaxPlan();
+    const costColor = maxPlan ? colors.green : (stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green);
+    const costDisplay = maxPlan
+      ? `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}`
+      : `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}`;
+    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costDisplay}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
 
     // Model breakdown
     if (stats.byModel && stats.byModel.length > 0) {
@@ -929,32 +934,75 @@ function renderTokenEconomicsCached(cache: DashboardCache): void {
 
   // Budget bar
   const barWidth = 32;
-  const costBar = formatCostBar(costs.usedPercent, barWidth);
-  writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
-  writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
-  writeLine();
-
-  // Rate limits (simplified - skip the async fetch)
+  const maxPlan = isMaxPlan();
   const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
-  writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
-  writeLine();
 
-  // Cost projections - extrapolate based on hours elapsed today
-  const now = new Date();
-  const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
-  const hourlyRate = costs.totalCost / hoursElapsed;
-  const dailyProjection = hourlyRate * 24;
-  const monthlyProjection = dailyProjection * 30;
+  // Get plan detection details
+  const planInfo = detectPlan();
+  const planDisplay = planInfo.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
+  const confidenceNote = planInfo.confidence === 'inferred' ? ` ${colors.dim}[${planInfo.reason}]${RESET}` : '';
 
-  writeLine(`  ${colors.dim}Projections${RESET}`);
-  const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
-  writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
-
-  if (dailyProjection > costs.dailyBudget * 0.8) {
-    writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
+  // Show detected providers
+  const providers = detectProvidersFromEnv();
+  if (providers.length > 0) {
+    const providerLine = providers.map((p) => {
+      const icon = p.provider === 'anthropic' ? colors.green + '●' : colors.dim + '○';
+      const planStr = p.plan ? ` ${colors.dim}(${p.plan})${RESET}` : '';
+      return `${icon}${RESET} ${getProviderDisplayName(p.provider)}${planStr}`;
+    }).join('  ');
+    writeLine(`  ${colors.dim}Providers:${RESET} ${providerLine}`);
+    writeLine();
   }
-  if (costs.usedPercent > 80) {
-    writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
+
+  if (maxPlan) {
+    // Max plan: Show rate limits as primary constraint, cost is informational only
+    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+    writeLine();
+
+    // Show cost as informational only (no warnings)
+    writeLine(`  ${colors.dim}Usage:${RESET} ${colors.green}$${costs.totalCost.toFixed(2)}${RESET}${colors.dim} today${RESET}  ${colors.dim}│${RESET}  ${colors.cyan}${costs.totalCalls}${RESET}${colors.dim} calls${RESET}`);
+
+    // Cost projections without warnings
+    const now = new Date();
+    const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
+    const hourlyRate = costs.totalCost / hoursElapsed;
+    const monthlyProjection = hourlyRate * 24 * 30;
+
+    writeLine(`  ${colors.dim}Monthly est:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}${colors.dim} (informational)${RESET}`);
+    writeLine();
+
+    // Rate limits are the real constraint on Max plan
+    writeLine(`  ${colors.dim}Rate limits are your only constraint on Max plan${RESET}`);
+    writeLine(`  ${colors.dim}Check limits:${RESET} squads health`);
+  } else {
+    // Usage plan: Show budget tracking with warnings
+    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+    writeLine();
+    const costBar = formatCostBar(costs.usedPercent, barWidth);
+    writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
+    writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
+    writeLine();
+
+    writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
+    writeLine();
+
+    // Cost projections with warnings for usage plan
+    const now = new Date();
+    const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
+    const hourlyRate = costs.totalCost / hoursElapsed;
+    const dailyProjection = hourlyRate * 24;
+    const monthlyProjection = dailyProjection * 30;
+
+    writeLine(`  ${colors.dim}Projections${RESET}`);
+    const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
+    writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
+
+    if (dailyProjection > costs.dailyBudget * 0.8) {
+      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
+    }
+    if (costs.usedPercent > 80) {
+      writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
+    }
   }
   writeLine();
 }
@@ -984,8 +1032,13 @@ function renderInfrastructureCached(cache: DashboardCache): void {
 
   // Today's real-time metrics
   if (stats.today.generations > 0 || stats.today.costUsd > 0) {
-    const costColor = stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green;
-    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
+    // On Max plan, cost is informational only (green). On usage plan, color by budget usage.
+    const maxPlan = isMaxPlan();
+    const costColor = maxPlan ? colors.green : (stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green);
+    const costDisplay = maxPlan
+      ? `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}`
+      : `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}`;
+    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costDisplay}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
 
     // Model breakdown
     if (stats.byModel && stats.byModel.length > 0) {

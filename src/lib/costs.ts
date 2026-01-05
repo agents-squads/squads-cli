@@ -4,6 +4,19 @@
  * Fallback: Langfuse API (if bridge unavailable)
  */
 
+import {
+  ProviderName,
+  ProviderDetection,
+  detectProviderFromModel,
+  detectProvidersFromEnv,
+  getModelPricing,
+  calcCost as calcProviderCost,
+  getProviderDisplayName,
+} from './providers.js';
+
+// Re-export provider types for convenience
+export { ProviderName, ProviderDetection, detectProviderFromModel, detectProvidersFromEnv, getProviderDisplayName };
+
 interface SquadCosts {
   squad: string;
   calls: number;
@@ -12,6 +25,18 @@ interface SquadCosts {
   cachedTokens: number;
   cost: number;
   models: Record<string, number>;
+}
+
+export interface ProviderCosts {
+  provider: ProviderName;
+  displayName: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  plan?: string;
+  confidence?: 'explicit' | 'inferred';
+  reason?: string;
 }
 
 export interface CostSummary {
@@ -26,10 +51,12 @@ export interface CostSummary {
   totalInputTokens: number;
   cacheHitRate: number;
   bySquad: SquadCosts[];
+  byProvider: ProviderCosts[];
   source: 'postgres' | 'langfuse' | 'none';
 }
 
-// Model pricing (per 1M tokens)
+// Legacy MODEL_PRICING kept for backward compatibility
+// New code should use getModelPricing() from providers.ts
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-opus-4-5-20251101': { input: 15.0, output: 75.0 },
   'claude-sonnet-4-20250514': { input: 3.0, output: 15.0 },
@@ -43,6 +70,88 @@ const DEFAULT_DAILY_BUDGET = 200.0;
 const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
 const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
 const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
+
+/**
+ * Anthropic plan types:
+ * - 'max': Flat fee subscription ($200/mo), no overage - only rate limits matter
+ * - 'usage': Pay-per-token, budget tracking matters
+ */
+export type PlanType = 'max' | 'usage';
+
+/**
+ * Plan detection result with confidence and reason
+ */
+export interface PlanDetection {
+  plan: PlanType;
+  confidence: 'explicit' | 'inferred';
+  reason: string;
+}
+
+/**
+ * Detect the Anthropic plan type using multiple signals:
+ *
+ * Priority order:
+ * 1. Explicit SQUADS_PLAN_TYPE env var (highest confidence)
+ * 2. ANTHROPIC_BUDGET_DAILY set → usage plan (user cares about budget)
+ * 3. Tier 4 + no budget → likely Max plan (heavy user)
+ * 4. Low tier (1-2) → usage plan (new user, pay-as-you-go)
+ * 5. Default: max (assumes professional use)
+ */
+export function detectPlan(): PlanDetection {
+  // 1. Explicit configuration (highest priority)
+  const explicitPlan = process.env.SQUADS_PLAN_TYPE?.toLowerCase();
+  if (explicitPlan === 'usage') {
+    return { plan: 'usage', confidence: 'explicit', reason: 'SQUADS_PLAN_TYPE=usage' };
+  }
+  if (explicitPlan === 'max') {
+    return { plan: 'max', confidence: 'explicit', reason: 'SQUADS_PLAN_TYPE=max' };
+  }
+
+  // 2. Budget explicitly set → user cares about costs → usage plan
+  const budgetSet = process.env.ANTHROPIC_BUDGET_DAILY || process.env.SQUADS_DAILY_BUDGET;
+  if (budgetSet) {
+    return { plan: 'usage', confidence: 'inferred', reason: `Budget set ($${budgetSet}/day)` };
+  }
+
+  // 3. Check tier - Tier 4 usually indicates Max plan user
+  const tier = parseInt(process.env.ANTHROPIC_TIER || '0', 10);
+  if (tier >= 4) {
+    return { plan: 'max', confidence: 'inferred', reason: `Tier ${tier} (high usage)` };
+  }
+
+  // 4. Low tier (1-2) → likely new user on usage plan
+  if (tier >= 1 && tier <= 2) {
+    return { plan: 'usage', confidence: 'inferred', reason: `Tier ${tier} (new user)` };
+  }
+
+  // 5. Default: assume max (professional users more common for this CLI)
+  return { plan: 'max', confidence: 'inferred', reason: 'Default (no config)' };
+}
+
+/**
+ * Get the current Anthropic plan type
+ * Use detectPlan() for full details including confidence
+ */
+export function getPlanType(): PlanType {
+  return detectPlan().plan;
+}
+
+/**
+ * Check if we're on a flat-fee plan where budget doesn't matter
+ */
+export function isMaxPlan(): boolean {
+  return getPlanType() === 'max';
+}
+
+/**
+ * Get human-readable plan description for dashboard display
+ */
+export function getPlanDescription(): string {
+  const detection = detectPlan();
+  const planName = detection.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
+  const confidence = detection.confidence === 'explicit' ? '' : ` [${detection.reason}]`;
+  return `${planName}${confidence}`;
+}
 
 /**
  * Fetch with timeout to prevent hanging when services are down
@@ -62,8 +171,9 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 }
 
 function calcCost(model: string, inputTokens: number, outputTokens: number): number {
-  const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
-  return (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
+  // Use provider-aware pricing
+  const provider = detectProviderFromModel(model);
+  return calcProviderCost(provider, model, inputTokens, outputTokens);
 }
 
 /**
@@ -100,6 +210,20 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
     const totalAllInput = totalInputTokens + totalCachedTokens;
     const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
+    // Build provider summary from detected providers in env
+    const detectedProviders = detectProvidersFromEnv();
+    const byProvider: ProviderCosts[] = detectedProviders.map((p) => ({
+      provider: p.provider,
+      displayName: getProviderDisplayName(p.provider),
+      calls: 0, // Bridge doesn't track by provider yet
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: p.provider === 'anthropic' ? totalCost : 0, // Assume all cost is Anthropic for now
+      plan: p.plan,
+      confidence: p.confidence,
+      reason: p.reason,
+    }));
+
     return {
       totalCost,
       dailyBudget,
@@ -112,6 +236,7 @@ async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promis
       totalInputTokens,
       cacheHitRate,
       bySquad,
+      byProvider,
       source: 'postgres',
     };
   } catch {
@@ -200,6 +325,38 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
     const totalAllInput = totalInputTokens + totalCachedTokens;
     const cacheHitRate = totalAllInput > 0 ? (totalCachedTokens / totalAllInput) * 100 : 0;
 
+    // Build provider summary - Langfuse can track by model, so group by provider
+    const providerMap: Record<string, ProviderCosts> = {};
+    for (const obs of observations) {
+      if (obs.type !== 'GENERATION') continue;
+      const model = obs.model || 'unknown';
+      const provider = detectProviderFromModel(model);
+      const usage = obs.usage || {};
+      const inputTokens = usage.input || 0;
+      const outputTokens = usage.output || 0;
+      const cost = calcCost(model, inputTokens, outputTokens);
+
+      if (!providerMap[provider]) {
+        const detection = detectProvidersFromEnv().find((p) => p.provider === provider);
+        providerMap[provider] = {
+          provider,
+          displayName: getProviderDisplayName(provider),
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          plan: detection?.plan,
+          confidence: detection?.confidence,
+          reason: detection?.reason,
+        };
+      }
+      providerMap[provider].calls += 1;
+      providerMap[provider].inputTokens += inputTokens;
+      providerMap[provider].outputTokens += outputTokens;
+      providerMap[provider].cost += cost;
+    }
+    const byProvider = Object.values(providerMap).sort((a, b) => b.cost - a.cost);
+
     return {
       totalCost,
       dailyBudget,
@@ -212,6 +369,7 @@ async function fetchFromLangfuse(limit = 100): Promise<CostSummary | null> {
       totalInputTokens,
       cacheHitRate,
       bySquad: squadList,
+      byProvider,
       source: 'langfuse',
     };
   } catch {
@@ -238,8 +396,21 @@ export async function fetchCostSummary(
     return langfuseResult;
   }
 
-  // No data source available
+  // No data source available - still detect providers from env
   const defaultBudget = parseFloat(process.env.SQUADS_DAILY_BUDGET || '') || DEFAULT_DAILY_BUDGET;
+  const detectedProviders = detectProvidersFromEnv();
+  const byProvider: ProviderCosts[] = detectedProviders.map((p) => ({
+    provider: p.provider,
+    displayName: getProviderDisplayName(p.provider),
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cost: 0,
+    plan: p.plan,
+    confidence: p.confidence,
+    reason: p.reason,
+  }));
+
   return {
     totalCost: 0,
     dailyBudget: defaultBudget,
@@ -252,6 +423,7 @@ export async function fetchCostSummary(
     totalInputTokens: 0,
     cacheHitRate: 0,
     bySquad: [],
+    byProvider,
     source: 'none',
   };
 }
