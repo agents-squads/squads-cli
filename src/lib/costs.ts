@@ -45,6 +45,30 @@ const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
 const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
 
 /**
+ * Anthropic plan types:
+ * - 'max': Flat fee subscription ($200/mo), no overage - only rate limits matter
+ * - 'usage': Pay-per-token, budget tracking matters
+ */
+export type PlanType = 'max' | 'usage';
+
+/**
+ * Get the current Anthropic plan type from environment
+ * Defaults to 'max' (most common for heavy users)
+ */
+export function getPlanType(): PlanType {
+  const planType = process.env.SQUADS_PLAN_TYPE?.toLowerCase();
+  if (planType === 'usage') return 'usage';
+  return 'max'; // Default to max plan
+}
+
+/**
+ * Check if we're on a flat-fee plan where budget doesn't matter
+ */
+export function isMaxPlan(): boolean {
+  return getPlanType() === 'max';
+}
+
+/**
  * Fetch with timeout to prevent hanging when services are down
  */
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
