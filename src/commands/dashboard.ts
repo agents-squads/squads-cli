@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -937,9 +937,14 @@ function renderTokenEconomicsCached(cache: DashboardCache): void {
   const maxPlan = isMaxPlan();
   const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
 
+  // Get plan detection details
+  const planInfo = detectPlan();
+  const planDisplay = planInfo.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
+  const confidenceNote = planInfo.confidence === 'inferred' ? ` ${colors.dim}[${planInfo.reason}]${RESET}` : '';
+
   if (maxPlan) {
     // Max plan: Show rate limits as primary constraint, cost is informational only
-    writeLine(`  ${colors.dim}Plan: Max ($200 flat)${RESET}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
     writeLine();
 
     // Show cost as informational only (no warnings)
@@ -959,6 +964,8 @@ function renderTokenEconomicsCached(cache: DashboardCache): void {
     writeLine(`  ${colors.dim}Check limits:${RESET} squads health`);
   } else {
     // Usage plan: Show budget tracking with warnings
+    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+    writeLine();
     const costBar = formatCostBar(costs.usedPercent, barWidth);
     writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
     writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);

@@ -1,74 +1,146 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { detectPlan, getPlanType, isMaxPlan, PlanDetection } from '../src/lib/costs.js';
 
-// We test the plan type logic directly since the functions are simple
 describe('plan type detection', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
+    // Create a clean env for each test
     process.env = { ...originalEnv };
+    // Clear all plan-related env vars
+    delete process.env.SQUADS_PLAN_TYPE;
+    delete process.env.ANTHROPIC_BUDGET_DAILY;
+    delete process.env.SQUADS_DAILY_BUDGET;
+    delete process.env.ANTHROPIC_TIER;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  // Test the logic that's used in getPlanType()
-  function getPlanType(): 'max' | 'usage' {
-    const planType = process.env.SQUADS_PLAN_TYPE?.toLowerCase();
-    if (planType === 'usage') return 'usage';
-    return 'max';
-  }
+  describe('detectPlan - explicit configuration', () => {
+    it('returns explicit max when SQUADS_PLAN_TYPE=max', () => {
+      process.env.SQUADS_PLAN_TYPE = 'max';
+      const result = detectPlan();
+      expect(result.plan).toBe('max');
+      expect(result.confidence).toBe('explicit');
+      expect(result.reason).toBe('SQUADS_PLAN_TYPE=max');
+    });
 
-  function isMaxPlan(): boolean {
-    return getPlanType() === 'max';
-  }
+    it('returns explicit usage when SQUADS_PLAN_TYPE=usage', () => {
+      process.env.SQUADS_PLAN_TYPE = 'usage';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('explicit');
+      expect(result.reason).toBe('SQUADS_PLAN_TYPE=usage');
+    });
+
+    it('handles case insensitivity', () => {
+      process.env.SQUADS_PLAN_TYPE = 'USAGE';
+      expect(detectPlan().plan).toBe('usage');
+
+      process.env.SQUADS_PLAN_TYPE = 'MAX';
+      expect(detectPlan().plan).toBe('max');
+    });
+  });
+
+  describe('detectPlan - budget inference', () => {
+    it('infers usage plan when ANTHROPIC_BUDGET_DAILY is set', () => {
+      process.env.ANTHROPIC_BUDGET_DAILY = '50';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('inferred');
+      expect(result.reason).toContain('Budget set');
+    });
+
+    it('infers usage plan when SQUADS_DAILY_BUDGET is set', () => {
+      process.env.SQUADS_DAILY_BUDGET = '100';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('inferred');
+    });
+
+    it('explicit config overrides budget inference', () => {
+      process.env.SQUADS_PLAN_TYPE = 'max';
+      process.env.ANTHROPIC_BUDGET_DAILY = '50';
+      const result = detectPlan();
+      expect(result.plan).toBe('max');
+      expect(result.confidence).toBe('explicit');
+    });
+  });
+
+  describe('detectPlan - tier inference', () => {
+    it('infers max plan for Tier 4', () => {
+      process.env.ANTHROPIC_TIER = '4';
+      const result = detectPlan();
+      expect(result.plan).toBe('max');
+      expect(result.confidence).toBe('inferred');
+      expect(result.reason).toContain('Tier 4');
+    });
+
+    it('infers usage plan for Tier 1 (new user)', () => {
+      process.env.ANTHROPIC_TIER = '1';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('inferred');
+      expect(result.reason).toContain('Tier 1');
+    });
+
+    it('infers usage plan for Tier 2 (new user)', () => {
+      process.env.ANTHROPIC_TIER = '2';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('inferred');
+    });
+
+    it('budget takes priority over tier', () => {
+      process.env.ANTHROPIC_TIER = '4';
+      process.env.ANTHROPIC_BUDGET_DAILY = '50';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.reason).toContain('Budget set');
+    });
+  });
+
+  describe('detectPlan - defaults', () => {
+    it('defaults to max plan when no signals', () => {
+      const result = detectPlan();
+      expect(result.plan).toBe('max');
+      expect(result.confidence).toBe('inferred');
+      expect(result.reason).toContain('Default');
+    });
+
+    it('defaults to max for Tier 3 (middle tier)', () => {
+      process.env.ANTHROPIC_TIER = '3';
+      const result = detectPlan();
+      expect(result.plan).toBe('max');
+      expect(result.confidence).toBe('inferred');
+    });
+  });
 
   describe('getPlanType', () => {
-    it('defaults to max when no env var set', () => {
-      delete process.env.SQUADS_PLAN_TYPE;
-      expect(getPlanType()).toBe('max');
-    });
-
-    it('returns max when SQUADS_PLAN_TYPE=max', () => {
-      process.env.SQUADS_PLAN_TYPE = 'max';
-      expect(getPlanType()).toBe('max');
-    });
-
-    it('returns max when SQUADS_PLAN_TYPE=MAX (case insensitive)', () => {
-      process.env.SQUADS_PLAN_TYPE = 'MAX';
-      expect(getPlanType()).toBe('max');
-    });
-
-    it('returns usage when SQUADS_PLAN_TYPE=usage', () => {
+    it('returns the plan from detectPlan', () => {
       process.env.SQUADS_PLAN_TYPE = 'usage';
       expect(getPlanType()).toBe('usage');
-    });
 
-    it('returns usage when SQUADS_PLAN_TYPE=USAGE (case insensitive)', () => {
-      process.env.SQUADS_PLAN_TYPE = 'USAGE';
-      expect(getPlanType()).toBe('usage');
-    });
-
-    it('defaults to max for unknown values', () => {
-      process.env.SQUADS_PLAN_TYPE = 'unknown';
+      process.env.SQUADS_PLAN_TYPE = 'max';
       expect(getPlanType()).toBe('max');
     });
   });
 
   describe('isMaxPlan', () => {
-    it('returns true when on max plan', () => {
+    it('returns true for max plan', () => {
       process.env.SQUADS_PLAN_TYPE = 'max';
       expect(isMaxPlan()).toBe(true);
     });
 
-    it('returns true when env not set (default)', () => {
-      delete process.env.SQUADS_PLAN_TYPE;
-      expect(isMaxPlan()).toBe(true);
-    });
-
-    it('returns false when on usage plan', () => {
+    it('returns false for usage plan', () => {
       process.env.SQUADS_PLAN_TYPE = 'usage';
       expect(isMaxPlan()).toBe(false);
+    });
+
+    it('returns true by default (no config)', () => {
+      expect(isMaxPlan()).toBe(true);
     });
   });
 
