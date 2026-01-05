@@ -76,7 +76,7 @@ export function gradient(text: string): string {
 // Progress bar with gradient fill
 export function progressBar(percent: number, width = 20): string {
   // Clamp values to prevent negative repeat counts
-  const clampedPercent = Math.max(0, Math.min(100, percent));
+  const clampedPercent = Math.max(0, Math.min(100, percent || 0));
   const filled = Math.round((clampedPercent / 100) * width);
   const empty = Math.max(0, width - filled);
 
@@ -153,14 +153,31 @@ export const icons = {
   empty: `${colors.dim}◇${RESET}`,
 };
 
-// Write without newline
-export function write(str: string): void {
-  process.stdout.write(str);
+// Strip ANSI escape codes from a string
+export function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-// Write line
+// Check if we should use colors (TTY detection)
+export function isColorEnabled(): boolean {
+  // NO_COLOR environment variable (standard: https://no-color.org/)
+  if (process.env.NO_COLOR !== undefined) return false;
+  // Force color via environment variable
+  if (process.env.FORCE_COLOR !== undefined) return true;
+  // Check if output is a TTY
+  return process.stdout.isTTY ?? false;
+}
+
+// Write without newline (strips ANSI codes when piped)
+export function write(str: string): void {
+  const output = isColorEnabled() ? str : stripAnsi(str);
+  process.stdout.write(output);
+}
+
+// Write line (strips ANSI codes when piped)
 export function writeLine(str = ''): void {
-  process.stdout.write(str + '\n');
+  const output = isColorEnabled() ? str : stripAnsi(str);
+  process.stdout.write(output + '\n');
 }
 
 // Sparkline chart using block characters
@@ -190,7 +207,11 @@ export function sparkline(values: number[], _width?: number): string {
 
 // Bar chart (horizontal)
 export function barChart(value: number, max: number, width: number = 20, label?: string): string {
-  const filled = Math.round((value / max) * width);
+  // Guard against invalid inputs to prevent crashes
+  const safeValue = Math.max(0, value || 0);
+  const safeMax = Math.max(1, max || 1); // Prevent division by zero
+  const ratio = Math.min(1, safeValue / safeMax); // Clamp ratio to 0-1
+  const filled = Math.round(ratio * width);
   const empty = width - filled;
 
   let bar = '';
