@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -364,7 +364,7 @@ async function _saveSnapshot(
   if (!dbAvailable) return;
 
   // Fetch additional data for snapshot
-  const gitStats = baseDir ? getMultiRepoGitStats(baseDir, 30) : null;
+  const gitStats = _baseDir ? getMultiRepoGitStats(_baseDir, 30) : null;
   const costs = await fetchCostSummary(100);
 
   // Build squad snapshot data
@@ -396,8 +396,8 @@ async function _saveSnapshot(
     : [];
 
   // Calculate totals
-  const totalInputTokens = costs?.bySquad.reduce((sum, s) => sum + s.inputTokens, 0) || 0;
-  const totalOutputTokens = costs?.bySquad.reduce((sum, s) => sum + s.outputTokens, 0) || 0;
+  const totalInputTokens = costs?.bySquad.reduce((sum: number, s: { inputTokens: number }) => sum + s.inputTokens, 0) || 0;
+  const totalOutputTokens = costs?.bySquad.reduce((sum: number, s: { outputTokens: number }) => sum + s.outputTokens, 0) || 0;
   const overallProgress = squadData.length > 0
     ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
     : 0;
@@ -1052,8 +1052,8 @@ async function saveSnapshotCached(
     : [];
 
   // Calculate totals
-  const totalInputTokens = costs?.bySquad.reduce((sum, s) => sum + s.inputTokens, 0) || 0;
-  const totalOutputTokens = costs?.bySquad.reduce((sum, s) => sum + s.outputTokens, 0) || 0;
+  const totalInputTokens = costs?.bySquad.reduce((sum: number, s: { inputTokens: number }) => sum + s.inputTokens, 0) || 0;
+  const totalOutputTokens = costs?.bySquad.reduce((sum: number, s: { outputTokens: number }) => sum + s.outputTokens, 0) || 0;
   const overallProgress = squadData.length > 0
     ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
     : 0;
