@@ -15,13 +15,6 @@ export interface Squad {
   mission?: string;
 }
 
-// Core functions (to be implemented)
-export async function loadSquad(path: string): Promise<Squad | null> {
-  // TODO: Load squad from markdown file
-  return null;
-}
-
-export async function runAgent(agent: Agent, prompt: string): Promise<string> {
-  // TODO: Execute agent
-  return '';
-}
+// Note: Programmatic API (loadSquad, runAgent) not yet implemented.
+// Use the CLI for squad execution: `squads run <squad>`
+// See: https://github.com/agents-squads/squads-cli for documentation.
