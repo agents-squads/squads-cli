@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import open from 'open';
+import 'open';
 import http from 'http';
 
 // Personal email domains to reject

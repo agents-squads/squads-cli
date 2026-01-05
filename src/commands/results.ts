@@ -1,6 +1,4 @@
 import { execSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import {
   colors,
@@ -12,7 +10,6 @@ import {
   truncate,
   icons,
   writeLine,
-  progressBar,
 } from '../lib/terminal.js';
 
 interface SquadResults {

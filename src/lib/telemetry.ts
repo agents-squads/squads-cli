@@ -274,7 +274,7 @@ export function registerExitHandler(): void {
   });
 
   // For signals, we need to handle manually
-  const signalHandler = async (signal: string) => {
+  const signalHandler = async (_signal: string) => {
     if (eventQueue.length > 0) {
       await flushEvents();
     }

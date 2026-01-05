@@ -1,5 +1,5 @@
 import { execSync, spawn } from 'child_process';
-import { existsSync, readdirSync } from 'fs';
+import { readdirSync } from 'fs';
 import { join } from 'path';
 import ora from 'ora';
 import {
@@ -7,7 +7,6 @@ import {
   bold,
   RESET,
   gradient,
-  truncate,
   icons,
   writeLine,
 } from '../lib/terminal.js';

@@ -5,8 +5,6 @@ import {
   bold,
   RESET,
   gradient,
-  box,
-  padEnd,
   truncate,
   icons,
   writeLine,
