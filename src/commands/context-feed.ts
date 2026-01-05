@@ -264,7 +264,7 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
 
 function renderHumanBriefing(data: BriefingData, options: BriefingOptions): void {
   writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}briefing${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}context-feed${RESET}`);
   writeLine();
 
   // Sessions indicator
@@ -352,9 +352,9 @@ function renderHumanBriefing(data: BriefingData, options: BriefingOptions): void
   }
 
   // Commands
-  writeLine(`  ${colors.dim}$${RESET} squads briefing ${colors.cyan}--topic "pricing"${RESET}    ${colors.dim}Topic-focused${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads briefing ${colors.cyan}--squad website${RESET}     ${colors.dim}Single squad${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads briefing ${colors.cyan}--agent${RESET}             ${colors.dim}JSON for agents${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feed ${colors.cyan}--topic "pricing"${RESET}    ${colors.dim}Topic-focused${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feed ${colors.cyan}--squad website${RESET}     ${colors.dim}Single squad${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feed ${colors.cyan}--agent${RESET}             ${colors.dim}JSON for agents${RESET}`);
   writeLine();
 }
 
@@ -371,7 +371,7 @@ function renderAgentBriefing(data: BriefingData): void {
 // Command Export
 // ============================================================================
 
-export async function briefingCommand(options: BriefingOptions = {}): Promise<void> {
+export async function contextFeedCommand(options: BriefingOptions = {}): Promise<void> {
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
