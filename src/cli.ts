@@ -63,6 +63,7 @@ import { workersCommand } from './commands/workers.js';
 import { contextFeedCommand } from './commands/context-feed.js';
 import { watchCommand } from './commands/watch.js';
 import { liveCommand } from './commands/live.js';
+import { topCommand } from './commands/top.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
@@ -260,6 +261,12 @@ program
   .option('-m, --minimal', 'Minimal view')
   .option('-f, --focus <panel>', 'Focus on specific panel (agents, cost, activity, memory)')
   .action((options) => liveCommand(options));
+
+// Top command - live process table like Unix top
+program
+  .command('top')
+  .description('Live process table (like Unix top) - numbers update in place')
+  .action(() => topCommand());
 
 // Memory command group
 const memory = program
