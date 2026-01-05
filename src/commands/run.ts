@@ -9,7 +9,7 @@ import {
   loadAgentDefinition
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { track, Events } from '../lib/telemetry.js';
+import { track, Events, flushEvents } from '../lib/telemetry.js';
 import {
   colors,
   bold,
@@ -106,6 +106,7 @@ export async function runCommand(
 
   if (squad) {
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
+    await flushEvents(); // Ensure telemetry is sent before potential exit
     await runSquad(squad, squadsDir, options);
   } else {
     // Try to find as an agent
