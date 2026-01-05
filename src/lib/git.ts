@@ -557,7 +557,7 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
       let lastCommit = '';
 
       for (const line of commits) {
-        const [hash, author, date, message] = line.split('|');
+        const [hash, author, date] = line.split('|');
         if (!hash) continue;
 
         stats.totalCommits++;
@@ -617,10 +617,8 @@ export function getActivitySparkline(basePath: string, days: number = 7): number
   const activity: number[] = [];
   const now = new Date();
 
+  // Initialize activity array with zeros for each day
   for (let i = days - 1; i >= 0; i--) {
-    const date = new Date(now);
-    date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split('T')[0];
     activity.push(0);
   }
 

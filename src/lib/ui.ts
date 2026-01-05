@@ -8,7 +8,6 @@ import {
   padEnd,
   icons,
   writeLine,
-  truncate,
 } from './terminal.js';
 
 // Version from package.json (injected at build time or read dynamically)

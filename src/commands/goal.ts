@@ -4,15 +4,12 @@ import {
   listSquads,
   addGoalToSquad,
   updateGoalInSquad,
-  Goal
 } from '../lib/squad-parser.js';
 import {
   colors,
   bold,
   RESET,
   gradient,
-  box,
-  padEnd,
   truncate,
   icons,
   writeLine,

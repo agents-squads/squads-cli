@@ -4,10 +4,8 @@
 
 import { createInterface } from 'readline';
 import {
-  checkForUpdate,
   refreshVersionCache,
   performUpdate,
-  getCurrentVersion,
 } from '../lib/update.js';
 import {
   colors,

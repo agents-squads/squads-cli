@@ -512,7 +512,7 @@ export async function stackInitCommand(): Promise<void> {
 
       composeDir = targetDir;
       writeLine(`  ${colors.green}${icons.success}${RESET} Files copied`);
-    } catch (err) {
+    } catch {
       writeLine(`  ${colors.yellow}${icons.warning}${RESET} Could not copy files, using source location`);
     }
   } else if (existsSync(targetDir)) {
@@ -635,7 +635,7 @@ BRIDGE_PORT=8088
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         writeLine(`  ${colors.green}${icons.success}${RESET} Services started`);
-      } catch (err) {
+      } catch {
         writeLine(`  ${colors.red}${icons.error}${RESET} Failed to start services`);
         writeLine(`  ${colors.dim}Try manually: cd ${composeDir} && docker compose up -d${RESET}`);
       }

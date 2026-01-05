@@ -1,11 +1,10 @@
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
-import { findSquadsDir, listSquads } from '../lib/squad-parser.js';
+import { findSquadsDir } from '../lib/squad-parser.js';
 import {
   colors,
-  bold,
   RESET,
   gradient,
   icons,
@@ -19,7 +18,7 @@ interface CommitInfo {
   files: string[];
 }
 
-interface SquadUpdate {
+interface _SquadUpdate {
   squad: string;
   commits: CommitInfo[];
   summary: string;
@@ -100,7 +99,7 @@ function getRecentCommits(since?: string): CommitInfo[] {
         });
       }
     }
-  } catch (error) {
+  } catch {
     // Not in a git repo or other error
   }
 
@@ -278,7 +277,7 @@ function gitPushMemory(): { success: boolean; output: string } {
 
 export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean } = {}): Promise<void> {
   const memoryDir = findMemoryDir();
-  const squadsDir = findSquadsDir();
+  const _squadsDir = findSquadsDir();
 
   if (!memoryDir) {
     writeLine(`  ${colors.yellow}No .agents/memory directory found${RESET}`);
