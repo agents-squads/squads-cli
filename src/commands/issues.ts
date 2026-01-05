@@ -11,12 +11,22 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 
+interface Label {
+  name: string;
+  color?: string;
+  description?: string;
+}
+
 interface Issue {
   number: number;
   title: string;
   state: string;
-  labels: string[];
+  labels: Label[];
   createdAt: string;
+}
+
+function getLabelName(label: Label | string): string {
+  return typeof label === 'string' ? label : label.name;
 }
 
 interface RepoIssues {
@@ -64,7 +74,7 @@ export async function issuesCommand(options: IssuesOptions = {}): Promise<void> 
       const issues: Issue[] = JSON.parse(result);
       repoData.push({ repo, issues });
       totalOpen += issues.length;
-    } catch (e: any) {
+    } catch {
       repoData.push({ repo, issues: [], error: 'not found or no access' });
     }
   }
@@ -124,7 +134,7 @@ export async function issuesCommand(options: IssuesOptions = {}): Promise<void> 
 
     for (const issue of allIssues) {
       const labelStr = issue.labels.length > 0
-        ? `${colors.dim}[${issue.labels.map((l: any) => l.name || l).join(', ')}]${RESET}`
+        ? `${colors.dim}[${issue.labels.map(getLabelName).join(', ')}]${RESET}`
         : '';
 
       writeLine(`  ${icons.empty} ${colors.dim}#${issue.number}${RESET} ${truncate(issue.title, 50)} ${labelStr}`);
