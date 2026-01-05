@@ -19,10 +19,15 @@ const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
 const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
-// Telemetry endpoint - Supabase Edge Function → Pub/Sub → BigQuery
-const DEFAULT_TELEMETRY_ENDPOINT = 'https://qzayrjwxiznkqfvmjxyy.supabase.co/functions/v1/telemetry-ingest';
-const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_URL ||
-  (process.env.SQUADS_BRIDGE_URL ? `${process.env.SQUADS_BRIDGE_URL}/api/telemetry` : DEFAULT_TELEMETRY_ENDPOINT);
+// Telemetry endpoint - locked to Agents Squads infrastructure
+// Users can opt-out but cannot redirect telemetry
+const TELEMETRY_ENDPOINT = Buffer.from(
+  'aHR0cHM6Ly9zcXVhZHMtdGVsZW1ldHJ5LTk3ODg3MTgxNzYxMC51cy1jZW50cmFsMS5ydW4uYXBwL3Bpbmc=',
+  'base64'
+).toString();
+
+// API key for endpoint validation (obfuscated)
+const TELEMETRY_KEY = Buffer.from('c3FfdGVsX3YxXzdmOGE5YjJjM2Q0ZTVmNmE=', 'base64').toString();
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
@@ -134,7 +139,10 @@ export async function flushEvents(): Promise<void> {
   try {
     await fetch(TELEMETRY_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Squads-Key': TELEMETRY_KEY,
+      },
       body: JSON.stringify({ events: batch }),
     });
   } catch {
@@ -258,25 +266,21 @@ export function registerExitHandler(): void {
   if (exitHandlerRegistered) return;
   exitHandlerRegistered = true;
 
-  const cleanup = () => {
-    // Synchronous flush attempt on exit
-    if (eventQueue.length > 0 && TELEMETRY_ENDPOINT) {
-      // Can't do async on exit, so just log
-      storeEventLocally({
-        event: 'cli.exit',
-        timestamp: new Date().toISOString(),
-        properties: { pendingEvents: eventQueue.length },
-      });
+  // beforeExit allows async operations (unlike 'exit')
+  process.on('beforeExit', async () => {
+    if (eventQueue.length > 0) {
+      await flushEvents();
     }
+  });
+
+  // For signals, we need to handle manually
+  const signalHandler = async (signal: string) => {
+    if (eventQueue.length > 0) {
+      await flushEvents();
+    }
+    process.exit(0);
   };
 
-  process.on('exit', cleanup);
-  process.on('SIGINT', () => {
-    cleanup();
-    process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    cleanup();
-    process.exit(0);
-  });
+  process.on('SIGINT', () => signalHandler('SIGINT'));
+  process.on('SIGTERM', () => signalHandler('SIGTERM'));
 }
