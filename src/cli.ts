@@ -60,6 +60,7 @@ import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
 import { healthCommand } from './commands/health.js';
 import { workersCommand } from './commands/workers.js';
+import { contextFeedCommand } from './commands/context-feed.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
@@ -211,6 +212,18 @@ program
   .option('-v, --verbose', 'Show cost and token details')
   .option('-j, --json', 'Output as JSON')
   .action((options) => historyCommand(options));
+
+// Context feed command - context injection for agents
+program
+  .command('context-feed')
+  .alias('feed')
+  .description('Context feed for agents: goals, memory, costs, activity')
+  .option('-s, --squad <squad>', 'Focus on specific squad')
+  .option('-t, --topic <topic>', 'Search memory for relevant context')
+  .option('-a, --agent', 'Output JSON for agent consumption')
+  .option('-j, --json', 'Output as JSON (alias for --agent)')
+  .option('-v, --verbose', 'Show additional details')
+  .action((options) => contextFeedCommand(options));
 
 // Workers command - show running processes and tasks
 program
