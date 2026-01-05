@@ -59,7 +59,7 @@ async function fetchScheduler<T>(
     throw new Error(`Scheduler error: ${res.status} ${error}`);
   }
 
-  return res.json();
+  return res.json() as T;
 }
 
 async function listTriggers(squad?: string): Promise<void> {
