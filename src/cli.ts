@@ -57,6 +57,7 @@ import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js'
 import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
+import { historyCommand } from './commands/history.js';
 import { workersCommand } from './commands/workers.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
@@ -199,6 +200,16 @@ program
   .option('-d, --days <days>', 'Days to look back', '7')
   .option('-v, --verbose', 'Show detailed KPIs per goal')
   .action((squad, options) => resultsCommand({ ...options, squad }));
+
+// History command - show recent agent executions
+program
+  .command('history')
+  .description('Show recent agent execution history')
+  .option('-d, --days <days>', 'Days to look back', '7')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-v, --verbose', 'Show cost and token details')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => historyCommand(options));
 
 // Workers command - show running processes and tasks
 program
