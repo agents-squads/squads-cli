@@ -15,7 +15,17 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "docker/docker-compose.yml",
+    "docker/docker-compose.engram.yml",
+    "docker/.env.example",
+    "docker/init-db.sql",
+    "docker/init-engram-db.sql",
+    "docker/init-langfuse-db.sh",
+    "docker/otel-collector.yaml",
+    "docker/README.md",
+    "docker/squads-bridge/",
+    "docker/telemetry-ping/"
   ],
   "scripts": {
     "build": "tsup",

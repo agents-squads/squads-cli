@@ -28,7 +28,8 @@ import {
   memoryShowCommand,
   memoryUpdateCommand,
   memoryListCommand,
-  memorySearchCommand
+  memorySearchCommand,
+  memoryExtractCommand
 } from './commands/memory.js';
 import { syncCommand } from './commands/sync.js';
 import {
@@ -230,6 +231,18 @@ memory
     limit: parseInt(opts.limit, 10),
     role: opts.role,
     importance: opts.importance
+  }));
+
+memory
+  .command('extract')
+  .description('Extract memories from recent conversations into Engram')
+  .option('-s, --session <session>', 'Extract specific session only')
+  .option('-h, --hours <hours>', 'Look back period in hours', '24')
+  .option('-d, --dry-run', 'Preview without sending to Engram')
+  .action((opts) => memoryExtractCommand({
+    session: opts.session,
+    hours: parseInt(opts.hours, 10),
+    dryRun: opts.dryRun
   }));
 
 // Goal command group

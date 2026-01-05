@@ -16,8 +16,10 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import { checkServiceAvailable, showServiceSetupGuide } from './stack.js';
 
 const SQUADS_BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+const MEM0_API_URL = process.env.MEM0_API_URL || 'http://localhost:8000';
 
 interface MemoryOptions {
   squad?: string;
@@ -382,12 +384,164 @@ export async function memorySearchCommand(
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage.includes('ECONNREFUSED')) {
-      writeLine(`  ${colors.yellow}Cannot connect to squads-bridge${RESET}`);
-      writeLine(`  ${colors.dim}Run: docker compose up -d${RESET}`);
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
+      showServiceSetupGuide('bridge', 'not responding');
     } else {
       writeLine(`  ${colors.red}Error searching conversations: ${errorMessage}${RESET}`);
+      writeLine();
+    }
+  }
+}
+
+interface ExtractOptions {
+  session?: string;
+  hours?: number;
+  dryRun?: boolean;
+}
+
+/**
+ * Extract memories from recent conversations and store in Engram
+ */
+export async function memoryExtractCommand(
+  options: ExtractOptions = {}
+): Promise<void> {
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}memory extract${RESET}`);
+  writeLine();
+
+  const hours = options.hours || 24;
+
+  try {
+    // 1. Fetch recent conversations from bridge
+    writeLine(`  ${colors.dim}Fetching conversations from last ${hours}h...${RESET}`);
+
+    const bridgeResponse = await fetch(`${SQUADS_BRIDGE_URL}/api/conversations/recent`);
+    if (!bridgeResponse.ok) {
+      throw new Error(`Bridge API error: ${bridgeResponse.status}`);
+    }
+
+    const { conversations, count } = await bridgeResponse.json() as {
+      conversations: Array<{
+        id: number;
+        session_id: string;
+        role: string;
+        content: string;
+        squad?: string;
+        agent?: string;
+        created_at: string;
+      }>;
+      count: number;
+    };
+
+    if (count === 0) {
+      writeLine(`  ${colors.yellow}No recent conversations to extract${RESET}`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${colors.green}${count}${RESET} conversations found`);
+    writeLine();
+
+    // 2. Group conversations by session
+    const sessions = new Map<string, typeof conversations>();
+    for (const conv of conversations) {
+      const sessionId = conv.session_id || 'unknown';
+      if (!sessions.has(sessionId)) {
+        sessions.set(sessionId, []);
+      }
+      sessions.get(sessionId)!.push(conv);
+    }
+
+    writeLine(`  ${colors.cyan}${sessions.size}${RESET} sessions to process`);
+    writeLine();
+
+    if (options.dryRun) {
+      writeLine(`  ${colors.yellow}Dry run - not sending to Engram${RESET}`);
+      writeLine();
+      for (const [sessionId, convs] of sessions) {
+        const squad = convs[0]?.squad || 'unknown';
+        const agent = convs[0]?.agent || 'unknown';
+        writeLine(`  ${icons.progress} ${colors.dim}${sessionId.slice(0, 8)}${RESET} ${colors.cyan}${squad}/${agent}${RESET} ${colors.dim}(${convs.length} messages)${RESET}`);
+      }
+      writeLine();
+      return;
+    }
+
+    // 3. Send each session to mem0 for extraction
+    let extracted = 0;
+    let failed = 0;
+
+    for (const [sessionId, convs] of sessions) {
+      const squad = convs[0]?.squad || 'hq';
+      const agent = convs[0]?.agent || 'unknown';
+
+      // Format messages for mem0
+      const messages = convs.map(c => ({
+        role: c.role === 'assistant' ? 'assistant' : c.role === 'user' ? 'user' : 'system',
+        content: c.content
+      }));
+
+      try {
+        const mem0Response = await fetch(`${MEM0_API_URL}/memories`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages,
+            user_id: squad,
+            agent_id: agent,
+            run_id: sessionId,
+            metadata: {
+              source: 'squads-cli',
+              extracted_at: new Date().toISOString()
+            }
+          })
+        });
+
+        if (mem0Response.ok) {
+          const result = await mem0Response.json() as { results?: Array<unknown> };
+          const memCount = result.results?.length || 0;
+          writeLine(`  ${colors.green}${icons.success}${RESET} ${colors.dim}${sessionId.slice(0, 8)}${RESET} ${colors.cyan}${squad}/${agent}${RESET} → ${colors.green}${memCount}${RESET} memories`);
+          extracted++;
+        } else {
+          writeLine(`  ${colors.red}${icons.error}${RESET} ${colors.dim}${sessionId.slice(0, 8)}${RESET} ${colors.red}Failed: ${mem0Response.status}${RESET}`);
+          failed++;
+        }
+      } catch (err) {
+        writeLine(`  ${colors.red}${icons.error}${RESET} ${colors.dim}${sessionId.slice(0, 8)}${RESET} ${colors.red}Error: ${err}${RESET}`);
+        failed++;
+      }
+    }
+
+    writeLine();
+    if (failed === 0) {
+      writeLine(`  ${colors.green}${icons.success}${RESET} Extracted memories from ${extracted} sessions`);
+    } else {
+      writeLine(`  ${colors.yellow}${icons.warning}${RESET} Extracted: ${extracted}, Failed: ${failed}`);
     }
     writeLine();
+
+    // Show next steps
+    writeLine(`  ${colors.dim}$${RESET} squads memory query ${colors.cyan}"<term>"${RESET}    ${colors.dim}Search extracted memories${RESET}`);
+    writeLine();
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
+      // Check which service is down
+      const bridgeOk = await checkServiceAvailable('bridge', false);
+      const mem0Ok = await checkServiceAvailable('mem0', false);
+
+      if (!bridgeOk) {
+        showServiceSetupGuide('bridge', 'not responding');
+      } else if (!mem0Ok) {
+        showServiceSetupGuide('mem0', 'not responding');
+      } else {
+        writeLine(`  ${colors.red}Error: ${errorMessage}${RESET}`);
+        writeLine();
+      }
+    } else {
+      writeLine(`  ${colors.red}Error: ${errorMessage}${RESET}`);
+      writeLine();
+    }
   }
 }
