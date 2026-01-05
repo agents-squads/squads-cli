@@ -25,6 +25,54 @@ interface RunOptions {
   dryRun?: boolean;
   agent?: string;
   timeout?: number; // minutes, default 30
+  execute?: boolean;
+  parallel?: boolean; // Run all agents in parallel
+}
+
+/**
+ * Ensure the project directory is trusted in Claude's config.
+ * This prevents the workspace trust dialog from blocking autonomous execution.
+ */
+function ensureProjectTrusted(projectPath: string): void {
+  const configPath = join(process.env.HOME || '', '.claude.json');
+
+  if (!existsSync(configPath)) {
+    // No Claude config yet - will be created on first interactive run
+    return;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+
+    if (!config.projects) {
+      config.projects = {};
+    }
+
+    if (!config.projects[projectPath]) {
+      config.projects[projectPath] = {};
+    }
+
+    // Mark as trusted for autonomous execution
+    if (!config.projects[projectPath].hasTrustDialogAccepted) {
+      config.projects[projectPath].hasTrustDialogAccepted = true;
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+    }
+  } catch (error) {
+    // Don't fail execution if we can't update config
+    // The dialog will just appear
+  }
+}
+
+/**
+ * Get the project root directory (where .agents/ lives)
+ */
+function getProjectRoot(): string {
+  const squadsDir = findSquadsDir();
+  if (squadsDir) {
+    // .agents/squads -> .agents -> project root
+    return dirname(dirname(squadsDir));
+  }
+  return process.cwd();
 }
 
 interface ExecutionRecord {
@@ -146,6 +194,53 @@ async function runSquad(
   writeLine(`  ${colors.dim}Started: ${startTime}${RESET}`);
   writeLine();
 
+  // PARALLEL EXECUTION: --parallel --execute runs all agents simultaneously
+  if (options.parallel) {
+    const agentFiles = squad.agents
+      .map(a => ({
+        name: a.name,
+        path: join(squadsDir, squad.name, `${a.name}.md`)
+      }))
+      .filter(a => existsSync(a.path));
+
+    if (agentFiles.length === 0) {
+      writeLine(`  ${icons.error} ${colors.red}No agent files found${RESET}`);
+      return;
+    }
+
+    writeLine(`  ${bold}Parallel execution${RESET} ${colors.dim}${agentFiles.length} agents${RESET}`);
+    writeLine();
+
+    if (!options.execute) {
+      // Preview mode
+      for (const agent of agentFiles) {
+        writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET}`);
+      }
+      writeLine();
+      writeLine(`  ${colors.dim}Launch all agents in parallel:${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel --execute`);
+      writeLine();
+      return;
+    }
+
+    // Execute all in parallel
+    writeLine(`  ${gradient('Launching')} ${agentFiles.length} agents in parallel...`);
+    writeLine();
+
+    const launches = agentFiles.map(agent =>
+      runAgent(agent.name, agent.path, squad.name, options)
+    );
+
+    await Promise.all(launches);
+
+    writeLine();
+    writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
+    writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
+    writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
+    writeLine();
+    return;
+  }
+
   // If there's a pipeline, run agents in order
   if (squad.pipelines.length > 0) {
     const pipeline = squad.pipelines[0];
@@ -193,6 +288,9 @@ async function runSquad(
         writeLine();
         writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
+        writeLine();
+        writeLine(`  ${colors.dim}Run all agents in parallel:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel --execute`);
       }
     }
   }
@@ -231,7 +329,8 @@ async function runAgent(
     status: 'running',
   });
 
-  // Generate the Claude Code prompt
+  // Generate the Claude Code prompt with timeout awareness
+  const timeoutMins = options.timeout || 30;
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
 
 Read the agent definition at ${agentPath} and follow its instructions exactly.
@@ -242,10 +341,21 @@ The agent definition contains:
 - Step-by-step instructions
 - Expected output format
 
+TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
+- Focus on the most important tasks first
+- If a task is taking too long, move on and note it for next run
+- Aim to complete within ${Math.floor(timeoutMins * 0.7)} minutes
+
 After completion:
 1. Update the agent's memory in .agents/memory/${squadName}/${agentName}/state.md
 2. Log any learnings to learnings.md
-3. Report what was accomplished`;
+3. Summarize what was accomplished
+
+CRITICAL: When you have completed your tasks OR reached the time limit:
+- Type /exit immediately to end this session
+- Do NOT wait for user input
+- Do NOT ask follow-up questions
+- Just /exit when done`;
 
   // Check if Claude CLI is available
   const claudeAvailable = await checkClaudeCliAvailable();
@@ -301,25 +411,33 @@ async function executeWithClaude(prompt: string, verbose?: boolean, timeoutMinut
   // Run via tmux for real PTY support and session management
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
 
+  // Ensure the project is trusted (prevents workspace trust dialog)
+  const projectRoot = getProjectRoot();
+  ensureProjectTrusted(projectRoot);
+
   // Extract squad/agent from prompt for telemetry tagging
   const squadMatch = prompt.match(/squad (\w+)/);
   const agentMatch = prompt.match(/(\w+) agent/);
-  const squadName = squadMatch?.[1] || 'unknown';
-  const agentName = agentMatch?.[1] || 'unknown';
+  const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
+  const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
 
-  // Create unique session name
-  const timestamp = Date.now();
-  const sessionName = `squads-${squadName}-${agentName}-${timestamp}`;
+  // Use session name from scheduler if provided, otherwise create unique one
+  const sessionName = process.env.SQUADS_TMUX_SESSION ||
+    `squads-${squadName}-${agentName}-${Date.now()}`;
 
   if (verbose) {
-    writeLine(`  ${colors.dim}Spawning tmux session: ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
+    writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
   }
 
   // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   // Build Claude command with all permissions bypassed for autonomous execution
-  const claudeCmd = `claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'`;
+  // --dangerously-skip-permissions: bypasses tool permission dialogs
+  // --mcp-config: loads MCP servers with pre-configured secrets (no prompts)
+  // Project trust is handled by ensureProjectTrusted above
+  const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'`;
 
   // Create detached tmux session running Claude
   const tmux = spawn('tmux', [
@@ -341,12 +459,10 @@ async function executeWithClaude(prompt: string, verbose?: boolean, timeoutMinut
 
   tmux.unref();
 
-  // Spawn a background process to auto-accept the dialog after it appears
-  // This runs outside the tmux session and sends keys to it
-  spawn('/bin/sh', ['-c', `sleep 2 && tmux send-keys -t '${sessionName}' Down Enter`], {
-    stdio: 'ignore',
-    detached: true,
-  }).unref();
+  // No hacky send-keys needed anymore!
+  // - Workspace trust: handled by ensureProjectTrusted()
+  // - Tool permissions: handled by --dangerously-skip-permissions
+  // - MCP secrets: pre-configured in ~/.claude.json mcpServers.*.env
 
   if (verbose) {
     writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);
