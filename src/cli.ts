@@ -59,6 +59,7 @@ import { progressCommand, progressStartCommand, progressCompleteCommand } from '
 import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
 import { workersCommand } from './commands/workers.js';
+import { briefingCommand } from './commands/briefing.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
@@ -210,6 +211,18 @@ program
   .option('-v, --verbose', 'Show cost and token details')
   .option('-j, --json', 'Output as JSON')
   .action((options) => historyCommand(options));
+
+// Briefing command - context injection for agents
+program
+  .command('briefing')
+  .alias('brief')
+  .description('Context briefing for agents: goals, memory, costs, activity')
+  .option('-s, --squad <squad>', 'Focus on specific squad')
+  .option('-t, --topic <topic>', 'Search memory for relevant context')
+  .option('-a, --agent', 'Output JSON for agent consumption')
+  .option('-j, --json', 'Output as JSON (alias for --agent)')
+  .option('-v, --verbose', 'Show additional details')
+  .action((options) => briefingCommand(options));
 
 // Workers command - show running processes and tasks
 program
