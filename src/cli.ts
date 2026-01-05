@@ -317,11 +317,12 @@ sessions
 
 sessions
   .command('summary')
-  .description('Show pretty session summary (pass JSON via stdin or --data)')
-  .option('-d, --data <json>', 'JSON data for summary')
+  .description('Show pretty session summary (auto-detects current session or pass JSON)')
+  .option('-d, --data <json>', 'JSON data for summary (overrides auto-detection)')
   .option('-f, --file <path>', 'Path to JSON file with summary data')
   .option('-j, --json', 'Output as JSON instead of pretty format')
   .action(async (options) => {
+    const { buildCurrentSessionSummary } = await import('./commands/sessions.js');
     let data: SessionSummaryData;
 
     if (options.file) {
@@ -331,14 +332,21 @@ sessions
     } else if (options.data) {
       // Parse from --data argument
       data = JSON.parse(options.data);
-    } else {
-      // Read from stdin
+    } else if (!process.stdin.isTTY) {
+      // Read from stdin only if piped
       const chunks: Buffer[] = [];
       for await (const chunk of process.stdin) {
         chunks.push(chunk);
       }
-      const input = Buffer.concat(chunks).toString('utf-8');
-      data = JSON.parse(input);
+      const input = Buffer.concat(chunks).toString('utf-8').trim();
+      if (input) {
+        data = JSON.parse(input);
+      } else {
+        data = await buildCurrentSessionSummary();
+      }
+    } else {
+      // Auto-detect current session
+      data = await buildCurrentSessionSummary();
     }
 
     await sessionsSummaryCommand(data, { json: options.json });
