@@ -179,17 +179,19 @@ export function detectSquad(cwd: string = process.cwd()): string | null {
 }
 
 /**
- * Detect running AI coding assistant processes (real-time process detection)
+ * Detect running AI coding assistant processes (fast version - no lsof)
+ * Returns processes immediately without cwd/squad info
  * Supports: Claude, Cursor, Aider, Gemini, Copilot, Cody, Continue
  */
-export function detectAIProcesses(): AIProcess[] {
+export function detectAIProcessesFast(): AIProcess[] {
   const processes: AIProcess[] = [];
 
   try {
     // Get all processes - we'll filter for AI tools
+    // Short timeout for responsiveness - this is called during dashboard render
     const psOutput = execSync('ps -eo pid,tty,comm 2>/dev/null', {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: 2000, // Reduced from 5s for faster CLI response
     }).trim();
 
     if (!psOutput) return [];
@@ -217,27 +219,11 @@ export function detectAIProcesses(): AIProcess[] {
 
       if (!toolName) continue;
 
-      // Get the working directory for this process
-      let cwd = '';
-      try {
-        const lsofOutput = execSync(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
-          encoding: 'utf-8',
-          timeout: 3000,
-        }).trim();
-        cwd = lsofOutput || '';
-      } catch {
-        // Can't get cwd, use empty string
-        cwd = '';
-      }
-
-      // Detect squad from working directory
-      const squad = detectSquad(cwd);
-
       processes.push({
         pid,
         tty,
-        cwd,
-        squad,
+        cwd: '', // No cwd in fast mode
+        squad: null, // No squad detection in fast mode
         tool: toolName,
       });
     }
@@ -249,11 +235,123 @@ export function detectAIProcesses(): AIProcess[] {
   return processes;
 }
 
+/**
+ * Get cwd for a single process using lsof (async)
+ */
+async function getProcessCwd(pid: number): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const { exec } = require('child_process');
+      exec(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
+        encoding: 'utf-8',
+        timeout: 3000,
+      }, (error: Error | null, stdout: string) => {
+        resolve(error ? '' : stdout.trim());
+      });
+    } catch {
+      resolve('');
+    }
+  });
+}
+
+/**
+ * Enrich processes with cwd and squad info (async, parallel lsof)
+ * Call this after detectAIProcessesFast() when you need squad info
+ */
+export async function enrichProcessesWithSquad(processes: AIProcess[]): Promise<AIProcess[]> {
+  if (processes.length === 0) return processes;
+
+  // Run lsof for all processes in parallel
+  const cwdPromises = processes.map(p => getProcessCwd(p.pid));
+  const cwds = await Promise.all(cwdPromises);
+
+  // Enrich each process with cwd and squad
+  return processes.map((proc, i) => ({
+    ...proc,
+    cwd: cwds[i],
+    squad: detectSquad(cwds[i]),
+  }));
+}
+
+/**
+ * Detect running AI coding assistant processes (full version with squad info)
+ * Synchronous wrapper for backwards compatibility - calls lsof sequentially
+ * For better performance, use detectAIProcessesFast() + enrichProcessesWithSquad()
+ */
+export function detectAIProcesses(): AIProcess[] {
+  const processes = detectAIProcessesFast();
+
+  // Synchronously enrich with cwd/squad (backwards compatible behavior)
+  for (const proc of processes) {
+    try {
+      const lsofOutput = execSync(`lsof -p ${proc.pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
+        encoding: 'utf-8',
+        timeout: 3000,
+      }).trim();
+      proc.cwd = lsofOutput || '';
+      proc.squad = detectSquad(proc.cwd);
+    } catch {
+      // Keep empty cwd and null squad
+    }
+  }
+
+  return processes;
+}
+
 // Backwards compatibility alias
 export const detectClaudeProcesses = detectAIProcesses;
 
 /**
- * Get live session summary using real process detection
+ * Get live session summary using real process detection (fast version)
+ * Returns count immediately, squad breakdown shows 'unknown' until enriched
+ */
+export function getLiveSessionSummaryFast(): SessionSummary {
+  const processes = detectAIProcessesFast();
+  const bySquad: Record<string, number> = {};
+  const byTool: Record<string, number> = {};
+
+  for (const proc of processes) {
+    const squad = proc.squad || 'unknown';
+    bySquad[squad] = (bySquad[squad] || 0) + 1;
+    byTool[proc.tool] = (byTool[proc.tool] || 0) + 1;
+  }
+
+  return {
+    totalSessions: processes.length,
+    bySquad,
+    squadCount: Object.keys(bySquad).length,
+    byTool,
+  };
+}
+
+/**
+ * Get live session summary with full squad detection (async, parallel lsof)
+ * Use this when you need accurate squad breakdown
+ */
+export async function getLiveSessionSummaryAsync(): Promise<SessionSummary> {
+  const processes = detectAIProcessesFast();
+  const enrichedProcesses = await enrichProcessesWithSquad(processes);
+
+  const bySquad: Record<string, number> = {};
+  const byTool: Record<string, number> = {};
+
+  for (const proc of enrichedProcesses) {
+    const squad = proc.squad || 'unknown';
+    bySquad[squad] = (bySquad[squad] || 0) + 1;
+    byTool[proc.tool] = (byTool[proc.tool] || 0) + 1;
+  }
+
+  return {
+    totalSessions: enrichedProcesses.length,
+    bySquad,
+    squadCount: Object.keys(bySquad).length,
+    byTool,
+  };
+}
+
+/**
+ * Get live session summary using real process detection (synchronous, backwards compatible)
+ * For better performance, use getLiveSessionSummaryFast() or getLiveSessionSummaryAsync()
  */
 export function getLiveSessionSummary(): SessionSummary {
   const processes = detectAIProcesses();

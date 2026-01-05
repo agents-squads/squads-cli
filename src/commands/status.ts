@@ -7,7 +7,7 @@ import {
   listAgents
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
-import { getLiveSessionSummary, cleanupStaleSessions } from '../lib/sessions.js';
+import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
 import {
   colors,
@@ -50,9 +50,9 @@ async function showOverallStatus(
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
 
-  // Get active sessions (real-time process detection)
+  // Get active sessions (real-time process detection with parallel lsof)
   cleanupStaleSessions();
-  const sessionSummary = getLiveSessionSummary();
+  const sessionSummary = await getLiveSessionSummaryAsync();
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
