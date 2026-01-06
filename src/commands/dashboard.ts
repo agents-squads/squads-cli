@@ -261,9 +261,9 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${progressBar(overallProgress, 32)} ${colors.dim}${overallProgress}% goal progress${RESET}`);
   writeLine();
 
-  // Squad table
-  const w = { name: 13, commits: 7, prs: 4, issues: 6, goals: 6, bar: 10 };
-  const tableWidth = w.name + w.commits + w.prs + w.issues + w.goals + w.bar + 12;
+  // Squad table - add 2 chars padding to each column for spacing
+  const w = { name: 13, commits: 9, prs: 5, issues: 8, goals: 7, bar: 10 };
+  const tableWidth = w.name + w.commits + w.prs + w.issues + w.goals + w.bar + 6;
 
   writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
   writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +

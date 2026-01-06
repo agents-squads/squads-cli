@@ -5,12 +5,40 @@
 export const ESC = '\x1b[';
 export const RESET = `${ESC}0m`;
 
-// Colors (256-color mode for gradients)
+// Detect true color support
+function supportsTrueColor(): boolean {
+  const colorterm = process.env.COLORTERM;
+  if (colorterm === 'truecolor' || colorterm === '24bit') return true;
+  const term = process.env.TERM || '';
+  if (term.includes('256color') || term.includes('truecolor')) return true;
+  // iTerm2, VS Code, modern terminals
+  if (process.env.TERM_PROGRAM === 'iTerm.app') return true;
+  if (process.env.TERM_PROGRAM === 'vscode') return true;
+  if (process.env.WT_SESSION) return true; // Windows Terminal
+  return false;
+}
+
+const USE_TRUE_COLOR = supportsTrueColor();
+
+// Colors - use 24-bit RGB if supported, fallback to basic ANSI
 export const rgb = (r: number, g: number, b: number) => `${ESC}38;2;${r};${g};${b}m`;
 export const bgRgb = (r: number, g: number, b: number) => `${ESC}48;2;${r};${g};${b}m`;
 
-// Named colors (our brand palette)
-export const colors = {
+// Basic ANSI color codes (work everywhere)
+const ansi = {
+  purple: `${ESC}35m`,      // magenta
+  pink: `${ESC}95m`,        // bright magenta
+  cyan: `${ESC}36m`,        // cyan
+  green: `${ESC}32m`,       // green
+  yellow: `${ESC}33m`,      // yellow
+  red: `${ESC}31m`,         // red
+  gray: `${ESC}90m`,        // bright black (gray)
+  dim: `${ESC}90m`,         // bright black (gray)
+  white: `${ESC}97m`,       // bright white
+};
+
+// Named colors (our brand palette) - with fallback
+export const colors = USE_TRUE_COLOR ? {
   purple: rgb(168, 85, 247),    // #a855f7
   pink: rgb(236, 72, 153),      // #ec4899
   cyan: rgb(6, 182, 212),       // #06b6d4
@@ -20,7 +48,7 @@ export const colors = {
   gray: rgb(107, 114, 128),     // #6b7280
   dim: rgb(75, 85, 99),         // #4b5563
   white: rgb(255, 255, 255),
-};
+} : ansi;
 
 // Styles
 export const bold = `${ESC}1m`;
@@ -164,6 +192,8 @@ export function isColorEnabled(): boolean {
   if (process.env.NO_COLOR !== undefined) return false;
   // Force color via environment variable
   if (process.env.FORCE_COLOR !== undefined) return true;
+  // Claude Code terminal - always enable colors (it supports them)
+  if (process.env.CLAUDECODE !== undefined) return true;
   // Check if output is a TTY
   return process.stdout.isTTY ?? false;
 }
