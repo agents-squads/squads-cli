@@ -27,6 +27,7 @@ interface RunOptions {
   execute?: boolean;
   parallel?: boolean; // Run all agents in parallel
   lead?: boolean; // Run as lead session using Task tool for parallelization
+  foreground?: boolean; // Run in foreground (no tmux)
 }
 
 /**
@@ -409,20 +410,26 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     return;
   }
 
-  writeLine(`  ${gradient('Launching')} lead session...`);
+  writeLine(`  ${gradient('Launching')} lead session${options.foreground ? ' (foreground)' : ''}...`);
   writeLine();
 
   try {
-    const result = await executeWithClaude(prompt, options.verbose, timeoutMins);
-    writeLine(`  ${icons.success} Lead session launched`);
-    writeLine(`  ${colors.dim}${result}${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}The lead will:${RESET}`);
-    writeLine(`  ${colors.dim}  1. Assess pending work (issues, memory)${RESET}`);
-    writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
-    writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground);
+
+    if (options.foreground) {
+      writeLine();
+      writeLine(`  ${icons.success} Lead session completed`);
+    } else {
+      writeLine(`  ${icons.success} Lead session launched`);
+      writeLine(`  ${colors.dim}${result}${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}The lead will:${RESET}`);
+      writeLine(`  ${colors.dim}  1. Assess pending work (issues, memory)${RESET}`);
+      writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
+      writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+    }
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
   }
@@ -488,18 +495,22 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
   const claudeAvailable = await checkClaudeCliAvailable();
 
   if (options.execute && claudeAvailable) {
-    spinner.text = `Launching ${agentName} as background task...`;
+    spinner.text = options.foreground
+      ? `Running ${agentName} in foreground...`
+      : `Launching ${agentName} as background task...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30);
-      spinner.succeed(`Agent ${agentName} launched`);
-      // Don't mark as completed - it's running in background
-      // Agent will update its own memory when done
+      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground);
 
-      writeLine(`  ${colors.dim}${result}${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
-      writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
+      if (options.foreground) {
+        spinner.succeed(`Agent ${agentName} completed`);
+      } else {
+        spinner.succeed(`Agent ${agentName} launched`);
+        writeLine(`  ${colors.dim}${result}${RESET}`);
+        writeLine();
+        writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+        writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
+      }
     } catch (error) {
       spinner.fail(`Agent ${agentName} failed to launch`);
       updateExecutionStatus(squadName, agentName, 'failed', String(error));
@@ -533,9 +544,13 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
   });
 }
 
-async function executeWithClaude(prompt: string, verbose?: boolean, _timeoutMinutes: number = 30): Promise<string> {
+async function executeWithClaude(
+  prompt: string,
+  verbose?: boolean,
+  _timeoutMinutes: number = 30,
+  foreground?: boolean
+): Promise<string> {
   // Use interactive Claude Code (subscription) instead of --print (API credits)
-  // Run via tmux for real PTY support and session management
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
 
   // Ensure the project is trusted (prevents workspace trust dialog)
@@ -548,7 +563,47 @@ async function executeWithClaude(prompt: string, verbose?: boolean, _timeoutMinu
   const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
   const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
 
-  // Use session name from scheduler if provided, otherwise create unique one
+  // Escape prompt for shell
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+
+  // Foreground mode: run Claude directly in the terminal
+  if (foreground) {
+    if (verbose) {
+      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
+      writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const claude = spawn('claude', [
+        '--dangerously-skip-permissions',
+        '--mcp-config', userConfigPath,
+        '--',
+        prompt
+      ], {
+        stdio: 'inherit',
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          SQUADS_SQUAD: squadName,
+          SQUADS_AGENT: agentName,
+        },
+      });
+
+      claude.on('close', (code) => {
+        if (code === 0) {
+          resolve('Session completed');
+        } else {
+          reject(new Error(`Claude exited with code ${code}`));
+        }
+      });
+
+      claude.on('error', (err) => {
+        reject(err);
+      });
+    });
+  }
+
+  // Background mode: run via tmux for session management
   const sessionName = process.env.SQUADS_TMUX_SESSION ||
     `squads-${squadName}-${agentName}-${Date.now()}`;
 
@@ -557,13 +612,7 @@ async function executeWithClaude(prompt: string, verbose?: boolean, _timeoutMinu
     writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
   }
 
-  // Escape prompt for shell
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
-
   // Build Claude command with all permissions bypassed for autonomous execution
-  // --dangerously-skip-permissions: bypasses tool permission dialogs
-  // --mcp-config: loads MCP servers with pre-configured secrets (no prompts)
-  // Project trust is handled by ensureProjectTrusted above
   const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'`;
 
   // Create detached tmux session running Claude
@@ -585,11 +634,6 @@ async function executeWithClaude(prompt: string, verbose?: boolean, _timeoutMinu
   });
 
   tmux.unref();
-
-  // No hacky send-keys needed anymore!
-  // - Workspace trust: handled by ensureProjectTrusted()
-  // - Tool permissions: handled by --dangerously-skip-permissions
-  // - MCP secrets: pre-configured in ~/.claude.json mcpServers.*.env
 
   if (verbose) {
     writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);

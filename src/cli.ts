@@ -127,6 +127,7 @@ program
   .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
   .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
+  .option('-f, --foreground', 'Run in foreground (no tmux, blocks terminal)')
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
