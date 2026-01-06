@@ -1,7 +1,7 @@
 import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
+import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, fetchNpmStats, NpmStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
@@ -439,18 +439,20 @@ async function _saveSnapshot(
   await saveDashboardSnapshot(snapshot);
 }
 
-// Find agents-squads base directory
+// Find agents-squads base directory (project-scoped, not global)
 function findAgentsSquadsDir(): string | null {
-  const candidates = [
-    join(process.cwd(), '..'),
-    join(homedir(), 'agents-squads'),
-  ];
-
-  for (const dir of candidates) {
-    if (existsSync(join(dir, 'hq'))) {
-      return dir;
-    }
+  // First try: parent of current project (for multi-repo setups)
+  const parentDir = join(process.cwd(), '..');
+  if (existsSync(join(parentDir, 'hq'))) {
+    return parentDir;
   }
+
+  // Second try: current directory IS the project root
+  if (existsSync(join(process.cwd(), '.git'))) {
+    return process.cwd();
+  }
+
+  // Don't fall back to ~/agents-squads - that would show our data to fresh users
   return null;
 }
 
@@ -938,23 +940,32 @@ function renderGitPerformanceCached(cache: DashboardCache): void {
 function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active: number; completed: number }): void {
   const costs = cache.costs;
   const stats = cache.bridgeStats;
-
-  if (!costs && !stats) {
-    writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(no data)${RESET}`);
-    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for tracking${RESET}`);
-    writeLine();
-    return;
-  }
+  const hasInfra = hasLocalInfraConfig();
+  const hasData = costs || stats;
 
   writeLine(`  ${bold}Token Economics${RESET}`);
   writeLine();
 
-  // === SUBSCRIPTION ===
+  // === SUBSCRIPTION (always show - works without infra) ===
   const maxPlan = isMaxPlan();
-  const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
+  const tier = parseInt(process.env.ANTHROPIC_TIER || '0', 10);
   const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
-  writeLine(`  ${planIcon} ${bold}Claude Max${RESET} ${colors.dim}$200/mo flat${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+  const planLabel = maxPlan ? 'Claude Max' : 'Claude Pro';
+  const planCost = maxPlan ? '$200/mo flat' : 'pay-per-token';
+  const tierDisplay = tier > 0 ? `  ${colors.dim}Tier ${tier}${RESET}` : '';
+  writeLine(`  ${planIcon} ${bold}${planLabel}${RESET} ${colors.dim}${planCost}${RESET}${tierDisplay}`);
   writeLine();
+
+  // === METRICS (require infra) ===
+  if (!hasInfra || !hasData) {
+    writeLine(`  ${colors.dim}○${RESET} Track costs, tokens, and API usage`);
+    writeLine(`  ${colors.dim}○${RESET} Monitor rate limits and budgets`);
+    writeLine();
+    writeLine(`  ${colors.dim}Connect:${RESET} squads connect`);
+    writeLine(`  ${colors.dim}Self-host:${RESET} cd docker && docker-compose up -d`);
+    writeLine();
+    return;
+  }
 
   // === TOKEN USAGE ===
   const todayTokens = stats ? stats.today.inputTokens + stats.today.outputTokens : 0;
@@ -1023,13 +1034,15 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
 
 function renderInfrastructureCached(cache: DashboardCache): void {
   const stats = cache.bridgeStats;
+  const hasInfra = hasLocalInfraConfig();
 
-  if (!stats) {
-    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
+  if (!hasInfra || !stats) {
+    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(not connected)${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Start with:${RESET} cd docker && docker-compose up -d`);
-    writeLine(`  ${colors.dim}Docs:${RESET} https://agents-squads.com/docs/setup`);
-    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}jorge@agents-squads.com${RESET}`);
+    writeLine(`  ${colors.dim}○${RESET} postgres  ${colors.dim}○${RESET} redis  ${colors.dim}○${RESET} otel`);
+    writeLine();
+    writeLine(`  ${colors.dim}Connect:${RESET} squads connect`);
+    writeLine(`  ${colors.dim}Self-host:${RESET} cd docker && docker-compose up -d`);
     writeLine();
     return;
   }
@@ -1084,8 +1097,15 @@ function renderInfrastructureCached(cache: DashboardCache): void {
 }
 
 function renderAcquisitionCached(cache: DashboardCache): void {
-  const npm = cache.npmStats;
+  // Only show Acquisition for squads-cli project (internal metrics)
+  // Check if SQUADS_NPM_PACKAGE is set or if we're in the squads-cli repo
+  const npmPackage = process.env.SQUADS_NPM_PACKAGE;
+  if (!npmPackage) {
+    // Not configured - don't show internal acquisition metrics to fresh users
+    return;
+  }
 
+  const npm = cache.npmStats;
   if (!npm) {
     // Don't show section if npm API failed
     return;
@@ -1100,10 +1120,6 @@ function renderAcquisitionCached(cache: DashboardCache): void {
 
   writeLine(`  ${colors.cyan}${npm.downloads.lastWeek}${RESET} installs/week  ${trendIcon} ${trendColor}${Math.abs(npm.weekOverWeek)}%${RESET} ${colors.dim}wow${RESET}`);
   writeLine(`  ${colors.dim}Today${RESET} ${npm.downloads.lastDay}  ${colors.dim}│${RESET}  ${colors.dim}Month${RESET} ${npm.downloads.lastMonth}`);
-
-  // Funnel hint
-  writeLine();
-  writeLine(`  ${colors.dim}GitHub → npm install → squads dash → ?${RESET}`);
 
   writeLine();
 }
