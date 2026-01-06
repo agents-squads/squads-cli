@@ -308,9 +308,15 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
 
+  // Compute goal counts for efficiency metrics
+  const goalCount = {
+    active: squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0),
+    completed: squadData.reduce((sum, s) => sum + s.goals.filter(g => g.completed).length, 0),
+  };
+
   // Render sections using cached data (no more network calls)
   renderGitPerformanceCached(cache);
-  renderTokenEconomicsCached(cache);
+  renderTokenEconomicsCached(cache, goalCount);
   renderInfrastructureCached(cache);
 
   // These still need async but are fast
@@ -921,91 +927,89 @@ function renderGitPerformanceCached(cache: DashboardCache): void {
   }
 }
 
-function renderTokenEconomicsCached(cache: DashboardCache): void {
+function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active: number; completed: number }): void {
   const costs = cache.costs;
+  const stats = cache.bridgeStats;
 
-  if (!costs) {
+  if (!costs && !stats) {
     writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(no data)${RESET}`);
-    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for cost tracking${RESET}`);
+    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for tracking${RESET}`);
     writeLine();
     return;
   }
 
-  writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(last 100 calls)${RESET}`);
+  writeLine(`  ${bold}Token Economics${RESET}`);
   writeLine();
 
-  // Budget bar
-  const barWidth = 32;
+  // === SUBSCRIPTION ===
   const maxPlan = isMaxPlan();
   const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
+  const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
+  writeLine(`  ${planIcon} ${bold}Claude Max${RESET} ${colors.dim}$200/mo flat${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
+  writeLine();
 
-  // Get plan detection details
-  const planInfo = detectPlan();
-  const planDisplay = planInfo.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
-  const confidenceNote = planInfo.confidence === 'inferred' ? ` ${colors.dim}[${planInfo.reason}]${RESET}` : '';
+  // === TOKEN USAGE ===
+  const todayTokens = stats ? stats.today.inputTokens + stats.today.outputTokens : 0;
+  const todayCalls = stats?.today.generations || costs?.totalCalls || 0;
+  const todayCost = stats?.today.costUsd || costs?.totalCost || 0;
 
-  // Show detected providers
-  const providers = detectProvidersFromEnv();
-  if (providers.length > 0) {
-    const providerLine = providers.map((p) => {
-      const icon = p.provider === 'anthropic' ? colors.green + '●' : colors.dim + '○';
-      const planStr = p.plan ? ` ${colors.dim}(${p.plan})${RESET}` : '';
-      return `${icon}${RESET} ${getProviderDisplayName(p.provider)}${planStr}`;
-    }).join('  ');
-    writeLine(`  ${colors.dim}Providers:${RESET} ${providerLine}`);
+  writeLine(`  ${colors.dim}Today${RESET}`);
+  writeLine(`  ${colors.cyan}${formatK(todayTokens)}${RESET} tokens  ${colors.dim}│${RESET}  ${colors.cyan}${todayCalls}${RESET} calls  ${colors.dim}│${RESET}  ${colors.green}$${todayCost.toFixed(2)}${RESET}`);
+
+  // Week stats if available
+  if (stats?.week && stats.week.generations > 0) {
+    const weekTokens = (stats.week.inputTokens || 0) + (stats.week.outputTokens || 0);
+    writeLine(`  ${colors.dim}Week${RESET}   ${colors.purple}${formatK(weekTokens)}${RESET} tokens  ${colors.dim}│${RESET}  ${colors.purple}${stats.week.generations}${RESET} calls  ${colors.dim}│${RESET}  ${colors.purple}$${stats.week.costUsd.toFixed(2)}${RESET}`);
+  }
+  writeLine();
+
+  // === GOAL EFFICIENCY ===
+  if (goalCount && goalCount.completed > 0 && todayTokens > 0) {
+    const tokensPerGoal = Math.round(todayTokens / goalCount.completed);
+    writeLine(`  ${colors.dim}Efficiency${RESET}`);
+    writeLine(`  ${colors.cyan}${formatK(tokensPerGoal)}${RESET} tokens/goal  ${colors.dim}│${RESET}  ${colors.green}${goalCount.completed}${RESET} goals done`);
     writeLine();
   }
 
-  if (maxPlan) {
-    // Max plan: Show rate limits as primary constraint, cost is informational only
-    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
-    writeLine();
+  // === RATE LIMITS (the real constraint) ===
+  // Anthropic Tier 4 limits (Max plan)
+  // RPM: 4000, TPM: 400k input / 80k output, TPD: 2.5M (informational)
+  writeLine(`  ${colors.dim}Rate Limits${RESET} ${colors.dim}(Tier ${tier})${RESET}`);
 
-    // Show cost as informational only (no warnings)
-    writeLine(`  ${colors.dim}Usage:${RESET} ${colors.green}$${costs.totalCost.toFixed(2)}${RESET}${colors.dim} today${RESET}  ${colors.dim}│${RESET}  ${colors.cyan}${costs.totalCalls}${RESET}${colors.dim} calls${RESET}`);
+  // Calculate usage percentages based on typical Tier 4 limits
+  const tier4Limits = {
+    rpm: 4000,
+    inputTpm: 400000,
+    outputTpm: 80000,
+  };
 
-    // Cost projections without warnings
-    const now = new Date();
-    const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
-    const hourlyRate = costs.totalCost / hoursElapsed;
-    const monthlyProjection = hourlyRate * 24 * 30;
+  // Estimate current usage rate (calls per minute based on today's activity)
+  const now = new Date();
+  const minutesElapsed = Math.max((now.getHours() * 60) + now.getMinutes(), 1);
+  const callsPerMinute = todayCalls / minutesElapsed;
+  const tokensPerMinute = todayTokens / minutesElapsed;
+  const rpmPct = (callsPerMinute / tier4Limits.rpm) * 100;
+  const tpmPct = (tokensPerMinute / (tier4Limits.inputTpm + tier4Limits.outputTpm)) * 100;
 
-    writeLine(`  ${colors.dim}Monthly est:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}${colors.dim} (informational)${RESET}`);
-    writeLine();
+  // Show rate usage bars
+  const rpmBar = progressBar(Math.min(rpmPct, 100), 10);
+  const tpmBar = progressBar(Math.min(tpmPct, 100), 10);
+  const rpmColor = rpmPct > 75 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
+  const tpmColor = tpmPct > 75 ? colors.red : tpmPct > 50 ? colors.yellow : colors.green;
 
-    // Rate limits are the real constraint on Max plan
-    writeLine(`  ${colors.dim}Rate limits are your only constraint on Max plan${RESET}`);
-    writeLine(`  ${colors.dim}Check limits:${RESET} squads health`);
-  } else {
-    // Usage plan: Show budget tracking with warnings
-    writeLine(`  ${colors.dim}Plan:${RESET} ${planDisplay}${confidenceNote}  ${colors.dim}│${RESET}  ${colors.dim}Tier ${tier}${RESET}`);
-    writeLine();
-    const costBar = formatCostBar(costs.usedPercent, barWidth);
-    writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
-    writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
-    writeLine();
+  writeLine(`  RPM  ${rpmBar} ${rpmColor}${callsPerMinute.toFixed(1)}${RESET}${colors.dim}/${tier4Limits.rpm}${RESET}`);
+  writeLine(`  TPM  ${tpmBar} ${tpmColor}${formatK(Math.round(tokensPerMinute))}${RESET}${colors.dim}/${formatK(tier4Limits.inputTpm + tier4Limits.outputTpm)}${RESET}`);
 
-    writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
-    writeLine();
+  // Capacity remaining for autonomous work
+  const rpmAvailable = Math.max(0, tier4Limits.rpm - callsPerMinute);
+  const tpmAvailable = Math.max(0, (tier4Limits.inputTpm + tier4Limits.outputTpm) - tokensPerMinute);
 
-    // Cost projections with warnings for usage plan
-    const now = new Date();
-    const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
-    const hourlyRate = costs.totalCost / hoursElapsed;
-    const dailyProjection = hourlyRate * 24;
-    const monthlyProjection = dailyProjection * 30;
-
-    writeLine(`  ${colors.dim}Projections${RESET}`);
-    const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
-    writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
-
-    if (dailyProjection > costs.dailyBudget * 0.8) {
-      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
-    }
-    if (costs.usedPercent > 80) {
-      writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
-    }
+  if (rpmAvailable > 100 && tpmAvailable > 10000) {
+    writeLine(`  ${colors.green}●${RESET} ${colors.dim}Capacity for autonomous triggers${RESET}`);
+  } else if (rpmPct > 75 || tpmPct > 75) {
+    writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Rate limits constrained${RESET}`);
   }
+
   writeLine();
 }
 
