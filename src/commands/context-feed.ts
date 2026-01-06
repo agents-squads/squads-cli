@@ -5,7 +5,7 @@
  * into a single consumable output for human review or agent context.
  */
 
-import { existsSync, statSync, readdirSync } from 'fs';
+import { existsSync, statSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   findSquadsDir,
@@ -47,9 +47,19 @@ interface SquadBriefing {
   lastActivity?: string;
 }
 
+interface BusinessBrief {
+  priority?: string;
+  runway?: string;
+  focus?: string[];
+  blockers?: string[];
+  decisionFramework?: string[];
+  raw?: string;
+}
+
 interface BriefingData {
   timestamp: string;
   error?: string;
+  brief?: BusinessBrief;
   squads: SquadBriefing[];
   goals: {
     active: number;
@@ -83,6 +93,77 @@ interface BriefingOptions {
   json?: boolean;
   agent?: boolean;
   verbose?: boolean;
+}
+
+// ============================================================================
+// Business Brief Parser
+// ============================================================================
+
+function readBusinessBrief(squadsDir: string | null): BusinessBrief | undefined {
+  if (!squadsDir) return undefined;
+
+  // Go up from .agents/squads to .agents, then look for BUSINESS_BRIEF.md
+  const briefPath = join(squadsDir, '..', 'BUSINESS_BRIEF.md');
+  if (!existsSync(briefPath)) return undefined;
+
+  try {
+    const content = readFileSync(briefPath, 'utf-8');
+    const brief: BusinessBrief = { raw: content };
+
+    // Parse #1 Priority section
+    const priorityMatch = content.match(/##\s*#1 Priority\s*\n+\*\*([^*]+)\*\*/);
+    if (priorityMatch) {
+      brief.priority = priorityMatch[1].trim();
+    }
+
+    // Parse Runway section
+    const runwayMatch = content.match(/##\s*Runway\s*\n+([\s\S]*?)(?=\n##|$)/);
+    if (runwayMatch) {
+      const pressureMatch = runwayMatch[1].match(/\*\*Pressure\*\*:\s*(\w+)/i);
+      if (pressureMatch) {
+        brief.runway = pressureMatch[1];
+      }
+    }
+
+    // Parse Current Focus section
+    const focusMatch = content.match(/##\s*Current Focus\s*\n+([\s\S]*?)(?=\n##|$)/);
+    if (focusMatch) {
+      const items = focusMatch[1].match(/^\d+\.\s*\*\*([^*]+)\*\*/gm);
+      if (items) {
+        brief.focus = items.map(item => {
+          const match = item.match(/\*\*([^*]+)\*\*/);
+          return match ? match[1].trim() : item;
+        });
+      }
+    }
+
+    // Parse Blockers section
+    const blockersMatch = content.match(/##\s*Blockers\s*\n+([\s\S]*?)(?=\n##|$)/);
+    if (blockersMatch) {
+      const text = blockersMatch[1].trim();
+      if (text.toLowerCase().includes('none')) {
+        brief.blockers = [];
+      } else {
+        const items = text.match(/^-\s*(.+)$/gm);
+        if (items) {
+          brief.blockers = items.map(item => item.replace(/^-\s*/, '').trim());
+        }
+      }
+    }
+
+    // Parse Decision Framework
+    const decisionMatch = content.match(/##\s*Decision Framework\s*\n+([\s\S]*?)(?=\n##|$)/);
+    if (decisionMatch) {
+      const items = decisionMatch[1].match(/^\d+\.\s*(.+)$/gm);
+      if (items) {
+        brief.decisionFramework = items.map(item => item.replace(/^\d+\.\s*/, '').trim());
+      }
+    }
+
+    return brief;
+  } catch {
+    return undefined;
+  }
 }
 
 // ============================================================================
@@ -248,8 +329,12 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
     }));
   }
 
+  // Read business brief
+  const brief = readBusinessBrief(squadsDir);
+
   return {
     timestamp: new Date().toISOString(),
+    brief,
     squads: squadBriefings,
     goals: {
       active: totalActive,
@@ -281,6 +366,33 @@ function renderHumanBriefing(data: BriefingData, options: BriefingOptions): void
     writeLine(`  ${colors.yellow}${icons.warning || '⚠'}${RESET} ${data.error}`);
     writeLine();
     return;
+  }
+
+  // Business Brief (top priority context)
+  if (data.brief) {
+    if (data.brief.priority) {
+      const runwayColor = data.brief.runway === 'HIGH' ? colors.red :
+                          data.brief.runway === 'MEDIUM' ? colors.yellow : colors.green;
+      writeLine(`  ${bold}#1 Priority${RESET} ${runwayColor}[${data.brief.runway || '—'}]${RESET}`);
+      writeLine(`  ${colors.white}${data.brief.priority}${RESET}`);
+      writeLine();
+    }
+
+    if (data.brief.focus && data.brief.focus.length > 0) {
+      writeLine(`  ${bold}Focus${RESET}`);
+      for (const item of data.brief.focus.slice(0, 3)) {
+        writeLine(`  ${colors.cyan}→${RESET} ${item}`);
+      }
+      writeLine();
+    }
+
+    if (data.brief.blockers && data.brief.blockers.length > 0) {
+      writeLine(`  ${colors.red}${bold}Blockers${RESET}`);
+      for (const blocker of data.brief.blockers) {
+        writeLine(`  ${colors.red}✗${RESET} ${blocker}`);
+      }
+      writeLine();
+    }
   }
 
   // Sessions indicator
