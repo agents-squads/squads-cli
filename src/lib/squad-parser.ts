@@ -54,6 +54,28 @@ export function findSquadsDir(): string | null {
   return null;
 }
 
+export function findProjectRoot(): string | null {
+  // Find the root of the squads project (where .agents/ lives)
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+  // squadsDir is /path/to/.agents/squads, so go up 2 levels
+  return join(squadsDir, '..', '..');
+}
+
+export function hasLocalInfraConfig(): boolean {
+  // Check if the project has a local .env file with infra config
+  const projectRoot = findProjectRoot();
+  if (!projectRoot) return false;
+
+  const envPath = join(projectRoot, '.env');
+  if (!existsSync(envPath)) return false;
+
+  // Check if .env has any infra-related keys
+  const content = readFileSync(envPath, 'utf-8');
+  const infraKeys = ['LANGFUSE_', 'SQUADS_BRIDGE', 'SQUADS_POSTGRES', 'SQUADS_REDIS'];
+  return infraKeys.some(key => content.includes(key));
+}
+
 export function listSquads(squadsDir: string): string[] {
   const squads: string[] = [];
 
