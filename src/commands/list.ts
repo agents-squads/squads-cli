@@ -13,6 +13,7 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import { track } from '../lib/telemetry.js';
 
 interface ListOptions {
   squads?: boolean;
@@ -20,6 +21,7 @@ interface ListOptions {
 }
 
 export async function listCommand(options: ListOptions): Promise<void> {
+  await track('cli.list', { squads: options.squads, agents: options.agents });
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
