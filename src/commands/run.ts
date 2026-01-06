@@ -26,6 +26,7 @@ interface RunOptions {
   timeout?: number; // minutes, default 30
   execute?: boolean;
   parallel?: boolean; // Run all agents in parallel
+  lead?: boolean; // Run as lead session using Task tool for parallelization
 }
 
 /**
@@ -193,6 +194,12 @@ async function runSquad(
   writeLine(`  ${colors.dim}Started: ${startTime}${RESET}`);
   writeLine();
 
+  // LEAD MODE: Single orchestrator session using Task tool for parallelization
+  if (options.lead) {
+    await runLeadMode(squad, squadsDir, options);
+    return;
+  }
+
   // PARALLEL EXECUTION: --parallel --execute runs all agents simultaneously
   if (options.parallel) {
     const agentFiles = squad.agents
@@ -298,6 +305,127 @@ async function runSquad(
   writeLine(`  ${colors.dim}After execution, record outcome:${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.name}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
   writeLine();
+}
+
+/**
+ * Lead mode: Single orchestrator session that uses Task tool for parallel work.
+ * Benefits over --parallel:
+ * - Single session overhead vs N sessions
+ * - Lead coordinates and routes work intelligently
+ * - Task agents share context when needed
+ * - Better parallelization (Claude's native Task tool)
+ */
+async function runLeadMode(
+  squad: ReturnType<typeof loadSquad>,
+  squadsDir: string,
+  options: RunOptions
+): Promise<void> {
+  if (!squad) return;
+
+  const agentFiles = squad.agents
+    .map(a => ({
+      name: a.name,
+      path: join(squadsDir, squad.name, `${a.name}.md`),
+      role: a.role || '',
+    }))
+    .filter(a => existsSync(a.path));
+
+  if (agentFiles.length === 0) {
+    writeLine(`  ${icons.error} ${colors.red}No agent files found${RESET}`);
+    return;
+  }
+
+  writeLine(`  ${bold}Lead mode${RESET} ${colors.dim}orchestrating ${agentFiles.length} agents${RESET}`);
+  writeLine();
+
+  // List available agents
+  for (const agent of agentFiles) {
+    writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
+  }
+  writeLine();
+
+  if (!options.execute) {
+    writeLine(`  ${colors.dim}Launch lead session:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --lead --execute`);
+    writeLine();
+    return;
+  }
+
+  // Build the lead prompt
+  const timeoutMins = options.timeout || 30;
+  const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
+  const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
+
+  const prompt = `You are the Lead of the ${squad.name} squad.
+
+## Mission
+${squad.mission || 'Execute squad operations efficiently.'}
+
+## Available Agents
+${agentList}
+
+## Agent Definition Files
+${agentPaths}
+
+## Your Role as Lead
+
+1. **Assess the situation**: Check for pending work:
+   - Run \`gh issue list --repo agents-squads/hq --label squad:${squad.name}\` for assigned issues
+   - Check .agents/memory/${squad.name}/ for squad state and pending tasks
+   - Review recent activity with \`git log --oneline -10\`
+
+2. **Delegate work using Task tool**: For each piece of work:
+   - Use the Task tool with subagent_type="general-purpose"
+   - Include the agent definition file path in the prompt
+   - Spawn multiple Task agents IN PARALLEL when work is independent
+   - Example: "Read ${agentFiles[0]?.path || 'agent.md'} and execute its instructions for [specific task]"
+
+3. **Coordinate parallel execution**:
+   - Independent tasks → spawn Task agents in parallel (single message, multiple tool calls)
+   - Dependent tasks → run sequentially
+   - Monitor progress and handle failures
+
+4. **Report and update memory**:
+   - Update .agents/memory/${squad.name}/state.md with completed work
+   - Log learnings to learnings.md
+   - Create issues for follow-up work if needed
+
+## Time Budget
+You have ${timeoutMins} minutes. Prioritize high-impact work.
+
+## Critical Instructions
+- Use Task tool for delegation, NOT direct execution of agent work
+- Spawn parallel Task agents when work is independent
+- When done, type /exit to end the session
+- Do NOT wait for user input - work autonomously
+
+Begin by assessing pending work, then delegate to agents via Task tool.`;
+
+  // Execute via Claude
+  const claudeAvailable = await checkClaudeCliAvailable();
+  if (!claudeAvailable) {
+    writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
+    writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
+    return;
+  }
+
+  writeLine(`  ${gradient('Launching')} lead session...`);
+  writeLine();
+
+  try {
+    const result = await executeWithClaude(prompt, options.verbose, timeoutMins);
+    writeLine(`  ${icons.success} Lead session launched`);
+    writeLine(`  ${colors.dim}${result}${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}The lead will:${RESET}`);
+    writeLine(`  ${colors.dim}  1. Assess pending work (issues, memory)${RESET}`);
+    writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
+    writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+  } catch (error) {
+    writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
+  }
 }
 
 async function runAgent(
