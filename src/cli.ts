@@ -125,6 +125,8 @@ program
   .option('-e, --execute', 'Execute agent via Claude CLI (requires claude installed)')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
+  .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
+  .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
