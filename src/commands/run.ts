@@ -401,6 +401,16 @@ You have ${timeoutMins} minutes. Prioritize high-impact work.
 - When done, type /exit to end the session
 - Do NOT wait for user input - work autonomously
 
+## Async Mode (CRITICAL)
+This is ASYNC execution - Task agents must be fully autonomous:
+- **Findings** → Create GitHub issues (gh issue create)
+- **Code changes** → Create PRs (gh pr create)
+- **Analysis results** → Write to .agents/outputs/ or memory files
+- **NEVER wait for human review** - complete the work and move on
+- **NEVER ask clarifying questions** - make reasonable decisions
+
+Instruct each Task agent: "Work autonomously. Output findings to GitHub issues. Output code changes as PRs. Do not wait for review."
+
 Begin by assessing pending work, then delegate to agents via Task tool.`;
 
   // Execute via Claude
