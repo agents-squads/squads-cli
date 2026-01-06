@@ -61,30 +61,74 @@ interface RequirementCheck {
   hint?: string;
 }
 
+// Check if Claude CLI is installed and logged in
+function checkClaudeAuth(): { installed: boolean; loggedIn: boolean } {
+  try {
+    execSync('which claude', { stdio: 'ignore' });
+  } catch {
+    return { installed: false, loggedIn: false };
+  }
+
+  try {
+    // Check if claude is authenticated
+    const result = execSync('claude --version', { stdio: 'pipe' }).toString();
+    // If we get here, claude is installed. Check auth status.
+    // Claude CLI doesn't have a direct "am I logged in" check, but if it works, assume ok
+    return { installed: true, loggedIn: result.includes('claude') };
+  } catch {
+    return { installed: true, loggedIn: false };
+  }
+}
+
+// Check if gh CLI is authenticated
+function checkGhAuth(): boolean {
+  try {
+    execSync('gh auth status', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function checkRequirements(): RequirementCheck[] {
   const checks: RequirementCheck[] = [];
 
-  // Check ANTHROPIC_API_KEY
-  if (process.env.ANTHROPIC_API_KEY) {
-    checks.push({ name: 'ANTHROPIC_API_KEY', status: 'ok' });
+  // Check Claude CLI (subscription-based auth)
+  const claudeStatus = checkClaudeAuth();
+  if (claudeStatus.installed && claudeStatus.loggedIn) {
+    checks.push({ name: 'Claude CLI', status: 'ok' });
+  } else if (claudeStatus.installed) {
+    checks.push({
+      name: 'Claude CLI',
+      status: 'warning',
+      message: 'Installed but may need login',
+      hint: 'Run: claude login',
+    });
   } else {
     checks.push({
-      name: 'ANTHROPIC_API_KEY',
+      name: 'Claude CLI',
       status: 'missing',
       message: 'Required to run agents',
-      hint: 'Get one free: https://console.anthropic.com',
+      hint: 'Install: npm install -g @anthropic-ai/claude-code',
     });
   }
 
-  // Check GITHUB_TOKEN
-  if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) {
-    checks.push({ name: 'GITHUB_TOKEN', status: 'ok' });
+  // Check GitHub CLI auth (not raw token)
+  if (checkGhAuth()) {
+    checks.push({ name: 'GitHub CLI', status: 'ok' });
+  } else if (commandExists('gh')) {
+    checks.push({
+      name: 'GitHub CLI',
+      status: 'warning',
+      message: 'Installed but not logged in',
+      hint: 'Run: gh auth login',
+    });
   } else {
     checks.push({
-      name: 'GITHUB_TOKEN',
+      name: 'GitHub CLI',
       status: 'missing',
       message: 'Required for GitHub integration (issues, PRs)',
-      hint: 'Create one: https://github.com/settings/tokens',
+      hint: 'Install: https://cli.github.com',
     });
   }
 
@@ -314,7 +358,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   console.log();
 
   if (hasMissingRequired) {
-    console.log(chalk.yellow('  Set up API keys to continue, then run squads init again.'));
+    console.log(chalk.yellow('  Install missing tools to continue, then run squads init again.'));
     console.log();
     return;
   }
