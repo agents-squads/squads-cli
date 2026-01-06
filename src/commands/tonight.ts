@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
 import path, { dirname } from 'path';
@@ -67,8 +66,8 @@ async function getCurrentCost(): Promise<number> {
   return 0;
 }
 
-// Check if we should stop
-function shouldStop(state: TonightState): { stop: boolean; reason?: string } {
+// Check if we should stop (reserved for future use)
+function _shouldStop(state: TonightState): { stop: boolean; reason?: string } {
   // Cost cap reached
   if (state.totalCost >= state.costCap) {
     return { stop: true, reason: `Cost cap reached: $${state.totalCost.toFixed(2)} >= $${state.costCap}` };

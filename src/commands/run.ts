@@ -59,7 +59,7 @@ function ensureProjectTrusted(projectPath: string): void {
       config.projects[projectPath].hasTrustDialogAccepted = true;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
     }
-  } catch (error) {
+  } catch (_error) {
     // Don't fail execution if we can't update config
     // The dialog will just appear
   }
