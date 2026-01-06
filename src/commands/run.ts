@@ -28,6 +28,7 @@ interface RunOptions {
   parallel?: boolean; // Run all agents in parallel
   lead?: boolean; // Run as lead session using Task tool for parallelization
   foreground?: boolean; // Run in foreground (no tmux)
+  useApi?: boolean; // Use API credits instead of subscription
 }
 
 /**
@@ -414,7 +415,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   writeLine();
 
   try {
-    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground);
+    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi);
 
     if (options.foreground) {
       writeLine();
@@ -500,7 +501,7 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
       : `Launching ${agentName} as background task...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground);
+      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi);
 
       if (options.foreground) {
         spinner.succeed(`Agent ${agentName} completed`);
@@ -548,7 +549,8 @@ async function executeWithClaude(
   prompt: string,
   verbose?: boolean,
   _timeoutMinutes: number = 30,
-  foreground?: boolean
+  foreground?: boolean,
+  useApi?: boolean
 ): Promise<string> {
   // Use interactive Claude Code (subscription) instead of --print (API credits)
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
@@ -563,6 +565,11 @@ async function executeWithClaude(
   const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
   const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
 
+  // Build env: remove ANTHROPIC_API_KEY unless --use-api is set
+  // This ensures Claude uses OAuth subscription by default
+  const { ANTHROPIC_API_KEY: _apiKey, ...envWithoutApiKey } = process.env;
+  const spawnEnv = useApi ? process.env : envWithoutApiKey;
+
   // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
@@ -571,6 +578,7 @@ async function executeWithClaude(
     if (verbose) {
       writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
       writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
+      writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
     }
 
     return new Promise((resolve, reject) => {
@@ -583,7 +591,7 @@ async function executeWithClaude(
         stdio: 'inherit',
         cwd: projectRoot,
         env: {
-          ...process.env,
+          ...spawnEnv,
           SQUADS_SQUAD: squadName,
           SQUADS_AGENT: agentName,
         },
@@ -610,6 +618,7 @@ async function executeWithClaude(
   if (verbose) {
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
     writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
   }
 
   // Build Claude command with all permissions bypassed for autonomous execution
@@ -627,7 +636,7 @@ async function executeWithClaude(
     stdio: 'ignore',
     detached: true,
     env: {
-      ...process.env,
+      ...spawnEnv,
       SQUADS_SQUAD: squadName,
       SQUADS_AGENT: agentName,
     },
