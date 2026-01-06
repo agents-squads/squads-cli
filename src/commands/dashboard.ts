@@ -93,6 +93,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
     return;
   }
 
@@ -291,7 +292,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     const prs = gh?.prsMerged || 0;
     const issuesClosed = gh?.issuesClosed || 0;
     const issuesOpen = gh?.issuesOpen || 0;
-    const activeCount = squad.goals.filter(g => !g.completed).length;
+    const completedCount = squad.goals.filter(g => g.completed).length;
     const totalCount = squad.goals.length;
 
     const commitColor = commits > 10 ? colors.green : commits > 0 ? colors.cyan : colors.dim;
@@ -303,7 +304,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
       `${commitColor}${padEnd(String(commits), w.commits)}${RESET}` +
       `${prColor}${padEnd(String(prs), w.prs)}${RESET}` +
       `${issueColor}${padEnd(`${issuesClosed}/${issuesOpen}`, w.issues)}${RESET}` +
-      `${padEnd(`${activeCount}/${totalCount}`, w.goals)}` +
+      `${padEnd(`${completedCount}/${totalCount}`, w.goals)}` +
       `${progressBar(squad.goalProgress, 8)}` +
       ` ${colors.purple}${box.vertical}${RESET}`);
   }

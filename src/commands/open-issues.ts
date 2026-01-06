@@ -41,6 +41,7 @@ export async function openIssuesCommand(options: OpenOptions = {}): Promise<void
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
     return;
   }
 
