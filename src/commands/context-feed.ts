@@ -5,7 +5,7 @@
  * into a single consumable output for human review or agent context.
  */
 
-import { existsSync } from 'fs';
+import { existsSync, statSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
   findSquadsDir,
@@ -49,6 +49,7 @@ interface SquadBriefing {
 
 interface BriefingData {
   timestamp: string;
+  error?: string;
   squads: SquadBriefing[];
   goals: {
     active: number;
@@ -94,11 +95,20 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
   const baseDir = squadsDir ? join(squadsDir, '..', '..', '..') : null;
 
   // Determine which squads to include
-  const squadNames = squadsDir
-    ? options.squad
-      ? [options.squad]
-      : listSquads(squadsDir)
-    : [];
+  const allSquads = squadsDir ? listSquads(squadsDir) : [];
+
+  // Validate --squad option if provided
+  if (options.squad && !allSquads.includes(options.squad)) {
+    return {
+      timestamp: new Date().toISOString(),
+      error: `Squad "${options.squad}" not found. Available: ${allSquads.join(', ')}`,
+      squads: [],
+      goals: { active: 0, completed: 0, bySquad: [] },
+      sessions: { active: 0, bySquad: 0 },
+    } as BriefingData & { error?: string };
+  }
+
+  const squadNames = options.squad ? [options.squad] : allSquads;
 
   // Collect data in parallel for performance
   const [bridgeStats, rateLimits, sessions, gitStats] = await Promise.all([
@@ -142,7 +152,6 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
     if (memoryDir) {
       const squadMemoryPath = join(memoryDir, squadName);
       if (existsSync(squadMemoryPath)) {
-        const { statSync, readdirSync } = await import('fs');
         let mostRecent = 0;
         try {
           const walkDir = (dir: string) => {
@@ -266,6 +275,13 @@ function renderHumanBriefing(data: BriefingData, options: BriefingOptions): void
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}context-feed${RESET}`);
   writeLine();
+
+  // Handle error (e.g., invalid squad)
+  if (data.error) {
+    writeLine(`  ${colors.yellow}${icons.warning || '⚠'}${RESET} ${data.error}`);
+    writeLine();
+    return;
+  }
 
   // Sessions indicator
   if (data.sessions.active > 0) {
