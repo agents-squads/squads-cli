@@ -78,6 +78,12 @@ import {
   applyStackConfig
 } from './commands/stack.js';
 import { registerTriggerCommand } from './commands/trigger.js';
+import {
+  tonightCommand,
+  tonightStatusCommand,
+  tonightStopCommand,
+  tonightReportCommand
+} from './commands/tonight.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -514,6 +520,42 @@ stack
 
 // Trigger command group - smart value-driven triggers
 registerTriggerCommand(program);
+
+// Tonight command group - autonomous overnight execution
+const tonight = program
+  .command('tonight')
+  .description('Run agents autonomously overnight with safety limits');
+
+tonight
+  .command('run <targets...>')
+  .description('Start tonight mode with specified squads/agents')
+  .option('-c, --cost-cap <usd>', 'Max USD to spend (default: 50)', '50')
+  .option('-s, --stop-at <time>', 'Stop time HH:MM (default: 07:00)', '07:00')
+  .option('-r, --max-retries <n>', 'Max restarts per agent (default: 3)', '3')
+  .option('-d, --dry-run', 'Show what would run without executing')
+  .option('-v, --verbose', 'Verbose output')
+  .action((targets, options) => tonightCommand(targets, {
+    costCap: parseFloat(options.costCap),
+    stopAt: options.stopAt,
+    maxRetries: parseInt(options.maxRetries, 10),
+    dryRun: options.dryRun,
+    verbose: options.verbose,
+  }));
+
+tonight
+  .command('status')
+  .description('Check tonight mode status')
+  .action(tonightStatusCommand);
+
+tonight
+  .command('stop')
+  .description('Stop all tonight agents and generate report')
+  .action(tonightStopCommand);
+
+tonight
+  .command('report')
+  .description('Show latest tonight report')
+  .action(tonightReportCommand);
 
 // Auth commands
 program
