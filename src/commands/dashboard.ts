@@ -808,7 +808,10 @@ async function _renderInfrastructure(): Promise<void> {
 
   if (!stats) {
     writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
-    writeLine(`  ${colors.dim}Start with: cd docker && docker-compose up -d${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Start with:${RESET} cd docker && docker-compose up -d`);
+    writeLine(`  ${colors.dim}Docs:${RESET} https://agents-squads.com/docs/setup`);
+    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}jorge@agents-squads.com${RESET}`);
     writeLine();
     return;
   }
@@ -1022,7 +1025,10 @@ function renderInfrastructureCached(cache: DashboardCache): void {
 
   if (!stats) {
     writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
-    writeLine(`  ${colors.dim}Start with: cd docker && docker-compose up -d${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Start with:${RESET} cd docker && docker-compose up -d`);
+    writeLine(`  ${colors.dim}Docs:${RESET} https://agents-squads.com/docs/setup`);
+    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}jorge@agents-squads.com${RESET}`);
     writeLine();
     return;
   }
