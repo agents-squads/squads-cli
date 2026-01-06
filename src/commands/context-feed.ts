@@ -99,6 +99,37 @@ interface BriefingOptions {
 // Business Brief Parser
 // ============================================================================
 
+const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+async function syncBriefToBridge(brief: BusinessBrief, sourcePath: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${BRIDGE_URL}/api/brief`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        priority: brief.priority,
+        runway: brief.runway,
+        focus: brief.focus || [],
+        blockers: brief.blockers || [],
+        decision_framework: brief.decisionFramework || [],
+        raw_content: brief.raw || '',
+        source_path: sourcePath,
+        synced_by: 'cli',
+      }),
+    });
+
+    if (!response.ok) {
+      return false;
+    }
+
+    const result = await response.json();
+    return result.status === 'synced' || result.status === 'unchanged';
+  } catch {
+    // Bridge not available, silently fail
+    return false;
+  }
+}
+
 function readBusinessBrief(squadsDir: string | null): BusinessBrief | undefined {
   if (!squadsDir) return undefined;
 
@@ -329,8 +360,13 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
     }));
   }
 
-  // Read business brief
+  // Read business brief and sync to bridge
   const brief = readBusinessBrief(squadsDir);
+  if (brief && squadsDir) {
+    const briefPath = join(squadsDir, '..', 'BUSINESS_BRIEF.md');
+    // Sync in background, don't block
+    syncBriefToBridge(brief, briefPath).catch(() => {});
+  }
 
   return {
     timestamp: new Date().toISOString(),

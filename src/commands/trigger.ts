@@ -12,6 +12,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { existsSync } from "fs";
 
 const SCHEDULER_URL = process.env.SCHEDULER_URL || "http://localhost:8090";
 
@@ -105,8 +106,11 @@ async function syncTriggers(): Promise<void> {
   const hqPath = process.env.HQ_PATH || `${process.env.HOME}/agents-squads/hq`;
 
   try {
+    // Use venv Python if available, fallback to system python3
+    const venvPython = `${hqPath}/squads-scheduler/.venv/bin/python`;
+    const pythonCmd = existsSync(venvPython) ? venvPython : "python3";
     const output = execSync(
-      `python ${hqPath}/squads-scheduler/sync_triggers.py`,
+      `${pythonCmd} ${hqPath}/squads-scheduler/sync_triggers.py`,
       { encoding: "utf-8", cwd: hqPath }
     );
     console.log(output);

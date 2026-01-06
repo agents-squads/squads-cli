@@ -1441,6 +1441,159 @@ def compute_insights():
         return jsonify({"error": str(e)}), 500
 
 
+# =============================================================================
+# Business Brief API - Sync strategic context to Postgres
+# =============================================================================
+
+@app.route("/api/brief", methods=["GET"])
+def get_brief():
+    """Get current business brief from Postgres."""
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, priority, runway, focus, blockers, decision_framework,
+                       metrics, raw_content, source_hash, updated_at, synced_by
+                FROM business_briefs
+                WHERE is_active = true
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """)
+            brief = cur.fetchone()
+        conn.close()
+
+        if not brief:
+            return jsonify({"error": "No brief found"}), 404
+
+        return jsonify({
+            "status": "ok",
+            "brief": {
+                "id": str(brief["id"]),
+                "priority": brief["priority"],
+                "runway": brief["runway"],
+                "focus": brief["focus"],
+                "blockers": brief["blockers"],
+                "decision_framework": brief["decision_framework"],
+                "metrics": brief["metrics"],
+                "raw_content": brief["raw_content"],
+                "source_hash": brief["source_hash"],
+                "updated_at": brief["updated_at"].isoformat() if brief["updated_at"] else None,
+                "synced_by": brief["synced_by"],
+            }
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/brief", methods=["POST"])
+def sync_brief():
+    """Sync business brief from local to Postgres."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data"}), 400
+
+        import hashlib
+        raw_content = data.get("raw_content", "")
+        source_hash = hashlib.md5(raw_content.encode()).hexdigest()
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Check if content changed
+            cur.execute("""
+                SELECT source_hash FROM business_briefs
+                WHERE is_active = true
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """)
+            existing = cur.fetchone()
+
+            if existing and existing["source_hash"] == source_hash:
+                conn.close()
+                return jsonify({
+                    "status": "unchanged",
+                    "message": "Brief content unchanged",
+                    "source_hash": source_hash,
+                }), 200
+
+            # Deactivate old briefs
+            cur.execute("UPDATE business_briefs SET is_active = false WHERE is_active = true")
+
+            # Insert new brief
+            cur.execute("""
+                INSERT INTO business_briefs
+                    (priority, runway, focus, blockers, decision_framework,
+                     metrics, raw_content, source_hash, source_path, synced_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                data.get("priority"),
+                data.get("runway"),
+                json.dumps(data.get("focus", [])),
+                json.dumps(data.get("blockers", [])),
+                json.dumps(data.get("decision_framework", [])),
+                json.dumps(data.get("metrics", {})),
+                raw_content,
+                source_hash,
+                data.get("source_path"),
+                data.get("synced_by", "cli"),
+            ))
+            brief_id = cur.fetchone()["id"]
+
+        conn.commit()
+        conn.close()
+
+        if DEBUG_MODE:
+            print(f"[BRIEF] Synced: {source_hash[:8]}... priority={data.get('priority', '')[:30]}")
+
+        return jsonify({
+            "status": "synced",
+            "brief_id": str(brief_id),
+            "source_hash": source_hash,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/brief/history", methods=["GET"])
+def brief_history():
+    """Get brief change history."""
+    try:
+        limit = min(int(request.args.get("limit", 10)), 50)
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, priority, runway, source_hash, updated_at, synced_by, is_active
+                FROM business_briefs
+                ORDER BY updated_at DESC
+                LIMIT %s
+            """, (limit,))
+            briefs = cur.fetchall()
+        conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "count": len(briefs),
+            "history": [{
+                "id": str(b["id"]),
+                "priority": b["priority"],
+                "runway": b["runway"],
+                "source_hash": b["source_hash"],
+                "updated_at": b["updated_at"].isoformat() if b["updated_at"] else None,
+                "synced_by": b["synced_by"],
+                "is_active": b["is_active"],
+            } for b in briefs],
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting Squads Bridge on port {port}")
