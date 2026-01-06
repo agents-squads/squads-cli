@@ -632,7 +632,8 @@ async function executeWithClaude(
   }
 
   // Build Claude command with all permissions bypassed for autonomous execution
-  const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'`;
+  // Auto-cleanup: kill tmux session when Claude exits (success or failure)
+  const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
   // Create detached tmux session running Claude
   const tmux = spawn('tmux', [
