@@ -282,7 +282,10 @@ program
 // Memory command group
 const memory = program
   .command('memory')
-  .description('Query and manage squad memory');
+  .description('Query and manage squad memory')
+  .action(() => {
+    memory.outputHelp();
+  });
 
 memory
   .command('query <query>')
@@ -343,7 +346,10 @@ memory
 // Goal command group
 const goal = program
   .command('goal')
-  .description('Manage squad goals');
+  .description('Manage squad goals')
+  .action(() => {
+    goal.outputHelp();
+  });
 
 goal
   .command('set <squad> <description>')
