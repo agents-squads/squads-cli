@@ -830,3 +830,51 @@ export async function fetchInsights(period: 'day' | 'week' | 'month' = 'week'): 
     };
   }
 }
+
+// === NPM Stats for Acquisition Tracking ===
+
+export interface NpmStats {
+  package: string;
+  downloads: {
+    lastDay: number;
+    lastWeek: number;
+    lastMonth: number;
+  };
+  weekOverWeek: number; // percentage change
+}
+
+export async function fetchNpmStats(packageName: string = 'squads-cli'): Promise<NpmStats | null> {
+  try {
+    const [dayRes, weekRes, monthRes] = await Promise.all([
+      fetch(`https://api.npmjs.org/downloads/point/last-day/${packageName}`),
+      fetch(`https://api.npmjs.org/downloads/point/last-week/${packageName}`),
+      fetch(`https://api.npmjs.org/downloads/point/last-month/${packageName}`),
+    ]);
+
+    if (!dayRes.ok || !weekRes.ok || !monthRes.ok) return null;
+
+    const [dayData, weekData, monthData] = await Promise.all([
+      dayRes.json() as Promise<{ downloads: number }>,
+      weekRes.json() as Promise<{ downloads: number }>,
+      monthRes.json() as Promise<{ downloads: number }>,
+    ]);
+
+    // Calculate week-over-week growth (rough estimate: this week vs avg of month)
+    const avgWeeklyFromMonth = monthData.downloads / 4;
+    const weekOverWeek = avgWeeklyFromMonth > 0
+      ? Math.round(((weekData.downloads - avgWeeklyFromMonth) / avgWeeklyFromMonth) * 100)
+      : 0;
+
+    return {
+      package: packageName,
+      downloads: {
+        lastDay: dayData.downloads,
+        lastWeek: weekData.downloads,
+        lastMonth: monthData.downloads,
+      },
+      weekOverWeek,
+    };
+  } catch {
+    return null;
+  }
+}

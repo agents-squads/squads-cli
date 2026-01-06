@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan, detectProvidersFromEnv, ProviderCosts, getProviderDisplayName } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, detectPlan, detectProvidersFromEnv, ProviderCosts, getProviderDisplayName, fetchNpmStats, NpmStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -85,6 +85,7 @@ interface DashboardCache {
   history: DashboardSnapshot[];
   insights: Insights | null;
   sessionSummary: SessionSummary;
+  npmStats: NpmStats | null;
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
@@ -114,7 +115,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   // Clean up stale file-based sessions (sync, fast)
   cleanupStaleSessions();
 
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary] = await Promise.all([
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats] = await Promise.all([
     // Git stats (local, ~1s)
     Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
@@ -133,10 +134,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     timeout(fetchInsights('week').catch(() => null), 2000, null),
     // Session summary (parallel lsof, ~1s)
     getLiveSessionSummaryAsync(),
+    // NPM download stats (network, 2s timeout)
+    timeout(fetchNpmStats('squads-cli'), 2000, null),
   ]);
 
   // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary };
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats };
 
   // === PHASE 2: Build squad metrics (sync, fast) ===
   const squadData: SquadMetrics[] = [];
@@ -318,6 +321,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   renderGitPerformanceCached(cache);
   renderTokenEconomicsCached(cache, goalCount);
   renderInfrastructureCached(cache);
+  renderAcquisitionCached(cache);
 
   // These still need async but are fast
   renderHistoricalTrendsCached(cache);
@@ -1068,6 +1072,31 @@ function renderInfrastructureCached(cache: DashboardCache): void {
     }).join('  ') || '';
     writeLine(`  ${colors.dim}Week:${RESET}  ${colors.cyan}${stats.week.generations}${RESET}${colors.dim} calls${RESET}  ${colors.purple}$${stats.week.costUsd.toFixed(2)}${RESET}  ${weekModelLine}`);
   }
+
+  writeLine();
+}
+
+function renderAcquisitionCached(cache: DashboardCache): void {
+  const npm = cache.npmStats;
+
+  if (!npm) {
+    // Don't show section if npm API failed
+    return;
+  }
+
+  writeLine(`  ${bold}Acquisition${RESET} ${colors.dim}(npm)${RESET}`);
+  writeLine();
+
+  // Download stats
+  const trendIcon = npm.weekOverWeek >= 0 ? `${colors.green}↑${RESET}` : `${colors.red}↓${RESET}`;
+  const trendColor = npm.weekOverWeek >= 0 ? colors.green : colors.red;
+
+  writeLine(`  ${colors.cyan}${npm.downloads.lastWeek}${RESET} installs/week  ${trendIcon} ${trendColor}${Math.abs(npm.weekOverWeek)}%${RESET} ${colors.dim}wow${RESET}`);
+  writeLine(`  ${colors.dim}Today${RESET} ${npm.downloads.lastDay}  ${colors.dim}│${RESET}  ${colors.dim}Month${RESET} ${npm.downloads.lastMonth}`);
+
+  // Funnel hint
+  writeLine();
+  writeLine(`  ${colors.dim}GitHub → npm install → squads dash → ?${RESET}`);
 
   writeLine();
 }
