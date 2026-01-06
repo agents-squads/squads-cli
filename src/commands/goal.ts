@@ -57,6 +57,7 @@ export async function goalListCommand(
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
     return;
   }
 
