@@ -114,6 +114,7 @@ program
   .command('init')
   .description('Initialize a new squad project')
   .option('-t, --template <template>', 'Project template', 'default')
+  .option('--skip-infra', 'Skip infrastructure setup prompt')
   .action(initCommand);
 
 // Run command - runs squads or individual agents
