@@ -3,7 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, fetchNpmStats, NpmStats } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -947,14 +947,25 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
   writeLine();
 
   // === SUBSCRIPTION (always show - works without infra) ===
-  const maxPlan = isMaxPlan();
+  const planType = getPlanType();
   const tier = parseInt(process.env.ANTHROPIC_TIER || '0', 10);
-  const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
-  const planLabel = maxPlan ? 'Claude Max' : 'Claude Pro';
-  const planCost = maxPlan ? '$200/mo flat' : 'pay-per-token';
-  const tierDisplay = tier > 0 ? `  ${colors.dim}Tier ${tier}${RESET}` : '';
-  writeLine(`  ${planIcon} ${bold}${planLabel}${RESET} ${colors.dim}${planCost}${RESET}${tierDisplay}`);
-  writeLine();
+
+  if (planType === 'unknown') {
+    writeLine(`  ${colors.dim}○${RESET} ${bold}Plan${RESET} ${colors.yellow}not configured${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Set your Claude plan:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=max   ${colors.dim}# $200/mo flat${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=usage ${colors.dim}# pay-per-token${RESET}`);
+    writeLine();
+  } else {
+    const maxPlan = planType === 'max';
+    const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
+    const planLabel = maxPlan ? 'Claude Max' : 'Claude Pro';
+    const planCost = maxPlan ? '$200/mo flat' : 'pay-per-token';
+    const tierDisplay = tier > 0 ? `  ${colors.dim}Tier ${tier}${RESET}` : '';
+    writeLine(`  ${planIcon} ${bold}${planLabel}${RESET} ${colors.dim}${planCost}${RESET}${tierDisplay}`);
+    writeLine();
+  }
 
   // === METRICS (require infra) ===
   if (!hasInfra || !hasData) {

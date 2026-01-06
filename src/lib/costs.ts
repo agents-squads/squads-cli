@@ -74,8 +74,9 @@ const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
  * Anthropic plan types:
  * - 'max': Flat fee subscription ($200/mo), no overage - only rate limits matter
  * - 'usage': Pay-per-token, budget tracking matters
+ * - 'unknown': Not configured yet
  */
-export type PlanType = 'max' | 'usage';
+export type PlanType = 'max' | 'usage' | 'unknown';
 
 /**
  * Plan detection result with confidence and reason
@@ -123,8 +124,8 @@ export function detectPlan(): PlanDetection {
     return { plan: 'usage', confidence: 'inferred', reason: `Tier ${tier} (new user)` };
   }
 
-  // 5. Default: assume max (professional users more common for this CLI)
-  return { plan: 'max', confidence: 'inferred', reason: 'Default (no config)' };
+  // 5. Default: unknown - prompt user to configure
+  return { plan: 'unknown', confidence: 'inferred', reason: 'Not configured' };
 }
 
 /**
@@ -147,7 +148,11 @@ export function isMaxPlan(): boolean {
  */
 export function getPlanDescription(): string {
   const detection = detectPlan();
-  const planName = detection.plan === 'max' ? 'Max ($200 flat)' : 'Usage (pay-per-token)';
+  const planName = detection.plan === 'max'
+    ? 'Max ($200 flat)'
+    : detection.plan === 'usage'
+      ? 'Usage (pay-per-token)'
+      : 'Unknown';
   const confidence = detection.confidence === 'explicit' ? '' : ` [${detection.reason}]`;
   return `${planName}${confidence}`;
 }
