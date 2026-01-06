@@ -347,7 +347,8 @@ squads run engineering -a ci-optimizer # Run specific agent (flag notation)
 squads run engineering --dry-run      # Preview what would run
 squads run engineering --execute      # Execute via Claude CLI
 squads run engineering --parallel     # Run all agents in parallel
-squads run engineering --parallel --execute  # Launch all in parallel via Claude
+squads run engineering --lead         # Lead mode: single orchestrator with Task agents
+squads run engineering --foreground   # Run in foreground (no tmux)
 squads run engineering --timeout 60   # Set timeout in minutes (default: 30)
 ```
 
@@ -582,7 +583,9 @@ squads run <target>                  Run squad or agent
   -e, --execute                      Execute via Claude CLI
   -a, --agent <agent>                Run specific agent within squad
   -t, --timeout <minutes>            Execution timeout (default: 30)
-  --parallel                         Run all agents in parallel
+  -p, --parallel                     Run all agents in parallel
+  -l, --lead                         Lead mode: single orchestrator using Task tool
+  -f, --foreground                   Run in foreground (no tmux)
 
 squads list                          List all squads/agents
   -s, --squads                       Squads only

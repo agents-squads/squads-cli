@@ -17,11 +17,9 @@ import { findMemoryDir, searchMemory, getSquadState } from '../lib/memory.js';
 import {
   fetchBridgeStats,
   fetchRateLimits,
-  BridgeStats,
-  RateLimits,
 } from '../lib/costs.js';
-import { getMultiRepoGitStats, GitPerformanceStats } from '../lib/git.js';
-import { getLiveSessionSummaryAsync, SessionSummary } from '../lib/sessions.js';
+import { getMultiRepoGitStats } from '../lib/git.js';
+import { getLiveSessionSummaryAsync } from '../lib/sessions.js';
 import {
   colors,
   bold,

@@ -1,7 +1,6 @@
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
-import { execSync, spawn } from 'child_process';
-import { colors, RESET } from '../lib/terminal.js';
+import { execSync } from 'child_process';
 
 interface LiveOptions {
   minimal?: boolean;
@@ -27,7 +26,7 @@ interface CostData {
  * Live TUI Dashboard - Real-time squad monitoring
  * Uses blessed-contrib for terminal UI
  */
-export async function liveCommand(options: LiveOptions): Promise<void> {
+export async function liveCommand(_options: LiveOptions): Promise<void> {
   // Create blessed screen
   const screen = blessed.screen({
     smartCSR: true,
