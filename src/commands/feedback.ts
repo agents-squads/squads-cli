@@ -12,6 +12,7 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import { track, Events } from '../lib/telemetry.js';
 
 export interface FeedbackEntry {
   date: string;
@@ -111,6 +112,7 @@ export async function feedbackAddCommand(
   feedback: string,
   options: { learning?: string[] }
 ): Promise<void> {
+  await track(Events.CLI_FEEDBACK_ADD, { squad: squadName, rating: parseInt(rating) });
   const feedbackPath = getFeedbackPath(squadName);
   if (!feedbackPath) {
     writeLine(`  ${colors.red}Could not find memory directory${RESET}`);
@@ -181,6 +183,7 @@ export async function feedbackShowCommand(
   squadName: string,
   options: { limit?: string }
 ): Promise<void> {
+  await track(Events.CLI_FEEDBACK_SHOW, { squad: squadName });
   const feedbackPath = getFeedbackPath(squadName);
   if (!feedbackPath || !existsSync(feedbackPath)) {
     writeLine(`  ${colors.yellow}No feedback recorded for ${squadName}${RESET}`);
@@ -222,6 +225,7 @@ export async function feedbackShowCommand(
 }
 
 export async function feedbackStatsCommand(): Promise<void> {
+  await track(Events.CLI_FEEDBACK_STATS);
   const memoryDir = findMemoryDir();
   if (!memoryDir) {
     writeLine(`  ${colors.red}Could not find memory directory${RESET}`);

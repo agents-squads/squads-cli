@@ -9,6 +9,7 @@ import {
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
+import { track, Events } from '../lib/telemetry.js';
 import {
   colors,
   bold,
@@ -28,6 +29,7 @@ export async function statusCommand(
   squadName?: string,
   options: StatusOptions = {}
 ): Promise<void> {
+  await track(Events.CLI_STATUS, { squad: squadName || 'all', verbose: options.verbose });
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {

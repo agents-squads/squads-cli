@@ -10,6 +10,7 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import { track, Events } from '../lib/telemetry.js';
 
 interface CommitInfo {
   hash: string;
@@ -276,6 +277,7 @@ function gitPushMemory(): { success: boolean; output: string } {
 }
 
 export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean } = {}): Promise<void> {
+  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull });
   const memoryDir = findMemoryDir();
   const _squadsDir = findSquadsDir();
 
