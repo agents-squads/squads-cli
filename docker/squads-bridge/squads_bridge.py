@@ -398,20 +398,23 @@ def ensure_session(conn, session_id, squad, agent, user_id):
         """, (session_id, squad, agent, user_id or None))
 
 
-def save_generation(conn, session_id, squad, agent, user_id, model, token_data):
+def save_generation(conn, session_id, squad, agent, user_id, model, token_data,
+                    task_type="execution", trigger_source="manual", execution_id=None):
     """Save LLM generation to postgres + Redis."""
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO squads.llm_generations
                 (session_id, squad, agent, user_id, model,
-                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                 task_type, trigger_source, execution_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             session_id, squad, agent, user_id or None, model,
             token_data["input_tokens"], token_data["output_tokens"],
             token_data["cache_read"], token_data["cache_creation"],
-            token_data["cost_usd"]
+            token_data["cost_usd"],
+            task_type, trigger_source, execution_id
         ))
         gen_id = cur.fetchone()[0]
 
@@ -496,6 +499,22 @@ def receive_logs():
                 os.environ.get("SQUADS_AGENT") or
                 "coo"
             )
+            # Extract telemetry context (added for per-agent cost tracking)
+            task_type = (
+                resource_attrs.get("squads.task_type") or
+                os.environ.get("SQUADS_TASK_TYPE") or
+                "execution"
+            )
+            trigger_source = (
+                resource_attrs.get("squads.trigger") or
+                os.environ.get("SQUADS_TRIGGER") or
+                "manual"
+            )
+            execution_id = (
+                resource_attrs.get("squads.execution_id") or
+                os.environ.get("SQUADS_EXECUTION_ID") or
+                None
+            )
 
             for scope_log in resource_log.get("scopeLogs", []):
                 for log_record in scope_log.get("logRecords", []):
@@ -527,22 +546,29 @@ def receive_logs():
                         # Save to postgres (primary)
                         gen_id = save_generation(
                             conn, session_id, squad_name, agent_name,
-                            user_id, model, token_data
+                            user_id, model, token_data,
+                            task_type, trigger_source, execution_id
                         )
-                        print(f"[PG] Generation #{gen_id}: {model} {token_data['input_tokens']}+{token_data['output_tokens']} tokens ${token_data['cost_usd']:.4f}")
+                        print(f"[PG] Generation #{gen_id}: {model} {token_data['input_tokens']}+{token_data['output_tokens']} tokens ${token_data['cost_usd']:.4f} [{task_type}]")
 
                         # Forward to Langfuse (optional)
                         if langfuse:
                             try:
+                                # Name format: squad/agent for easy filtering
+                                trace_name = f"{squad_name}/{agent_name}" if agent_name != "coo" else f"llm:{model}"
                                 trace = langfuse.trace(
-                                    name=f"llm:{model}",
+                                    name=trace_name,
                                     user_id=user_id or None,
                                     session_id=session_id,
                                     metadata={
                                         "squad": squad_name,
                                         "agent": agent_name,
+                                        "task_type": task_type,
+                                        "trigger": trigger_source,
+                                        "execution_id": execution_id,
                                         "service": service_name,
                                     },
+                                    tags=[squad_name, agent_name, task_type],  # Enable filtering
                                 )
                                 trace.generation(
                                     name=f"llm:{model}",
