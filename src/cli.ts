@@ -12,6 +12,22 @@ if (!process.stdout.isTTY) {
   chalk.level = 0;
 }
 
+// Handle EPIPE gracefully when output is piped through head/tail/grep
+// These commands close the pipe early, which is normal Unix behavior
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') {
+    process.exit(0);
+  }
+  throw err;
+});
+
+process.stderr.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE') {
+    process.exit(0);
+  }
+  throw err;
+});
+
 // Load .env from multiple locations (first found wins)
 const envPaths = [
   join(process.cwd(), '.env'),
