@@ -972,8 +972,7 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
     writeLine(`  ${colors.dim}○${RESET} Track costs, tokens, and API usage`);
     writeLine(`  ${colors.dim}○${RESET} Monitor rate limits and budgets`);
     writeLine();
-    writeLine(`  ${colors.dim}Connect:${RESET} squads connect`);
-    writeLine(`  ${colors.dim}Self-host:${RESET} cd docker && docker-compose up -d`);
+    writeLine(`  ${colors.dim}Setup:${RESET} github.com/agents-squads/squads-cli#analytics`);
     writeLine();
     return;
   }
@@ -1052,8 +1051,7 @@ function renderInfrastructureCached(cache: DashboardCache): void {
     writeLine();
     writeLine(`  ${colors.dim}○${RESET} postgres  ${colors.dim}○${RESET} redis  ${colors.dim}○${RESET} otel`);
     writeLine();
-    writeLine(`  ${colors.dim}Connect:${RESET} squads connect`);
-    writeLine(`  ${colors.dim}Self-host:${RESET} cd docker && docker-compose up -d`);
+    writeLine(`  ${colors.dim}Setup:${RESET} github.com/agents-squads/squads-cli#infrastructure`);
     writeLine();
     return;
   }
