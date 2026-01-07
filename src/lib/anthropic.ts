@@ -9,12 +9,12 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync, readdirSync, statSync } from 'fs';
-import { join, basename } from 'path';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 
-// Beta headers required for Skills API
-const SKILLS_BETA = 'skills-2025-10-02';
-const CODE_EXECUTION_BETA = 'code-execution-2025-08-25';
+// Beta headers required for Skills API (reserved for API implementation)
+const _SKILLS_BETA = 'skills-2025-10-02';
+const _CODE_EXECUTION_BETA = 'code-execution-2025-08-25';
 
 export interface Skill {
   id: string;
@@ -50,22 +50,13 @@ function getClient(): Anthropic {
  * List all uploaded skills
  */
 export async function listSkills(): Promise<Skill[]> {
-  const anthropic = getClient();
+  // Validate API key is available
+  getClient();
 
   try {
-    // Use beta endpoint for skills
-    const response = await anthropic.beta.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      betas: [SKILLS_BETA],
-      messages: [{
-        role: 'user',
-        content: 'List all my uploaded skills. Return a JSON array of skill objects.'
-      }]
-    });
-
     // Note: The actual Skills API may have a different endpoint
     // This is a placeholder until we have the exact API spec
+    // Real implementation will use: anthropic.beta.skills.list({ betas: [SKILLS_BETA] })
     console.warn('Skills API: Using placeholder implementation. Actual API may differ.');
     return [];
   } catch (error) {
@@ -169,7 +160,8 @@ export function extractSkillDescription(files: SkillFile[]): string | undefined 
  * Upload a skill to Anthropic
  */
 export async function uploadSkill(skillPath: string): Promise<Skill> {
-  const anthropic = getClient();
+  // Validate API key is available
+  getClient();
   const files = loadSkillFiles(skillPath);
 
   if (files.length === 0) {
@@ -214,7 +206,8 @@ export async function uploadSkill(skillPath: string): Promise<Skill> {
  * Delete a skill by ID
  */
 export async function deleteSkill(skillId: string): Promise<void> {
-  const anthropic = getClient();
+  // Validate API key is available
+  getClient();
 
   try {
     // Placeholder until we have actual API spec
@@ -229,7 +222,8 @@ export async function deleteSkill(skillId: string): Promise<void> {
  * Get skill details by ID
  */
 export async function getSkill(skillId: string): Promise<Skill | null> {
-  const anthropic = getClient();
+  // Validate API key is available
+  getClient();
 
   try {
     // Placeholder until we have actual API spec

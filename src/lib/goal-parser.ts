@@ -20,6 +20,11 @@ export interface ValidationResult {
   parsed?: ParsedGoal;
 }
 
+/** Minimal interface for inquirer-like prompting */
+interface InquirerLike {
+  prompt<T>(questions: { type: string; name: string; message: string; validate?: (val: unknown) => boolean | string; default?: unknown }[]): Promise<T>;
+}
+
 /**
  * Extract numeric value from text
  * Handles: "10", "$50K", "5%", "50k", "1.5M"
@@ -85,7 +90,7 @@ function extractUnit(text: string, numericMatch: string): string | null {
   const words = afterNumeric.trim().split(/\s+/);
   for (let i = 0; i < Math.min(3, words.length); i++) {
     const word = words[i].toLowerCase().replace(/[^a-z]/g, '');
-    if (common Units.includes(word)) {
+    if (commonUnits.includes(word)) {
       return word;
     }
   }
@@ -221,7 +226,7 @@ export function formatParsedGoal(parsed: ParsedGoal): string {
  */
 export async function promptForMissingComponents(
   parsed: ParsedGoal,
-  inquirer: any
+  inquirer: InquirerLike
 ): Promise<ParsedGoal | null> {
   const result = { ...parsed };
 

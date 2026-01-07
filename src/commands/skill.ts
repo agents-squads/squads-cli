@@ -18,16 +18,11 @@ import {
   uploadSkill,
   deleteSkill,
   getSkill,
-  isApiKeyConfigured,
-  Skill
+  isApiKeyConfigured
 } from '../lib/anthropic.js';
-import {
-  findSquadsDir,
-  loadAgentDefinition
-} from '../lib/squad-parser.js';
+import { findSquadsDir } from '../lib/squad-parser.js';
 import {
   colors,
-  bold,
   RESET,
   gradient,
   icons,
@@ -383,7 +378,7 @@ function convertAgentToSkill(
   agentName: string
 ): string {
   // Extract existing frontmatter if present
-  let existingMeta: Record<string, string> = {};
+  const existingMeta: Record<string, string> = {};
   let bodyContent = agentContent;
 
   const frontmatterMatch = agentContent.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)/);
