@@ -34,6 +34,36 @@ async function confirm(question: string, defaultYes = true): Promise<boolean> {
   });
 }
 
+// Optional email prompt for updates
+async function promptEmail(): Promise<string | null> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`  ${chalk.dim('📬 Get product updates? (optional, Enter to skip):')} `, (answer) => {
+      rl.close();
+      const email = answer.trim();
+
+      // Skip if empty
+      if (!email) {
+        resolve(null);
+        return;
+      }
+
+      // Basic email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (emailRegex.test(email)) {
+        resolve(email);
+      } else {
+        console.log(chalk.dim('  Invalid email, skipping...'));
+        resolve(null);
+      }
+    });
+  });
+}
+
 // Check if a command exists
 function commandExists(cmd: string): boolean {
   try {
@@ -704,6 +734,17 @@ squads goal list       # View goals
   console.log(chalk.dim('  • .claude/settings.json - Claude Code hooks'));
   console.log(chalk.dim('  • CLAUDE.md             - Agent instructions'));
   console.log();
+
+  // Optional email capture for updates
+  const email = await promptEmail();
+  if (email) {
+    await track(Events.CLI_INIT, {
+      event: 'email_capture',
+      email,
+    });
+    console.log(chalk.dim(`  ✓ We'll send updates to ${email}`));
+    console.log();
+  }
 
   // Single clear next action - this is critical for activation
   console.log(chalk.bold('  👉 Try it now:'));
