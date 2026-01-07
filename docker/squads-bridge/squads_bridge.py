@@ -765,6 +765,8 @@ def cost_summary():
     try:
         period = request.args.get("period", "day")
         squad = request.args.get("squad")
+        agent = request.args.get("agent")
+        task_type = request.args.get("task_type")  # evaluation, execution, research, lead
 
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -776,8 +778,15 @@ def cost_summary():
             else:  # month
                 time_filter = "created_at >= CURRENT_DATE - INTERVAL '30 days'"
 
-            # Squad filter
-            squad_filter = f"AND squad = '{squad}'" if squad else ""
+            # Build filters
+            filters = [time_filter]
+            if squad:
+                filters.append(f"squad = '{squad}'")
+            if agent:
+                filters.append(f"agent = '{agent}'")
+            if task_type:
+                filters.append(f"task_type = '{task_type}'")
+            where_clause = " AND ".join(filters)
 
             # Aggregated stats
             cur.execute(f"""
@@ -787,7 +796,7 @@ def cost_summary():
                     COALESCE(SUM(output_tokens), 0) as output_tokens,
                     COALESCE(SUM(cost_usd), 0) as total_cost_usd
                 FROM squads.llm_generations
-                WHERE {time_filter} {squad_filter}
+                WHERE {where_clause}
             """)
             totals = cur.fetchone()
 
@@ -806,6 +815,39 @@ def cost_summary():
             """)
             by_squad = cur.fetchall()
 
+            # By agent (NEW - for per-agent cost tracking)
+            cur.execute(f"""
+                SELECT
+                    squad,
+                    agent,
+                    task_type,
+                    COUNT(*) as generations,
+                    COALESCE(SUM(input_tokens), 0) as input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(cost_usd), 0) as cost_usd
+                FROM squads.llm_generations
+                WHERE {time_filter}
+                GROUP BY squad, agent, task_type
+                ORDER BY cost_usd DESC
+                LIMIT 50
+            """)
+            by_agent = cur.fetchall()
+
+            # By task_type (NEW - evaluation vs execution breakdown)
+            cur.execute(f"""
+                SELECT
+                    task_type,
+                    COUNT(*) as generations,
+                    COALESCE(SUM(input_tokens), 0) as input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(cost_usd), 0) as cost_usd
+                FROM squads.llm_generations
+                WHERE {time_filter}
+                GROUP BY task_type
+                ORDER BY cost_usd DESC
+            """)
+            by_task_type = cur.fetchall()
+
             # By model
             cur.execute(f"""
                 SELECT
@@ -813,7 +855,7 @@ def cost_summary():
                     COUNT(*) as generations,
                     COALESCE(SUM(cost_usd), 0) as cost_usd
                 FROM squads.llm_generations
-                WHERE {time_filter} {squad_filter}
+                WHERE {where_clause}
                 GROUP BY model
                 ORDER BY cost_usd DESC
             """)
@@ -823,7 +865,11 @@ def cost_summary():
 
         return jsonify({
             "period": period,
-            "squad_filter": squad,
+            "filters": {
+                "squad": squad,
+                "agent": agent,
+                "task_type": task_type,
+            },
             "totals": {
                 "generations": totals["generation_count"],
                 "input_tokens": totals["input_tokens"],
@@ -837,6 +883,22 @@ def cost_summary():
                 "output_tokens": r["output_tokens"],
                 "cost_usd": float(r["cost_usd"]),
             } for r in by_squad],
+            "by_agent": [{
+                "squad": r["squad"],
+                "agent": r["agent"],
+                "task_type": r["task_type"],
+                "generations": r["generations"],
+                "input_tokens": r["input_tokens"],
+                "output_tokens": r["output_tokens"],
+                "cost_usd": float(r["cost_usd"]),
+            } for r in by_agent],
+            "by_task_type": [{
+                "task_type": r["task_type"],
+                "generations": r["generations"],
+                "input_tokens": r["input_tokens"],
+                "output_tokens": r["output_tokens"],
+                "cost_usd": float(r["cost_usd"]),
+            } for r in by_task_type],
             "by_model": [{
                 "model": r["model"],
                 "generations": r["generations"],
