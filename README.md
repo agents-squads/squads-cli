@@ -511,6 +511,84 @@ squads stack logs bridge               # View container logs
 squads stack logs postgres -n 100      # Last 100 lines
 ```
 
+### Tonight Mode (Autonomous Execution)
+
+Run agents autonomously overnight with safety guardrails:
+
+```bash
+# Run intelligence squad overnight
+squads tonight intelligence
+
+# Multiple targets with cost cap
+squads tonight intelligence customer/outreach --cost-cap 25
+
+# Preview what would run
+squads tonight engineering --dry-run
+
+# Check status while running
+squads tonight status
+
+# Stop all overnight agents
+squads tonight stop
+
+# View the morning report
+squads tonight report
+```
+
+**Example output:**
+
+```
+$ squads tonight intelligence customer/outreach
+
+  squads tonight
+
+  Config:
+    Cost cap:    $50
+    Stop at:     07:00
+    Max retries: 3
+    Targets:     intelligence, customer/outreach
+
+  ✓ Launched 2 agent(s)
+
+  ✓ Tonight mode active
+
+  Monitor:
+    squads tonight status  - Check progress
+    squads tonight stop    - Kill all agents
+    tmux ls | grep tonight - List sessions
+
+  Logs: .agents/outputs/tonight/
+```
+
+**Safety features:**
+- **Cost cap** — Automatically stops when spending limit reached (default: $50)
+- **Time limit** — Stops at specified time (default: 7:00 AM)
+- **Max retries** — Limits restart attempts for crashed agents (default: 3)
+- **Session isolation** — Each agent runs in isolated tmux session
+- **Logging** — All output captured to `.agents/outputs/tonight/`
+- **Morning report** — Summary generated on completion
+
+**Monitoring commands:**
+
+```bash
+# Check current status
+squads tonight status
+
+# Attach to a running session
+tmux attach -t squads-tonight-intelligence-...
+
+# View live logs
+tail -f .agents/outputs/tonight/*.log
+
+# Stop everything immediately
+squads tonight stop
+```
+
+> **Warning**: Tonight mode uses `--dangerously-skip-permissions` which bypasses
+> Claude's safety confirmations. Only use with trusted agent definitions. Review
+> your agent prompts and ensure they have appropriate scope limits before running
+> autonomously.
+
 ### Smart Triggers
 
 Triggers execute agents based on conditions in PostgreSQL:
@@ -693,6 +771,16 @@ squads trigger fire <name>           Fire trigger
 squads trigger enable <name>         Enable trigger
 squads trigger disable <name>        Disable trigger
 squads trigger status                Scheduler stats
+
+squads tonight <targets...>          Autonomous overnight execution
+  --cost-cap <usd>                   Max spend (default: $50)
+  --stop-at <time>                   Stop time HH:MM (default: 07:00)
+  --max-retries <n>                  Restart limit (default: 3)
+  -d, --dry-run                      Preview only
+  -v, --verbose                      Verbose output
+squads tonight status                Check progress
+squads tonight stop                  Kill all agents
+squads tonight report                View morning report
 
 squads update                        Interactive update
   -y, --yes                          Auto-confirm
