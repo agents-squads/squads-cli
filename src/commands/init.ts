@@ -405,6 +405,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
 Demonstrates squads functionality with safe, educational examples.
 
+## Goals
+
+- [ ] Run the demo agents and explore the dashboard
+
 ## Agents
 
 | Agent | Purpose |
@@ -555,44 +559,83 @@ Markdown report saved to .agents/outputs/demo/project-analysis.md
         claudeMdPath,
         `# Project Instructions
 
-## Squads CLI
+## What is Squads?
 
-This project uses AI agent squads for automation.
+Squads is a framework for building AI agent teams that automate real work.
+Each **squad** is a team of **agents** (markdown prompts) that execute via Claude.
 
-### Quick Start
+## For Claude (READ THIS)
+
+When helping users with squad-related tasks:
+
+### Check Context First
+\`\`\`bash
+squads status              # What squads exist?
+squads memory query "X"    # What do we know about X?
+\`\`\`
+
+### Creating Agents
+Agents live in \`.agents/squads/<squad-name>/<agent-name>.md\`:
+
+\`\`\`markdown
+# Agent Name
+
+## Purpose
+One sentence: what this agent does.
+
+## Instructions
+1. Specific step
+2. Another step
+3. Output location
+
+## Output
+What it produces and where it goes.
+\`\`\`
+
+### Running Agents
+\`\`\`bash
+squads run <squad>           # Run all agents in squad
+squads run <squad>/<agent>   # Run specific agent
+\`\`\`
+
+### Tracking Progress
+\`\`\`bash
+squads dash                  # Full dashboard with goals
+squads goal list             # View all goals
+squads goal set <squad> "X"  # Add a goal
+\`\`\`
+
+### Common User Requests
+
+| User says | You should |
+|-----------|------------|
+| "Create an agent to..." | Create \`.agents/squads/<squad>/<name>.md\` |
+| "Automate X" | Create agent, then \`squads run\` |
+| "What's the status?" | Run \`squads dash\` or \`squads status\` |
+| "Run the X agent" | \`squads run <squad>/x\` |
+| "Check memory" | \`squads memory query "<topic>"\` |
+
+## Quick Reference
 
 \`\`\`bash
 squads status          # Overview
 squads dash            # Full dashboard
-squads run demo        # Try the demo squad
-squads run <squad>     # Execute a squad
+squads run demo        # Try demo squad
+squads list            # All agents
+squads memory query X  # Search memory
+squads goal list       # View goals
 \`\`\`
 
-### Memory
+## Project Structure
 
-Squads have persistent memory across sessions:
-
-\`\`\`bash
-squads memory query "<topic>"   # Search memory
-squads memory show <squad>      # View squad memory
 \`\`\`
-
-### Creating Agents
-
-Agents are markdown files in \`.agents/squads/<squad>/\`:
-
-\`\`\`markdown
-# My Agent
-
-## Purpose
-What this agent does.
-
-## Instructions
-1. Step one
-2. Step two
-
-## Output
-What it produces.
+.agents/
+├── squads/           # Agent teams
+│   └── <squad>/
+│       ├── SQUAD.md  # Squad definition
+│       └── *.md      # Agent files
+├── memory/           # Persistent context
+└── outputs/          # Agent outputs
 \`\`\`
 `
       );

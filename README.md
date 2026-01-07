@@ -761,6 +761,86 @@ your-project/
 └── CLAUDE.md                # Project instructions
 ```
 
+## Analytics
+
+Track token usage, costs, and API calls across your squads.
+
+### Setup
+
+1. **Configure your Claude plan:**
+   ```bash
+   export SQUADS_PLAN_TYPE=max    # $200/mo flat rate
+   # or
+   export SQUADS_PLAN_TYPE=usage  # pay-per-token
+   ```
+
+2. **Connect to telemetry (optional):**
+   ```bash
+   # Self-hosted via Docker
+   cd docker && docker-compose up -d
+
+   # Or configure external services
+   export LANGFUSE_HOST=https://your-langfuse.com
+   export LANGFUSE_PUBLIC_KEY=pk-...
+   export LANGFUSE_SECRET_KEY=sk-...
+   ```
+
+3. **View in dashboard:**
+   ```bash
+   squads dash
+   ```
+
+### Metrics Tracked
+
+- Token usage (input/output/cache)
+- API costs per squad/agent
+- Rate limit status
+- Generation counts
+
+## Infrastructure
+
+Optional services that enhance squad capabilities.
+
+### Services
+
+| Service | Purpose |
+|---------|---------|
+| postgres | Session storage, trigger conditions |
+| redis | Caching, rate limiting |
+| otel | OpenTelemetry metrics pipeline |
+| langfuse | Telemetry dashboard |
+| bridge | Conversation capture API |
+
+### Self-Hosted Setup
+
+```bash
+# Clone the infrastructure
+git clone https://github.com/agents-squads/squads-infra
+cd squads-infra
+
+# Start services
+docker-compose up -d
+
+# Configure CLI
+squads stack env >> ~/.zshrc
+source ~/.zshrc
+
+# Verify
+squads stack health
+```
+
+### Minimal Setup (Postgres only)
+
+```bash
+# Just need triggers and session storage
+docker run -d --name squads-postgres \
+  -e POSTGRES_PASSWORD=squads \
+  -p 5432:5432 \
+  postgres:16
+
+export SQUADS_POSTGRES_URL=postgres://postgres:squads@localhost:5432/squads
+```
+
 ## Development
 
 ```bash
