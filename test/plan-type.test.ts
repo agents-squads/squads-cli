@@ -103,17 +103,17 @@ describe('plan type detection', () => {
   });
 
   describe('detectPlan - defaults', () => {
-    it('defaults to max plan when no signals', () => {
+    it('defaults to unknown plan when no signals (prompts user to configure)', () => {
       const result = detectPlan();
-      expect(result.plan).toBe('max');
+      expect(result.plan).toBe('unknown');
       expect(result.confidence).toBe('inferred');
-      expect(result.reason).toContain('Default');
+      expect(result.reason).toContain('Not configured');
     });
 
-    it('defaults to max for Tier 3 (middle tier)', () => {
+    it('defaults to unknown for Tier 3 (middle tier, ambiguous)', () => {
       process.env.ANTHROPIC_TIER = '3';
       const result = detectPlan();
-      expect(result.plan).toBe('max');
+      expect(result.plan).toBe('unknown');
       expect(result.confidence).toBe('inferred');
     });
   });
@@ -139,8 +139,8 @@ describe('plan type detection', () => {
       expect(isMaxPlan()).toBe(false);
     });
 
-    it('returns true by default (no config)', () => {
-      expect(isMaxPlan()).toBe(true);
+    it('returns false by default (unknown plan is not max)', () => {
+      expect(isMaxPlan()).toBe(false);
     });
   });
 
