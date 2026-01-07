@@ -1,6 +1,5 @@
 import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats } from '../lib/costs.js';

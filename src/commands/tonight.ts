@@ -57,7 +57,7 @@ async function getCurrentCost(): Promise<number> {
   try {
     const response = await fetch('http://localhost:8088/api/stats/today');
     if (response.ok) {
-      const data = await response.json();
+      const data = await response.json() as { cost_usd?: number };
       return data.cost_usd || 0;
     }
   } catch {
