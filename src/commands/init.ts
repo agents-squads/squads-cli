@@ -360,6 +360,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (hasMissingRequired) {
     console.log(chalk.yellow('  Install missing tools to continue, then run squads init again.'));
     console.log();
+
+    // Track init failure for analytics
+    track(Events.CLI_INIT, {
+      success: false,
+      reason: 'missing_requirements',
+    });
     return;
   }
 
@@ -643,8 +649,9 @@ squads goal list       # View goals
 
     spinner.succeed('Squad structure created');
 
-    // Track initialization
+    // Track successful initialization
     await track(Events.CLI_INIT, {
+      success: true,
       hasGit: gitStatus.isGitRepo,
       hasRemote: gitStatus.hasRemote,
       template: options.template,
@@ -654,6 +661,13 @@ squads goal list       # View goals
   } catch (error) {
     spinner.fail('Failed to create structure');
     console.error(chalk.red(`  ${error}`));
+
+    // Track init failure
+    track(Events.CLI_INIT, {
+      success: false,
+      reason: 'structure_creation_failed',
+      error: String(error),
+    });
     process.exit(1);
   }
 
@@ -679,20 +693,26 @@ squads goal list       # View goals
     }
   }
 
-  // Success message
+  // Success message - clear single next action
   console.log();
-  console.log(chalk.green('  ✓ Ready!'));
+  console.log(chalk.green.bold('  ✓ Squads initialized!'));
   console.log();
-  console.log(`  ${chalk.cyan('.agents/')}
-  ${chalk.dim('├──')} ${chalk.cyan('squads/demo/')}     Demo squad (try it!)
-  ${chalk.dim('├──')} ${chalk.cyan('memory/')}         Persistent context
-  ${chalk.dim('└──')} ${chalk.cyan('outputs/')}        Agent outputs`);
+
+  // Show what was created (compact)
+  console.log(chalk.dim('  Created:'));
+  console.log(chalk.dim('  • .agents/squads/demo/  - Demo squad with 2 agents'));
+  console.log(chalk.dim('  • .claude/settings.json - Claude Code hooks'));
+  console.log(chalk.dim('  • CLAUDE.md             - Agent instructions'));
   console.log();
-  console.log(chalk.dim('  Next steps:'));
-  console.log(`  ${chalk.cyan('1.')} Try the demo: ${chalk.yellow('squads run demo')}`);
-  console.log(`  ${chalk.cyan('2.')} Check status: ${chalk.yellow('squads dash')}`);
-  console.log(`  ${chalk.cyan('3.')} Create your own squad in ${chalk.cyan('.agents/squads/')}`);
+
+  // Single clear next action - this is critical for activation
+  console.log(chalk.bold('  👉 Try it now:'));
   console.log();
-  console.log(chalk.dim('  Need help? jorge@agents-squads.com'));
+  console.log(`     ${chalk.yellow.bold('squads status')}`);
+  console.log();
+  console.log(chalk.dim('  Then explore:'));
+  console.log(chalk.dim(`  • ${chalk.cyan('squads dash')}      Full dashboard`));
+  console.log(chalk.dim(`  • ${chalk.cyan('squads run demo')}  Try demo agents`));
+  console.log(chalk.dim(`  • ${chalk.cyan('squads --help')}    All commands`));
   console.log();
 }
