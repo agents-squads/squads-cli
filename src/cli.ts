@@ -94,6 +94,7 @@ import {
   applyStackConfig
 } from './commands/stack.js';
 import { registerTriggerCommand } from './commands/trigger.js';
+import { registerSkillCommand } from './commands/skill.js';
 import {
   tonightCommand,
   tonightStatusCommand,
@@ -152,6 +153,8 @@ program
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
   .option('-f, --foreground', 'Run in foreground (no tmux, blocks terminal)')
   .option('--use-api', 'Use API credits instead of subscription')
+  .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
+  .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
@@ -542,6 +545,9 @@ stack
 
 // Trigger command group - smart value-driven triggers
 registerTriggerCommand(program);
+
+// Skill command group - Agent Skills API
+registerSkillCommand(program);
 
 // Tonight command group - autonomous overnight execution
 const tonight = program

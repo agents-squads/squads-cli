@@ -65,6 +65,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
     "@supabase/supabase-js": "^2.89.0",
     "@types/blessed": "^0.1.27",
     "blessed": "^0.1.81",

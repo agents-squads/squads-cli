@@ -1,6 +1,8 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 
+export type EffortLevel = 'high' | 'medium' | 'low';
+
 export interface Agent {
   name: string;
   role: string;
@@ -8,6 +10,7 @@ export interface Agent {
   status?: string;
   filePath?: string;
   squad?: string;
+  effort?: EffortLevel;
 }
 
 export interface Pipeline {
@@ -35,6 +38,7 @@ export interface Squad {
   dependencies: string[];
   outputPath: string;
   goals: Goal[];
+  effort?: EffortLevel;  // Squad-level default effort
 }
 
 export function findSquadsDir(): string | null {
@@ -162,6 +166,12 @@ export function parseSquadFile(filePath: string): Squad {
       }
     }
 
+    // Extract squad-level effort (e.g., "effort: medium" in Context section)
+    const effortMatch = line.match(/^effort:\s*(high|medium|low)/i);
+    if (effortMatch && !squad.effort) {
+      squad.effort = effortMatch[1].toLowerCase() as EffortLevel;
+    }
+
     // Parse agent tables
     if (currentSection.includes('agent') || currentSection.includes('orchestrator') ||
         currentSection.includes('evaluator') || currentSection.includes('builder') ||
@@ -179,13 +189,20 @@ export function parseSquadFile(filePath: string): Squad {
         const roleIdx = tableHeaders.findIndex(h => h === 'role');
         const triggerIdx = tableHeaders.findIndex(h => h === 'trigger');
         const statusIdx = tableHeaders.findIndex(h => h === 'status');
+        const effortIdx = tableHeaders.findIndex(h => h === 'effort');
 
         if (agentIdx >= 0 && cells[agentIdx]) {
+          const effortValue = effortIdx >= 0 ? cells[effortIdx]?.toLowerCase() : undefined;
+          const effort = ['high', 'medium', 'low'].includes(effortValue || '')
+            ? effortValue as EffortLevel
+            : undefined;
+
           squad.agents.push({
             name: cells[agentIdx],
             role: roleIdx >= 0 ? cells[roleIdx] : '',
             trigger: triggerIdx >= 0 ? cells[triggerIdx] : 'manual',
-            status: statusIdx >= 0 ? cells[statusIdx] : 'active'
+            status: statusIdx >= 0 ? cells[statusIdx] : 'active',
+            effort
           });
         }
       }
