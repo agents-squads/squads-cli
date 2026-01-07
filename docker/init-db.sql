@@ -154,6 +154,11 @@ CREATE TABLE IF NOT EXISTS squads.llm_generations (
     -- Cost
     cost_usd NUMERIC(10,6) DEFAULT 0,
 
+    -- Execution context (for per-agent cost tracking)
+    task_type VARCHAR(50) DEFAULT 'execution', -- evaluation, execution, research, lead
+    trigger_source VARCHAR(50) DEFAULT 'manual', -- manual, scheduled, event, smart
+    execution_id VARCHAR(100), -- exec_<timestamp>_<random> for grouping
+
     -- Timing
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     duration_ms INTEGER,
@@ -210,6 +215,8 @@ CREATE TABLE IF NOT EXISTS squads.sessions (
 CREATE INDEX IF NOT EXISTS idx_llm_generations_session ON squads.llm_generations(session_id);
 CREATE INDEX IF NOT EXISTS idx_llm_generations_squad ON squads.llm_generations(squad, agent);
 CREATE INDEX IF NOT EXISTS idx_llm_generations_created ON squads.llm_generations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_generations_task_type ON squads.llm_generations(task_type);
+CREATE INDEX IF NOT EXISTS idx_llm_generations_execution ON squads.llm_generations(execution_id) WHERE execution_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON squads.tool_executions(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_executions_tool ON squads.tool_executions(tool_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_squad ON squads.sessions(squad, agent);
@@ -392,6 +399,78 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON squads.tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON squads.tasks(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_feedback_task ON squads.task_feedback(task_id);
 CREATE INDEX IF NOT EXISTS idx_agent_insights_lookup ON squads.agent_insights(squad, period, period_start DESC);
+
+-- =============================================================================
+-- SQUAD GOALS: Automatic agent binding and progress tracking
+-- =============================================================================
+
+-- Goals table - centralized goal tracking with numeric targets
+CREATE TABLE IF NOT EXISTS squads.squad_goals (
+    id SERIAL PRIMARY KEY,
+    squad VARCHAR(100) NOT NULL,
+    description TEXT NOT NULL,
+
+    -- Progress tracking
+    completed BOOLEAN DEFAULT FALSE,
+    progress_text TEXT,
+    progress_value NUMERIC(5,2) DEFAULT 0, -- 0.00 to 100.00
+
+    -- Numeric target (required for auto-agent binding)
+    target_value NUMERIC,
+    target_unit VARCHAR(50), -- leads, revenue, posts, features, etc.
+
+    -- Status
+    status VARCHAR(50) DEFAULT 'active', -- active, at_risk, on_hold, completed, blocked
+
+    -- Timing
+    deadline DATE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Metadata
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+-- Goal-agent bindings (automatic or manual)
+CREATE TABLE IF NOT EXISTS squads.goal_agents (
+    id SERIAL PRIMARY KEY,
+    goal_id INTEGER NOT NULL REFERENCES squads.squad_goals(id) ON DELETE CASCADE,
+    squad VARCHAR(100) NOT NULL,
+    agent VARCHAR(100) NOT NULL,
+
+    -- Assignment metadata
+    assignment_type VARCHAR(20) DEFAULT 'auto', -- auto, manual
+    role VARCHAR(20), -- primary, supporting
+    confidence NUMERIC(3,2), -- 0.00-1.00 for auto-matching quality
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    UNIQUE(goal_id, agent)
+);
+
+-- Goal triggers (link goals to execution triggers)
+CREATE TABLE IF NOT EXISTS squads.goal_triggers (
+    id SERIAL PRIMARY KEY,
+    goal_id INTEGER NOT NULL REFERENCES squads.squad_goals(id) ON DELETE CASCADE,
+    trigger_id INTEGER NOT NULL REFERENCES squads.triggers(id) ON DELETE CASCADE,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    UNIQUE(goal_id, trigger_id)
+);
+
+-- Add goal_id to trigger_executions (link executions to goals)
+ALTER TABLE squads.trigger_executions
+ADD COLUMN IF NOT EXISTS goal_id INTEGER REFERENCES squads.squad_goals(id) ON DELETE SET NULL;
+
+-- Indexes for goal queries
+CREATE INDEX IF NOT EXISTS idx_squad_goals_squad ON squads.squad_goals(squad);
+CREATE INDEX IF NOT EXISTS idx_squad_goals_status ON squads.squad_goals(status) WHERE status IN ('active', 'at_risk');
+CREATE INDEX IF NOT EXISTS idx_squad_goals_deadline ON squads.squad_goals(deadline) WHERE deadline IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_goal_agents_goal ON squads.goal_agents(goal_id);
+CREATE INDEX IF NOT EXISTS idx_goal_agents_squad ON squads.goal_agents(squad);
+CREATE INDEX IF NOT EXISTS idx_goal_triggers_goal ON squads.goal_triggers(goal_id);
+CREATE INDEX IF NOT EXISTS idx_trigger_executions_goal ON squads.trigger_executions(goal_id) WHERE goal_id IS NOT NULL;
 
 -- Grant permissions
 GRANT ALL PRIVILEGES ON SCHEMA squads TO squads;
