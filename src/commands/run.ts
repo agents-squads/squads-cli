@@ -6,7 +6,8 @@ import {
   findSquadsDir,
   loadSquad,
   listAgents,
-  loadAgentDefinition
+  loadAgentDefinition,
+  EffortLevel
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
@@ -29,6 +30,8 @@ interface RunOptions {
   lead?: boolean; // Run as lead session using Task tool for parallelization
   foreground?: boolean; // Run in foreground (no tmux)
   useApi?: boolean; // Use API credits instead of subscription
+  effort?: EffortLevel; // Effort level: high, medium, low
+  skills?: string[]; // Skills to load (skill IDs or local paths)
 }
 
 /**
@@ -183,6 +186,11 @@ async function runSquad(
   options: RunOptions
 ): Promise<void> {
   if (!squad) return;
+
+  // Inherit effort from squad config if not provided via CLI
+  if (!options.effort && squad.effort) {
+    options.effort = squad.effort;
+  }
 
   const startTime = new Date().toISOString();
 
@@ -425,7 +433,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   writeLine();
 
   try {
-    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi);
+    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi, options.effort, options.skills);
 
     if (options.foreground) {
       writeLine();
@@ -511,7 +519,7 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
       : `Launching ${agentName} as background task...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi);
+      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills);
 
       if (options.foreground) {
         spinner.succeed(`Agent ${agentName} completed`);
@@ -560,7 +568,9 @@ async function executeWithClaude(
   verbose?: boolean,
   _timeoutMinutes: number = 30,
   foreground?: boolean,
-  useApi?: boolean
+  useApi?: boolean,
+  effort?: EffortLevel,
+  skills?: string[]
 ): Promise<string> {
   // Use interactive Claude Code (subscription) instead of --print (API credits)
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
@@ -589,6 +599,12 @@ async function executeWithClaude(
       writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
       writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
       writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
+      if (effort) {
+        writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
+      }
+      if (skills && skills.length > 0) {
+        writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
+      }
     }
 
     return new Promise((resolve, reject) => {
@@ -604,6 +620,8 @@ async function executeWithClaude(
           ...spawnEnv,
           SQUADS_SQUAD: squadName,
           SQUADS_AGENT: agentName,
+          ...(effort && { CLAUDE_EFFORT: effort }),
+          ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
         },
       });
 
@@ -629,6 +647,12 @@ async function executeWithClaude(
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
     writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
     writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
+    if (effort) {
+      writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
+    }
+    if (skills && skills.length > 0) {
+      writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
+    }
   }
 
   // Build Claude command with all permissions bypassed for autonomous execution
@@ -650,6 +674,8 @@ async function executeWithClaude(
       ...spawnEnv,
       SQUADS_SQUAD: squadName,
       SQUADS_AGENT: agentName,
+      ...(effort && { CLAUDE_EFFORT: effort }),
+      ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
     },
   });
 
