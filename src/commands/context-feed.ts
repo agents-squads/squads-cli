@@ -120,7 +120,7 @@ async function syncBriefToBridge(brief: BusinessBrief, sourcePath: string): Prom
       return false;
     }
 
-    const result = await response.json();
+    const result = await response.json() as { status?: string };
     return result.status === 'synced' || result.status === 'unchanged';
   } catch {
     // Bridge not available, silently fail
