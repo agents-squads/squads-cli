@@ -32,6 +32,49 @@ interface RunOptions {
   useApi?: boolean; // Use API credits instead of subscription
   effort?: EffortLevel; // Effort level: high, medium, low
   skills?: string[]; // Skills to load (skill IDs or local paths)
+  trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
+}
+
+/**
+ * Execution context for telemetry tagging
+ * Passed to Claude via environment variables for per-agent cost tracking
+ */
+interface ExecutionContext {
+  squad: string;
+  agent: string;
+  taskType: 'evaluation' | 'execution' | 'research' | 'lead';
+  trigger: 'manual' | 'scheduled' | 'event' | 'smart';
+  executionId: string;
+}
+
+/**
+ * Generate a unique execution ID for telemetry tracking
+ */
+function generateExecutionId(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `exec_${timestamp}_${random}`;
+}
+
+/**
+ * Detect task type from agent name patterns
+ * - *-eval, *-critic, *-review → evaluation
+ * - *-lead, *-orchestrator → lead
+ * - *-research, *-analyst → research
+ * - everything else → execution
+ */
+function detectTaskType(agentName: string): ExecutionContext['taskType'] {
+  const name = agentName.toLowerCase();
+  if (name.includes('eval') || name.includes('critic') || name.includes('review') || name.includes('test')) {
+    return 'evaluation';
+  }
+  if (name.includes('lead') || name.includes('orchestrator')) {
+    return 'lead';
+  }
+  if (name.includes('research') || name.includes('analyst') || name.includes('intel')) {
+    return 'research';
+  }
+  return 'execution';
 }
 
 /**
@@ -433,7 +476,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   writeLine();
 
   try {
-    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi, options.effort, options.skills);
+    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
 
     if (options.foreground) {
       writeLine();
@@ -519,7 +562,7 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
       : `Launching ${agentName} as background task...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills);
+      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
 
       if (options.foreground) {
         spinner.succeed(`Agent ${agentName} completed`);
@@ -570,7 +613,8 @@ async function executeWithClaude(
   foreground?: boolean,
   useApi?: boolean,
   effort?: EffortLevel,
-  skills?: string[]
+  skills?: string[],
+  trigger: ExecutionContext['trigger'] = 'manual'
 ): Promise<string> {
   // Use interactive Claude Code (subscription) instead of --print (API credits)
   const userConfigPath = join(process.env.HOME || '', '.claude.json');
@@ -584,6 +628,15 @@ async function executeWithClaude(
   const agentMatch = prompt.match(/(\w+) agent/);
   const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
   const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
+
+  // Build execution context for telemetry
+  const execContext: ExecutionContext = {
+    squad: squadName,
+    agent: agentName,
+    taskType: detectTaskType(agentName),
+    trigger,
+    executionId: generateExecutionId(),
+  };
 
   // Build env: remove ANTHROPIC_API_KEY unless --use-api is set
   // This ensures Claude uses OAuth subscription by default
@@ -599,6 +652,9 @@ async function executeWithClaude(
       writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
       writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
       writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
+      writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
+      writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
+      writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
       if (effort) {
         writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
       }
@@ -618,8 +674,13 @@ async function executeWithClaude(
         cwd: projectRoot,
         env: {
           ...spawnEnv,
-          SQUADS_SQUAD: squadName,
-          SQUADS_AGENT: agentName,
+          // Telemetry context for per-agent cost tracking
+          SQUADS_SQUAD: execContext.squad,
+          SQUADS_AGENT: execContext.agent,
+          SQUADS_TASK_TYPE: execContext.taskType,
+          SQUADS_TRIGGER: execContext.trigger,
+          SQUADS_EXECUTION_ID: execContext.executionId,
+          // Claude-specific options
           ...(effort && { CLAUDE_EFFORT: effort }),
           ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
         },
@@ -647,6 +708,9 @@ async function executeWithClaude(
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
     writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
     writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
+    writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
+    writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
+    writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
     if (effort) {
       writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
     }
@@ -672,8 +736,13 @@ async function executeWithClaude(
     detached: true,
     env: {
       ...spawnEnv,
-      SQUADS_SQUAD: squadName,
-      SQUADS_AGENT: agentName,
+      // Telemetry context for per-agent cost tracking
+      SQUADS_SQUAD: execContext.squad,
+      SQUADS_AGENT: execContext.agent,
+      SQUADS_TASK_TYPE: execContext.taskType,
+      SQUADS_TRIGGER: execContext.trigger,
+      SQUADS_EXECUTION_ID: execContext.executionId,
+      // Claude-specific options
       ...(effort && { CLAUDE_EFFORT: effort }),
       ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
     },
