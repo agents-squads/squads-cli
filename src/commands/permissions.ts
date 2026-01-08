@@ -9,7 +9,7 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   buildContextFromSquad,
