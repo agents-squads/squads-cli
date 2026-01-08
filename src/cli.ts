@@ -98,6 +98,7 @@ import { registerSkillCommand } from './commands/skill.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { contextShowCommand, contextListCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
+import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
 import {
   tonightCommand,
   tonightStatusCommand,
@@ -217,6 +218,37 @@ program
   .argument('<squad>', 'Squad to check')
   .option('--json', 'Output as JSON')
   .action(budgetCheckCommand);
+
+// Exec command group - execution history introspection
+const exec = program
+  .command('exec')
+  .description('View execution history and statistics');
+
+exec
+  .command('list')
+  .description('List recent executions')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-a, --agent <agent>', 'Filter by agent')
+  .option('--status <status>', 'Filter by status (running, completed, failed)')
+  .option('-n, --limit <n>', 'Number of executions to show', '20')
+  .option('--json', 'Output as JSON')
+  .action((options) => execListCommand({ ...options, limit: parseInt(options.limit, 10) }));
+
+exec
+  .command('show <id>')
+  .description('Show execution details')
+  .option('--json', 'Output as JSON')
+  .action(execShowCommand);
+
+exec
+  .command('stats')
+  .description('Show execution statistics')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('--json', 'Output as JSON')
+  .action(execStatsCommand);
+
+// Default action: show list
+exec.action((options) => execListCommand(options));
 
 // Issues command
 program

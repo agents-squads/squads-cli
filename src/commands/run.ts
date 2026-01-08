@@ -193,10 +193,15 @@ function getProjectRoot(): string {
 interface ExecutionRecord {
   squadName: string;
   agentName: string;
+  executionId: string;
   startTime: string;
   endTime?: string;
+  durationMs?: number;
   status: 'running' | 'completed' | 'failed';
+  trigger?: 'manual' | 'scheduled' | 'event' | 'smart';
+  taskType?: 'evaluation' | 'execution' | 'research' | 'lead';
   outcome?: string;
+  error?: string;
 }
 
 function getExecutionLogPath(squadName: string, agentName: string): string | null {
@@ -216,16 +221,20 @@ function logExecution(record: ExecutionRecord): void {
 
   let content = '';
   if (existsSync(logPath)) {
-    content = readFileSync(logPath, 'utf-8');
+    content = readFileSync(logPath, 'utf-8').trimEnd();
   } else {
-    content = `# ${record.squadName}/${record.agentName} - Execution Log\n\n`;
+    content = `# ${record.squadName}/${record.agentName} - Execution Log`;
   }
 
+  // Structured entry format for parsing
   const entry = `
+
 ---
+<!-- exec:${record.executionId} -->
 **${record.startTime}** | Status: ${record.status}
-${record.endTime ? `Completed: ${record.endTime}` : ''}
-${record.outcome ? `Outcome: ${record.outcome}` : ''}
+- ID: \`${record.executionId}\`
+- Trigger: ${record.trigger || 'manual'}
+- Task Type: ${record.taskType || 'execution'}
 `;
 
   writeFileSync(logPath, content + entry);
@@ -234,8 +243,13 @@ ${record.outcome ? `Outcome: ${record.outcome}` : ''}
 function updateExecutionStatus(
   squadName: string,
   agentName: string,
+  executionId: string,
   status: 'completed' | 'failed',
-  outcome?: string
+  details?: {
+    outcome?: string;
+    error?: string;
+    durationMs?: number;
+  }
 ): void {
   const logPath = getExecutionLogPath(squadName, agentName);
   if (!logPath || !existsSync(logPath)) return;
@@ -243,12 +257,39 @@ function updateExecutionStatus(
   let content = readFileSync(logPath, 'utf-8');
   const endTime = new Date().toISOString();
 
-  // Update the last "running" entry
-  content = content.replace(
-    /Status: running\n$/,
-    `Status: ${status}\nCompleted: ${endTime}\n${outcome ? `Outcome: ${outcome}\n` : ''}`
-  );
+  // Find and update the specific execution by ID
+  const execMarker = `<!-- exec:${executionId} -->`;
+  const markerIndex = content.indexOf(execMarker);
 
+  if (markerIndex === -1) return;
+
+  // Find the next entry marker or end of file
+  const nextEntryIndex = content.indexOf('\n---\n', markerIndex + 1);
+  const entryEnd = nextEntryIndex === -1 ? content.length : nextEntryIndex;
+
+  // Extract and update the entry
+  const entryStart = content.lastIndexOf('\n---\n', markerIndex);
+  const currentEntry = content.slice(entryStart, entryEnd);
+
+  // Build completion details
+  const durationStr = details?.durationMs
+    ? `${(details.durationMs / 1000).toFixed(1)}s`
+    : 'unknown';
+
+  let updatedEntry = currentEntry
+    .replace(/Status: running/, `Status: ${status}`)
+    + `- Completed: ${endTime}
+- Duration: ${durationStr}`;
+
+  if (details?.outcome) {
+    updatedEntry += `\n- Outcome: ${details.outcome}`;
+  }
+  if (details?.error) {
+    updatedEntry += `\n- Error: ${details.error}`;
+  }
+
+  // Replace the entry in content
+  content = content.slice(0, entryStart) + updatedEntry + content.slice(entryEnd);
   writeFileSync(logPath, content);
 }
 
@@ -611,7 +652,10 @@ async function runAgent(
   options: RunOptions & { execute?: boolean }
 ): Promise<void> {
   const spinner = ora(`Running agent: ${agentName}`).start();
-  const startTime = new Date().toISOString();
+  const startMs = Date.now();
+  const startTime = new Date(startMs).toISOString();
+  const executionId = generateExecutionId();
+  const taskType = detectTaskType(agentName);
 
   const definition = loadAgentDefinition(agentPath);
 
@@ -662,8 +706,11 @@ async function runAgent(
   logExecution({
     squadName,
     agentName,
+    executionId,
     startTime,
     status: 'running',
+    trigger: options.trigger || 'manual',
+    taskType,
   });
 
   // Generate the Claude Code prompt with timeout awareness
@@ -716,7 +763,10 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
       }
     } catch (error) {
       spinner.fail(`Agent ${agentName} failed to launch`);
-      updateExecutionStatus(squadName, agentName, 'failed', String(error));
+      updateExecutionStatus(squadName, agentName, executionId, 'failed', {
+        error: String(error),
+        durationMs: Date.now() - startMs,
+      });
       writeLine(`  ${colors.red}${String(error)}${RESET}`);
     }
   } else {
