@@ -140,6 +140,26 @@ program
       process.exit(err.exitCode);
     }
     throw err;
+  })
+  // Default action when no command provided - show status dashboard
+  .action(async () => {
+    const { gradient, colors, RESET } = await import('./lib/terminal.js');
+    const { checkForUpdate } = await import('./lib/update.js');
+
+    console.log();
+    console.log(`  ${gradient('squads')} ${colors.dim}v${version}${RESET}`);
+    console.log();
+
+    // Check for updates
+    const updateInfo = checkForUpdate();
+    if (updateInfo.updateAvailable) {
+      console.log(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET}`);
+      console.log(`  ${colors.dim}Run \`squads update\` to install${RESET}`);
+      console.log();
+    }
+
+    // Run status command to show all squads (includes quick commands)
+    await statusCommand(undefined, {});
   });
 
 // Init command
@@ -749,31 +769,3 @@ try {
   handleError(error);
 }
 
-// Show help if no command provided
-if (!process.argv.slice(2).length) {
-  console.log(`
-${chalk.bold.magenta('squads')} - AI agent squad management
-
-${chalk.dim('Quick start:')}
-  ${chalk.cyan('squads status')}                  View all squads status
-  ${chalk.cyan('squads run <squad>')}             Run a squad
-  ${chalk.cyan('squads memory query "<term>"')}   Search squad memory
-
-${chalk.dim('Goals & Feedback:')}
-  ${chalk.cyan('squads goal set <squad> "<goal>"')}    Set a goal
-  ${chalk.cyan('squads goal list')}                    View active goals
-  ${chalk.cyan('squads feedback add <squad> 4 "msg"')} Rate last execution
-
-${chalk.dim('Smart Triggers:')}
-  ${chalk.cyan('squads trigger list')}                 View all triggers
-  ${chalk.cyan('squads trigger sync')}                 Sync from SQUAD.md
-  ${chalk.cyan('squads trigger fire <name>')}          Manually fire trigger
-
-${chalk.dim('Examples:')}
-  ${chalk.cyan('squads run website')}                  Run website squad
-  ${chalk.cyan('squads goal set finance "Track costs"')} Set finance goal
-  ${chalk.cyan('squads trigger status')}               Scheduler health
-
-${chalk.dim('Run')} ${chalk.cyan('squads --help')} ${chalk.dim('for all commands.')}
-`);
-}
