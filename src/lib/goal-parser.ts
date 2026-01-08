@@ -232,11 +232,11 @@ export async function promptForMissingComponents(
 
   // Prompt for target value if missing
   if (result.targetValue === null) {
-    const answer = await inquirer.prompt([{
+    const answer = await inquirer.prompt<{ targetValue: number }>([{
       type: 'number',
       name: 'targetValue',
       message: 'Target (e.g., 10, 50, 1000):',
-      validate: (val: number) => val > 0 || 'Must be a positive number'
+      validate: (val: unknown) => (typeof val === 'number' && val > 0) || 'Must be a positive number'
     }]);
 
     if (!answer.targetValue) return null;
@@ -245,11 +245,11 @@ export async function promptForMissingComponents(
 
   // Prompt for unit if missing
   if (result.targetUnit === null) {
-    const answer = await inquirer.prompt([{
+    const answer = await inquirer.prompt<{ targetUnit: string }>([{
       type: 'input',
       name: 'targetUnit',
       message: 'Unit (e.g., leads, revenue, posts, features):',
-      validate: (val: string) => val.trim().length > 0 || 'Unit is required'
+      validate: (val: unknown) => (typeof val === 'string' && val.trim().length > 0) || 'Unit is required'
     }]);
 
     if (!answer.targetUnit) return null;
@@ -258,7 +258,7 @@ export async function promptForMissingComponents(
 
   // Prompt for deadline (optional)
   if (!result.deadline) {
-    const answer = await inquirer.prompt([{
+    const answer = await inquirer.prompt<{ deadline: string }>([{
       type: 'input',
       name: 'deadline',
       message: 'Deadline (optional, e.g., Jan 10, Q1 2026, 30 days):',
