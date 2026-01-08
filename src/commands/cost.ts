@@ -170,7 +170,6 @@ export async function costCommand(options: CostOptions = {}): Promise<void> {
       const budgetStr = dailyBudget ? `$${dailyBudget}/d` : `${colors.dim}—${RESET}`;
 
       let statusStr: string;
-      let statusColor = colors.dim;
       if (dailyBudget) {
         const pct = (sq.costUsd / dailyBudget) * 100;
         if (pct >= 100) {

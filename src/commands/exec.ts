@@ -8,7 +8,6 @@
 import { track, Events } from '../lib/telemetry.js';
 import {
   listExecutions,
-  getExecution,
   getExecutionStats,
   formatDuration,
   formatRelativeTime,
@@ -36,22 +35,6 @@ interface ListOptions {
 
 interface ShowOptions {
   json?: boolean;
-}
-
-/**
- * Format status with color and icon
- */
-function formatStatus(status: Execution['status']): string {
-  switch (status) {
-    case 'running':
-      return `${colors.yellow}${icons.running}${RESET} ${colors.yellow}running${RESET}`;
-    case 'completed':
-      return `${colors.green}${icons.success}${RESET} ${colors.green}completed${RESET}`;
-    case 'failed':
-      return `${colors.red}${icons.error}${RESET} ${colors.red}failed${RESET}`;
-    default:
-      return status;
-  }
 }
 
 /**

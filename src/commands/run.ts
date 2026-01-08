@@ -13,7 +13,6 @@ import {
   buildContextFromSquad,
   validateExecution,
   formatViolations,
-  SquadContext,
   ExecutionRequest
 } from '../lib/permissions.js';
 import { findMemoryDir } from '../lib/memory.js';
