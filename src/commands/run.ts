@@ -9,6 +9,13 @@ import {
   loadAgentDefinition,
   EffortLevel
 } from '../lib/squad-parser.js';
+import {
+  buildContextFromSquad,
+  validateExecution,
+  formatViolations,
+  SquadContext,
+  ExecutionRequest
+} from '../lib/permissions.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
 import {
@@ -85,6 +92,35 @@ function generateExecutionId(): string {
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).substring(2, 8);
   return `exec_${timestamp}_${random}`;
+}
+
+/**
+ * Select MCP config based on squad name
+ * Different squads need different tools - keeps main sessions lean
+ */
+function selectMcpConfig(squadName: string): string {
+  const home = process.env.HOME || '';
+  const configsDir = join(home, '.claude', 'mcp-configs');
+
+  // Squad → MCP config mapping
+  const squadConfigs: Record<string, string> = {
+    website: 'website.json',      // chrome-devtools, img-gen
+    research: 'research.json',    // web-fetch
+    intelligence: 'research.json', // web-fetch
+    analytics: 'data.json',       // supabase, grafana, analytics
+    engineering: 'data.json',     // supabase, grafana
+  };
+
+  const configFile = squadConfigs[squadName.toLowerCase()];
+  if (configFile) {
+    const configPath = join(configsDir, configFile);
+    if (existsSync(configPath)) {
+      return configPath;
+    }
+  }
+
+  // Fallback to default user config
+  return join(home, '.claude.json');
 }
 
 /**
@@ -647,9 +683,6 @@ async function executeWithClaude(
   skills?: string[],
   trigger: ExecutionContext['trigger'] = 'manual'
 ): Promise<string> {
-  // Use interactive Claude Code (subscription) instead of --print (API credits)
-  const userConfigPath = join(process.env.HOME || '', '.claude.json');
-
   // Ensure the project is trusted (prevents workspace trust dialog)
   const projectRoot = getProjectRoot();
   ensureProjectTrusted(projectRoot);
@@ -659,6 +692,9 @@ async function executeWithClaude(
   const agentMatch = prompt.match(/(\w+) agent/);
   const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
   const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
+
+  // Select MCP config based on squad (keeps main sessions lean)
+  const mcpConfigPath = selectMcpConfig(squadName);
 
   // Build execution context for telemetry
   const execContext: ExecutionContext = {
@@ -700,7 +736,7 @@ async function executeWithClaude(
     return new Promise((resolve, reject) => {
       const claude = spawn('claude', [
         '--dangerously-skip-permissions',
-        '--mcp-config', userConfigPath,
+        '--mcp-config', mcpConfigPath,
         '--',
         prompt
       ], {
@@ -743,6 +779,7 @@ async function executeWithClaude(
   if (verbose) {
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
     writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}MCP config: ${mcpConfigPath}${RESET}`);
     writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
     writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
     writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
@@ -757,7 +794,7 @@ async function executeWithClaude(
 
   // Build Claude command with all permissions bypassed for autonomous execution
   // Auto-cleanup: kill tmux session when Claude exits (success or failure)
-  const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${userConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+  const claudeCmd = `cd '${projectRoot}' && claude --dangerously-skip-permissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
   // Create detached tmux session running Claude
   const tmux = spawn('tmux', [
