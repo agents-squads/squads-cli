@@ -74,6 +74,7 @@
     "chrono-node": "^2.9.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
+    "gray-matter": "^4.0.3",
     "inquirer": "^9.2.12",
     "minimatch": "^10.1.1",
     "open": "^11.0.0",

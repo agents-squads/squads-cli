@@ -226,6 +226,8 @@ export const Events = {
   CLI_DASHBOARD: 'cli.dashboard',
   CLI_WORKERS: 'cli.workers',
   CLI_TONIGHT: 'cli.tonight',
+  CLI_CONTEXT: 'cli.context',
+  CLI_COST: 'cli.cost',
 
   // Goals
   CLI_GOAL_SET: 'cli.goal.set',

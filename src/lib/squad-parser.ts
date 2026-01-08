@@ -1,7 +1,37 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
+import matter from 'gray-matter';
 
 export type EffortLevel = 'high' | 'medium' | 'low';
+
+// Context schema for frontmatter
+export interface SquadContext {
+  mcp?: string[];
+  skills?: string[];
+  memory?: {
+    load?: string[];
+  };
+  model?: {
+    default?: string;
+    expensive?: string;
+    cheap?: string;
+  };
+  budget?: {
+    daily?: number;
+    weekly?: number;
+    perExecution?: number;
+  };
+}
+
+// Frontmatter schema
+export interface SquadFrontmatter {
+  name?: string;
+  mission?: string;
+  repo?: string;
+  stack?: string;
+  context?: SquadContext;
+  effort?: EffortLevel;
+}
 
 export interface Agent {
   name: string;
@@ -39,6 +69,9 @@ export interface Squad {
   outputPath: string;
   goals: Goal[];
   effort?: EffortLevel;  // Squad-level default effort
+  context?: SquadContext;  // Frontmatter context block
+  repo?: string;
+  stack?: string;
 }
 
 export function findSquadsDir(): string | null {
@@ -127,18 +160,28 @@ export function listAgents(squadsDir: string, squadName?: string): Agent[] {
 }
 
 export function parseSquadFile(filePath: string): Squad {
-  const content = readFileSync(filePath, 'utf-8');
-  const lines = content.split('\n');
+  const rawContent = readFileSync(filePath, 'utf-8');
+
+  // Parse frontmatter with gray-matter
+  const { data: frontmatter, content: bodyContent } = matter(rawContent);
+  const fm = frontmatter as SquadFrontmatter;
+
+  const lines = bodyContent.split('\n');
 
   const squad: Squad = {
-    name: basename(filePath).replace('.md', ''),
-    mission: '',
+    name: fm.name || basename(filePath).replace('.md', ''),
+    mission: fm.mission || '',
     agents: [],
     pipelines: [],
     triggers: { scheduled: [], event: [], manual: [] },
     dependencies: [],
     outputPath: '',
-    goals: []
+    goals: [],
+    // Apply frontmatter fields
+    effort: fm.effort,
+    context: fm.context,
+    repo: fm.repo,
+    stack: fm.stack,
   };
 
   let currentSection = '';
