@@ -48,6 +48,37 @@ interface ExecutionContext {
 }
 
 /**
+ * Register execution context with the squads-bridge for telemetry
+ * This allows the bridge to tag incoming OTel data with correct squad/agent info
+ */
+async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/context/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        execution_id: ctx.executionId,
+        squad: ctx.squad,
+        agent: ctx.agent,
+        task_type: ctx.taskType,
+        trigger: ctx.trigger,
+      }),
+    });
+
+    if (!response.ok) {
+      // Non-fatal - continue even if bridge is unavailable
+      return false;
+    }
+    return true;
+  } catch {
+    // Bridge not available - continue anyway
+    return false;
+  }
+}
+
+/**
  * Generate a unique execution ID for telemetry tracking
  */
 function generateExecutionId(): string {
@@ -646,6 +677,9 @@ async function executeWithClaude(
   // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
+  // Register context with bridge for telemetry (non-blocking)
+  await registerContextWithBridge(execContext);
+
   // Foreground mode: run Claude directly in the terminal
   if (foreground) {
     if (verbose) {
@@ -680,6 +714,8 @@ async function executeWithClaude(
           SQUADS_TASK_TYPE: execContext.taskType,
           SQUADS_TRIGGER: execContext.trigger,
           SQUADS_EXECUTION_ID: execContext.executionId,
+          // OTel resource attributes for telemetry pipeline
+          OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
           // Claude-specific options
           ...(effort && { CLAUDE_EFFORT: effort }),
           ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
@@ -742,6 +778,8 @@ async function executeWithClaude(
       SQUADS_TASK_TYPE: execContext.taskType,
       SQUADS_TRIGGER: execContext.trigger,
       SQUADS_EXECUTION_ID: execContext.executionId,
+      // OTel resource attributes for telemetry pipeline
+      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
       // Claude-specific options
       ...(effort && { CLAUDE_EFFORT: effort }),
       ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
