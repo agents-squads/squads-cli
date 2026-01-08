@@ -10,7 +10,7 @@ import gzip
 import threading
 import time
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from collections import deque
 from flask import Flask, request, jsonify
 import psycopg2
@@ -486,34 +486,35 @@ def receive_logs():
 
             service_name = resource_attrs.get("service.name", "claude-code")
 
-            # Detect squad/agent context
+            # Detect squad/agent context - check OTel attrs first, then registered context
+            registered_ctx = get_context_for_session()
+
             squad_name = (
                 resource_attrs.get("squad") or
                 resource_attrs.get("squads.squad") or
-                os.environ.get("SQUADS_SQUAD") or
+                registered_ctx.get("squad") or
                 "hq"
             )
             agent_name = (
                 resource_attrs.get("agent") or
                 resource_attrs.get("squads.agent") or
-                os.environ.get("SQUADS_AGENT") or
+                registered_ctx.get("agent") or
                 "coo"
             )
             # Extract telemetry context (added for per-agent cost tracking)
             task_type = (
                 resource_attrs.get("squads.task_type") or
-                os.environ.get("SQUADS_TASK_TYPE") or
+                registered_ctx.get("task_type") or
                 "execution"
             )
             trigger_source = (
                 resource_attrs.get("squads.trigger") or
-                os.environ.get("SQUADS_TRIGGER") or
+                registered_ctx.get("trigger") or
                 "manual"
             )
             execution_id = (
                 resource_attrs.get("squads.execution_id") or
-                os.environ.get("SQUADS_EXECUTION_ID") or
-                None
+                None  # Will be set by registered context if available
             )
 
             for scope_log in resource_log.get("scopeLogs", []):
@@ -638,6 +639,80 @@ def receive_logs():
         print(f"Error processing logs: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# Context registry for agent executions (maps session patterns to context)
+# Used when OTel doesn't include resource attributes
+execution_contexts = {}  # execution_id -> {squad, agent, task_type, trigger, expires_at}
+
+
+@app.route("/api/context/register", methods=["POST"])
+def register_context():
+    """Register execution context for upcoming Claude session.
+
+    CLI calls this before launching Claude, so the bridge knows
+    which squad/agent/task_type to associate with incoming telemetry.
+    """
+    try:
+        data = request.get_json() or {}
+        execution_id = data.get("execution_id")
+        if not execution_id:
+            return jsonify({"error": "execution_id required"}), 400
+
+        # Store context with 2-hour expiry
+        expires_at = datetime.now() + timedelta(hours=2)
+        execution_contexts[execution_id] = {
+            "squad": data.get("squad", "hq"),
+            "agent": data.get("agent", "coo"),
+            "task_type": data.get("task_type", "execution"),
+            "trigger": data.get("trigger", "manual"),
+            "expires_at": expires_at,
+        }
+
+        # Also store in Redis for persistence across restarts
+        if redis_client:
+            redis_client.setex(
+                f"context:{execution_id}",
+                7200,  # 2 hours TTL
+                json.dumps({
+                    "squad": data.get("squad", "hq"),
+                    "agent": data.get("agent", "coo"),
+                    "task_type": data.get("task_type", "execution"),
+                    "trigger": data.get("trigger", "manual"),
+                })
+            )
+
+        # Store as "latest" context for this squad/agent combination
+        key = f"{data.get('squad', 'hq')}:{data.get('agent', 'coo')}"
+        if redis_client:
+            redis_client.setex(f"context:latest:{key}", 3600, execution_id)
+
+        print(f"[CONTEXT] Registered {execution_id}: {data.get('squad')}/{data.get('agent')} [{data.get('task_type')}]")
+        return jsonify({"status": "ok", "execution_id": execution_id}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def get_context_for_session() -> dict:
+    """Get the most recent execution context.
+
+    Returns the latest registered context that hasn't expired.
+    This is used when OTel data doesn't include resource attributes.
+    """
+    # Clean expired contexts
+    now = datetime.now()
+    expired = [k for k, v in execution_contexts.items() if v.get("expires_at", now) < now]
+    for k in expired:
+        del execution_contexts[k]
+
+    # Return most recent context
+    if execution_contexts:
+        # Get the most recently registered context
+        latest = max(execution_contexts.items(), key=lambda x: x[1].get("expires_at", now))
+        return latest[1]
+
+    return {}
 
 
 @app.route("/health", methods=["GET"])
