@@ -158,6 +158,7 @@ export interface GitPerformanceStats {
   avgCommitsPerDay: number;
   peakDay: { date: string; count: number } | null;
   repos: RepoStats[];
+  recentCommits: CommitInfo[];  // Most recent commits across all repos
 }
 
 export interface RepoStats {
@@ -535,7 +536,11 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
     avgCommitsPerDay: 0,
     peakDay: null,
     repos: [],
+    recentCommits: [],
   };
+
+  // Collect all commits with full info for sorting
+  const allCommits: CommitInfo[] = [];
 
   for (const repo of SQUAD_REPOS) {
     const repoPath = join(basePath, repo);
@@ -557,7 +562,9 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
       let lastCommit = '';
 
       for (const line of commits) {
-        const [hash, author, date] = line.split('|');
+        const parts = line.split('|');
+        const [hash, author, date, ...messageParts] = parts;
+        const message = messageParts.join('|'); // Handle | in commit messages
         if (!hash) continue;
 
         stats.totalCommits++;
@@ -575,6 +582,9 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
         // By repo
         const repoCount = stats.commitsByRepo.get(repo) || 0;
         stats.commitsByRepo.set(repo, repoCount + 1);
+
+        // Collect for recent commits
+        allCommits.push({ hash, author, date, message, repo });
       }
 
       stats.repos.push({
@@ -608,6 +618,11 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
   if (peakDate) {
     stats.peakDay = { date: peakDate, count: peakCount };
   }
+
+  // Sort commits by date (most recent first) and take top 5
+  stats.recentCommits = allCommits
+    .sort((a, b) => b.date.localeCompare(a.date) || b.hash.localeCompare(a.hash))
+    .slice(0, 5);
 
   return stats;
 }
