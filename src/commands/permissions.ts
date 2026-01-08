@@ -274,7 +274,7 @@ function formatMode(mode: string): string {
     case 'warn':
       return `${colors.yellow}warn${RESET} ${colors.dim}(logs and continues)${RESET}`;
     case 'audit':
-      return `${colors.blue}audit${RESET} ${colors.dim}(logs to trail)${RESET}`;
+      return `${colors.cyan}audit${RESET} ${colors.dim}(logs to trail)${RESET}`;
     default:
       return mode;
   }
