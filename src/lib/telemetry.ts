@@ -228,6 +228,7 @@ export const Events = {
   CLI_TONIGHT: 'cli.tonight',
   CLI_CONTEXT: 'cli.context',
   CLI_COST: 'cli.cost',
+  CLI_EXEC: 'cli.exec',
 
   // Goals
   CLI_GOAL_SET: 'cli.goal.set',

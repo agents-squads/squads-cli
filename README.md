@@ -388,6 +388,32 @@ squads memory extract -s abc123        # Extract specific session
 squads memory extract -d               # Dry run (preview only)
 ```
 
+### Execution History
+
+View and analyze past agent executions:
+
+```bash
+$ squads exec list
+
+  squads exec list
+
+  ┌────────────────────────────────────────────────────────────────────────────────────┐
+  │ AGENT                 STATUS      DURATION  TIME          ID                       │
+  ├────────────────────────────────────────────────────────────────────────────────────┤
+  │ cli/code-eval         ● completed 5m 30s    2h ago        exec_abc123_xyz          │
+  │ website/web-lead      ◆ running   —         3h ago        exec_def456_abc          │
+  └────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+```bash
+squads exec list                     # Recent executions
+squads exec list --squad cli         # Filter by squad
+squads exec list --status completed  # Filter by status
+squads exec show <id>                # Execution details
+squads exec stats                    # Statistics across all executions
+squads exec --json                   # JSON output for programmatic access
+```
+
 ### Goal Tracking
 
 ```bash
@@ -771,6 +797,18 @@ squads trigger fire <name>           Fire trigger
 squads trigger enable <name>         Enable trigger
 squads trigger disable <name>        Disable trigger
 squads trigger status                Scheduler stats
+
+squads exec list                     List recent executions
+  -s, --squad <squad>                Filter by squad
+  -a, --agent <agent>                Filter by agent
+  --status <status>                  Filter: running, completed, failed
+  -n, --limit <n>                    Results to show (default: 20)
+  --json                             JSON output
+squads exec show <id>                Execution details
+  --json                             JSON output
+squads exec stats                    Execution statistics
+  -s, --squad <squad>                Filter by squad
+  --json                             JSON output
 
 squads tonight <targets...>          Autonomous overnight execution
   --cost-cap <usd>                   Max spend (default: $50)

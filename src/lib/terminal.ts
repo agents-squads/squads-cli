@@ -177,6 +177,7 @@ export const icons = {
   error: `${colors.red}●${RESET}`,
   pending: `${colors.dim}○${RESET}`,
   active: `${colors.green}●${RESET}`,
+  running: `${colors.yellow}◆${RESET}`,
   progress: `${colors.cyan}◆${RESET}`,
   empty: `${colors.dim}◇${RESET}`,
 };
