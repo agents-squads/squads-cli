@@ -327,19 +327,62 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   renderHistoricalTrendsCached(cache);
   renderInsightsCached(cache);
 
-  // Goals section
+  // Working On section - shows recent commits
+  if (gitStats && gitStats.recentCommits && gitStats.recentCommits.length > 0) {
+    writeLine(`  ${bold}Working On${RESET}`);
+    writeLine();
+
+    for (const commit of gitStats.recentCommits.slice(0, 3)) {
+      const shortHash = commit.hash.slice(0, 7);
+      const shortMsg = truncate(commit.message, 45);
+      writeLine(`  ${colors.dim}${shortHash}${RESET} ${shortMsg} ${colors.dim}(${commit.repo})${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Goals section - show 3 most relevant (prioritize squads with recent activity)
   const allActiveGoals = squadData.flatMap(s =>
     s.goals.filter(g => !g.completed).map(g => ({ squad: s.name, goal: g }))
   );
 
   if (allActiveGoals.length > 0) {
-    writeLine(`  ${bold}Goals${RESET}`);
+    // Get squads with recent commits for relevance scoring
+    const activeSquads = new Set(gitStats?.recentCommits?.map(c => {
+      // Map repo to squad
+      const repoSquadMap: Record<string, string> = {
+        'agents-squads-web': 'website',
+        'squads-cli': 'cli',
+        'hq': 'engineering',
+        'company': 'company',
+        'product': 'product',
+        'research': 'research',
+        'intelligence': 'intelligence',
+        'customer': 'customer',
+        'finance': 'finance',
+        'marketing': 'marketing',
+      };
+      return repoSquadMap[c.repo] || c.repo;
+    }) || []);
+
+    // Sort goals: active squads first, then by progress
+    const sortedGoals = [...allActiveGoals].sort((a, b) => {
+      const aActive = activeSquads.has(a.squad) ? 1 : 0;
+      const bActive = activeSquads.has(b.squad) ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+      // Then by progress (goals with progress first)
+      const aHasProgress = a.goal.progress ? 1 : 0;
+      const bHasProgress = b.goal.progress ? 1 : 0;
+      return bHasProgress - aHasProgress;
+    });
+
+    writeLine(`  ${bold}Goals${RESET} ${colors.dim}(${allActiveGoals.length} active)${RESET}`);
     writeLine();
 
-    const maxGoals = 6;
-    for (const { squad, goal } of allActiveGoals.slice(0, maxGoals)) {
+    const maxGoals = 3; // Show only 3 most relevant
+    for (const { squad, goal } of sortedGoals.slice(0, maxGoals)) {
       const hasProgress = goal.progress && goal.progress.length > 0;
-      const icon = hasProgress ? icons.progress : icons.empty;
+      const isActive = activeSquads.has(squad);
+      const icon = isActive ? icons.active : (hasProgress ? icons.progress : icons.empty);
       writeLine(`  ${icon} ${colors.dim}${squad}${RESET} ${truncate(goal.description, 48)}`);
       if (hasProgress) {
         writeLine(`    ${colors.dim}└${RESET} ${colors.green}${truncate(goal.progress!, 52)}${RESET}`);
