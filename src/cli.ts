@@ -97,6 +97,7 @@ import { registerTriggerCommand } from './commands/trigger.js';
 import { registerSkillCommand } from './commands/skill.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { contextShowCommand, contextListCommand } from './commands/context.js';
+import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import {
   tonightCommand,
   tonightStatusCommand,
@@ -200,6 +201,22 @@ context
   .description('List context for all squads')
   .option('--json', 'Output as JSON')
   .action(contextListCommand);
+
+// Cost command - cost introspection for self-improvement
+program
+  .command('cost')
+  .description('Show cost summary (today, week, by squad)')
+  .option('-s, --squad <squad>', 'Filter to specific squad')
+  .option('--json', 'Output as JSON')
+  .action(costCommand);
+
+// Budget check command - pre-flight budget validation
+program
+  .command('budget')
+  .description('Check budget status for a squad')
+  .argument('<squad>', 'Squad to check')
+  .option('--json', 'Output as JSON')
+  .action(budgetCheckCommand);
 
 // Issues command
 program
