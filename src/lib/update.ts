@@ -232,3 +232,95 @@ export function refreshVersionCache(): UpdateInfo {
   }
   return checkForUpdate();
 }
+
+// Auto-update settings
+const AUTO_UPDATE_CACHE_FILE = join(CACHE_DIR, 'auto-update.json');
+const AUTO_UPDATE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour cooldown between auto-update attempts
+
+interface AutoUpdateCache {
+  lastAttempt: number;
+  lastSuccess?: number;
+}
+
+function readAutoUpdateCache(): AutoUpdateCache | null {
+  try {
+    if (!existsSync(AUTO_UPDATE_CACHE_FILE)) return null;
+    return JSON.parse(readFileSync(AUTO_UPDATE_CACHE_FILE, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeAutoUpdateCache(cache: AutoUpdateCache): void {
+  try {
+    if (!existsSync(CACHE_DIR)) {
+      mkdirSync(CACHE_DIR, { recursive: true });
+    }
+    writeFileSync(AUTO_UPDATE_CACHE_FILE, JSON.stringify(cache, null, 2));
+  } catch {
+    // Ignore errors
+  }
+}
+
+/**
+ * Seamless auto-update on CLI startup (like Gemini CLI)
+ * Checks for updates and auto-installs without prompting.
+ * Shows a message on success: "Update successful! The new version will be used on your next run."
+ *
+ * @param silent - If true, don't show any output (for background checks)
+ * @returns Promise that resolves when check/update is complete
+ */
+export async function autoUpdateOnStartup(silent = false): Promise<void> {
+  // Skip in CI or if auto-update disabled
+  if (process.env.CI || process.env.SQUADS_NO_AUTO_UPDATE) return;
+
+  // Check cooldown - don't spam npm
+  const autoCache = readAutoUpdateCache();
+  const now = Date.now();
+  if (autoCache && (now - autoCache.lastAttempt) < AUTO_UPDATE_COOLDOWN_MS) {
+    return; // Too soon since last attempt
+  }
+
+  // Check if update is available
+  const info = checkForUpdate();
+  if (!info.updateAvailable) return;
+
+  // Write attempt timestamp before trying
+  writeAutoUpdateCache({ lastAttempt: now, lastSuccess: autoCache?.lastSuccess });
+
+  // Perform update silently in background using spawn
+  try {
+    const { spawn } = await import('child_process');
+
+    // Run npm update in background
+    const child = spawn('npm', ['update', '-g', 'squads-cli'], {
+      detached: true,
+      stdio: silent ? 'ignore' : ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    });
+
+    if (!silent && child.stdout) {
+      // Wait for completion and check result
+      await new Promise<void>((resolve) => {
+        child.on('close', (code) => {
+          if (code === 0) {
+            // Success - show Gemini-style message
+            console.log(`\n  \x1b[32m✓\x1b[0m Update successful! v${info.latestVersion} will be used on your next run.\n`);
+            writeAutoUpdateCache({ lastAttempt: now, lastSuccess: now });
+            // Clear version cache so next startup detects new version
+            try { unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+          }
+          resolve();
+        });
+
+        // Timeout after 30 seconds
+        setTimeout(() => resolve(), 30000);
+      });
+    } else {
+      // Silent mode - just fire and forget
+      child.unref();
+    }
+  } catch {
+    // Ignore errors - auto-update is best effort
+  }
+}

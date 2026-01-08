@@ -74,6 +74,27 @@ export const clear = {
   screen: `${ESC}2J${ESC}0;0H`,
 };
 
+// Check if terminal supports Unicode
+function supportsUnicode(): boolean {
+  // Windows CMD typically doesn't support Unicode well
+  if (process.platform === 'win32') {
+    // Windows Terminal supports Unicode
+    if (process.env.WT_SESSION) return true;
+    // ConEmu supports Unicode
+    if (process.env.ConEmuTask) return true;
+    // Fallback: check for UTF-8 codepage
+    if (process.env.LANG?.includes('UTF') || process.env.LC_ALL?.includes('UTF')) return true;
+    return false;
+  }
+  // Most modern terminals on macOS/Linux support Unicode
+  // But AI CLIs might not render them well in their output
+  // Force ASCII for known problematic environments
+  if (process.env.SQUADS_ASCII !== undefined) return false;
+  return true;
+}
+
+const USE_UNICODE = supportsUnicode();
+
 // Gradient text (purple → pink → cyan)
 export function gradient(text: string): string {
   const stops = [
@@ -101,6 +122,10 @@ export function gradient(text: string): string {
   return result + RESET;
 }
 
+// Progress bar characters
+const BAR_FILLED = USE_UNICODE ? '━' : '=';
+const BAR_EMPTY = USE_UNICODE ? '━' : '-';
+
 // Progress bar with gradient fill
 export function progressBar(percent: number, width = 20): string {
   // Clamp values to prevent negative repeat counts
@@ -114,15 +139,15 @@ export function progressBar(percent: number, width = 20): string {
     const r = Math.round(16 + (168 - 16) * t);
     const g = Math.round(185 + (85 - 185) * t);
     const b = Math.round(129 + (247 - 129) * t);
-    bar += rgb(r, g, b) + '━';
+    bar += rgb(r, g, b) + BAR_FILLED;
   }
 
-  bar += colors.dim + '━'.repeat(empty) + RESET;
+  bar += colors.dim + BAR_EMPTY.repeat(empty) + RESET;
   return bar;
 }
 
-// Box drawing
-export const box = {
+// Box drawing - with ASCII fallback
+export const box = USE_UNICODE ? {
   topLeft: '┌',
   topRight: '┐',
   bottomLeft: '└',
@@ -131,6 +156,15 @@ export const box = {
   vertical: '│',
   teeRight: '├',
   teeLeft: '┤',
+} : {
+  topLeft: '+',
+  topRight: '+',
+  bottomLeft: '+',
+  bottomRight: '+',
+  horizontal: '-',
+  vertical: '|',
+  teeRight: '+',
+  teeLeft: '+',
 };
 
 // Format helpers
@@ -167,11 +201,13 @@ export function truncate(str: string, len: number): string {
   return result + colors.dim + '…' + RESET;
 }
 
-// Spinner frames
-export const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+// Spinner frames - with ASCII fallback
+export const spinnerFrames = USE_UNICODE
+  ? ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+  : ['-', '\\', '|', '/'];
 
-// Status icons
-export const icons = {
+// Status icons - with ASCII fallback
+export const icons = USE_UNICODE ? {
   success: `${colors.green}●${RESET}`,
   warning: `${colors.yellow}○${RESET}`,
   error: `${colors.red}●${RESET}`,
@@ -180,11 +216,41 @@ export const icons = {
   running: `${colors.yellow}◆${RESET}`,
   progress: `${colors.cyan}◆${RESET}`,
   empty: `${colors.dim}◇${RESET}`,
+} : {
+  success: `${colors.green}*${RESET}`,
+  warning: `${colors.yellow}!${RESET}`,
+  error: `${colors.red}x${RESET}`,
+  pending: `${colors.dim}o${RESET}`,
+  active: `${colors.green}*${RESET}`,
+  running: `${colors.yellow}>${RESET}`,
+  progress: `${colors.cyan}>${RESET}`,
+  empty: `${colors.dim}.${RESET}`,
 };
 
 // Strip ANSI escape codes from a string
 export function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Check if running under an AI coding assistant
+export function isAiCli(): boolean {
+  // Claude Code
+  if (process.env.CLAUDECODE !== undefined) return true;
+  // Gemini CLI
+  if (process.env.GEMINI_API_KEY !== undefined) return true;
+  // Cursor
+  if (process.env.CURSOR_CHANNEL !== undefined) return true;
+  // Sourcegraph Cody
+  if (process.env.CODY_AUTH !== undefined) return true;
+  // Windsurf (Codeium)
+  if (process.env.CODEIUM_API_KEY !== undefined) return true;
+  // Copilot CLI
+  if (process.env.GITHUB_COPILOT_CLI !== undefined) return true;
+  // Aider
+  if (process.env.AIDER_MODEL !== undefined) return true;
+  // Continue.dev
+  if (process.env.CONTINUE_GLOBAL_DIR !== undefined) return true;
+  return false;
 }
 
 // Check if we should use colors (TTY detection)
@@ -193,8 +259,8 @@ export function isColorEnabled(): boolean {
   if (process.env.NO_COLOR !== undefined) return false;
   // Force color via environment variable
   if (process.env.FORCE_COLOR !== undefined) return true;
-  // Claude Code terminal - always enable colors (it supports them)
-  if (process.env.CLAUDECODE !== undefined) return true;
+  // AI coding assistants - enable colors (they support ANSI)
+  if (isAiCli()) return true;
   // Check if output is a TTY
   return process.stdout.isTTY ?? false;
 }
@@ -211,25 +277,29 @@ export function writeLine(str = ''): void {
   process.stdout.write(output + '\n');
 }
 
+// Sparkline characters - Unicode blocks vs ASCII
+const SPARKLINE_BLOCKS = USE_UNICODE
+  ? ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+  : ['_', '.', '-', '=', '+', '#', '#', '#'];
+
 // Sparkline chart using block characters
 export function sparkline(values: number[], _width?: number): string {
   if (values.length === 0) return '';
 
-  const blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
   const max = Math.max(...values, 1);
 
   let result = '';
   for (const val of values) {
     const normalized = val / max;
-    const blockIndex = Math.min(Math.floor(normalized * blocks.length), blocks.length - 1);
+    const blockIndex = Math.min(Math.floor(normalized * SPARKLINE_BLOCKS.length), SPARKLINE_BLOCKS.length - 1);
 
     // Color gradient from dim to cyan to green based on value
     if (normalized === 0) {
-      result += colors.dim + blocks[0];
+      result += colors.dim + SPARKLINE_BLOCKS[0];
     } else if (normalized < 0.5) {
-      result += colors.cyan + blocks[blockIndex];
+      result += colors.cyan + SPARKLINE_BLOCKS[blockIndex];
     } else {
-      result += colors.green + blocks[blockIndex];
+      result += colors.green + SPARKLINE_BLOCKS[blockIndex];
     }
   }
 
@@ -252,10 +322,10 @@ export function barChart(value: number, max: number, width: number = 20, label?:
     const r = Math.round(16 + (6 - 16) * t);
     const g = Math.round(185 + (182 - 185) * t);
     const b = Math.round(129 + (212 - 129) * t);
-    bar += rgb(r, g, b) + '━';
+    bar += rgb(r, g, b) + BAR_FILLED;
   }
 
-  bar += colors.dim + '━'.repeat(empty) + RESET;
+  bar += colors.dim + BAR_EMPTY.repeat(empty) + RESET;
 
   if (label) {
     return `${bar} ${label}`;

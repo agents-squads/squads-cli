@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { version } from './version.js';
+import { autoUpdateOnStartup } from './lib/update.js';
 
 // Disable colors when output is piped (not a TTY)
 // This ensures piped output is clean for parsing
@@ -108,6 +109,11 @@ import {
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
+
+// Seamless auto-update on startup (like Gemini CLI)
+// Runs in background, shows message on success
+// Set SQUADS_NO_AUTO_UPDATE=1 to disable
+await autoUpdateOnStartup();
 
 // Register telemetry exit handler early
 registerExitHandler();
