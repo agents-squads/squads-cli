@@ -252,6 +252,46 @@ function updateExecutionStatus(
   writeFileSync(logPath, content);
 }
 
+/**
+ * Extract MCP servers mentioned in an agent definition
+ * Looks for patterns like: mcp-server-name, chrome-devtools, firecrawl, etc.
+ */
+function extractMcpServersFromDefinition(definition: string): string[] {
+  const servers: Set<string> = new Set();
+
+  // Common MCP server patterns
+  const knownServers = [
+    'chrome-devtools',
+    'firecrawl',
+    'supabase',
+    'grafana',
+    'context7',
+    'huggingface',
+    'nano-banana'
+  ];
+
+  // Check for known servers in the definition
+  for (const server of knownServers) {
+    if (definition.toLowerCase().includes(server)) {
+      servers.add(server);
+    }
+  }
+
+  // Look for mcp: blocks in YAML
+  const mcpMatch = definition.match(/mcp:\s*\n((?:\s*-\s*\S+\s*\n?)+)/i);
+  if (mcpMatch) {
+    const lines = mcpMatch[1].split('\n');
+    for (const line of lines) {
+      const serverMatch = line.match(/^\s*-\s*(\S+)/);
+      if (serverMatch) {
+        servers.add(serverMatch[1]);
+      }
+    }
+  }
+
+  return Array.from(servers);
+}
+
 export async function runCommand(
   target: string,
   options: RunOptions
@@ -582,6 +622,40 @@ async function runAgent(
       writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
     }
     return;
+  }
+
+  // Pre-execution permission validation (Phase 3)
+  const squadsDir = findSquadsDir();
+  if (squadsDir) {
+    const squadFilePath = join(squadsDir, squadName, 'SQUAD.md');
+    if (existsSync(squadFilePath)) {
+      const squadContent = readFileSync(squadFilePath, 'utf-8');
+      const permContext = buildContextFromSquad(squadName, squadContent, agentName);
+
+      // Build execution request from agent definition
+      // For now, we validate MCP servers mentioned in the agent definition
+      const mcpServers = extractMcpServersFromDefinition(definition);
+      const execRequest: ExecutionRequest = {
+        mcpServers
+      };
+
+      const permResult = validateExecution(permContext, execRequest);
+
+      if (permResult.violations.length > 0) {
+        spinner.stop();
+        const violationLines = formatViolations(permResult);
+        for (const line of violationLines) {
+          writeLine(`  ${line}`);
+        }
+        writeLine();
+
+        if (!permResult.allowed) {
+          writeLine(`  ${colors.red}Execution blocked due to permission violations.${RESET}`);
+          writeLine(`  ${colors.dim}Configure permissions in ${squadFilePath}${RESET}`);
+          return;
+        }
+      }
+    }
   }
 
   // Log execution start

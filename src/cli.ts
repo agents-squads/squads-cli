@@ -95,6 +95,8 @@ import {
 } from './commands/stack.js';
 import { registerTriggerCommand } from './commands/trigger.js';
 import { registerSkillCommand } from './commands/skill.js';
+import { registerPermissionsCommand } from './commands/permissions.js';
+import { contextShowCommand, contextListCommand } from './commands/context.js';
 import {
   tonightCommand,
   tonightStatusCommand,
@@ -181,6 +183,23 @@ program
   .option('-c, --ceo', 'Executive summary with priorities and blockers')
   .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
   .action((options) => dashboardCommand({ ...options, fast: !options.full }));
+
+// Context command - show squad execution context (MCP, skills, budget, model)
+const context = program
+  .command('context')
+  .description('View and manage squad execution context');
+
+context
+  .command('show <squad>')
+  .description('Show context for a squad (MCP, skills, model, budget)')
+  .option('--json', 'Output as JSON')
+  .action(contextShowCommand);
+
+context
+  .command('list')
+  .description('List context for all squads')
+  .option('--json', 'Output as JSON')
+  .action(contextListCommand);
 
 // Issues command
 program
@@ -548,6 +567,9 @@ registerTriggerCommand(program);
 
 // Skill command group - Agent Skills API
 registerSkillCommand(program);
+
+// Permissions command group - Phase 3 execution contexts
+registerPermissionsCommand(program);
 
 // Tonight command group - autonomous overnight execution
 const tonight = program
