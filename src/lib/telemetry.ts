@@ -274,6 +274,12 @@ export const Events = {
   // Auth
   CLI_LOGIN: 'cli.login',
   CLI_LOGOUT: 'cli.logout',
+
+  // Context Condenser
+  CONDENSER_COMPRESS: 'condenser.compress',
+  CONDENSER_DEDUPE: 'condenser.dedupe',
+  CONDENSER_PRUNE: 'condenser.prune',
+  CONDENSER_SUMMARIZE: 'condenser.summarize',
 } as const;
 
 // Track command execution time (legacy helper)
