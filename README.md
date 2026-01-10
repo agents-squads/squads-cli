@@ -765,6 +765,44 @@ squads workers                       Show active workers
   -v, --verbose                      More details
   -k, --kill <pid>                   Kill process
 
+squads context                       Business context for alignment
+  -s, --squad <squad>                Focus on specific squad
+  -t, --topic <topic>                Search memory for relevant context
+  -v, --verbose                      Show additional details
+  --json                             JSON output
+
+squads history                       Recent agent execution history
+  -d, --days <n>                     Days to look back (default: 7)
+  -s, --squad <squad>                Filter by squad
+  -v, --verbose                      Show cost and token details
+  -j, --json                         JSON output
+
+squads health                        Quick infrastructure health check
+  -v, --verbose                      Show logs for failures
+  --json                             JSON output
+
+squads watch <command> [args]        Live refresh any command (like Unix watch)
+  -n, --interval <seconds>           Refresh interval (default: 2)
+
+squads live                          Live TUI dashboard (like htop)
+  -r, --refresh <ms>                 Refresh rate (default: 1000)
+
+squads top                           Live process table (like Unix top)
+
+squads version                       Show version information
+
+squads env show <squad>              Squad execution environment (MCP, model, budget)
+  --json                             JSON output
+squads env list                      List all squad environments
+  --json                             JSON output
+
+squads cost                          Cost summary (today, week, by squad)
+  -s, --squad <squad>                Filter to specific squad
+  --json                             JSON output
+
+squads budget <squad>                Check budget status for a squad
+  --json                             JSON output
+
 squads issues                        GitHub issues
   -o, --org <org>                    Organization (default: agents-squads)
   -r, --repos <repos>                Comma-separated repos
