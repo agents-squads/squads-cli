@@ -10,6 +10,7 @@ import { track, Events } from '../lib/telemetry.js';
 interface InitOptions {
   template: string;
   skipInfra?: boolean;
+  force?: boolean;
 }
 
 // Simple yes/no prompt
@@ -387,8 +388,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   console.log();
 
-  if (hasMissingRequired) {
+  if (hasMissingRequired && !options.force) {
     console.log(chalk.yellow('  Install missing tools to continue, then run squads init again.'));
+    console.log(chalk.dim('  Or use --force to skip requirement checks.'));
     console.log();
 
     // Track init failure for analytics
@@ -428,8 +430,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/squads',
       '.agents/squads/demo',
       '.agents/memory',
+      '.agents/memory/getting-started',
       '.agents/outputs',
       '.claude',
+      '.claude/skills',
+      '.claude/skills/squads-workflow',
     ];
 
     for (const dir of dirs) {
@@ -541,6 +546,148 @@ Markdown report saved to .agents/outputs/demo/project-analysis.md
       analyzerAgent
     );
 
+    // Create squads-workflow skill
+    const squadsWorkflowSkill = `# Squads Workflow
+
+Use this skill when working with squads-cli to maintain persistent memory, track goals, and coordinate work.
+
+## Session Start
+
+At session start, you'll see \`squads status\` output automatically. For complex tasks, run:
+
+\`\`\`bash
+squads context                # Get business context, goals, decisions
+squads memory query "<topic>" # Check what we already know
+\`\`\`
+
+**Skip context loading for simple tasks** (typo fixes, quick questions).
+
+## Core Commands
+
+\`\`\`bash
+# Context & Status
+squads context                # Business context for alignment
+squads status                 # Squad overview
+squads dash                   # Full dashboard
+
+# Memory
+squads memory query "<topic>" # Search memory
+squads memory show <squad>    # Squad's full memory
+
+# Goals
+squads goal list              # All active goals
+squads goal set <squad> "X"   # Add a goal
+
+# Running Agents
+squads run <squad>            # Run all agents in squad
+squads run <squad>/<agent>    # Run specific agent
+squads list                   # List all agents
+\`\`\`
+
+## Workflow
+
+### Before Research
+Always check memory first to avoid re-researching:
+\`\`\`bash
+squads memory query "topic"
+\`\`\`
+
+### After Work
+Update memory with what you learned by editing:
+\`.agents/memory/<squad>/<agent>/state.md\`
+
+### Commits
+Include goal attribution when relevant:
+\`\`\`
+feat: add user auth [goal:engineering/1]
+\`\`\`
+
+## Agent Execution
+
+When a task could be automated:
+1. Check if agent exists: \`squads list | grep <keyword>\`
+2. If yes: \`squads run <squad>/<agent>\`
+3. If no: Create agent in \`.agents/squads/<squad>/<name>.md\`
+
+## Memory Locations
+
+- \`.agents/memory/<squad>/<agent>/state.md\` - Current knowledge
+- \`.agents/memory/<squad>/<agent>/learnings.md\` - Insights over time
+
+## Key Principle
+
+**Memory is your cross-session brain.** Without it, every session starts fresh. With it, you build on previous work.
+`;
+
+    await fs.writeFile(
+      path.join(cwd, '.claude/skills/squads-workflow/instruction.md'),
+      squadsWorkflowSkill
+    );
+
+    // Create seed memory
+    const seedMemory = `# Getting Started with Squads
+
+## What You've Set Up
+
+- **Demo squad** ready to run (\`squads run demo\`)
+- **Memory system** for persistent context
+- **Hooks** that sync status and memory automatically
+
+## Next Steps
+
+1. Run the demo: \`squads run demo\`
+2. Check the dashboard: \`squads dash\`
+3. Create your first real squad in \`.agents/squads/\`
+
+## Tips
+
+- Check memory before researching: \`squads memory query "<topic>"\`
+- Use \`squads context\` for business alignment on complex tasks
+- Agents are reusable - if you do something twice, make it an agent
+`;
+
+    await fs.writeFile(
+      path.join(cwd, '.agents/memory/getting-started/state.md'),
+      seedMemory
+    );
+
+    // Create business brief template
+    const businessBrief = `# Business Brief
+
+## #1 Priority
+
+**[Define your top priority here]**
+
+## Runway
+
+**Pressure**: LOW | MEDIUM | HIGH
+
+## Current Focus
+
+1. **[Focus area 1]** - Description
+2. **[Focus area 2]** - Description
+3. **[Focus area 3]** - Description
+
+## Blockers
+
+- None currently (or list blockers)
+
+## Decision Framework
+
+1. Does this drive the #1 priority?
+2. Is there a simpler approach?
+3. What's the opportunity cost?
+
+---
+
+*This file is read by \`squads context\` to provide business alignment.*
+`;
+
+    await fs.writeFile(
+      path.join(cwd, '.agents/BUSINESS_BRIEF.md'),
+      businessBrief
+    );
+
     // Create Claude Code settings with hooks
     const claudeSettings = {
       hooks: {
@@ -602,12 +749,22 @@ Each **squad** is a team of **agents** (markdown prompts) that execute via Claud
 
 ## For Claude (READ THIS)
 
-When helping users with squad-related tasks:
+**Skill available**: Use \`/squads-workflow\` for detailed workflow guidance.
 
-### Check Context First
+### Session Start
+
+You'll see \`squads status\` automatically. For complex tasks, also run:
 \`\`\`bash
-squads status              # What squads exist?
-squads memory query "X"    # What do we know about X?
+squads context                # Business context, goals, decisions
+squads memory query "<topic>" # What we already know
+\`\`\`
+
+**Skip for simple tasks** (typo fixes, quick questions).
+
+### Before Research
+Always check memory first:
+\`\`\`bash
+squads memory query "<topic>"
 \`\`\`
 
 ### Creating Agents
@@ -650,10 +807,12 @@ squads goal set <squad> "X"  # Add a goal
 | "What's the status?" | Run \`squads dash\` or \`squads status\` |
 | "Run the X agent" | \`squads run <squad>/x\` |
 | "Check memory" | \`squads memory query "<topic>"\` |
+| "Get context" | \`squads context\` |
 
 ## Quick Reference
 
 \`\`\`bash
+squads context         # Business context for alignment
 squads status          # Overview
 squads dash            # Full dashboard
 squads run demo        # Try demo squad
@@ -730,9 +889,12 @@ squads goal list       # View goals
 
   // Show what was created (compact)
   console.log(chalk.dim('  Created:'));
-  console.log(chalk.dim('  • .agents/squads/demo/  - Demo squad with 2 agents'));
-  console.log(chalk.dim('  • .claude/settings.json - Claude Code hooks'));
-  console.log(chalk.dim('  • CLAUDE.md             - Agent instructions'));
+  console.log(chalk.dim('  • .agents/squads/demo/     - Demo squad with 2 agents'));
+  console.log(chalk.dim('  • .agents/BUSINESS_BRIEF   - Business context template'));
+  console.log(chalk.dim('  • .agents/memory/          - Seed memory'));
+  console.log(chalk.dim('  • .claude/settings.json    - Claude Code hooks'));
+  console.log(chalk.dim('  • .claude/skills/          - Squads workflow skill'));
+  console.log(chalk.dim('  • CLAUDE.md                - Agent instructions'));
   console.log();
 
   // Optional email capture for updates

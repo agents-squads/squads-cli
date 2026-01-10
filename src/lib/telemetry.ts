@@ -44,7 +44,7 @@ function getSystemContext(): Record<string, string | undefined> {
   if (cachedSystemContext) return cachedSystemContext;
 
   cachedSystemContext = {
-    os: platform(),
+    os: platform(), // darwin, linux, win32
     osVersion: release(),
     nodeVersion: process.version,
     shell: process.env.SHELL?.split('/').pop() || process.env.ComSpec?.split('\\').pop(),

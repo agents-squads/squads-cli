@@ -168,6 +168,7 @@ program
   .description('Initialize a new squad project')
   .option('-t, --template <template>', 'Project template', 'default')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
+  .option('--force', 'Skip requirement checks (for CI/testing)')
   .action(initCommand);
 
 // Run command - runs squads or individual agents
@@ -212,20 +213,20 @@ program
   .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
   .action((options) => dashboardCommand({ ...options, fast: !options.full }));
 
-// Context command - show squad execution context (MCP, skills, budget, model)
-const context = program
-  .command('context')
-  .description('View and manage squad execution context');
+// Env command - squad execution environment (MCP, skills, budget, model)
+const env = program
+  .command('env')
+  .description('View squad execution environment (MCP, skills, model, budget)');
 
-context
+env
   .command('show <squad>')
-  .description('Show context for a squad (MCP, skills, model, budget)')
+  .description('Show execution environment for a squad')
   .option('--json', 'Output as JSON')
   .action(contextShowCommand);
 
-context
+env
   .command('list')
-  .description('List context for all squads')
+  .description('List execution environment for all squads')
   .option('--json', 'Output as JSON')
   .action(contextListCommand);
 
@@ -340,11 +341,11 @@ program
   .option('-j, --json', 'Output as JSON')
   .action((options) => historyCommand(options));
 
-// Context feed command - context injection for agents
+// Context command - business context for alignment
 program
-  .command('context-feed')
+  .command('context')
   .alias('feed')
-  .description('Context feed for agents: goals, memory, costs, activity')
+  .description('Get business context for alignment: goals, memory, costs, activity')
   .option('-s, --squad <squad>', 'Focus on specific squad')
   .option('-t, --topic <topic>', 'Search memory for relevant context')
   .option('-a, --agent', 'Output JSON for agent consumption')
