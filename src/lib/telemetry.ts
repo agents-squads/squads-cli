@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
 
 interface TelemetryEvent {
@@ -32,6 +32,28 @@ const TELEMETRY_KEY = Buffer.from('c3FfdGVsX3YxXzdmOGE5YjJjM2Q0ZTVmNmE=', 'base6
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
 let flushScheduled = false;
+
+// Cached system context (computed once per session)
+let cachedSystemContext: Record<string, string | undefined> | null = null;
+
+/**
+ * Get minimal system context for error identification.
+ * Computed once per session for performance.
+ */
+function getSystemContext(): Record<string, string | undefined> {
+  if (cachedSystemContext) return cachedSystemContext;
+
+  cachedSystemContext = {
+    os: platform(),
+    osVersion: release(),
+    nodeVersion: process.version,
+    shell: process.env.SHELL?.split('/').pop() || process.env.ComSpec?.split('\\').pop(),
+    terminal: process.env.TERM_PROGRAM || undefined,
+    ci: process.env.CI === 'true' ? 'true' : undefined,
+  };
+
+  return cachedSystemContext;
+}
 
 function ensureDir(): void {
   if (!existsSync(TELEMETRY_DIR)) {
@@ -102,6 +124,7 @@ export async function track(event: string, properties?: Record<string, string | 
     timestamp: new Date().toISOString(),
     properties: {
       ...properties,
+      ...getSystemContext(),
       anonymousId: config.anonymousId,
       cliVersion: process.env.npm_package_version || 'unknown',
     },
