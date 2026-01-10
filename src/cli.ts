@@ -205,6 +205,7 @@ program
   .description('List agents and squads')
   .option('-s, --squads', 'List squads only')
   .option('-a, --agents', 'List agents only')
+  .option('-v, --verbose', 'Show additional details')
   .action(listCommand);
 
 // Status command
