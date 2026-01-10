@@ -110,6 +110,35 @@ squads run engineering --parallel   # Run all in parallel
 squads run engineering --timeout 60 # Custom timeout (minutes)
 ```
 
+### Monitoring & History
+```bash
+squads context                # Business context (goals, decisions, priorities)
+squads context --topic "X"    # Topic-focused context
+squads history                # Recent agent execution history
+squads history --days 7       # Execution history (last N days)
+squads health                 # Quick infrastructure check
+squads workers                # Show active workers
+squads progress               # Track agent task progress
+squads results                # Show squad results (git + KPIs)
+```
+
+### Live Dashboards
+```bash
+squads live                   # Live TUI dashboard
+squads top                    # Live process table
+squads watch <command>        # Live refresh any command
+squads watch status           # Example: watch status
+```
+
+### Environment & Config
+```bash
+squads env show <squad>       # Squad execution context (MCP, model, budget)
+squads env list               # List all squad environments
+squads cost                   # Cost summary (today, week, by squad)
+squads budget <squad>         # Check budget status
+squads version                # Show version information
+```
+
 ## Development Workflow
 
 ### Building
