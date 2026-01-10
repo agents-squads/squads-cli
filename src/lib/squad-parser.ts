@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 import matter from 'gray-matter';
+import { resolveMcpConfig, type McpResolution } from './mcp-config.js';
 
 export type EffortLevel = 'high' | 'medium' | 'low';
 
@@ -72,6 +73,28 @@ export interface Squad {
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
   stack?: string;
+}
+
+/**
+ * Resolved execution context with paths and metadata.
+ * Extends SquadContext with resolved paths for MCP, skills, and memory.
+ */
+export interface ExecutionContext extends SquadContext {
+  /** Squad name this context belongs to */
+  squadName: string;
+  /** Resolved paths and metadata */
+  resolved: {
+    /** Path to MCP config file to use */
+    mcpConfigPath: string;
+    /** Source of MCP config resolution */
+    mcpSource: 'user-override' | 'generated' | 'fallback';
+    /** List of MCP servers in the config */
+    mcpServers: string[];
+    /** Resolved skill directory paths */
+    skillPaths: string[];
+    /** Resolved memory file paths */
+    memoryPaths: string[];
+  };
 }
 
 export function findSquadsDir(): string | null {
@@ -424,4 +447,133 @@ export function updateGoalInSquad(
   }
 
   return false;
+}
+
+/**
+ * Find the skills directory (.claude/skills)
+ */
+function findSkillsDir(): string | null {
+  const projectRoot = findProjectRoot();
+  if (!projectRoot) return null;
+
+  const skillsDir = join(projectRoot, '.claude', 'skills');
+  return existsSync(skillsDir) ? skillsDir : null;
+}
+
+/**
+ * Find the memory directory (.agents/memory)
+ */
+function findMemoryDir(): string | null {
+  const projectRoot = findProjectRoot();
+  if (!projectRoot) return null;
+
+  const memoryDir = join(projectRoot, '.agents', 'memory');
+  return existsSync(memoryDir) ? memoryDir : null;
+}
+
+/**
+ * Resolve a skill name to its directory path.
+ */
+function resolveSkillPath(skillName: string): string | null {
+  const skillsDir = findSkillsDir();
+  if (!skillsDir) return null;
+
+  const skillPath = join(skillsDir, skillName);
+  return existsSync(skillPath) ? skillPath : null;
+}
+
+/**
+ * Resolve memory glob patterns to actual file paths.
+ */
+function resolveMemoryPaths(patterns: string[]): string[] {
+  const memoryDir = findMemoryDir();
+  if (!memoryDir) return [];
+
+  const resolved: string[] = [];
+
+  for (const pattern of patterns) {
+    // Handle simple patterns like "intelligence/*" or "research/*"
+    if (pattern.endsWith('/*')) {
+      const subdir = pattern.slice(0, -2);
+      const subdirPath = join(memoryDir, subdir);
+      if (existsSync(subdirPath)) {
+        // Add all .md files in the subdirectory
+        try {
+          const files = readdirSync(subdirPath);
+          for (const file of files) {
+            if (file.endsWith('.md')) {
+              resolved.push(join(subdirPath, file));
+            }
+          }
+        } catch {
+          // Ignore read errors
+        }
+      }
+    } else {
+      // Direct path
+      const fullPath = join(memoryDir, pattern);
+      if (existsSync(fullPath)) {
+        resolved.push(fullPath);
+      }
+    }
+  }
+
+  return resolved;
+}
+
+/**
+ * Resolve execution context for a squad.
+ *
+ * Takes a Squad object and resolves all context references to actual paths:
+ * - MCP config path (three-tier resolution)
+ * - Skill directory paths
+ * - Memory file paths
+ *
+ * @param squad - The squad to resolve context for
+ * @param forceRegenerate - Force MCP config regeneration
+ * @returns Resolved execution context with all paths
+ */
+export function resolveExecutionContext(
+  squad: Squad,
+  forceRegenerate = false
+): ExecutionContext {
+  const ctx = squad.context || {};
+
+  // Resolve MCP config
+  const mcpResolution: McpResolution = resolveMcpConfig(
+    squad.name,
+    ctx.mcp,
+    forceRegenerate
+  );
+
+  // Resolve skill paths
+  const skillPaths: string[] = [];
+  if (ctx.skills) {
+    for (const skill of ctx.skills) {
+      const path = resolveSkillPath(skill);
+      if (path) {
+        skillPaths.push(path);
+      }
+    }
+  }
+
+  // Resolve memory paths
+  const memoryPaths = ctx.memory?.load
+    ? resolveMemoryPaths(ctx.memory.load)
+    : [];
+
+  return {
+    // Copy all SquadContext fields
+    ...ctx,
+    // Add squad name
+    squadName: squad.name,
+    // Add resolved paths
+    resolved: {
+      mcpConfigPath: mcpResolution.path,
+      mcpSource: mcpResolution.source,
+      mcpServers: mcpResolution.servers || [],
+      skillPaths,
+      memoryPaths,
+    },
+  };
 }

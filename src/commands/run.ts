@@ -7,8 +7,11 @@ import {
   loadSquad,
   listAgents,
   loadAgentDefinition,
-  EffortLevel
+  EffortLevel,
+  resolveExecutionContext,
+  Squad,
 } from '../lib/squad-parser.js';
+import { resolveMcpConfigPath } from '../lib/mcp-config.js';
 import {
   buildContextFromSquad,
   validateExecution,
@@ -94,14 +97,23 @@ function generateExecutionId(): string {
 }
 
 /**
- * Select MCP config based on squad name
- * Different squads need different tools - keeps main sessions lean
+ * Select MCP config based on squad name and context
+ * Uses three-tier resolution:
+ * 1. Squad context.mcp from SQUAD.md frontmatter (dynamic)
+ * 2. User override at ~/.claude/mcp-configs/{squad}.json
+ * 3. Legacy hardcoded mapping (backward compatibility)
+ * 4. Fallback to ~/.claude.json
  */
-function selectMcpConfig(squadName: string): string {
+function selectMcpConfig(squadName: string, squad?: Squad | null): string {
+  // Tier 1 & 2: Use new context-based resolution if squad has context.mcp
+  if (squad?.context?.mcp && squad.context.mcp.length > 0) {
+    return resolveMcpConfigPath(squadName, squad.context.mcp);
+  }
+
+  // Tier 3: Legacy hardcoded mapping (for squads without context block)
   const home = process.env.HOME || '';
   const configsDir = join(home, '.claude', 'mcp-configs');
 
-  // Squad → MCP config mapping
   const squadConfigs: Record<string, string> = {
     website: 'website.json',      // chrome-devtools, img-gen
     research: 'research.json',    // web-fetch
@@ -118,7 +130,7 @@ function selectMcpConfig(squadName: string): string {
     }
   }
 
-  // Fallback to default user config
+  // Tier 4: Fallback to default user config
   return join(home, '.claude.json');
 }
 
@@ -816,8 +828,11 @@ async function executeWithClaude(
   const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
   const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
 
-  // Select MCP config based on squad (keeps main sessions lean)
-  const mcpConfigPath = selectMcpConfig(squadName);
+  // Load squad for context-based MCP config resolution
+  const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
+
+  // Select MCP config based on squad context (dynamic) or legacy mapping (fallback)
+  const mcpConfigPath = selectMcpConfig(squadName, squad);
 
   // Build execution context for telemetry
   const execContext: ExecutionContext = {
