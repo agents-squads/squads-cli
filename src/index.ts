@@ -15,6 +15,27 @@ export interface Squad {
   mission?: string;
 }
 
+// Context Condenser - for programmatic API usage
+export {
+  ContextCondenser,
+  createCondenser,
+  CondenserConfig,
+  CondenserResult,
+  CondenserMessage,
+  TokenTracker,
+  CompressionLevel,
+  ThresholdConfig,
+  estimateTokens,
+  estimateMessageTokens,
+  createTracker,
+  updateTracker,
+  getCompressionLevel,
+  formatTrackerStatus,
+  FileDeduplicator,
+  TokenPruner,
+  ConversationSummarizer,
+} from './lib/condenser/index.js';
+
 // Note: Programmatic API (loadSquad, runAgent) not yet implemented.
 // Use the CLI for squad execution: `squads run <squad>`
 // See: https://github.com/agents-squads/squads-cli for documentation.
