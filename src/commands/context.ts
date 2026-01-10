@@ -3,6 +3,7 @@ import {
   loadSquad,
   listSquads,
   SquadContext,
+  resolveExecutionContext,
 } from '../lib/squad-parser.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
@@ -13,6 +14,7 @@ import {
   box,
   padEnd,
   writeLine,
+  icons,
 } from '../lib/terminal.js';
 
 interface ContextOptions {
@@ -199,5 +201,113 @@ export async function contextListCommand(
   }
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  writeLine();
+}
+
+interface ActivateOptions {
+  dryRun?: boolean;
+  force?: boolean;
+  json?: boolean;
+}
+
+/**
+ * Activate execution context for a squad.
+ * Resolves MCP config, skills, and memory paths.
+ * Generates squad-scoped .mcp.json if needed.
+ */
+export async function contextActivateCommand(
+  squadName: string,
+  options: ActivateOptions = {}
+): Promise<void> {
+  await track(Events.CLI_CONTEXT, { squad: squadName, action: 'activate' });
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) {
+    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
+    process.exit(1);
+  }
+
+  const squad = loadSquad(squadName);
+  if (!squad) {
+    writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
+    process.exit(1);
+  }
+
+  // Resolve execution context
+  const execContext = resolveExecutionContext(squad, options.force);
+
+  if (options.json) {
+    console.log(JSON.stringify(execContext, null, 2));
+    return;
+  }
+
+  if (options.dryRun) {
+    writeLine();
+    writeLine(`  ${gradient('squads')} ${colors.dim}context activate${RESET} ${colors.cyan}${squadName}${RESET} ${colors.yellow}(dry run)${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Would resolve:${RESET}`);
+    writeLine();
+    writeLine(`  ${bold}MCP Config${RESET}`);
+    writeLine(`    Path:    ${execContext.resolved.mcpConfigPath}`);
+    writeLine(`    Source:  ${execContext.resolved.mcpSource}`);
+    if (execContext.resolved.mcpServers.length > 0) {
+      writeLine(`    Servers: ${execContext.resolved.mcpServers.join(', ')}`);
+    }
+
+    if (execContext.resolved.skillPaths.length > 0) {
+      writeLine();
+      writeLine(`  ${bold}Skills${RESET}`);
+      for (const path of execContext.resolved.skillPaths) {
+        writeLine(`    ${colors.dim}${path}${RESET}`);
+      }
+    }
+
+    if (execContext.resolved.memoryPaths.length > 0) {
+      writeLine();
+      writeLine(`  ${bold}Memory${RESET}`);
+      for (const path of execContext.resolved.memoryPaths) {
+        writeLine(`    ${colors.dim}${path}${RESET}`);
+      }
+    }
+
+    writeLine();
+    writeLine(`  ${colors.dim}Run without --dry-run to generate config${RESET}`);
+    writeLine();
+    return;
+  }
+
+  // Actually activate (generate config if needed)
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}context activate${RESET} ${colors.cyan}${squadName}${RESET}`);
+  writeLine();
+
+  // Show what was resolved/generated
+  const sourceLabel = execContext.resolved.mcpSource === 'generated'
+    ? `${colors.green}generated${RESET}`
+    : execContext.resolved.mcpSource === 'user-override'
+    ? `${colors.cyan}user override${RESET}`
+    : `${colors.dim}fallback${RESET}`;
+
+  writeLine(`  ${icons.success} MCP config: ${sourceLabel}`);
+  writeLine(`    ${colors.dim}${execContext.resolved.mcpConfigPath}${RESET}`);
+
+  if (execContext.resolved.mcpServers.length > 0) {
+    writeLine(`    ${colors.dim}Servers: ${execContext.resolved.mcpServers.join(', ')}${RESET}`);
+  }
+
+  if (execContext.resolved.skillPaths.length > 0) {
+    writeLine(`  ${icons.success} Skills: ${execContext.resolved.skillPaths.length} resolved`);
+  }
+
+  if (execContext.resolved.memoryPaths.length > 0) {
+    writeLine(`  ${icons.success} Memory: ${execContext.resolved.memoryPaths.length} files`);
+  }
+
+  writeLine();
+  writeLine(`  ${colors.dim}To use this context manually:${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} claude --mcp-config '${execContext.resolved.mcpConfigPath}'`);
+  writeLine();
+  writeLine(`  ${colors.dim}Or run with squads:${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET}`);
   writeLine();
 }

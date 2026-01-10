@@ -97,7 +97,7 @@ import {
 import { registerTriggerCommand } from './commands/trigger.js';
 import { registerSkillCommand } from './commands/skill.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
-import { contextShowCommand, contextListCommand } from './commands/context.js';
+import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
 import {
@@ -241,6 +241,14 @@ env
   .description('List execution environment for all squads')
   .option('--json', 'Output as JSON')
   .action(contextListCommand);
+
+env
+  .command('activate <squad>')
+  .description('Activate execution context for a squad (generates scoped MCP config)')
+  .option('-d, --dry-run', 'Show what would be generated without writing files')
+  .option('-f, --force', 'Force regeneration even if config exists')
+  .option('--json', 'Output as JSON')
+  .action(contextActivateCommand);
 
 // Cost command - cost introspection for self-improvement
 program
