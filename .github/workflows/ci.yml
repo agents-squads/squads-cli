@@ -34,16 +34,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test with coverage
-        run: npm run test:coverage
-
-      - name: Upload coverage (Node 20 only)
-        if: matrix.node-version == 20
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage/
-          retention-days: 7
+      - name: Test
+        run: npm run test
 
       - name: Upload build artifacts (Node 20 only)
         if: matrix.node-version == 20
