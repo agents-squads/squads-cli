@@ -1,19 +1,29 @@
 // squads-cli library exports
 export { version } from './version.js';
 
-// Types
-export interface Agent {
-  name: string;
-  model: string;
-  tools: string[];
-  trigger: 'manual' | 'scheduled' | 'event';
-}
-
-export interface Squad {
-  name: string;
-  agents: Agent[];
-  mission?: string;
-}
+// SQUAD.md Parser - parse and work with SQUAD.md files programmatically
+// See: https://github.com/agents-squads/agents-squads/blob/main/SQUAD.md
+export {
+  // Core functions
+  parseSquadFile,
+  loadSquad,
+  loadAgentDefinition,
+  listSquads,
+  listAgents,
+  findSquadsDir,
+  findProjectRoot,
+  // Goal management
+  addGoalToSquad,
+  updateGoalInSquad,
+  // Types
+  type Squad,
+  type Agent,
+  type Goal,
+  type Pipeline,
+  type SquadContext,
+  type SquadFrontmatter,
+  type EffortLevel,
+} from './lib/squad-parser.js';
 
 // Context Condenser - for programmatic API usage
 export {
@@ -36,6 +46,10 @@ export {
   ConversationSummarizer,
 } from './lib/condenser/index.js';
 
-// Note: Programmatic API (loadSquad, runAgent) not yet implemented.
-// Use the CLI for squad execution: `squads run <squad>`
-// See: https://github.com/agents-squads/squads-cli for documentation.
+// Usage:
+//   import { loadSquad, parseSquadFile } from 'squads-cli';
+//   const squad = loadSquad('engineering');
+//   console.log(squad.agents);
+//
+// CLI: `squads run <squad>` for execution
+// Docs: https://github.com/agents-squads/squads-cli
