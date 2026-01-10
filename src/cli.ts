@@ -186,6 +186,17 @@ program
   .option('--use-api', 'Use API credits instead of subscription')
   .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
   .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
+  .addHelpText('after', `
+Examples:
+  $ squads run engineering              Run whole squad (shows agent list)
+  $ squads run engineering/code-review  Run specific agent (slash notation)
+  $ squads run engineering -a code-review  Same as above (flag notation)
+  $ squads run engineering --dry-run    Preview what would run
+  $ squads run engineering --execute    Execute via Claude CLI
+  $ squads run engineering --parallel   Run all agents in parallel (tmux)
+  $ squads run engineering --lead       Single orchestrator with Task tool
+  $ squads run engineering -f           Run in foreground (blocks terminal)
+`)
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
 // List command
@@ -397,6 +408,14 @@ program
 const memory = program
   .command('memory')
   .description('Query and manage squad memory')
+  .addHelpText('after', `
+Examples:
+  $ squads memory query "pricing"     Search all memory for "pricing"
+  $ squads memory show engineering    View engineering squad's memory
+  $ squads memory update research "Found: MCP adoption at 15%"
+  $ squads memory list                List all memory entries
+  $ squads memory sync --push         Sync and push to git
+`)
   .action(() => {
     memory.outputHelp();
   });
