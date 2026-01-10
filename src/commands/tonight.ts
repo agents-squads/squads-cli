@@ -132,8 +132,10 @@ function launchAgent(
   const sessionName = `squads-tonight-${sessionId}`;
 
   // Build the command with logging
+  // Unset ANTHROPIC_API_KEY to force subscription auth (not API credits)
   const claudeCmd = [
     `cd '${projectRoot}'`,
+    `unset ANTHROPIC_API_KEY`,
     `echo "=== Tonight Session: ${target} ===" >> '${logFile}'`,
     `echo "Started: $(date)" >> '${logFile}'`,
     `claude --dangerously-skip-permissions -p 'You are running as part of an overnight autonomous session. Execute your tasks efficiently. If you encounter errors, document them clearly and move on. Do not ask for user input.' -- "Run squad: ${target}" 2>&1 | tee -a '${logFile}'`,
