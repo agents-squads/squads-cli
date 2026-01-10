@@ -10,6 +10,7 @@ import { track, Events } from '../lib/telemetry.js';
 interface InitOptions {
   template: string;
   skipInfra?: boolean;
+  force?: boolean;
 }
 
 // Simple yes/no prompt
@@ -387,8 +388,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   console.log();
 
-  if (hasMissingRequired) {
+  if (hasMissingRequired && !options.force) {
     console.log(chalk.yellow('  Install missing tools to continue, then run squads init again.'));
+    console.log(chalk.dim('  Or use --force to skip requirement checks.'));
     console.log();
 
     // Track init failure for analytics

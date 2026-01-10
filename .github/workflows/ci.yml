@@ -86,7 +86,7 @@ jobs:
           mkdir -p /tmp/test-init
           cd /tmp/test-init
           git init
-          node $GITHUB_WORKSPACE/dist/cli.js init --skip-infra <<< ""
+          node $GITHUB_WORKSPACE/dist/cli.js init --skip-infra --force <<< ""
 
           # Verify expected files exist
           test -f CLAUDE.md || (echo "CLAUDE.md missing" && exit 1)
