@@ -431,10 +431,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/squads/demo',
       '.agents/memory',
       '.agents/memory/getting-started',
+      '.agents/memory/general/shared', // For cross-squad learnings
       '.agents/outputs',
       '.claude',
       '.claude/skills',
       '.claude/skills/squads-workflow',
+      '.claude/skills/squads-learn',
     ];
 
     for (const dir of dirs) {
@@ -624,6 +626,59 @@ When a task could be automated:
       squadsWorkflowSkill
     );
 
+    // Create squads-learn skill
+    const squadsLearnSkill = `---
+name: squads-learn
+description: Capture learnings after completing work. Use when finishing a task, fixing a bug, discovering a pattern, or learning something worth remembering for future sessions.
+---
+
+# Capture Learnings
+
+After completing work, capture what you learned so future sessions can benefit.
+
+## When to Use
+
+- After fixing a bug - What was the root cause?
+- After completing a feature - What approach worked?
+- After research - What's the key insight?
+- When you notice a pattern - Something that works consistently
+
+## Quick Commands
+
+\`\`\`bash
+# Capture a learning
+squads learn "The auth token needs refresh after 1 hour, not on 401"
+
+# With squad and category
+squads learn "Always check memory first" --squad engineering --category pattern
+
+# View learnings
+squads learnings show engineering
+squads learnings search "auth"
+\`\`\`
+
+## Categories
+
+- \`success\` - Something that worked well
+- \`failure\` - Something that didn't work (learn from mistakes)
+- \`pattern\` - A reusable approach
+- \`tip\` - General advice
+
+## End of Task Checklist
+
+Before marking done, ask:
+1. What worked that I should remember?
+2. What didn't work that I should avoid?
+3. Is there a pattern worth capturing?
+
+If yes → \`squads learn "<insight>"\`
+`;
+
+    await fs.writeFile(
+      path.join(cwd, '.claude/skills/squads-learn/SKILL.md'),
+      squadsLearnSkill
+    );
+
     // Create seed memory
     const seedMemory = `# Getting Started with Squads
 
@@ -707,7 +762,7 @@ When a task could be automated:
             hooks: [
               {
                 type: 'command',
-                command: 'squads memory sync',
+                command: 'squads memory sync && echo "\\n💡 Capture learnings: squads learn \\"<what you learned>\\"\\n"',
                 timeout: 15,
               },
             ],
@@ -891,9 +946,9 @@ squads goal list       # View goals
   console.log(chalk.dim('  Created:'));
   console.log(chalk.dim('  • .agents/squads/demo/     - Demo squad with 2 agents'));
   console.log(chalk.dim('  • .agents/BUSINESS_BRIEF   - Business context template'));
-  console.log(chalk.dim('  • .agents/memory/          - Seed memory'));
+  console.log(chalk.dim('  • .agents/memory/          - Seed memory + learnings'));
   console.log(chalk.dim('  • .claude/settings.json    - Claude Code hooks'));
-  console.log(chalk.dim('  • .claude/skills/          - Squads workflow skill'));
+  console.log(chalk.dim('  • .claude/skills/          - Workflow + learn skills'));
   console.log(chalk.dim('  • CLAUDE.md                - Agent instructions'));
   console.log();
 

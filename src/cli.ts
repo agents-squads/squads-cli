@@ -66,6 +66,11 @@ import {
   feedbackShowCommand,
   feedbackStatsCommand
 } from './commands/feedback.js';
+import {
+  learnCommand,
+  learnShowCommand,
+  learnSearchCommand
+} from './commands/learn.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { issuesCommand } from './commands/issues.js';
 import { solveIssuesCommand } from './commands/solve-issues.js';
@@ -536,6 +541,34 @@ feedback
   .command('stats')
   .description('Show feedback summary across all squads')
   .action(feedbackStatsCommand);
+
+// Learn command - capture learnings for autonomous improvement
+program
+  .command('learn <insight>')
+  .description('Capture a learning for future sessions')
+  .option('-s, --squad <squad>', 'Squad to associate learning with')
+  .option('-c, --category <category>', 'Category: success, failure, pattern, tip')
+  .option('-t, --tags <tags>', 'Comma-separated tags')
+  .option('--context <context>', 'Additional context')
+  .action(learnCommand);
+
+const learn = program
+  .command('learnings')
+  .description('View and search learnings');
+
+learn
+  .command('show <squad>')
+  .description('Show learnings for a squad')
+  .option('-n, --limit <n>', 'Number to show', '10')
+  .option('-c, --category <category>', 'Filter by category')
+  .option('--tag <tag>', 'Filter by tag')
+  .action(learnShowCommand);
+
+learn
+  .command('search <query>')
+  .description('Search learnings across all squads')
+  .option('-n, --limit <n>', 'Max results', '10')
+  .action(learnSearchCommand);
 
 // Sessions command group - list active sessions and history
 const sessions = program
