@@ -310,7 +310,7 @@ export async function memorySearchCommand(
       writeLine();
       writeLine(`  ${colors.dim}Conversations are captured via hooks. Make sure:${RESET}`);
       writeLine(`  ${colors.dim}  1. squads-bridge is running (docker compose up)${RESET}`);
-      writeLine(`  ${colors.dim}  2. engram hook is configured in Claude settings${RESET}`);
+      writeLine(`  ${colors.dim}  2. telemetry hooks are configured in Claude settings${RESET}`);
       writeLine();
       return;
     }

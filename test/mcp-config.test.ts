@@ -18,25 +18,22 @@ describe('MCP Config', () => {
   describe('Server Registry', () => {
     it('lists known servers', () => {
       const servers = listKnownServers();
-      expect(servers).toContain('chrome-devtools');
-      expect(servers).toContain('firecrawl');
-      expect(servers).toContain('supabase');
       expect(servers).toContain('x-mcp');
-      expect(servers.length).toBeGreaterThan(5);
+      expect(servers).toContain('nano-banana');
+      expect(servers.length).toBe(2);
     });
 
     it('checks if server is known', () => {
-      expect(isKnownServer('chrome-devtools')).toBe(true);
-      expect(isKnownServer('firecrawl')).toBe(true);
+      expect(isKnownServer('x-mcp')).toBe(true);
+      expect(isKnownServer('nano-banana')).toBe(true);
       expect(isKnownServer('unknown-server')).toBe(false);
     });
 
     it('gets server definition', () => {
-      const chromeDef = getServerDef('chrome-devtools');
-      expect(chromeDef).toBeDefined();
-      expect(chromeDef?.type).toBe('stdio');
-      expect(chromeDef?.command).toBe('npx');
-      expect(chromeDef?.args).toContain('chrome-devtools-mcp');
+      const xDef = getServerDef('x-mcp');
+      expect(xDef).toBeDefined();
+      expect(xDef?.type).toBe('stdio');
+      expect(xDef?.command).toBe('python3');
     });
 
     it('returns undefined for unknown server', () => {
@@ -46,16 +43,16 @@ describe('MCP Config', () => {
 
   describe('generateMcpConfig', () => {
     it('generates config from known servers', () => {
-      const config = generateMcpConfig(['chrome-devtools', 'firecrawl']);
+      const config = generateMcpConfig(['x-mcp', 'nano-banana']);
 
       expect(config.mcpServers).toBeDefined();
-      expect(config.mcpServers['chrome-devtools']).toBeDefined();
-      expect(config.mcpServers['firecrawl']).toBeDefined();
+      expect(config.mcpServers['x-mcp']).toBeDefined();
+      expect(config.mcpServers['nano-banana']).toBeDefined();
       expect(Object.keys(config.mcpServers)).toHaveLength(2);
     });
 
     it('skips unknown servers silently', () => {
-      const config = generateMcpConfig(['chrome-devtools', 'unknown-server', 'firecrawl']);
+      const config = generateMcpConfig(['x-mcp', 'unknown-server', 'nano-banana']);
 
       expect(Object.keys(config.mcpServers)).toHaveLength(2);
       expect(config.mcpServers['unknown-server']).toBeUndefined();
@@ -67,14 +64,14 @@ describe('MCP Config', () => {
     });
 
     it('preserves server definition structure', () => {
-      const config = generateMcpConfig(['supabase']);
-      const supabase = config.mcpServers['supabase'];
+      const config = generateMcpConfig(['nano-banana']);
+      const nanoBanana = config.mcpServers['nano-banana'];
 
-      expect(supabase.type).toBe('stdio');
-      expect(supabase.command).toBe('npx');
-      expect(supabase.args).toContain('@supabase/mcp-server-supabase@latest');
-      expect(supabase.env).toBeDefined();
-      expect(supabase.env?.SUPABASE_ACCESS_TOKEN).toBe('${SUPABASE_ACCESS_TOKEN}');
+      expect(nanoBanana.type).toBe('stdio');
+      expect(nanoBanana.command).toBe('npx');
+      expect(nanoBanana.args).toContain('nano-banana-mcp');
+      expect(nanoBanana.env).toBeDefined();
+      expect(nanoBanana.env?.OPENAI_API_KEY).toBe('${OPENAI_API_KEY}');
     });
   });
 
@@ -150,11 +147,11 @@ describe('MCP Config', () => {
     });
 
     it('generates config from context.mcp', () => {
-      const result = resolveMcpConfig('test-squad', ['chrome-devtools', 'firecrawl']);
+      const result = resolveMcpConfig('test-squad', ['x-mcp', 'nano-banana']);
 
       expect(result.source).toBe('generated');
-      expect(result.servers).toContain('chrome-devtools');
-      expect(result.servers).toContain('firecrawl');
+      expect(result.servers).toContain('x-mcp');
+      expect(result.servers).toContain('nano-banana');
       expect(result.generated).toBe(true);
       expect(result.path).toContain('test-squad.mcp.json');
 
@@ -167,7 +164,7 @@ describe('MCP Config', () => {
       const userConfig = join(testHome, '.claude', 'mcp-configs', 'test-squad.json');
       writeMcpConfig({ mcpServers: { custom: { type: 'stdio', command: 'test', args: [] } } }, userConfig);
 
-      const result = resolveMcpConfig('test-squad', ['chrome-devtools']);
+      const result = resolveMcpConfig('test-squad', ['x-mcp']);
 
       expect(result.source).toBe('user-override');
       expect(result.path).toBe(userConfig);
@@ -176,23 +173,23 @@ describe('MCP Config', () => {
 
     it('uses existing generated config without regenerating', () => {
       // First call generates
-      const first = resolveMcpConfig('test-squad', ['chrome-devtools']);
+      const first = resolveMcpConfig('test-squad', ['x-mcp']);
       expect(first.generated).toBe(true);
 
       // Second call uses existing
-      const second = resolveMcpConfig('test-squad', ['chrome-devtools']);
+      const second = resolveMcpConfig('test-squad', ['x-mcp']);
       expect(second.generated).toBe(false);
       expect(second.path).toBe(first.path);
     });
 
     it('regenerates when force flag is set', () => {
       // First call generates
-      resolveMcpConfig('test-squad', ['chrome-devtools']);
+      resolveMcpConfig('test-squad', ['x-mcp']);
 
       // Second call with force regenerates
-      const result = resolveMcpConfig('test-squad', ['firecrawl'], true);
+      const result = resolveMcpConfig('test-squad', ['nano-banana'], true);
       expect(result.generated).toBe(true);
-      expect(result.servers).toContain('firecrawl');
+      expect(result.servers).toContain('nano-banana');
     });
   });
 
@@ -205,7 +202,7 @@ describe('MCP Config', () => {
         process.env.HOME = testHome;
         mkdirSync(join(testHome, '.claude', 'contexts'), { recursive: true });
 
-        const path = resolveMcpConfigPath('test-squad', ['chrome-devtools']);
+        const path = resolveMcpConfigPath('test-squad', ['x-mcp']);
 
         expect(typeof path).toBe('string');
         expect(path).toContain('test-squad.mcp.json');

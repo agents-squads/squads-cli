@@ -81,8 +81,8 @@ const SERVICES: Record<string, ServiceInfo> = {
     ],
   },
   mem0: {
-    name: 'Mem0 (Engram)',
-    description: 'Extracts and stores memories from conversations',
+    name: 'Mem0',
+    description: 'Memory extraction and search',
     required: false,
     healthUrl: 'http://localhost:8000/health',
     envVars: ['MEM0_API_URL'],
@@ -93,6 +93,18 @@ const SERVICES: Record<string, ServiceInfo> = {
       'Mem0 requires an LLM provider. Configure in docker/.env:',
       '  LLM_PROVIDER=ollama   # For local (free)',
       '  LLM_PROVIDER=openai   # Requires OPENAI_API_KEY',
+    ],
+  },
+  scheduler: {
+    name: 'Scheduler API',
+    description: 'Trigger evaluation and agent execution',
+    required: false,
+    healthUrl: 'http://localhost:8090/health',
+    envVars: [],
+    setupGuide: [
+      'Run: docker compose -f docker-compose.engram.yml up -d scheduler-api scheduler-worker',
+      '',
+      'Scheduler runs agents on triggers defined in SQUAD.md',
     ],
   },
   langfuse: {
@@ -601,6 +613,8 @@ BRIDGE_PORT=8088
     { name: 'squads-langfuse', required: false },
     { name: 'squads-otel-collector', required: false },
     { name: 'squads-mem0', required: false },
+    { name: 'squads-scheduler-api', required: false },
+    { name: 'squads-scheduler-worker', required: false },
   ];
 
   const statuses = containers.map(c => ({ ...c, ...getContainerStatus(c.name) }));
@@ -710,6 +724,8 @@ export async function stackStatusCommand(): Promise<void> {
     { name: 'squads-bridge', service: 'Bridge API' },
     { name: 'squads-langfuse', service: 'Langfuse' },
     { name: 'squads-otel-collector', service: 'Telemetry' },
+    { name: 'squads-scheduler-api', service: 'Scheduler' },
+    { name: 'squads-scheduler-worker', service: 'Worker' },
   ];
 
   const w = { service: 12, container: 22, status: 12 };
@@ -850,7 +866,7 @@ export async function stackHealthCommand(verbose = false): Promise<void> {
     return;
   }
 
-  // All containers including engram stack
+  // All containers including scheduler
   const containers = [
     { name: 'squads-postgres', service: 'postgres', healthUrl: '', critical: true },
     { name: 'squads-redis', service: 'redis', healthUrl: '', critical: true },
@@ -859,7 +875,8 @@ export async function stackHealthCommand(verbose = false): Promise<void> {
     { name: 'squads-otel-collector', service: 'otel', healthUrl: '', critical: false },
     { name: 'squads-langfuse', service: 'langfuse', healthUrl: 'http://localhost:3100/api/public/health', critical: false },
     { name: 'squads-mem0', service: 'mem0', healthUrl: 'http://localhost:8000/health', critical: false },
-    { name: 'squads-engram-mcp', service: 'engram', healthUrl: 'http://localhost:8080/', critical: false },
+    { name: 'squads-scheduler-api', service: 'scheduler', healthUrl: 'http://localhost:8090/health', critical: false },
+    { name: 'squads-scheduler-worker', service: 'worker', healthUrl: '', critical: false },
   ];
 
   let hasFailures = false;
@@ -954,7 +971,9 @@ export function stackLogsCommand(service: string, tail = 50): void {
     otel: 'squads-otel-collector',
     langfuse: 'squads-langfuse',
     mem0: 'squads-mem0',
-    engram: 'squads-engram-mcp',
+    scheduler: 'squads-scheduler-api',
+    worker: 'squads-scheduler-worker',
+    ngrok: 'squads-ngrok',
   };
 
   const container = containerMap[service] || `squads-${service}`;
