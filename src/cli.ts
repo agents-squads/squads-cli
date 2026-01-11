@@ -101,6 +101,7 @@ import {
   applyStackConfig
 } from './commands/stack.js';
 import { registerTriggerCommand } from './commands/trigger.js';
+import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerSkillCommand } from './commands/skill.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
@@ -776,6 +777,9 @@ stack
 
 // Trigger command group - smart value-driven triggers
 registerTriggerCommand(program);
+
+// Autonomous command group - scheduled routines
+registerAutonomousCommand(program);
 
 // Skill command group - Agent Skills API
 registerSkillCommand(program);

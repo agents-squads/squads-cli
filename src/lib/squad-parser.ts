@@ -74,6 +74,27 @@ export interface Goal {
   metrics?: string[];
 }
 
+/**
+ * Routine definition for autonomous scheduled execution.
+ * Defined in SQUAD.md under ### Routines yaml block.
+ */
+export interface Routine {
+  /** Unique name for the routine */
+  name: string;
+  /** Cron schedule (e.g., "0 8 * * *" for daily 8am) */
+  schedule: string;
+  /** Agents to run in this batch */
+  agents: string[];
+  /** Model to use (defaults to squad default or sonnet) */
+  model?: 'opus' | 'sonnet' | 'haiku';
+  /** Whether the routine is enabled */
+  enabled?: boolean;
+  /** Priority for execution ordering (lower = higher priority) */
+  priority?: number;
+  /** Minimum cooldown between runs (e.g., "6 hours") */
+  cooldown?: string;
+}
+
 export interface Squad {
   name: string;
   mission: string;
@@ -84,6 +105,8 @@ export interface Squad {
     event: string[];
     manual: string[];
   };
+  /** Autonomous routines for scheduled batch execution */
+  routines: Routine[];
   dependencies: string[];
   outputPath: string;
   goals: Goal[];
@@ -217,6 +240,7 @@ export function parseSquadFile(filePath: string): Squad {
     agents: [],
     pipelines: [],
     triggers: { scheduled: [], event: [], manual: [] },
+    routines: [],
     dependencies: [],
     outputPath: '',
     goals: [],
