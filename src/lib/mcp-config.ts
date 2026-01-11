@@ -39,7 +39,7 @@ const SERVER_REGISTRY: Record<string, McpServerDef> = {
   // Social APIs (no good CLI alternative)
   'web-fetch': {
     type: 'stdio',
-    command: 'python3',
+    command: '~/.claude/mcps/web-fetch/.venv/bin/python',
     args: ['~/.claude/mcps/web-fetch/server.py'],
     env: {
       X_BEARER_TOKEN: '${X_BEARER_TOKEN}',
