@@ -39,7 +39,7 @@ const SERVER_REGISTRY: Record<string, McpServerDef> = {
   // Social APIs (no good CLI alternative)
   'x-mcp': {
     type: 'stdio',
-    command: 'python3',
+    command: '~/.claude/mcps/x-mcp/.venv/bin/python',
     args: ['~/.claude/mcps/x-mcp/server.py'],
     env: {
       X_BEARER_TOKEN: '${X_BEARER_TOKEN}',
