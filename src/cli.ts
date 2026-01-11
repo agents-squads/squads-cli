@@ -477,11 +477,12 @@ memory
 
 memory
   .command('sync')
-  .description('Sync memory from git: pull remote changes, process commits, optionally push')
+  .description('Sync memory from git: pull remote changes, process commits, optionally push to Postgres')
   .option('-v, --verbose', 'Show detailed commit info')
   .option('-p, --push', 'Push local memory changes to remote after sync')
   .option('--no-pull', 'Skip pulling from remote')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull }));
+  .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres }));
 
 memory
   .command('search <query>')

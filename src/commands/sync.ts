@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 import { join } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
 import { findSquadsDir } from '../lib/squad-parser.js';
+import { syncAllCycleData, isPostgresAvailable, closeCycleSyncPool, SyncResult } from '../lib/cycle-sync.js';
 import {
   colors,
   RESET,
@@ -276,8 +277,8 @@ function gitPushMemory(): { success: boolean; output: string } {
   }
 }
 
-export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull });
+export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean } = {}): Promise<void> {
+  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres });
   const memoryDir = findMemoryDir();
   const _squadsDir = findSquadsDir();
 
@@ -385,11 +386,61 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     writeLine();
   }
 
+  // Step 4: Sync to Postgres if requested
+  if (options.postgres) {
+    writeLine(`  ${icons.progress} Syncing cycle data to Postgres...`);
+
+    const pgAvailable = await isPostgresAvailable();
+    if (!pgAvailable) {
+      writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
+      writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+      writeLine();
+    } else {
+      try {
+        const result: SyncResult = await syncAllCycleData();
+
+        const totalSynced = result.goals.synced + result.feedback.synced + result.kpis.synced + result.learnings.synced;
+        const totalErrors = result.goals.errors + result.feedback.errors + result.kpis.errors + result.learnings.errors;
+
+        if (totalSynced > 0 || totalErrors > 0) {
+          writeLine(`  ${icons.success} Synced to Postgres ${colors.dim}(${result.duration}ms)${RESET}`);
+          if (result.goals.synced > 0) {
+            writeLine(`    ${colors.dim}Goals:${RESET} ${colors.cyan}${result.goals.synced}${RESET}`);
+          }
+          if (result.feedback.synced > 0) {
+            writeLine(`    ${colors.dim}Feedback:${RESET} ${colors.cyan}${result.feedback.synced}${RESET}`);
+          }
+          if (result.kpis.synced > 0) {
+            writeLine(`    ${colors.dim}KPIs:${RESET} ${colors.cyan}${result.kpis.synced}${RESET}`);
+          }
+          if (result.learnings.synced > 0) {
+            writeLine(`    ${colors.dim}Learnings:${RESET} ${colors.cyan}${result.learnings.synced}${RESET}`);
+          }
+          if (totalErrors > 0) {
+            writeLine(`    ${colors.red}Errors:${RESET} ${totalErrors}`);
+          }
+        } else {
+          writeLine(`  ${icons.success} ${colors.dim}No new cycle data to sync${RESET}`);
+        }
+        writeLine();
+
+        await closeCycleSyncPool();
+      } catch (err) {
+        writeLine(`  ${icons.error} ${colors.red}Postgres sync failed${RESET}`);
+        if (process.env.DEBUG) console.error(err);
+        writeLine();
+      }
+    }
+  }
+
   // Show helpful commands
   writeLine(`  ${colors.dim}$${RESET} squads memory show ${colors.cyan}<squad>${RESET}   ${colors.dim}View updated memory${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads status               ${colors.dim}See all squads${RESET}`);
   if (!doPush && updated > 0) {
     writeLine(`  ${colors.dim}$${RESET} squads memory sync --push   ${colors.dim}Push changes to remote${RESET}`);
+  }
+  if (!options.postgres) {
+    writeLine(`  ${colors.dim}$${RESET} squads memory sync --postgres  ${colors.dim}Sync to Postgres${RESET}`);
   }
   writeLine();
 }

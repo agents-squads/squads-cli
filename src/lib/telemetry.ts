@@ -290,6 +290,9 @@ export const Events = {
   CLI_KPI_INSIGHTS: 'cli.kpi.insights',
   CLI_KPI_LIST: 'cli.kpi.list',
 
+  // Cycle Sync
+  CLI_SYNC_CYCLE: 'cli.sync.cycle',
+
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',
   CONDENSER_DEDUPE: 'condenser.dedupe',
