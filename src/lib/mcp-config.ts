@@ -31,66 +31,12 @@ export interface McpConfig {
 /**
  * Registry of known MCP servers with their configurations.
  * These can be referenced by name in SQUAD.md context.mcp arrays.
+ *
+ * NOTE: We prefer CLI tools over MCP when possible (less complexity).
+ * MCP is reserved for APIs that don't have good CLI alternatives.
  */
 const SERVER_REGISTRY: Record<string, McpServerDef> = {
-  // Browser/Web tools
-  'chrome-devtools': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['chrome-devtools-mcp', '--isolated', '--headless'],
-    env: {},
-  },
-  'img-gen': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['img-gen-mcp'],
-    env: {},
-  },
-  'firecrawl': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['firecrawl-mcp'],
-    env: {
-      FIRECRAWL_API_KEY: '${FIRECRAWL_API_KEY}',
-    },
-  },
-
-  // Data tools
-  'supabase': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['-y', '@supabase/mcp-server-supabase@latest', '--read-only'],
-    env: {
-      SUPABASE_ACCESS_TOKEN: '${SUPABASE_ACCESS_TOKEN}',
-    },
-  },
-  'grafana': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['-y', '@leval/mcp-grafana'],
-    env: {
-      GRAFANA_URL: '${GRAFANA_URL}',
-      GRAFANA_SERVICE_ACCOUNT_TOKEN: '${GRAFANA_SERVICE_ACCOUNT_TOKEN}',
-    },
-  },
-
-  // AI/ML tools
-  'huggingface': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['huggingface-mcp'],
-    env: {
-      HF_TOKEN: '${HF_TOKEN}',
-    },
-  },
-  'context7': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['context7-mcp'],
-    env: {},
-  },
-
-  // Social/Research tools
+  // Social APIs (no good CLI alternative)
   'web-fetch': {
     type: 'stdio',
     command: 'python3',
@@ -100,24 +46,17 @@ const SERVER_REGISTRY: Record<string, McpServerDef> = {
     },
   },
 
-  // Telemetry
-  'langfuse-telemetry': {
+  // Multi-model image generation (Grok, Gemini, GPT, etc.)
+  'img-gen': {
     type: 'stdio',
-    command: 'python3',
-    args: ['~/.claude/mcps/langfuse-telemetry/server.py'],
+    command: 'npx',
+    args: ['img-gen-mcp'],
     env: {
-      LANGFUSE_HOST: '${LANGFUSE_HOST}',
-      LANGFUSE_PUBLIC_KEY: '${LANGFUSE_PUBLIC_KEY}',
-      LANGFUSE_SECRET_KEY: '${LANGFUSE_SECRET_KEY}',
+      // Supports multiple providers - configure as needed
+      OPENAI_API_KEY: '${OPENAI_API_KEY}',
+      GEMINI_API_KEY: '${GEMINI_API_KEY}',
+      XAI_API_KEY: '${XAI_API_KEY}',
     },
-  },
-
-  // Analytics
-  'analytics': {
-    type: 'stdio',
-    command: 'python3',
-    args: ['-m', 'mcp_ga4.server'],
-    env: {},
   },
 };
 
