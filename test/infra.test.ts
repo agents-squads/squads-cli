@@ -22,7 +22,6 @@ const TIMEOUT = 10000;
 const SERVICES = {
   postgres: { port: 5433, type: 'tcp' },
   redis: { port: 6379, type: 'tcp' },
-  neo4j: { port: 7474, type: 'http', url: 'http://localhost:7474' },
   bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health' },
   langfuse: { port: 3100, type: 'http', url: 'http://localhost:3100/api/public/health' },
   mem0: { port: 8000, type: 'http', url: 'http://localhost:8000/health' },
@@ -113,10 +112,6 @@ describeInfra('infra', () => {
       expect(isContainerRunning('squads-redis')).toBe(true);
     });
 
-    it('squads-neo4j is running', () => {
-      expect(isContainerRunning('squads-neo4j')).toBe(true);
-    });
-
     it('squads-bridge is running', () => {
       expect(isContainerRunning('squads-bridge')).toBe(true);
     });
@@ -139,11 +134,6 @@ describeInfra('infra', () => {
     it('redis accepts connections on 6379', async () => {
       const open = await isPortOpen(6379);
       expect(open).toBe(true);
-    }, TIMEOUT);
-
-    it('neo4j responds on http://localhost:7474', async () => {
-      const healthy = await isHttpHealthy('http://localhost:7474');
-      expect(healthy).toBe(true);
     }, TIMEOUT);
 
     it('bridge health endpoint responds', async () => {
