@@ -222,7 +222,8 @@ export async function learnShowCommand(
     filtered = filtered.filter(l => l.category === options.category);
   }
   if (options.tag) {
-    filtered = filtered.filter(l => l.tags.includes(options.tag.toLowerCase()));
+    const tag = options.tag.toLowerCase();
+    filtered = filtered.filter(l => l.tags.includes(tag));
   }
 
   // Limit and reverse (most recent first)
