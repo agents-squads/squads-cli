@@ -2,7 +2,7 @@ import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -85,6 +85,7 @@ interface DashboardCache {
   insights: Insights | null;
   sessionSummary: SessionSummary;
   npmStats: NpmStats | null;
+  quotaInfo: QuotaInfo | null;
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
@@ -115,7 +116,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   // Clean up stale file-based sessions (sync, fast)
   cleanupStaleSessions();
 
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats] = await Promise.all([
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo] = await Promise.all([
     // Git stats (local, ~1s)
     Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
@@ -136,10 +137,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     getLiveSessionSummaryAsync(),
     // NPM download stats (network, 2s timeout)
     timeout(fetchNpmStats('squads-cli'), 2000, null),
+    // Quota/autonomy info (local network, 2s timeout)
+    timeout(fetchQuotaInfo(), 2000, null),
   ]);
 
   // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats };
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo };
 
   // === PHASE 2: Build squad metrics (sync, fast) ===
   const squadData: SquadMetrics[] = [];
@@ -320,6 +323,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   // Render sections using cached data (no more network calls)
   renderGitPerformanceCached(cache);
   renderTokenEconomicsCached(cache, goalCount);
+  renderQuotaCached(cache);
   renderInfrastructureCached(cache);
   renderAcquisitionCached(cache);
 
@@ -340,49 +344,47 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     writeLine();
   }
 
-  // Goals section - show 3 most relevant (prioritize squads with recent activity)
+  // Goals section - sorted from tactical (what to do NOW) to strategic (long-term vision)
   const allActiveGoals = squadData.flatMap(s =>
-    s.goals.filter(g => !g.completed).map(g => ({ squad: s.name, goal: g }))
+    s.goals.filter(g => !g.completed).map(g => ({
+      squad: s.name,
+      goal: g,
+      scope: inferScope(g.description)
+    }))
   );
 
   if (allActiveGoals.length > 0) {
-    // Get squads with recent commits for relevance scoring
-    const activeSquads = new Set(gitStats?.recentCommits?.map(c => {
-      // Map repo to squad
-      const repoSquadMap: Record<string, string> = {
-        'agents-squads-web': 'website',
-        'squads-cli': 'cli',
-        'hq': 'engineering',
-        'company': 'company',
-        'product': 'product',
-        'research': 'research',
-        'intelligence': 'intelligence',
-        'customer': 'customer',
-        'finance': 'finance',
-        'marketing': 'marketing',
-      };
-      return repoSquadMap[c.repo] || c.repo;
-    }) || []);
-
-    // Sort goals: active squads first, then by progress
+    // Sort goals: tactical first (actionable NOW) → operational → strategic (vision)
+    const scopeOrder = { tactical: 0, operational: 1, strategic: 2 };
     const sortedGoals = [...allActiveGoals].sort((a, b) => {
-      const aActive = activeSquads.has(a.squad) ? 1 : 0;
-      const bActive = activeSquads.has(b.squad) ? 1 : 0;
-      if (aActive !== bActive) return bActive - aActive;
-      // Then by progress (goals with progress first)
+      // Primary: scope (tactical first)
+      const scopeDiff = scopeOrder[a.scope] - scopeOrder[b.scope];
+      if (scopeDiff !== 0) return scopeDiff;
+      // Secondary: goals with progress first (being worked on)
       const aHasProgress = a.goal.progress ? 1 : 0;
       const bHasProgress = b.goal.progress ? 1 : 0;
       return bHasProgress - aHasProgress;
     });
 
-    writeLine(`  ${bold}Goals${RESET} ${colors.dim}(${allActiveGoals.length} active)${RESET}`);
+    // Group labels for display
+    const scopeLabels = { tactical: 'Next', operational: 'In Progress', strategic: 'Vision' };
+    const scopeIcons = { tactical: icons.active, operational: icons.progress, strategic: icons.empty };
+
+    writeLine(`  ${bold}Goals${RESET} ${colors.dim}(tactical → strategic)${RESET}`);
     writeLine();
 
-    const maxGoals = 3; // Show only 3 most relevant
-    for (const { squad, goal } of sortedGoals.slice(0, maxGoals)) {
+    const maxGoals = 5; // Show more goals since they're now meaningfully ordered
+    let lastScope = '';
+    for (const { squad, goal, scope } of sortedGoals.slice(0, maxGoals)) {
+      // Show scope header when it changes
+      if (scope !== lastScope) {
+        const label = scopeLabels[scope];
+        const labelColor = scope === 'tactical' ? colors.green : scope === 'strategic' ? colors.purple : colors.cyan;
+        writeLine(`  ${labelColor}${label}${RESET}`);
+        lastScope = scope;
+      }
       const hasProgress = goal.progress && goal.progress.length > 0;
-      const isActive = activeSquads.has(squad);
-      const icon = isActive ? icons.active : (hasProgress ? icons.progress : icons.empty);
+      const icon = scopeIcons[scope];
       writeLine(`  ${icon} ${colors.dim}${squad}${RESET} ${truncate(goal.description, 48)}`);
       if (hasProgress) {
         writeLine(`    ${colors.dim}└${RESET} ${colors.green}${truncate(goal.progress!, 52)}${RESET}`);
@@ -465,7 +467,7 @@ async function _saveSnapshot(
     totalIssuesOpen: ghStats?.issuesOpen || 0,
     goalProgressPct: overallProgress,
     costUsd: costs?.totalCost || 0,
-    dailyBudgetUsd: costs?.dailyBudget || 50,
+    dailyBudgetUsd: costs?.dailyBudget || 0, // 0 = not configured (no hardcoded defaults)
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     commits30d: gitStats?.totalCommits || 0,
@@ -1042,25 +1044,26 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
     writeLine();
   }
 
-  // === RATE LIMITS (the real constraint) ===
-  // Anthropic Tier 4 limits (Max plan)
-  // RPM: 4000, TPM: 400k input / 80k output, TPD: 2.5M (informational)
-  writeLine(`  ${colors.dim}Rate Limits${RESET} ${colors.dim}(Tier ${tier})${RESET}`);
+  // === RATE LIMITS (informational - real limits from Anthropic subscription) ===
+  // Limits vary by tier - check /usage for actual subscription limits
+  writeLine(`  ${colors.dim}Rate Limits${RESET} ${colors.dim}(check /usage for real limits)${RESET}`);
 
-  // Calculate usage percentages based on typical Tier 4 limits
-  const tier4Limits = {
-    rpm: 4000,
-    inputTpm: 400000,
-    outputTpm: 80000,
+  // Dynamic tier limits based on configured tier (or estimate from usage patterns)
+  const tierLimits: Record<number, { rpm: number; inputTpm: number; outputTpm: number }> = {
+    1: { rpm: 50, inputTpm: 30000, outputTpm: 8000 },
+    2: { rpm: 1000, inputTpm: 450000, outputTpm: 90000 },
+    3: { rpm: 2000, inputTpm: 800000, outputTpm: 160000 },
+    4: { rpm: 4000, inputTpm: 2000000, outputTpm: 400000 },
   };
+  const limits = tierLimits[tier] || tierLimits[4];
 
   // Estimate current usage rate (calls per minute based on today's activity)
   const now = new Date();
   const minutesElapsed = Math.max((now.getHours() * 60) + now.getMinutes(), 1);
   const callsPerMinute = todayCalls / minutesElapsed;
   const tokensPerMinute = todayTokens / minutesElapsed;
-  const rpmPct = (callsPerMinute / tier4Limits.rpm) * 100;
-  const tpmPct = (tokensPerMinute / (tier4Limits.inputTpm + tier4Limits.outputTpm)) * 100;
+  const rpmPct = (callsPerMinute / limits.rpm) * 100;
+  const tpmPct = (tokensPerMinute / (limits.inputTpm + limits.outputTpm)) * 100;
 
   // Show rate usage bars
   const rpmBar = progressBar(Math.min(rpmPct, 100), 10);
@@ -1068,17 +1071,67 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
   const rpmColor = rpmPct > 75 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
   const tpmColor = tpmPct > 75 ? colors.red : tpmPct > 50 ? colors.yellow : colors.green;
 
-  writeLine(`  RPM  ${rpmBar} ${rpmColor}${callsPerMinute.toFixed(1)}${RESET}${colors.dim}/${tier4Limits.rpm}${RESET}`);
-  writeLine(`  TPM  ${tpmBar} ${tpmColor}${formatK(Math.round(tokensPerMinute))}${RESET}${colors.dim}/${formatK(tier4Limits.inputTpm + tier4Limits.outputTpm)}${RESET}`);
+  writeLine(`  RPM  ${rpmBar} ${rpmColor}${callsPerMinute.toFixed(1)}${RESET}${colors.dim}/${limits.rpm}${RESET}`);
+  writeLine(`  TPM  ${tpmBar} ${tpmColor}${formatK(Math.round(tokensPerMinute))}${RESET}${colors.dim}/${formatK(limits.inputTpm + limits.outputTpm)}${RESET}`);
 
   // Capacity remaining for autonomous work
-  const rpmAvailable = Math.max(0, tier4Limits.rpm - callsPerMinute);
-  const tpmAvailable = Math.max(0, (tier4Limits.inputTpm + tier4Limits.outputTpm) - tokensPerMinute);
+  const rpmAvailable = Math.max(0, limits.rpm - callsPerMinute);
+  const tpmAvailable = Math.max(0, (limits.inputTpm + limits.outputTpm) - tokensPerMinute);
 
   if (rpmAvailable > 100 && tpmAvailable > 10000) {
     writeLine(`  ${colors.green}●${RESET} ${colors.dim}Capacity for autonomous triggers${RESET}`);
   } else if (rpmPct > 75 || tpmPct > 75) {
     writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Rate limits constrained${RESET}`);
+  }
+
+  writeLine();
+}
+
+function renderQuotaCached(cache: DashboardCache): void {
+  const quota = cache.quotaInfo;
+
+  if (!quota || !quota.monthlyQuota || quota.monthlyQuota === 0) {
+    // No quota data or invalid quota - skip section
+    return;
+  }
+
+  // Calculate ROI multiplier (how much value extracted from subscription)
+  const monthlyUsed = quota.monthlyUsed || 0;
+  const monthlyQuota = quota.monthlyQuota;
+  const roiMultiplier = monthlyUsed / monthlyQuota;
+  const roiDisplay = roiMultiplier >= 1 ? `${roiMultiplier.toFixed(1)}x` : `${(roiMultiplier * 100).toFixed(0)}%`;
+
+  // High utilization = good (green), low = room to grow (yellow)
+  const utilizationColor = roiMultiplier >= 2 ? colors.green : roiMultiplier >= 1 ? colors.cyan : roiMultiplier >= 0.5 ? colors.yellow : colors.dim;
+  const roiIcon = roiMultiplier >= 3 ? '🚀' : roiMultiplier >= 2 ? '🎉' : roiMultiplier >= 1 ? '✓' : '';
+
+  writeLine(`  ${bold}Subscription ROI${RESET} ${colors.dim}(autonomy: ${quota.autonomyScore}% ${quota.confidenceLevel})${RESET}`);
+  writeLine();
+
+  // ROI bar - fills up and overflows to show value extraction
+  const barWidth = 24;
+  const fillPct = Math.min(roiMultiplier, 1); // Cap at 100% for the bar
+  const filled = Math.round(fillPct * barWidth);
+  const overflowIndicator = roiMultiplier > 1 ? `${utilizationColor}+${RESET}` : '';
+  const bar = `${utilizationColor}${'█'.repeat(filled)}${colors.dim}${'░'.repeat(barWidth - filled)}${RESET}${overflowIndicator}`;
+
+  writeLine(`  ${bar} ${utilizationColor}${roiDisplay}${RESET} ${roiIcon}`);
+  writeLine(`  ${colors.green}$${monthlyUsed.toFixed(2)}${RESET} ${colors.dim}consumed${RESET} ${colors.dim}/${RESET} $${monthlyQuota}${colors.dim}/mo subscription${RESET}`);
+
+  // ROI interpretation
+  if (roiMultiplier >= 2) {
+    writeLine(`  ${colors.green}Excellent value${RESET} ${colors.dim}- ${roiDisplay} return on $${monthlyQuota} subscription${RESET}`);
+  } else if (roiMultiplier >= 1) {
+    writeLine(`  ${colors.cyan}Good utilization${RESET} ${colors.dim}- maximizing subscription value${RESET}`);
+  } else {
+    const potentialValue = monthlyQuota - monthlyUsed;
+    writeLine(`  ${colors.yellow}Room to grow${RESET} ${colors.dim}- $${potentialValue.toFixed(0)} of unused capacity${RESET}`);
+    writeLine(`  ${colors.dim}Tip: Run more routines with${RESET} ${colors.cyan}squads run <squad>${RESET}`);
+  }
+
+  // Learnings count
+  if (quota.learningCount > 0) {
+    writeLine(`  ${colors.dim}Learnings:${RESET} ${colors.purple}${quota.learningCount}${RESET} ${colors.dim}captured${RESET}`);
   }
 
   writeLine();
@@ -1228,7 +1281,7 @@ async function saveSnapshotCached(
     totalIssuesOpen: ghStats?.issuesOpen || 0,
     goalProgressPct: overallProgress,
     costUsd: costs?.totalCost || 0,
-    dailyBudgetUsd: costs?.dailyBudget || 50,
+    dailyBudgetUsd: costs?.dailyBudget || 0, // 0 = not configured (no hardcoded defaults)
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     commits30d: gitStats?.totalCommits || 0,
@@ -1246,14 +1299,27 @@ async function saveSnapshotCached(
   await Promise.race([saveDashboardSnapshot(snapshot), saveTimeout]);
 }
 
-// Priority keywords that indicate high priority goals
-const P0_KEYWORDS = ['revenue', 'first', 'launch', 'publish', 'ship', 'critical', 'urgent'];
-const P1_KEYWORDS = ['track', 'establish', 'identify', 'define', 'fix'];
+// Goal classification by scope (tactical = immediate action, strategic = long-term vision)
+// Tactical: specific, actionable, concrete tasks (what to do NOW)
+const TACTICAL_KEYWORDS = ['fix', 'add', 'update', 'implement', 'run', 'test', 'deploy', 'merge', 'review', 'debug'];
+// Strategic: high-level objectives, foundational work (WHERE we're going)
+const STRATEGIC_KEYWORDS = ['revenue', 'establish', 'build', 'create', 'define', 'design', 'launch', 'ship', 'foundation', 'strategy'];
 
+// Classify goal scope: tactical (0) = do now, strategic (2) = long-term vision
+function inferScope(goal: string): 'tactical' | 'operational' | 'strategic' {
+  const lower = goal.toLowerCase();
+  if (TACTICAL_KEYWORDS.some(k => lower.includes(k))) return 'tactical';
+  if (STRATEGIC_KEYWORDS.some(k => lower.includes(k))) return 'strategic';
+  return 'operational'; // middle ground
+}
+
+// Legacy priority inference for CEO report (strategic-first view)
 function inferPriority(goal: string): 'P0' | 'P1' | 'P2' {
   const lower = goal.toLowerCase();
-  if (P0_KEYWORDS.some(k => lower.includes(k))) return 'P0';
-  if (P1_KEYWORDS.some(k => lower.includes(k))) return 'P1';
+  // P0 = strategic/revenue critical
+  if (STRATEGIC_KEYWORDS.slice(0, 3).some(k => lower.includes(k))) return 'P0'; // revenue, establish, build
+  // P1 = operational/important
+  if (TACTICAL_KEYWORDS.slice(0, 4).some(k => lower.includes(k))) return 'P1'; // fix, add, update, implement
   return 'P2';
 }
 

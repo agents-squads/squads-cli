@@ -608,6 +608,49 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
 }
 
 /**
+ * Monthly quota/autonomy data from bridge
+ */
+export interface QuotaInfo {
+  monthlyUsed: number;
+  monthlyQuota: number;
+  quotaPct: number;
+  autonomyScore: number;
+  confidenceLevel: string;
+  learningCount: number;
+}
+
+export async function fetchQuotaInfo(): Promise<QuotaInfo | null> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/autonomy/score`);
+    if (!response.ok) return null;
+
+    const data = await response.json() as {
+      overall_score: number;
+      confidence_level: string;
+      execution_stats: {
+        monthly_used: number;
+        monthly_quota: number;
+        quota_pct: number;
+        learning_count: number;
+      };
+    };
+
+    return {
+      monthlyUsed: data.execution_stats.monthly_used,
+      monthlyQuota: data.execution_stats.monthly_quota,
+      quotaPct: data.execution_stats.quota_pct,
+      autonomyScore: data.overall_score,
+      confidenceLevel: data.confidence_level,
+      learningCount: data.execution_stats.learning_count,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Rate limit data from Anthropic API headers
  */
 export interface RateLimitInfo {

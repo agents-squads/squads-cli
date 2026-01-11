@@ -7,6 +7,7 @@ Forwards conversations to engram/mem0 for embeddings and graph storage.
 import os
 import json
 import gzip
+import hashlib
 import threading
 import time
 import requests
@@ -22,7 +23,8 @@ app = Flask(__name__)
 # Configuration
 DEBUG_MODE = os.environ.get("DEBUG", "1") == "1"
 LANGFUSE_ENABLED = os.environ.get("LANGFUSE_ENABLED", "false").lower() == "true"
-DAILY_BUDGET = float(os.environ.get("SQUADS_DAILY_BUDGET", "200.0"))
+# Monthly quota based on Anthropic plan (Max5 = $200/month)
+MONTHLY_QUOTA = float(os.environ.get("SQUADS_MONTHLY_QUOTA", "200.0"))
 recent_logs = deque(maxlen=50)
 
 # Engram/mem0 configuration for memory extraction
@@ -128,8 +130,8 @@ def get_realtime_stats() -> dict:
             "output_tokens": output_tokens,
             "generations": generations,
             "by_squad": by_squad,
-            "budget_remaining": DAILY_BUDGET - cost,
-            "budget_pct": (cost / DAILY_BUDGET) * 100 if DAILY_BUDGET > 0 else 0,
+            "budget_remaining": MONTHLY_QUOTA - cost,
+            "budget_pct": (cost / MONTHLY_QUOTA) * 100 if MONTHLY_QUOTA > 0 else 0,
         }
     except Exception as e:
         print(f"Redis stats error: {e}")
@@ -763,7 +765,7 @@ def stats():
                 "cost_usd": realtime["cost_usd"],
             },
             "budget": {
-                "daily": DAILY_BUDGET,
+                "daily": MONTHLY_QUOTA,
                 "used": realtime["cost_usd"],
                 "remaining": realtime["budget_remaining"],
                 "used_pct": realtime["budget_pct"],
@@ -820,10 +822,10 @@ def stats():
                 "cost_usd": cost_usd,
             },
             "budget": {
-                "daily": DAILY_BUDGET,
+                "daily": MONTHLY_QUOTA,
                 "used": cost_usd,
-                "remaining": DAILY_BUDGET - cost_usd,
-                "used_pct": (cost_usd / DAILY_BUDGET) * 100 if DAILY_BUDGET > 0 else 0,
+                "remaining": MONTHLY_QUOTA - cost_usd,
+                "used_pct": (cost_usd / MONTHLY_QUOTA) * 100 if MONTHLY_QUOTA > 0 else 0,
             },
             "by_squad": [dict(r) for r in by_squad],
             "langfuse_enabled": langfuse is not None,
@@ -1757,6 +1759,530 @@ def brief_history():
         return jsonify({"error": str(e)}), 500
 
 
+# =============================================================================
+# Execution Gates API - Pre-execution safety checks
+# =============================================================================
+
+@app.route("/api/execution/preflight", methods=["POST"])
+def preflight_check():
+    """Check all execution gates before agent runs.
+
+    Returns:
+        {
+            "allowed": bool,
+            "gates": {
+                "budget": {"ok": bool, "used": float, "limit": float, "remaining": float},
+                "cooldown": {"ok": bool, "elapsed_sec": int, "min_gap_sec": int}
+            }
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        squad = data.get("squad", "hq")
+        agent = data.get("agent")
+        min_cooldown = int(data.get("min_cooldown_sec", 300))  # 5 min default
+
+        # Quota gate - check monthly spend against plan quota
+        # Query monthly usage from Postgres (Redis only has daily stats)
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(cost_usd), 0) as cost_usd
+                FROM squads.llm_generations
+                WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)
+            """)
+            result = cur.fetchone()
+            monthly_used = float(result["cost_usd"]) if result else 0
+        conn.close()
+
+        quota_gate = {
+            "ok": monthly_used < MONTHLY_QUOTA,
+            "used": round(monthly_used, 2),
+            "limit": MONTHLY_QUOTA,
+            "remaining": round(MONTHLY_QUOTA - monthly_used, 2),
+            "period": "month"
+        }
+
+        # Cooldown gate (from existing tasks table)
+        cooldown_gate = {"ok": True, "elapsed_sec": None, "min_gap_sec": min_cooldown}
+
+        if agent:
+            conn = get_db()
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT MAX(started_at) as last_run
+                    FROM squads.tasks
+                    WHERE squad = %s AND agent = %s
+                """, (squad, agent))
+                result = cur.fetchone()
+            conn.close()
+
+            if result and result["last_run"]:
+                last_run = result["last_run"]
+                # Handle timezone-aware datetime
+                now = datetime.now(last_run.tzinfo) if last_run.tzinfo else datetime.now()
+                elapsed = (now - last_run).total_seconds()
+                cooldown_gate = {
+                    "ok": elapsed >= min_cooldown,
+                    "elapsed_sec": int(elapsed),
+                    "min_gap_sec": min_cooldown,
+                    "last_run": last_run.isoformat()
+                }
+
+        # Quota gate is informational only - never blocks execution
+        # Track as KPI, not as enforcement (real limits come from Anthropic subscription)
+        allowed = cooldown_gate["ok"]
+
+        if DEBUG_MODE:
+            print(f"[PREFLIGHT] {squad}/{agent}: quota=${quota_gate['used']}/mo (KPI) cooldown={'OK' if cooldown_gate['ok'] else 'BLOCKED'}")
+
+        return jsonify({
+            "allowed": allowed,
+            "squad": squad,
+            "agent": agent,
+            "gates": {
+                "quota": quota_gate,
+                "cooldown": cooldown_gate
+            }
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Fail open - if check fails, allow execution
+        return jsonify({
+            "allowed": True,
+            "error": str(e),
+            "gates": {}
+        }), 200
+
+
+@app.route("/api/learnings/relevant", methods=["GET"])
+def get_relevant_learnings():
+    """Get recent learnings for prompt injection.
+
+    Queries conversations marked as 'learning' type, ordered by importance.
+
+    Query params:
+        squad: Filter by squad (optional)
+        limit: Max results (default 5)
+
+    Returns:
+        {
+            "squad": str,
+            "count": int,
+            "learnings": [{"content": str, "importance": str, "created_at": str}]
+        }
+    """
+    try:
+        squad = request.args.get("squad")
+        limit = min(int(request.args.get("limit", 5)), 20)
+
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Query conversations marked as learnings
+            # Order by importance (high > normal > low), then recency
+            if squad:
+                cur.execute("""
+                    SELECT content, importance, created_at, squad
+                    FROM squads.conversations
+                    WHERE message_type = 'learning'
+                      AND (squad = %s OR squad IS NULL)
+                    ORDER BY
+                        CASE importance WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                        created_at DESC
+                    LIMIT %s
+                """, (squad, limit))
+            else:
+                cur.execute("""
+                    SELECT content, importance, created_at, squad
+                    FROM squads.conversations
+                    WHERE message_type = 'learning'
+                    ORDER BY
+                        CASE importance WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                        created_at DESC
+                    LIMIT %s
+                """, (limit,))
+
+            learnings = cur.fetchall()
+        conn.close()
+
+        if DEBUG_MODE:
+            print(f"[LEARNINGS] Found {len(learnings)} learnings for squad={squad}")
+
+        return jsonify({
+            "squad": squad,
+            "count": len(learnings),
+            "learnings": [{
+                "content": l["content"][:500] if l["content"] else "",
+                "importance": l["importance"] or "normal",
+                "squad": l["squad"],
+                "created_at": l["created_at"].isoformat() if l["created_at"] else None
+            } for l in learnings]
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "squad": request.args.get("squad"),
+            "count": 0,
+            "learnings": [],
+            "error": str(e)
+        }), 200
+
+
+# =============================================================================
+# Dimension Sync API - Sync squad/agent definitions from CLI
+# =============================================================================
+
+@app.route("/api/sync/dimensions", methods=["POST"])
+def sync_dimensions():
+    """Sync squad and agent definitions to dimension tables.
+
+    Expects:
+        {
+            "squads": [{"name": str, "mission": str, "domain": str, ...}],
+            "agents": [{"name": str, "squad": str, "role": str, ...}]
+        }
+
+    Returns:
+        {"synced_squads": int, "synced_agents": int}
+    """
+    try:
+        data = request.get_json() or {}
+        squads = data.get("squads", [])
+        agents = data.get("agents", [])
+
+        conn = get_db()
+        synced_squads = 0
+        synced_agents = 0
+
+        with conn.cursor() as cur:
+            # Upsert squads
+            for squad in squads:
+                cur.execute("""
+                    INSERT INTO squads.dim_squads (
+                        squad_name, mission, domain, default_provider,
+                        daily_budget, cooldown_seconds, metadata, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (squad_name) DO UPDATE SET
+                        mission = EXCLUDED.mission,
+                        domain = EXCLUDED.domain,
+                        default_provider = EXCLUDED.default_provider,
+                        daily_budget = EXCLUDED.daily_budget,
+                        cooldown_seconds = EXCLUDED.cooldown_seconds,
+                        metadata = EXCLUDED.metadata,
+                        updated_at = NOW()
+                """, (
+                    squad["name"],
+                    squad.get("mission"),
+                    squad.get("domain"),
+                    squad.get("default_provider", "anthropic"),
+                    squad.get("daily_budget", 50),
+                    squad.get("cooldown_seconds", 300),
+                    json.dumps(squad.get("metadata", {})),
+                ))
+                synced_squads += 1
+
+            # Upsert agents (need squad_id)
+            for agent in agents:
+                # Get squad_id
+                cur.execute(
+                    "SELECT id FROM squads.dim_squads WHERE squad_name = %s",
+                    (agent["squad"],)
+                )
+                row = cur.fetchone()
+                squad_id = row[0] if row else None
+
+                if squad_id:
+                    cur.execute("""
+                        INSERT INTO squads.dim_agents (
+                            agent_name, squad_id, role, purpose, provider,
+                            trigger_type, mcp_servers, skills, metadata, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (agent_name, squad_id) DO UPDATE SET
+                            role = EXCLUDED.role,
+                            purpose = EXCLUDED.purpose,
+                            provider = EXCLUDED.provider,
+                            trigger_type = EXCLUDED.trigger_type,
+                            mcp_servers = EXCLUDED.mcp_servers,
+                            skills = EXCLUDED.skills,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = NOW()
+                    """, (
+                        agent["name"],
+                        squad_id,
+                        agent.get("role"),
+                        agent.get("purpose"),
+                        agent.get("provider"),
+                        agent.get("trigger_type", "manual"),
+                        agent.get("mcp_servers", []),
+                        agent.get("skills", []),
+                        json.dumps(agent.get("metadata", {})),
+                    ))
+                    synced_agents += 1
+
+            conn.commit()
+
+        conn.close()
+
+        if DEBUG_MODE:
+            print(f"[SYNC] Synced {synced_squads} squads, {synced_agents} agents")
+
+        return jsonify({
+            "synced_squads": synced_squads,
+            "synced_agents": synced_agents
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sync/learnings", methods=["POST"])
+def sync_learnings():
+    """Sync learnings from CLI to Postgres conversations table.
+
+    Body:
+        learnings: list of {squad, agent, content, category, importance, source_file}
+
+    Returns:
+        {imported: int, skipped: int}
+    """
+    try:
+        data = request.get_json() or {}
+        learnings = data.get("learnings", [])
+
+        if not learnings:
+            return jsonify({"imported": 0, "skipped": 0}), 200
+
+        conn = get_db()
+        imported = 0
+        skipped = 0
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for learning in learnings:
+                # Check for duplicate (same content hash)
+                content = learning.get("content", "")
+                content_hash = hashlib.md5(content.encode()).hexdigest()
+
+                cur.execute("""
+                    SELECT id FROM squads.conversations
+                    WHERE message_type = 'learning'
+                    AND metadata->>'content_hash' = %s
+                """, (content_hash,))
+
+                if cur.fetchone():
+                    skipped += 1
+                    continue
+
+                # Insert into conversations table as learning
+                cur.execute("""
+                    INSERT INTO squads.conversations (
+                        role, content, message_type, importance, squad, agent, metadata
+                    ) VALUES (
+                        'system', %s, 'learning', %s, %s, %s, %s
+                    )
+                """, (
+                    content,
+                    learning.get("importance", "normal"),
+                    learning.get("squad"),
+                    learning.get("agent"),
+                    json.dumps({
+                        "category": learning.get("category", "insight"),
+                        "source_file": learning.get("source_file"),
+                        "content_hash": content_hash,
+                        "imported_at": datetime.now().isoformat(),
+                    }),
+                ))
+                imported += 1
+
+            conn.commit()
+
+        conn.close()
+
+        if DEBUG_MODE:
+            print(f"[SYNC] Imported {imported} learnings, skipped {skipped} duplicates")
+
+        return jsonify({"imported": imported, "skipped": skipped}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# Autonomy Score API - Calculate and return autonomy metrics
+# =============================================================================
+
+@app.route("/api/autonomy/score", methods=["GET"])
+def get_autonomy_score():
+    """Calculate current autonomy score.
+
+    Query params:
+        squad: Filter by squad (optional)
+        period: Time period - today, week, month (default: today)
+
+    Returns:
+        {
+            "overall_score": int (0-100),
+            "confidence_level": str (low/medium/high),
+            "components": {
+                "budget_compliance": int,
+                "cooldown_compliance": int,
+                "quality_score": int,
+                "success_rate": int,
+                "learning_utilization": int
+            },
+            "execution_stats": {...}
+        }
+    """
+    try:
+        squad = request.args.get("squad")
+        period = request.args.get("period", "today")
+
+        # Determine date range (tasks uses started_at, others use created_at)
+        if period == "today":
+            tasks_date_filter = "started_at >= CURRENT_DATE"
+            date_filter = "created_at >= CURRENT_DATE"
+        elif period == "week":
+            tasks_date_filter = "started_at >= CURRENT_DATE - INTERVAL '7 days'"
+            date_filter = "created_at >= CURRENT_DATE - INTERVAL '7 days'"
+        elif period == "month":
+            tasks_date_filter = "started_at >= CURRENT_DATE - INTERVAL '30 days'"
+            date_filter = "created_at >= CURRENT_DATE - INTERVAL '30 days'"
+        else:
+            tasks_date_filter = "started_at >= CURRENT_DATE"
+            date_filter = "created_at >= CURRENT_DATE"
+
+        conn = get_db()
+        components = {}
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Squad filter
+            squad_filter = f"AND squad = '{squad}'" if squad else ""
+
+            # 1. Usage KPI (monthly spend tracking - informational, not a gate)
+            cur.execute("""
+                SELECT COALESCE(SUM(cost_usd), 0) as cost_usd
+                FROM squads.llm_generations
+                WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)
+            """)
+            monthly_result = cur.fetchone()
+            monthly_used = float(monthly_result["cost_usd"]) if monthly_result else 0
+            # KPI: Track usage but don't penalize - real limits come from Anthropic subscription
+            # Score represents "how actively we're using our capacity" (higher = more active)
+            components["usage_kpi"] = min(100, int(monthly_used / 10))  # $1000/mo = 100% utilization
+
+            # 2. Success rate from tasks
+            cur.execute(f"""
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(*) FILTER (WHERE status = 'completed' AND success = true) as successful
+                FROM squads.tasks
+                WHERE {tasks_date_filter} {squad_filter}
+            """)
+            task_stats = cur.fetchone()
+            total_tasks = task_stats["total"] or 0
+            successful_tasks = task_stats["successful"] or 0
+            components["success_rate"] = int(100 * successful_tasks / total_tasks) if total_tasks > 0 else 100
+
+            # 3. Quality score from feedback
+            cur.execute(f"""
+                SELECT AVG(quality_score) as avg_score, COUNT(*) as count
+                FROM squads.task_feedback
+                WHERE {date_filter}
+            """)
+            feedback_stats = cur.fetchone()
+            avg_quality = feedback_stats["avg_score"] or 3.5  # Default to neutral
+            components["quality_score"] = int(avg_quality * 20)  # Scale 1-5 to 0-100
+
+            # 4. Cooldown compliance (check for rapid re-executions)
+            cur.execute(f"""
+                WITH exec_gaps AS (
+                    SELECT
+                        squad, agent,
+                        started_at,
+                        LAG(started_at) OVER (PARTITION BY squad, agent ORDER BY started_at) as prev_start
+                    FROM squads.tasks
+                    WHERE {tasks_date_filter} {squad_filter}
+                )
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (started_at - prev_start)) >= 300 OR prev_start IS NULL) as compliant
+                FROM exec_gaps
+            """)
+            cooldown_stats = cur.fetchone()
+            total_execs = cooldown_stats["total"] or 0
+            compliant_execs = cooldown_stats["compliant"] or 0
+            components["cooldown_compliance"] = int(100 * compliant_execs / total_execs) if total_execs > 0 else 100
+
+            # 5. Learning utilization (check if learnings exist in conversations)
+            cur.execute("""
+                SELECT COUNT(*) as learning_count
+                FROM squads.conversations
+                WHERE message_type = 'learning'
+                AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+            """)
+            learning_stats = cur.fetchone()
+            learning_count = learning_stats["learning_count"] or 0
+            # Score based on having learnings available (simple heuristic)
+            components["learning_utilization"] = min(100, learning_count * 10) if learning_count > 0 else 0
+
+        conn.close()
+
+        # Calculate weighted overall score
+        # Note: usage_kpi excluded from score calculation (it's informational only)
+        weights = {
+            "success_rate": 0.35,
+            "quality_score": 0.30,
+            "cooldown_compliance": 0.20,
+            "learning_utilization": 0.15
+        }
+
+        overall_score = int(sum(
+            components.get(k, 0) * v for k, v in weights.items()
+        ))
+
+        # Determine confidence level
+        if overall_score >= 75:
+            confidence_level = "high"
+        elif overall_score >= 50:
+            confidence_level = "medium"
+        else:
+            confidence_level = "low"
+
+        return jsonify({
+            "overall_score": overall_score,
+            "confidence_level": confidence_level,
+            "period": period,
+            "squad": squad,
+            "components": components,
+            "execution_stats": {
+                "total_tasks": total_tasks,
+                "successful_tasks": successful_tasks,
+                "monthly_spend_usd": round(monthly_used, 2),
+                "learning_count": learning_count
+            },
+            "usage_kpi": {
+                "monthly_spend": round(monthly_used, 2),
+                "note": "Track via /usage for real Anthropic limits"
+            }
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "overall_score": 50,
+            "confidence_level": "unknown",
+            "error": str(e)
+        }), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting Squads Bridge on port {port}")
@@ -1764,7 +2290,7 @@ if __name__ == "__main__":
     print(f"  Redis:      {'connected' if redis_client else 'disabled'}")
     print(f"  Langfuse:   {'enabled' if LANGFUSE_ENABLED else 'disabled'}")
     print(f"  Engram:     {'enabled -> ' + ENGRAM_URL if ENGRAM_ENABLED else 'disabled'}")
-    print(f"  Budget:     ${DAILY_BUDGET}/day")
+    print(f"  Usage KPI:  tracking (real limits via /usage)")
 
     # Start background conversation processor
     if redis_client:
