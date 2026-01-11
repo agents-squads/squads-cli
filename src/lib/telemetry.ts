@@ -283,6 +283,13 @@ export const Events = {
   // Providers
   CLI_PROVIDERS: 'cli.providers',
 
+  // KPIs
+  CLI_KPI_SHOW: 'cli.kpi.show',
+  CLI_KPI_RECORD: 'cli.kpi.record',
+  CLI_KPI_TREND: 'cli.kpi.trend',
+  CLI_KPI_INSIGHTS: 'cli.kpi.insights',
+  CLI_KPI_LIST: 'cli.kpi.list',
+
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',
   CONDENSER_DEDUPE: 'condenser.dedupe',
