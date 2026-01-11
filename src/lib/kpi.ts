@@ -275,7 +275,8 @@ export function aggregateByPeriod(
 /**
  * Parse KPI definitions from SQUAD.md frontmatter
  */
-export function parseKpiDefinitions(frontmatter: Record<string, unknown>): KpiDefinition[] {
+export function parseKpiDefinitions(frontmatter?: Record<string, unknown>): KpiDefinition[] {
+  if (!frontmatter) return [];
   const kpis = frontmatter.kpis as Array<Record<string, unknown>> | undefined;
   if (!kpis || !Array.isArray(kpis)) {
     return [];
