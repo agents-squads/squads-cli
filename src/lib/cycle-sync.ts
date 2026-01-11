@@ -17,7 +17,7 @@ const { Pool } = pg;
 
 // Connection config from environment or defaults
 const DATABASE_URL = process.env.SQUADS_DATABASE_URL ||
-  'postgresql://squads:squads_local_dev@localhost:5433/squads';
+  'postgresql://squads:squads@localhost:5433/squads';
 
 let pool: InstanceType<typeof Pool> | null = null;
 
@@ -55,55 +55,49 @@ export interface SyncResult {
 
 /**
  * Ensure required tables exist
+ *
+ * Note: squad_goals already exists with different schema, we adapt to it.
+ * For feedback and learnings, we create cycle-specific tables since existing
+ * task_feedback and agent_insights have incompatible schemas.
  */
 async function ensureTables(): Promise<void> {
   const client = await getPool().connect();
 
   try {
     await client.query(`
-      -- Goals table
-      CREATE TABLE IF NOT EXISTS squads.squad_goals (
+      -- Cycle feedback table (separate from task_feedback which is per-task)
+      CREATE TABLE IF NOT EXISTS squads.cycle_feedback (
         id SERIAL PRIMARY KEY,
-        squad_name TEXT NOT NULL,
-        goal_index INT NOT NULL,
-        description TEXT NOT NULL,
-        status TEXT DEFAULT 'active',  -- active, completed
-        progress TEXT,
-        target_value NUMERIC,
-        target_unit TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(squad_name, goal_index)
-      );
-      CREATE INDEX IF NOT EXISTS idx_squad_goals_squad ON squads.squad_goals(squad_name);
-
-      -- Feedback table
-      CREATE TABLE IF NOT EXISTS squads.task_feedback (
-        id SERIAL PRIMARY KEY,
-        squad_name TEXT NOT NULL,
-        agent_name TEXT,
+        squad TEXT NOT NULL,
+        agent TEXT,
         timestamp TIMESTAMPTZ NOT NULL,
         quality_score INT CHECK (quality_score BETWEEN 1 AND 5),
         feedback_text TEXT,
         learnings JSONB DEFAULT '[]',
         tags JSONB DEFAULT '[]',
-        UNIQUE(squad_name, timestamp)
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(squad, timestamp)
       );
-      CREATE INDEX IF NOT EXISTS idx_task_feedback_squad ON squads.task_feedback(squad_name);
 
-      -- Learnings table (insights)
-      CREATE TABLE IF NOT EXISTS squads.agent_insights (
+      -- Cycle learnings table (separate from agent_insights which is aggregated metrics)
+      CREATE TABLE IF NOT EXISTS squads.cycle_learnings (
         id SERIAL PRIMARY KEY,
-        squad_name TEXT NOT NULL,
-        agent_name TEXT,
+        squad TEXT NOT NULL,
+        agent TEXT,
         timestamp TIMESTAMPTZ NOT NULL,
         insight TEXT NOT NULL,
         category TEXT,  -- success, failure, pattern, tip
         tags JSONB DEFAULT '[]',
         context TEXT,
-        UNIQUE(squad_name, timestamp, insight)
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(squad, timestamp, insight)
       );
-      CREATE INDEX IF NOT EXISTS idx_agent_insights_squad ON squads.agent_insights(squad_name);
+    `);
+
+    // Create indexes separately (IF NOT EXISTS is implicit for indexes)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_cycle_feedback_squad ON squads.cycle_feedback(squad);
+      CREATE INDEX IF NOT EXISTS idx_cycle_learnings_squad ON squads.cycle_learnings(squad);
     `);
   } finally {
     client.release();
@@ -112,6 +106,7 @@ async function ensureTables(): Promise<void> {
 
 /**
  * Sync goals from SQUAD.md to Postgres
+ * Uses existing squad_goals table schema (squad column, not squad_name)
  */
 export async function syncGoals(squadName: string): Promise<SyncStats> {
   const stats: SyncStats = { synced: 0, skipped: 0, errors: 0 };
@@ -128,22 +123,37 @@ export async function syncGoals(squadName: string): Promise<SyncStats> {
       const goal = squad.goals[i];
 
       try {
-        await client.query(`
-          INSERT INTO squads.squad_goals (squad_name, goal_index, description, status, progress, updated_at)
-          VALUES ($1, $2, $3, $4, $5, NOW())
-          ON CONFLICT (squad_name, goal_index)
-          DO UPDATE SET
-            description = EXCLUDED.description,
-            status = EXCLUDED.status,
-            progress = EXCLUDED.progress,
-            updated_at = NOW()
-        `, [
-          squadName,
-          i + 1,
-          goal.description,
-          goal.completed ? 'completed' : 'active',
-          goal.progress || null,
-        ]);
+        // Check if goal exists by squad + description (since there's no goal_index in existing schema)
+        const existing = await client.query(
+          `SELECT id FROM squads.squad_goals WHERE squad = $1 AND description = $2`,
+          [squadName, goal.description]
+        );
+
+        if (existing.rows.length > 0) {
+          // Update existing
+          await client.query(`
+            UPDATE squads.squad_goals
+            SET completed = $1, progress_text = $2, status = $3, updated_at = NOW()
+            WHERE id = $4
+          `, [
+            goal.completed || false,
+            goal.progress || null,
+            goal.completed ? 'completed' : 'active',
+            existing.rows[0].id,
+          ]);
+        } else {
+          // Insert new
+          await client.query(`
+            INSERT INTO squads.squad_goals (squad, description, completed, progress_text, status, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+          `, [
+            squadName,
+            goal.description,
+            goal.completed || false,
+            goal.progress || null,
+            goal.completed ? 'completed' : 'active',
+          ]);
+        }
         stats.synced++;
       } catch (err) {
         stats.errors++;
@@ -191,6 +201,7 @@ function loadFeedbackStore(squadName: string): FeedbackStore {
 
 /**
  * Sync feedback from memory file to Postgres
+ * Uses cycle_feedback table (separate from task_feedback)
  */
 export async function syncFeedback(squadName: string): Promise<SyncStats> {
   const stats: SyncStats = { synced: 0, skipped: 0, errors: 0 };
@@ -206,9 +217,9 @@ export async function syncFeedback(squadName: string): Promise<SyncStats> {
     for (const entry of store.entries) {
       try {
         await client.query(`
-          INSERT INTO squads.task_feedback (squad_name, agent_name, timestamp, quality_score, feedback_text, learnings)
+          INSERT INTO squads.cycle_feedback (squad, agent, timestamp, quality_score, feedback_text, learnings)
           VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT (squad_name, timestamp) DO NOTHING
+          ON CONFLICT (squad, timestamp) DO NOTHING
         `, [
           squadName,
           entry.agent || null,
@@ -313,6 +324,7 @@ function loadLearningsStore(squadName: string): LearningsStore {
 
 /**
  * Sync learnings from memory file to Postgres
+ * Uses cycle_learnings table (separate from agent_insights which is aggregated)
  */
 export async function syncLearnings(squadName: string): Promise<SyncStats> {
   const stats: SyncStats = { synced: 0, skipped: 0, errors: 0 };
@@ -328,9 +340,9 @@ export async function syncLearnings(squadName: string): Promise<SyncStats> {
     for (const entry of store.entries) {
       try {
         await client.query(`
-          INSERT INTO squads.agent_insights (squad_name, agent_name, timestamp, insight, category, tags, context)
+          INSERT INTO squads.cycle_learnings (squad, agent, timestamp, insight, category, tags, context)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
-          ON CONFLICT (squad_name, timestamp, insight) DO NOTHING
+          ON CONFLICT (squad, timestamp, insight) DO NOTHING
         `, [
           squadName,
           entry.agent || null,
