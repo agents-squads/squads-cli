@@ -36,16 +36,6 @@ export interface McpConfig {
  * MCP is reserved for APIs that don't have good CLI alternatives.
  */
 const SERVER_REGISTRY: Record<string, McpServerDef> = {
-  // Social APIs (no good CLI alternative)
-  'web-fetch': {
-    type: 'stdio',
-    command: '~/.claude/mcps/web-fetch/.venv/bin/python',
-    args: ['~/.claude/mcps/web-fetch/server.py'],
-    env: {
-      X_BEARER_TOKEN: '${X_BEARER_TOKEN}',
-    },
-  },
-
   // Multi-model image generation (Grok, Gemini, GPT, etc.)
   'img-gen': {
     type: 'stdio',

@@ -280,6 +280,9 @@ export const Events = {
   CLI_LOGIN: 'cli.login',
   CLI_LOGOUT: 'cli.logout',
 
+  // Providers
+  CLI_PROVIDERS: 'cli.providers',
+
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',
   CONDENSER_DEDUPE: 'condenser.dedupe',
