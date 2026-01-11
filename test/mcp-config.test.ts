@@ -16,61 +16,34 @@ import {
 
 describe('MCP Config', () => {
   describe('Server Registry', () => {
-    it('lists known servers', () => {
+    it('lists known servers (empty - we use CLI tools)', () => {
       const servers = listKnownServers();
-      expect(servers).toContain('img-gen');
-      expect(servers.length).toBe(1);
+      expect(servers.length).toBe(0);
     });
 
     it('checks if server is known', () => {
-      expect(isKnownServer('img-gen')).toBe(true);
+      expect(isKnownServer('img-gen')).toBe(false);
       expect(isKnownServer('web-fetch')).toBe(false);
       expect(isKnownServer('unknown-server')).toBe(false);
     });
 
-    it('gets server definition', () => {
-      const def = getServerDef('img-gen');
-      expect(def).toBeDefined();
-      expect(def?.type).toBe('stdio');
-      expect(def?.command).toBe('npx');
-    });
-
-    it('returns undefined for unknown server', () => {
+    it('returns undefined for any server (registry empty)', () => {
+      expect(getServerDef('img-gen')).toBeUndefined();
       expect(getServerDef('unknown-server')).toBeUndefined();
     });
   });
 
   describe('generateMcpConfig', () => {
-    it('generates config from known servers', () => {
-      const config = generateMcpConfig(['img-gen']);
+    it('returns empty config (no servers in registry)', () => {
+      const config = generateMcpConfig(['img-gen', 'web-fetch']);
 
       expect(config.mcpServers).toBeDefined();
-      expect(config.mcpServers['img-gen']).toBeDefined();
-      expect(Object.keys(config.mcpServers)).toHaveLength(1);
-    });
-
-    it('skips unknown servers silently', () => {
-      const config = generateMcpConfig(['img-gen', 'unknown-server', 'web-fetch']);
-
-      expect(Object.keys(config.mcpServers)).toHaveLength(1);
-      expect(config.mcpServers['unknown-server']).toBeUndefined();
-      expect(config.mcpServers['web-fetch']).toBeUndefined();
+      expect(Object.keys(config.mcpServers)).toHaveLength(0);
     });
 
     it('returns empty config for empty input', () => {
       const config = generateMcpConfig([]);
       expect(Object.keys(config.mcpServers)).toHaveLength(0);
-    });
-
-    it('preserves server definition structure', () => {
-      const config = generateMcpConfig(['img-gen']);
-      const nanoBanana = config.mcpServers['img-gen'];
-
-      expect(nanoBanana.type).toBe('stdio');
-      expect(nanoBanana.command).toBe('npx');
-      expect(nanoBanana.args).toContain('img-gen-mcp');
-      expect(nanoBanana.env).toBeDefined();
-      expect(nanoBanana.env?.OPENAI_API_KEY).toBe('${OPENAI_API_KEY}');
     });
   });
 
@@ -145,11 +118,11 @@ describe('MCP Config', () => {
       expect(result.path).toContain('.claude.json');
     });
 
-    it('generates config from context.mcp', () => {
+    it('generates empty config when registry is empty', () => {
       const result = resolveMcpConfig('test-squad', ['img-gen']);
 
       expect(result.source).toBe('generated');
-      expect(result.servers).toContain('img-gen');
+      expect(result.servers).toEqual([]);
       expect(result.generated).toBe(true);
       expect(result.path).toContain('test-squad.mcp.json');
 
@@ -171,23 +144,22 @@ describe('MCP Config', () => {
 
     it('uses existing generated config without regenerating', () => {
       // First call generates
-      const first = resolveMcpConfig('test-squad', ['img-gen']);
+      const first = resolveMcpConfig('test-squad', ['some-server']);
       expect(first.generated).toBe(true);
 
       // Second call uses existing
-      const second = resolveMcpConfig('test-squad', ['img-gen']);
+      const second = resolveMcpConfig('test-squad', ['some-server']);
       expect(second.generated).toBe(false);
       expect(second.path).toBe(first.path);
     });
 
     it('regenerates when force flag is set', () => {
       // First call generates
-      resolveMcpConfig('test-squad', ['img-gen']);
+      resolveMcpConfig('test-squad', ['some-server']);
 
       // Second call with force regenerates
-      const result = resolveMcpConfig('test-squad', ['img-gen'], true);
+      const result = resolveMcpConfig('test-squad', ['other-server'], true);
       expect(result.generated).toBe(true);
-      expect(result.servers).toContain('img-gen');
     });
   });
 
@@ -200,7 +172,7 @@ describe('MCP Config', () => {
         process.env.HOME = testHome;
         mkdirSync(join(testHome, '.claude', 'contexts'), { recursive: true });
 
-        const path = resolveMcpConfigPath('test-squad', ['img-gen']);
+        const path = resolveMcpConfigPath('test-squad', ['some-server']);
 
         expect(typeof path).toBe('string');
         expect(path).toContain('test-squad.mcp.json');

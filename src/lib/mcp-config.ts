@@ -35,20 +35,16 @@ export interface McpConfig {
  * NOTE: We prefer CLI tools over MCP when possible (less complexity).
  * MCP is reserved for APIs that don't have good CLI alternatives.
  */
-const SERVER_REGISTRY: Record<string, McpServerDef> = {
-  // Multi-model image generation (Grok, Gemini, GPT, etc.)
-  'img-gen': {
-    type: 'stdio',
-    command: 'npx',
-    args: ['img-gen-mcp'],
-    env: {
-      // Supports multiple providers - configure as needed
-      OPENAI_API_KEY: '${OPENAI_API_KEY}',
-      GEMINI_API_KEY: '${GEMINI_API_KEY}',
-      XAI_API_KEY: '${XAI_API_KEY}',
-    },
-  },
-};
+/**
+ * MCP Registry is now empty - we prefer CLI tools over MCP.
+ *
+ * Replacements:
+ * - web-fetch → curl (see curl-master skill)
+ * - img-gen → scripts/img-gen CLI
+ *
+ * If you need to add MCP servers, add them here.
+ */
+const SERVER_REGISTRY: Record<string, McpServerDef> = {};
 
 /**
  * Get the home directory path.

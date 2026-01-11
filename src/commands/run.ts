@@ -7,6 +7,7 @@ import {
   loadSquad,
   listAgents,
   loadAgentDefinition,
+  parseAgentProvider,
   EffortLevel,
   resolveExecutionContext,
   Squad,
@@ -28,6 +29,12 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import {
+  LLM_CLIS,
+  getCLIConfig,
+  isProviderCLIAvailable,
+  type CLIConfig,
+} from '../lib/llm-clis.js';
 
 interface RunOptions {
   verbose?: boolean;
@@ -42,6 +49,7 @@ interface RunOptions {
   effort?: EffortLevel; // Effort level: high, medium, low
   skills?: string[]; // Skills to load (skill IDs or local paths)
   trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
+  provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
 }
 
 /**
@@ -752,21 +760,59 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
 - Do NOT ask follow-up questions
 - Just /exit when done`;
 
-  // Check if Claude CLI is available
-  const claudeAvailable = await checkClaudeCliAvailable();
+  // Resolve provider with full chain:
+  // 1. Agent config (from agent file frontmatter/header)
+  // 2. CLI option (--provider flag)
+  // 3. Squad default (from SQUAD.md providers.default)
+  // 4. Fallback to 'anthropic'
+  const agentProvider = parseAgentProvider(agentPath);
+  const squad = loadSquad(squadName);
+  const squadDefaultProvider = squad?.providers?.default;
 
-  if (options.execute && claudeAvailable) {
+  const provider = agentProvider || options.provider || squadDefaultProvider || 'anthropic';
+  const isAnthropic = provider === 'anthropic';
+
+  if (options.verbose && (agentProvider || squadDefaultProvider)) {
+    writeLine(`  ${colors.dim}Provider resolution:${RESET}`);
+    if (agentProvider) writeLine(`    ${colors.dim}Agent: ${agentProvider}${RESET}`);
+    if (options.provider) writeLine(`    ${colors.dim}CLI: ${options.provider}${RESET}`);
+    if (squadDefaultProvider) writeLine(`    ${colors.dim}Squad: ${squadDefaultProvider}${RESET}`);
+    writeLine(`    ${colors.dim}→ Using: ${provider}${RESET}`);
+  }
+
+  // Check CLI availability
+  const cliAvailable = isAnthropic
+    ? await checkClaudeCliAvailable()
+    : isProviderCLIAvailable(provider);
+
+  if (options.execute && cliAvailable) {
+    const cliConfig = getCLIConfig(provider);
+    const cliName = cliConfig?.displayName || provider;
+
     spinner.text = options.foreground
-      ? `Running ${agentName} in foreground...`
-      : `Launching ${agentName} as background task...`;
+      ? `Running ${agentName} with ${cliName} in foreground...`
+      : `Launching ${agentName} with ${cliName} as background task...`;
 
     try {
-      const result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
+      let result: string;
+
+      if (isAnthropic) {
+        // Use full Claude execution with MCP, permissions, etc.
+        result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
+      } else {
+        // Use simplified provider execution
+        result = await executeWithProvider(provider, prompt, {
+          verbose: options.verbose,
+          foreground: options.foreground,
+          squadName,
+          agentName,
+        });
+      }
 
       if (options.foreground) {
-        spinner.succeed(`Agent ${agentName} completed`);
+        spinner.succeed(`Agent ${agentName} completed (${cliName})`);
       } else {
-        spinner.succeed(`Agent ${agentName} launched`);
+        spinner.succeed(`Agent ${agentName} launched (${cliName})`);
         writeLine(`  ${colors.dim}${result}${RESET}`);
         writeLine();
         writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
@@ -785,15 +831,19 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
     spinner.succeed(`Agent ${agentName} ready`);
     writeLine(`  ${colors.dim}Execution logged: ${startTime}${RESET}`);
 
-    if (!claudeAvailable) {
+    if (!cliAvailable) {
+      const cliConfig = getCLIConfig(provider);
       writeLine();
-      writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
-      writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
+      writeLine(`  ${colors.yellow}${cliConfig?.command || provider} CLI not found${RESET}`);
+      writeLine(`  ${colors.dim}Install: ${cliConfig?.install || 'squads providers'}${RESET}`);
     }
 
     writeLine();
     writeLine(`  ${colors.dim}To launch as background task:${RESET}`);
     writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --execute`);
+    if (provider !== 'anthropic') {
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --execute --provider=${provider}`);
+    }
     writeLine();
     writeLine(`  ${colors.dim}Or run interactively:${RESET}`);
     writeLine(`  ${colors.dim}$${RESET} Run the ${colors.cyan}${agentName}${RESET} agent from ${agentPath}`);
@@ -965,6 +1015,104 @@ async function executeWithClaude(
 
   if (verbose) {
     writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);
+  }
+
+  return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;
+}
+
+/**
+ * Execute agent with a non-Anthropic LLM CLI provider.
+ *
+ * Supports: google (gemini), openai (codex), mistral (vibe), xai (grok), aider, ollama
+ *
+ * Unlike executeWithClaude which has full session management,
+ * other CLIs run in simpler non-interactive mode.
+ */
+async function executeWithProvider(
+  provider: string,
+  prompt: string,
+  options: {
+    verbose?: boolean;
+    foreground?: boolean;
+    cwd?: string;
+    squadName?: string;
+    agentName?: string;
+  }
+): Promise<string> {
+  const cliConfig = getCLIConfig(provider);
+
+  if (!cliConfig) {
+    throw new Error(`Unknown provider: ${provider}. Run 'squads providers' to see available providers.`);
+  }
+
+  if (!isProviderCLIAvailable(provider)) {
+    throw new Error(`CLI '${cliConfig.command}' not found. Install: ${cliConfig.install}`);
+  }
+
+  const projectRoot = options.cwd || getProjectRoot();
+  const args = cliConfig.buildArgs(prompt);
+
+  if (options.verbose) {
+    writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
+    writeLine(`  ${colors.dim}Command: ${cliConfig.command} ${args.join(' ').slice(0, 50)}...${RESET}`);
+    writeLine(`  ${colors.dim}CWD: ${projectRoot}${RESET}`);
+  }
+
+  // Foreground mode: run directly in terminal
+  if (options.foreground) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(cliConfig.command, args, {
+        stdio: 'inherit',
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          SQUADS_SQUAD: options.squadName || 'unknown',
+          SQUADS_AGENT: options.agentName || 'unknown',
+          SQUADS_PROVIDER: provider,
+        },
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve('Session completed');
+        } else {
+          reject(new Error(`${cliConfig.command} exited with code ${code}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(err);
+      });
+    });
+  }
+
+  // Background mode: run via tmux
+  const sessionName = `squads-${options.squadName || 'run'}-${options.agentName || 'agent'}-${Date.now()}`;
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const shellCmd = `cd '${projectRoot}' && ${cliConfig.command} ${cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ')}; tmux kill-session -t ${sessionName} 2>/dev/null`;
+
+  const tmux = spawn('tmux', [
+    'new-session',
+    '-d',
+    '-s', sessionName,
+    '-x', '200',
+    '-y', '50',
+    '/bin/sh', '-c', shellCmd
+  ], {
+    stdio: 'ignore',
+    detached: true,
+    env: {
+      ...process.env,
+      SQUADS_SQUAD: options.squadName || 'unknown',
+      SQUADS_AGENT: options.agentName || 'unknown',
+      SQUADS_PROVIDER: provider,
+    },
+  });
+
+  tmux.unref();
+
+  if (options.verbose) {
+    writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
   }
 
   return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;

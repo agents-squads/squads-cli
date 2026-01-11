@@ -24,6 +24,20 @@ export interface SquadContext {
   };
 }
 
+// Multi-LLM provider configuration
+export interface SquadProviders {
+  /** Default provider for all agents (default: anthropic) */
+  default?: string;
+  /** Provider for vision/image tasks */
+  vision?: string;
+  /** Provider for real-time data access */
+  realtime?: string;
+  /** Provider for high-volume/cheap operations */
+  cheap?: string;
+  /** Custom provider mappings by purpose */
+  [key: string]: string | undefined;
+}
+
 // Frontmatter schema
 export interface SquadFrontmatter {
   name?: string;
@@ -32,6 +46,8 @@ export interface SquadFrontmatter {
   stack?: string;
   context?: SquadContext;
   effort?: EffortLevel;
+  /** Multi-LLM provider configuration */
+  providers?: SquadProviders;
 }
 
 export interface Agent {
@@ -42,6 +58,8 @@ export interface Agent {
   filePath?: string;
   squad?: string;
   effort?: EffortLevel;
+  /** LLM provider override (from agent file frontmatter) */
+  provider?: string;
 }
 
 export interface Pipeline {
@@ -73,6 +91,8 @@ export interface Squad {
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
   stack?: string;
+  /** Multi-LLM provider configuration */
+  providers?: SquadProviders;
 }
 
 /**
@@ -205,6 +225,7 @@ export function parseSquadFile(filePath: string): Squad {
     context: fm.context,
     repo: fm.repo,
     stack: fm.stack,
+    providers: fm.providers,
   };
 
   let currentSection = '';
@@ -350,6 +371,39 @@ export function loadSquad(squadName: string): Squad | null {
 export function loadAgentDefinition(agentPath: string): string {
   if (!existsSync(agentPath)) return '';
   return readFileSync(agentPath, 'utf-8');
+}
+
+/**
+ * Parse provider from an agent definition file.
+ *
+ * Looks for:
+ * 1. Frontmatter: `provider: xai`
+ * 2. Header syntax: `## Provider\nxai`
+ *
+ * @returns Provider ID or undefined if not specified
+ */
+export function parseAgentProvider(agentPath: string): string | undefined {
+  if (!existsSync(agentPath)) return undefined;
+
+  const content = readFileSync(agentPath, 'utf-8');
+
+  // Try parsing frontmatter
+  try {
+    const { data: frontmatter } = matter(content);
+    if (frontmatter?.provider && typeof frontmatter.provider === 'string') {
+      return frontmatter.provider.toLowerCase();
+    }
+  } catch {
+    // Ignore frontmatter parsing errors
+  }
+
+  // Try header syntax: ## Provider\n<provider>
+  const providerHeaderMatch = content.match(/##\s*Provider\s*\n+([a-zA-Z0-9_-]+)/i);
+  if (providerHeaderMatch) {
+    return providerHeaderMatch[1].toLowerCase();
+  }
+
+  return undefined;
 }
 
 export function addGoalToSquad(squadName: string, goal: string): boolean {
