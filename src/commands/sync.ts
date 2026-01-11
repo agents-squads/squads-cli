@@ -245,6 +245,333 @@ function gitPullMemory(): { success: boolean; output: string; behind: number; ah
 }
 
 /**
+ * Sync squad and agent definitions to Postgres dimension tables.
+ * Creates/updates dim_squads and dim_agents from SQUAD.md and agent .md files.
+ */
+async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
+  const squadsDir = findSquadsDir();
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+  if (!squadsDir) {
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    return;
+  }
+
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}sync --dimensions${RESET}`);
+  writeLine();
+  writeLine(`  ${icons.progress} Collecting squad definitions...`);
+
+  // Collect all squads
+  const squadDirs = readdirSync(squadsDir, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name);
+
+  const squadsData: Array<{
+    name: string;
+    mission: string | null;
+    domain: string | null;
+    default_provider: string;
+    daily_budget: number;
+    cooldown_seconds: number;
+    metadata: Record<string, unknown>;
+  }> = [];
+
+  const agentsData: Array<{
+    name: string;
+    squad: string;
+    role: string | null;
+    purpose: string | null;
+    provider: string | null;
+    trigger_type: string;
+    mcp_servers: string[];
+    skills: string[];
+    metadata: Record<string, unknown>;
+  }> = [];
+
+  // Parse each squad
+  const { loadSquad: loadSquadFn } = await import('../lib/squad-parser.js');
+
+  for (const squadName of squadDirs) {
+    const squad = loadSquadFn(squadName);
+    if (!squad) continue;
+
+    squadsData.push({
+      name: squad.name,
+      mission: squad.mission || null,
+      domain: squad.domain || null,
+      default_provider: squad.providers?.default || 'anthropic',
+      daily_budget: squad.context?.budget?.daily || 50,
+      cooldown_seconds: squad.context?.cooldown || 300,
+      metadata: {
+        providers: squad.providers,
+        context: squad.context,
+        permissions: squad.permissions,
+      },
+    });
+
+    // Parse agents in this squad
+    for (const agent of squad.agents) {
+      const agentPath = join(squadsDir, squadName, `${agent.name}.md`);
+      if (!existsSync(agentPath)) continue;
+
+      // Extract MCP servers and skills from definition
+      const definition = readFileSync(agentPath, 'utf-8');
+      const mcpServers = extractMcpServersFromDef(definition);
+      const skills = extractSkillsFromDef(definition);
+
+      agentsData.push({
+        name: agent.name,
+        squad: squadName,
+        role: agent.role || null,
+        purpose: agent.purpose || null,
+        provider: agent.provider || null,
+        trigger_type: agent.trigger?.toLowerCase() || 'manual',
+        mcp_servers: mcpServers,
+        skills: skills,
+        metadata: {
+          schedule: agent.schedule,
+          outputs: agent.outputs,
+        },
+      });
+    }
+  }
+
+  writeLine(`  ${icons.success} Found ${colors.cyan}${squadsData.length}${RESET} squads, ${colors.cyan}${agentsData.length}${RESET} agents`);
+
+  if (verbose) {
+    writeLine();
+    for (const s of squadsData) {
+      writeLine(`    ${colors.cyan}${s.name}${RESET} ${colors.dim}(${s.metadata.providers ? 'with providers' : 'default'})${RESET}`);
+    }
+  }
+
+  // Send to bridge
+  writeLine();
+  writeLine(`  ${icons.progress} Syncing to Postgres...`);
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/sync/dimensions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ squads: squadsData, agents: agentsData }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Bridge returned ${response.status}: ${error}`);
+    }
+
+    const data = await response.json() as { synced_squads: number; synced_agents: number };
+
+    writeLine(`  ${icons.success} Synced ${colors.green}${data.synced_squads}${RESET} squads, ${colors.green}${data.synced_agents}${RESET} agents`);
+    writeLine();
+
+  } catch (error) {
+    writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine();
+  }
+}
+
+function extractMcpServersFromDef(definition: string): string[] {
+  const servers: Set<string> = new Set();
+  const knownServers = ['chrome-devtools', 'firecrawl', 'supabase', 'grafana', 'context7', 'huggingface', 'img-gen', 'web-fetch'];
+
+  for (const server of knownServers) {
+    if (definition.toLowerCase().includes(server)) {
+      servers.add(server);
+    }
+  }
+
+  const mcpMatch = definition.match(/mcp:\s*\n((?:\s*-\s*\S+\s*\n?)+)/i);
+  if (mcpMatch) {
+    for (const line of mcpMatch[1].split('\n')) {
+      const m = line.match(/^\s*-\s*(\S+)/);
+      if (m) servers.add(m[1]);
+    }
+  }
+
+  return Array.from(servers);
+}
+
+function extractSkillsFromDef(definition: string): string[] {
+  const skills: Set<string> = new Set();
+
+  const skillsMatch = definition.match(/skills:\s*\n((?:\s*-\s*\S+\s*\n?)+)/i);
+  if (skillsMatch) {
+    for (const line of skillsMatch[1].split('\n')) {
+      const m = line.match(/^\s*-\s*(\S+)/);
+      if (m) skills.add(m[1]);
+    }
+  }
+
+  const slashSkills = definition.match(/\/[\w-]+/g);
+  if (slashSkills) {
+    for (const skill of slashSkills) {
+      if (!skill.startsWith('/exit') && !skill.startsWith('/help')) {
+        skills.add(skill.slice(1));
+      }
+    }
+  }
+
+  return Array.from(skills);
+}
+
+interface LearningEntry {
+  squad: string;
+  agent: string | null;
+  content: string;
+  category: string;
+  importance: string;
+  source_file: string;
+}
+
+/**
+ * Parse a learnings.md file into individual learning entries
+ */
+function parseLearningsFile(filePath: string, squad: string, agent: string | null): LearningEntry[] {
+  const content = readFileSync(filePath, 'utf-8');
+  const learnings: LearningEntry[] = [];
+
+  // Split by headers (##, ###) to get sections
+  const sections = content.split(/^##+ /m).filter(Boolean);
+
+  for (const section of sections) {
+    const lines = section.trim().split('\n');
+    const title = lines[0]?.trim();
+    const body = lines.slice(1).join('\n').trim();
+
+    if (!body || body.length < 20) continue; // Skip empty or too short
+
+    // Determine category from section title
+    let category = 'insight';
+    const titleLower = title?.toLowerCase() || '';
+    if (titleLower.includes('what works') || titleLower.includes('success')) category = 'success';
+    else if (titleLower.includes('what doesn\'t') || titleLower.includes('unsuccessful') || titleLower.includes('fail')) category = 'failure';
+    else if (titleLower.includes('pattern')) category = 'pattern';
+    else if (titleLower.includes('improvement') || titleLower.includes('next')) category = 'tip';
+
+    // Determine importance from content markers
+    let importance = 'normal';
+    if (body.includes('**Learning**:') || body.includes('critical') || body.includes('P1')) importance = 'high';
+
+    learnings.push({
+      squad,
+      agent,
+      content: title ? `## ${title}\n${body}` : body,
+      category,
+      importance,
+      source_file: filePath,
+    });
+  }
+
+  // Also extract individual bullet points marked as learnings
+  const learningMatches = content.matchAll(/\*\*Learning\*\*:\s*(.+?)(?=\n\n|\n\*\*|$)/gs);
+  for (const match of learningMatches) {
+    learnings.push({
+      squad,
+      agent,
+      content: match[1].trim(),
+      category: 'insight',
+      importance: 'high',
+      source_file: filePath,
+    });
+  }
+
+  return learnings;
+}
+
+/**
+ * Sync learnings from .agents/memory to Postgres
+ */
+async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const memoryDir = findMemoryDir();
+
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}sync --learnings${RESET}`);
+  writeLine();
+
+  if (!memoryDir) {
+    writeLine(`  ${icons.error} ${colors.red}No .agents/memory directory found${RESET}`);
+    return;
+  }
+
+  // Find all learnings.md files
+  writeLine(`  ${icons.progress} Scanning for learnings files...`);
+
+  const learningsFiles: string[] = [];
+  const scanDir = (dir: string) => {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        scanDir(fullPath);
+      } else if (entry.name === 'learnings.md') {
+        learningsFiles.push(fullPath);
+      }
+    }
+  };
+  scanDir(memoryDir);
+
+  writeLine(`  ${icons.success} Found ${colors.cyan}${learningsFiles.length}${RESET} learnings files`);
+
+  // Parse all learnings
+  const allLearnings: LearningEntry[] = [];
+  for (const file of learningsFiles) {
+    // Extract squad and agent from path: .agents/memory/<squad>/<agent>/learnings.md
+    const relativePath = file.replace(memoryDir + '/', '');
+    const parts = relativePath.split('/');
+    const squad = parts[0] || 'unknown';
+    const agent = parts.length > 2 ? parts[1] : null;
+
+    const entries = parseLearningsFile(file, squad, agent);
+    allLearnings.push(...entries);
+
+    if (verbose && entries.length > 0) {
+      writeLine(`    ${colors.cyan}${squad}${agent ? '/' + agent : ''}${RESET}: ${entries.length} learnings`);
+    }
+  }
+
+  writeLine(`  ${icons.success} Parsed ${colors.cyan}${allLearnings.length}${RESET} total learnings`);
+
+  if (allLearnings.length === 0) {
+    writeLine();
+    writeLine(`  ${colors.dim}No learnings to sync${RESET}`);
+    return;
+  }
+
+  // Send to bridge
+  writeLine();
+  writeLine(`  ${icons.progress} Syncing to Postgres...`);
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/sync/learnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ learnings: allLearnings }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Bridge returned ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json() as { imported: number; skipped: number };
+    writeLine(`  ${icons.success} Imported ${colors.green}${result.imported}${RESET} learnings${result.skipped > 0 ? `, skipped ${result.skipped} duplicates` : ''}`);
+
+  } catch (error) {
+    writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+  }
+
+  writeLine();
+}
+
+/**
  * Push local memory changes to git remote
  */
 function gitPushMemory(): { success: boolean; output: string } {
@@ -277,8 +604,20 @@ function gitPushMemory(): { success: boolean; output: string } {
   }
 }
 
-export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres });
+export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean } = {}): Promise<void> {
+  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings });
+
+  // If --dimensions flag, sync squad/agent definitions to Postgres dim tables
+  if (options.dimensions) {
+    await syncDimensionsToPostgres(options.verbose);
+    return;
+  }
+
+  // If --learnings flag, sync learnings.md files to Postgres
+  if (options.learnings) {
+    await syncLearningsToPostgres(options.verbose);
+    return;
+  }
   const memoryDir = findMemoryDir();
   const _squadsDir = findSquadsDir();
 
@@ -330,6 +669,52 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
 
   if (commits.length === 0) {
     writeLine(`  ${colors.yellow}No new commits since last sync${RESET}`);
+
+    // Still sync to Postgres if requested (even without new commits)
+    if (options.postgres) {
+      writeLine();
+      writeLine(`  ${icons.progress} Syncing cycle data to Postgres...`);
+
+      const pgAvailable = await isPostgresAvailable();
+      if (!pgAvailable) {
+        writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
+        writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+      } else {
+        try {
+          const result: SyncResult = await syncAllCycleData();
+
+          const totalSynced = result.goals.synced + result.feedback.synced + result.kpis.synced + result.learnings.synced;
+          const totalErrors = result.goals.errors + result.feedback.errors + result.kpis.errors + result.learnings.errors;
+
+          if (totalSynced > 0 || totalErrors > 0) {
+            writeLine(`  ${icons.success} Synced to Postgres ${colors.dim}(${result.duration}ms)${RESET}`);
+            if (result.goals.synced > 0) {
+              writeLine(`    ${colors.dim}Goals:${RESET} ${colors.cyan}${result.goals.synced}${RESET}`);
+            }
+            if (result.feedback.synced > 0) {
+              writeLine(`    ${colors.dim}Feedback:${RESET} ${colors.cyan}${result.feedback.synced}${RESET}`);
+            }
+            if (result.kpis.synced > 0) {
+              writeLine(`    ${colors.dim}KPIs:${RESET} ${colors.cyan}${result.kpis.synced}${RESET}`);
+            }
+            if (result.learnings.synced > 0) {
+              writeLine(`    ${colors.dim}Learnings:${RESET} ${colors.cyan}${result.learnings.synced}${RESET}`);
+            }
+            if (totalErrors > 0) {
+              writeLine(`    ${colors.red}Errors:${RESET} ${totalErrors}`);
+            }
+          } else {
+            writeLine(`  ${icons.success} ${colors.dim}No new cycle data to sync${RESET}`);
+          }
+
+          await closeCycleSyncPool();
+        } catch (err) {
+          writeLine(`  ${icons.error} ${colors.red}Postgres sync failed${RESET}`);
+          if (process.env.DEBUG) console.error(err);
+        }
+      }
+    }
+
     writeLine();
     return;
   }
