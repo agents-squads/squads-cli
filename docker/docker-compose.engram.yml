@@ -1,14 +1,14 @@
-# Squads Local Stack - With Engram Integration
-# Full telemetry pipeline + Memory system
+# Squads Full Stack - With Memory + Scheduler
+# Full telemetry pipeline + Memory system + Scheduler
 #
 # Usage:
 #   cd docker && docker-compose -f docker-compose.engram.yml up -d
+#   With webhooks: docker-compose -f docker-compose.engram.yml --profile webhooks up -d
 #
 # Access:
 #   Langfuse UI:    http://localhost:3100
-#   Neo4j Browser:  http://localhost:7474
-#   Engram MCP:     http://localhost:8080
 #   Mem0 API:       http://localhost:8000
+#   Scheduler API:  http://localhost:8090
 #   Postgres:       localhost:5433
 
 name: agents-squads
@@ -57,30 +57,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - squads
-
-  # =============================================================================
-  # Neo4j - Knowledge graph for agent memory
-  # =============================================================================
-  neo4j:
-    image: neo4j:5-community
-    container_name: squads-neo4j
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-squads_local_dev}
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
-    volumes:
-      - squads_neo4j_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
     networks:
       - squads
 
@@ -199,10 +175,8 @@ services:
       POSTGRES_PASSWORD: squads
       POSTGRES_DB: engram
       POSTGRES_COLLECTION_NAME: memories
-      # Neo4j
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-squads_local_dev}
+      # Neo4j (disabled by default - saves ~600MB RAM)
+      NEO4J_ENABLED: ${NEO4J_ENABLED:-false}
       # LLM Provider: openai (fast) or ollama (local)
       # Set LLM_PROVIDER=openai and OPENAI_API_KEY for fast embeddings
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
@@ -223,8 +197,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      neo4j:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
       interval: 10s
@@ -235,47 +207,65 @@ services:
       - squads
 
   # =============================================================================
-  # Engram MCP - MCP server for Claude Code memory integration
+  # Scheduler API - Trigger management and webhooks
   # =============================================================================
-  engram-mcp:
+  scheduler-api:
     build:
-      context: ../../engram/mcp-server
+      context: ../../hq/squads-scheduler
       dockerfile: Dockerfile
-    container_name: squads-engram-mcp
+    container_name: squads-scheduler-api
     restart: unless-stopped
+    command: uvicorn api:app --host 0.0.0.0 --port 8090
     environment:
-      # Mem0 API
-      MEM0_API_URL: http://mem0:8000
-      # Database (for auth)
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: squads
-      POSTGRES_PASSWORD: squads
-      POSTGRES_DB: engram
-      # MCP Server
-      MCP_HOST: 0.0.0.0
-      MCP_PORT: 8080
-      # Project ID Mode
-      PROJECT_ID_MODE: ${PROJECT_ID_MODE:-auto}
-      DEFAULT_USER_ID: ${DEFAULT_USER_ID:-claude_code_mcp}
-      # Chunking
-      CHUNK_MAX_SIZE: ${CHUNK_MAX_SIZE:-1000}
-      CHUNK_OVERLAP_SIZE: ${CHUNK_OVERLAP_SIZE:-150}
-      # Logging
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
     ports:
-      - "${ENGRAM_MCP_PORT:-8080}:8080"
+      - "${SCHEDULER_API_PORT:-8090}:8090"
     depends_on:
-      mem0:
-        condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/')\" || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - squads
+
+  # =============================================================================
+  # Scheduler Worker - Trigger evaluation and agent execution
+  # =============================================================================
+  scheduler-worker:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-scheduler-worker
+    restart: unless-stopped
+    command: python scheduler.py
+    environment:
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      HQ_PATH: /hq
+      SQUADS_CLI: squads
+    volumes:
+      - ../../hq:/hq:ro
+    depends_on:
+      - scheduler-api
+    networks:
+      - squads
+
+  # =============================================================================
+  # Ngrok - Tunnel for webhooks (dev/testing)
+  # =============================================================================
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: squads-ngrok
+    restart: unless-stopped
+    profiles: ["webhooks"]  # Only start with: --profile webhooks
+    command: http scheduler-api:8090 --log stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    depends_on:
+      - scheduler-api
     networks:
       - squads
 
@@ -286,4 +276,3 @@ networks:
 volumes:
   squads_postgres_data:
   squads_redis_data:
-  squads_neo4j_data:
