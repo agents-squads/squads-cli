@@ -111,6 +111,7 @@ import {
   tonightStopCommand,
   tonightReportCommand
 } from './commands/tonight.js';
+import { providersCommand } from './commands/providers.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -392,6 +393,13 @@ program
   .description('Quick health check for all infrastructure services')
   .option('-v, --verbose', 'Show optional services')
   .action((options) => healthCommand(options));
+
+// Providers command - show LLM CLI availability for multi-LLM support
+program
+  .command('providers')
+  .description('Show available LLM CLI providers (claude, gemini, codex, etc.)')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => providersCommand(options));
 
 // Watch command - live refresh any command
 program

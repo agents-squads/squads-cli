@@ -36,16 +36,6 @@ export interface McpConfig {
  * MCP is reserved for APIs that don't have good CLI alternatives.
  */
 const SERVER_REGISTRY: Record<string, McpServerDef> = {
-  // Social APIs (no good CLI alternative)
-  'x-mcp': {
-    type: 'stdio',
-    command: '~/.claude/mcps/x-mcp/.venv/bin/python',
-    args: ['~/.claude/mcps/x-mcp/server.py'],
-    env: {
-      X_BEARER_TOKEN: '${X_BEARER_TOKEN}',
-    },
-  },
-
   // Multi-model image generation (Grok, Gemini, GPT, etc.)
   'nano-banana': {
     type: 'stdio',

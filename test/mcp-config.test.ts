@@ -18,22 +18,21 @@ describe('MCP Config', () => {
   describe('Server Registry', () => {
     it('lists known servers', () => {
       const servers = listKnownServers();
-      expect(servers).toContain('x-mcp');
       expect(servers).toContain('nano-banana');
-      expect(servers.length).toBe(2);
+      expect(servers.length).toBe(1);
     });
 
     it('checks if server is known', () => {
-      expect(isKnownServer('x-mcp')).toBe(true);
       expect(isKnownServer('nano-banana')).toBe(true);
+      expect(isKnownServer('x-mcp')).toBe(false);
       expect(isKnownServer('unknown-server')).toBe(false);
     });
 
     it('gets server definition', () => {
-      const xDef = getServerDef('x-mcp');
-      expect(xDef).toBeDefined();
-      expect(xDef?.type).toBe('stdio');
-      expect(xDef?.command).toBe('python3');
+      const def = getServerDef('nano-banana');
+      expect(def).toBeDefined();
+      expect(def?.type).toBe('stdio');
+      expect(def?.command).toBe('npx');
     });
 
     it('returns undefined for unknown server', () => {
@@ -43,19 +42,19 @@ describe('MCP Config', () => {
 
   describe('generateMcpConfig', () => {
     it('generates config from known servers', () => {
-      const config = generateMcpConfig(['x-mcp', 'nano-banana']);
+      const config = generateMcpConfig(['nano-banana']);
 
       expect(config.mcpServers).toBeDefined();
-      expect(config.mcpServers['x-mcp']).toBeDefined();
       expect(config.mcpServers['nano-banana']).toBeDefined();
-      expect(Object.keys(config.mcpServers)).toHaveLength(2);
+      expect(Object.keys(config.mcpServers)).toHaveLength(1);
     });
 
     it('skips unknown servers silently', () => {
-      const config = generateMcpConfig(['x-mcp', 'unknown-server', 'nano-banana']);
+      const config = generateMcpConfig(['nano-banana', 'unknown-server', 'x-mcp']);
 
-      expect(Object.keys(config.mcpServers)).toHaveLength(2);
+      expect(Object.keys(config.mcpServers)).toHaveLength(1);
       expect(config.mcpServers['unknown-server']).toBeUndefined();
+      expect(config.mcpServers['x-mcp']).toBeUndefined();
     });
 
     it('returns empty config for empty input', () => {
@@ -147,10 +146,9 @@ describe('MCP Config', () => {
     });
 
     it('generates config from context.mcp', () => {
-      const result = resolveMcpConfig('test-squad', ['x-mcp', 'nano-banana']);
+      const result = resolveMcpConfig('test-squad', ['nano-banana']);
 
       expect(result.source).toBe('generated');
-      expect(result.servers).toContain('x-mcp');
       expect(result.servers).toContain('nano-banana');
       expect(result.generated).toBe(true);
       expect(result.path).toContain('test-squad.mcp.json');
@@ -164,7 +162,7 @@ describe('MCP Config', () => {
       const userConfig = join(testHome, '.claude', 'mcp-configs', 'test-squad.json');
       writeMcpConfig({ mcpServers: { custom: { type: 'stdio', command: 'test', args: [] } } }, userConfig);
 
-      const result = resolveMcpConfig('test-squad', ['x-mcp']);
+      const result = resolveMcpConfig('test-squad', ['nano-banana']);
 
       expect(result.source).toBe('user-override');
       expect(result.path).toBe(userConfig);
@@ -173,18 +171,18 @@ describe('MCP Config', () => {
 
     it('uses existing generated config without regenerating', () => {
       // First call generates
-      const first = resolveMcpConfig('test-squad', ['x-mcp']);
+      const first = resolveMcpConfig('test-squad', ['nano-banana']);
       expect(first.generated).toBe(true);
 
       // Second call uses existing
-      const second = resolveMcpConfig('test-squad', ['x-mcp']);
+      const second = resolveMcpConfig('test-squad', ['nano-banana']);
       expect(second.generated).toBe(false);
       expect(second.path).toBe(first.path);
     });
 
     it('regenerates when force flag is set', () => {
       // First call generates
-      resolveMcpConfig('test-squad', ['x-mcp']);
+      resolveMcpConfig('test-squad', ['nano-banana']);
 
       // Second call with force regenerates
       const result = resolveMcpConfig('test-squad', ['nano-banana'], true);
@@ -202,7 +200,7 @@ describe('MCP Config', () => {
         process.env.HOME = testHome;
         mkdirSync(join(testHome, '.claude', 'contexts'), { recursive: true });
 
-        const path = resolveMcpConfigPath('test-squad', ['x-mcp']);
+        const path = resolveMcpConfigPath('test-squad', ['nano-banana']);
 
         expect(typeof path).toBe('string');
         expect(path).toContain('test-squad.mcp.json');
