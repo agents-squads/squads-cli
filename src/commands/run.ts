@@ -96,6 +96,71 @@ async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean
 }
 
 /**
+ * Pre-execution gate check via bridge API.
+ * Checks quota (monthly spend) and cooldown before running an agent.
+ * Fails open (allows execution) if bridge is unavailable.
+ */
+interface PreflightResult {
+  allowed: boolean;
+  gates: {
+    quota?: { ok: boolean; used: number; limit: number; remaining: number; period: string };
+    cooldown?: { ok: boolean; elapsed_sec: number | null; min_gap_sec: number };
+  };
+  error?: string;
+}
+
+async function checkPreflightGates(squad: string, agent: string): Promise<PreflightResult> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/execution/preflight`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ squad, agent }),
+    });
+
+    if (!response.ok) {
+      // Fail open if bridge returns error
+      return { allowed: true, gates: {} };
+    }
+
+    return await response.json() as PreflightResult;
+  } catch {
+    // Fail open if bridge is unavailable
+    return { allowed: true, gates: {} };
+  }
+}
+
+/**
+ * Fetch relevant learnings from bridge for prompt injection.
+ * Returns empty array if bridge is unavailable.
+ */
+interface Learning {
+  content: string;
+  importance: string;
+  created_at: string;
+}
+
+async function fetchLearnings(squad: string, limit = 5): Promise<Learning[]> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+
+  try {
+    const response = await fetch(
+      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json() as { learnings: Learning[] };
+    return data.learnings || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Generate a unique execution ID for telemetry tracking
  */
 function generateExecutionId(): string {
@@ -721,6 +786,33 @@ async function runAgent(
     }
   }
 
+  // Preflight gate check (quota, cooldown) via bridge API
+  const preflight = await checkPreflightGates(squadName, agentName);
+
+  if (!preflight.allowed) {
+    spinner.stop();
+    writeLine();
+    writeLine(`  ${colors.red}${icons.error} Execution blocked by preflight gates${RESET}`);
+
+    if (preflight.gates.quota && !preflight.gates.quota.ok) {
+      writeLine(`  ${colors.dim}Quota: $${preflight.gates.quota.used.toFixed(2)}/$${preflight.gates.quota.limit}/mo limit exceeded${RESET}`);
+    }
+
+    if (preflight.gates.cooldown && !preflight.gates.cooldown.ok) {
+      const elapsed = preflight.gates.cooldown.elapsed_sec;
+      const minGap = preflight.gates.cooldown.min_gap_sec;
+      writeLine(`  ${colors.dim}Cooldown: ${elapsed}s since last run (min: ${minGap}s)${RESET}`);
+    }
+
+    writeLine();
+    return;
+  }
+
+  // Show preflight status in verbose mode
+  if (options.verbose && Object.keys(preflight.gates).length > 0) {
+    writeLine(`  ${colors.dim}Preflight: quota ${preflight.gates.quota?.ok ? '✓' : '✗'} cooldown ${preflight.gates.cooldown?.ok ? '✓' : '✗'}${RESET}`);
+  }
+
   // Log execution start
   logExecution({
     squadName,
@@ -731,6 +823,16 @@ async function runAgent(
     trigger: options.trigger || 'manual',
     taskType,
   });
+
+  // Fetch learnings from bridge for prompt injection
+  const learnings = await fetchLearnings(squadName);
+  const learningContext = learnings.length > 0
+    ? `\n## Learnings from Previous Runs\n${learnings.map(l => `- ${l.content}`).join('\n')}\n`
+    : '';
+
+  if (options.verbose && learnings.length > 0) {
+    writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
+  }
 
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || 30;
@@ -743,7 +845,7 @@ The agent definition contains:
 - Tools it can use (MCP servers, skills)
 - Step-by-step instructions
 - Expected output format
-
+${learningContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run

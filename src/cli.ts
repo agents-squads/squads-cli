@@ -55,6 +55,7 @@ import {
   memoryExtractCommand
 } from './commands/memory.js';
 import { syncCommand } from './commands/sync.js';
+import { autonomyCommand } from './commands/autonomy.js';
 import {
   goalSetCommand,
   goalListCommand,
@@ -239,6 +240,15 @@ program
   .option('-c, --ceo', 'Executive summary with priorities and blockers')
   .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
   .action((options) => dashboardCommand({ ...options, fast: !options.full }));
+
+// Autonomy command - show autonomous operation readiness
+program
+  .command('autonomy')
+  .description('Show autonomy score and confidence metrics')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-p, --period <period>', 'Time period: today, week, month', 'today')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => autonomyCommand({ squad: options.squad, period: options.period, json: options.json }));
 
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
@@ -482,7 +492,9 @@ memory
   .option('-p, --push', 'Push local memory changes to remote after sync')
   .option('--no-pull', 'Skip pulling from remote')
   .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres }));
+  .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
+  .option('--learnings', 'Sync learnings.md files to Postgres')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings }));
 
 memory
   .command('search <query>')
