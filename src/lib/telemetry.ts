@@ -271,6 +271,11 @@ export const Events = {
   CLI_FEEDBACK_SHOW: 'cli.feedback.show',
   CLI_FEEDBACK_STATS: 'cli.feedback.stats',
 
+  // Learnings
+  CLI_LEARN: 'cli.learn',
+  CLI_LEARN_SHOW: 'cli.learn.show',
+  CLI_LEARN_SEARCH: 'cli.learn.search',
+
   // Auth
   CLI_LOGIN: 'cli.login',
   CLI_LOGOUT: 'cli.logout',
