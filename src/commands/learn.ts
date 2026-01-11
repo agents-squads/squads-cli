@@ -70,8 +70,9 @@ function parseLearnings(content: string): Learning[] {
  * Format a learning entry for storage
  */
 function formatLearning(learning: Learning): string {
+  // Plain unicode for file storage (no ANSI codes)
   const categoryEmoji = {
-    success: icons.success,
+    success: '●',
     failure: '✗',
     pattern: '◆',
     tip: '→',
