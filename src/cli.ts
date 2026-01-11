@@ -192,6 +192,7 @@ program
   .option('--use-api', 'Use API credits instead of subscription')
   .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
   .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
+  .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run whole squad (shows agent list)
@@ -202,6 +203,7 @@ Examples:
   $ squads run engineering --parallel   Run all agents in parallel (tmux)
   $ squads run engineering --lead       Single orchestrator with Task tool
   $ squads run engineering -f           Run in foreground (blocks terminal)
+  $ squads run research --provider=google  Use Gemini CLI instead of Claude
 `)
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
 
