@@ -285,6 +285,36 @@ squads memory show engineering
 squads memory query "performance"
 ```
 
+### Learning Loop
+
+Capture insights that persist across sessions:
+
+```bash
+# After fixing a bug
+squads learn "PostgreSQL connection pool exhaustion was caused by unclosed transactions"
+
+# With metadata
+squads learn "Always check memory before researching" --squad engineering --category pattern
+
+# View learnings
+squads learnings show engineering
+squads learnings search "postgres"
+```
+
+Learnings are stored in `.agents/memory/<squad>/shared/learnings.md` and sync with `squads memory sync`.
+
+**Categories:**
+- `success` — What worked well
+- `failure` — What didn't work (learn from mistakes)
+- `pattern` — Reusable approach
+- `tip` — General advice
+
+**The learning loop:**
+1. Session starts → hooks inject squad status + memory
+2. Work happens → you solve problems, discover things
+3. Session ends → Stop hook prompts "Capture learnings: squads learn..."
+4. Next session → Previous learnings compound via memory queries
+
 ### Goals with Metrics
 
 Goals can include optional metric annotations for tracking KPIs:
@@ -434,6 +464,19 @@ squads feedback add cli 5 "Excellent" -l "Cache key insight"  # With learning
 squads feedback show research                         # View history
 squads feedback show research -n 10                   # Show more entries
 squads feedback stats                                 # Summary across all squads
+```
+
+### Learnings
+
+```bash
+squads learn "Insight here"                           # Capture a learning
+squads learn "Pattern" -s engineering -c pattern      # With squad and category
+squads learn "Tip" -t "cli,perf"                      # With tags
+squads learnings show engineering                     # View squad learnings
+squads learnings show engineering -n 5                # Limit results
+squads learnings show engineering --category pattern  # Filter by category
+squads learnings show engineering --tag perf          # Filter by tag
+squads learnings search "postgres"                    # Search all learnings
 ```
 
 ### Session Management
@@ -729,6 +772,18 @@ squads feedback show <squad>         View history
   -n, --limit <n>                    Entries to show (default: 5)
 squads feedback stats                Summary across squads
 
+squads learn <insight>               Capture a learning
+  -s, --squad <squad>                Associate with squad (default: general)
+  -c, --category <category>          Category: success, failure, pattern, tip
+  -t, --tags <tags>                  Comma-separated tags
+  --context <context>                Additional context
+squads learnings show <squad>        View squad learnings
+  -n, --limit <n>                    Entries to show (default: 10)
+  --category <category>              Filter by category
+  --tag <tag>                        Filter by tag
+squads learnings search <query>      Search all learnings
+  -n, --limit <n>                    Results to show (default: 10)
+
 squads sessions                      List active sessions
   -v, --verbose                      Session details
   -j, --json                         JSON output
@@ -869,7 +924,7 @@ squads whoami                        Show user
 
 ## Claude Code Integration
 
-### Option 1: Session Hook (Recommended)
+### Option 1: Session Hooks (Recommended)
 
 Add to `.claude/settings.json`:
 
@@ -882,12 +937,21 @@ Add to `.claude/settings.json`:
         "command": "squads status",
         "timeout": 10
       }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "squads memory sync && echo \"\\n💡 Capture learnings: squads learn \\\"<insight>\\\"\\n\"",
+        "timeout": 15
+      }]
     }]
   }
 }
 ```
 
-Now every Claude Code session starts with squad context.
+Now every Claude Code session:
+- **Starts** with squad status injected
+- **Ends** with memory synced and a prompt to capture learnings
 
 ### Option 2: CLAUDE.md Instructions
 
