@@ -144,7 +144,7 @@ function checkRequirements(): RequirementCheck[] {
     });
   }
 
-  // Check GitHub CLI auth (not raw token)
+  // Check GitHub CLI auth (not raw token) - optional but recommended
   if (checkGhAuth()) {
     checks.push({ name: 'GitHub CLI', status: 'ok' });
   } else if (commandExists('gh')) {
@@ -157,8 +157,8 @@ function checkRequirements(): RequirementCheck[] {
   } else {
     checks.push({
       name: 'GitHub CLI',
-      status: 'missing',
-      message: 'Required for GitHub integration (issues, PRs)',
+      status: 'warning',
+      message: 'Optional - enables GitHub integration',
       hint: 'Install: https://cli.github.com',
     });
   }
@@ -357,6 +357,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
   let hasDocker = false;
   let dockerReady = false;
 
+  const missingTools: string[] = [];
+
   for (const check of checks) {
     if (check.status === 'ok') {
       console.log(`  ${chalk.green('✓')} ${check.name}`);
@@ -365,18 +367,17 @@ export async function initCommand(options: InitOptions): Promise<void> {
         dockerReady = true;
       }
     } else if (check.status === 'missing') {
-      console.log(`  ${chalk.yellow('⚠')} ${chalk.yellow(check.name)}`);
+      console.log(`  ${chalk.red('✗')} ${chalk.red(check.name)} ${chalk.dim('(required)')}`);
       if (check.message) {
         console.log(chalk.dim(`    ${check.message}`));
       }
       if (check.hint) {
-        console.log(chalk.dim(`    → ${check.hint}`));
+        console.log(chalk.cyan(`    → ${check.hint}`));
       }
-      if (check.name !== 'Docker') {
-        hasMissingRequired = true;
-      }
+      missingTools.push(check.name);
+      hasMissingRequired = true;
     } else if (check.status === 'warning') {
-      console.log(`  ${chalk.dim('○')} ${check.name} ${chalk.dim(`(${check.message})`)}`);
+      console.log(`  ${chalk.yellow('○')} ${check.name} ${chalk.dim(`(${check.message})`)}`);
       if (check.hint) {
         console.log(chalk.dim(`    → ${check.hint}`));
       }
@@ -389,14 +390,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
   console.log();
 
   if (hasMissingRequired && !options.force) {
-    console.log(chalk.yellow('  Install missing tools to continue, then run squads init again.'));
-    console.log(chalk.dim('  Or use --force to skip requirement checks.'));
+    console.log(chalk.red(`  Missing required: ${missingTools.join(', ')}`));
+    console.log();
+    console.log(chalk.white('  To install Claude CLI:'));
+    console.log(chalk.cyan('    npm install -g @anthropic-ai/claude-code'));
+    console.log();
+    console.log(chalk.dim('  After installing, run: squads init'));
     console.log();
 
-    // Track init failure for analytics
+    // Track init failure with specific missing tools
     track(Events.CLI_INIT, {
       success: false,
       reason: 'missing_requirements',
+      missingTools: missingTools.join(','),
     });
     return;
   }
