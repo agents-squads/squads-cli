@@ -5,13 +5,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Manage AI agent teams from your terminal.** One CLI to orchestrate Claude Code, Cursor, Gemini CLI, and any AI coding assistant.
+**Scale your organization with AI agent teams.** Domain-aligned squads that execute real business work—research, engineering, marketing, customer ops.
 
 ```bash
 npm install -g squads-cli && squads init
 ```
 
-> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes your agents by domain (engineering, research, marketing), gives them persistent memory, and tracks their goals—all from simple markdown files.
+> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes agents by business domain, gives them persistent memory, tracks goals, and delivers outcomes—not just answers.
 
 ![squads dashboard](./assets/dashboard.png)
 
