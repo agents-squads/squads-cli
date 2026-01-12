@@ -105,6 +105,7 @@ import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerSkillCommand } from './commands/skill.js';
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
+import { registerSlackCommand } from './commands/slack.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
@@ -791,6 +792,9 @@ registerSkillCommand(program);
 
 // Permissions command group - Phase 3 execution contexts
 registerPermissionsCommand(program);
+
+// Slack command group - channel sync and integration
+registerSlackCommand(program);
 
 // Tonight command group - autonomous overnight execution
 const tonight = program
