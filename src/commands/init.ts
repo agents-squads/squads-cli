@@ -392,19 +392,87 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (hasMissingRequired && !options.force) {
     console.log(chalk.red(`  Missing required: ${missingTools.join(', ')}`));
     console.log();
-    console.log(chalk.white('  To install Claude CLI:'));
-    console.log(chalk.cyan('    npm install -g @anthropic-ai/claude-code'));
-    console.log();
-    console.log(chalk.dim('  After installing, run: squads init'));
-    console.log();
 
-    // Track init failure with specific missing tools
-    track(Events.CLI_INIT, {
-      success: false,
-      reason: 'missing_requirements',
-      missingTools: missingTools.join(','),
-    });
-    return;
+    // Offer to install Claude CLI automatically
+    if (missingTools.includes('Claude CLI')) {
+      const shouldInstall = await confirm('Install Claude CLI now?', true);
+
+      if (shouldInstall) {
+        console.log();
+        console.log(chalk.dim('  Installing Claude CLI...'));
+
+        try {
+          execSync('npm install -g @anthropic-ai/claude-code', {
+            stdio: 'inherit',
+            timeout: 120000
+          });
+          console.log();
+          console.log(chalk.green('  ✓ Claude CLI installed'));
+          console.log();
+
+          // Now prompt for login
+          console.log(chalk.dim('  Opening browser for Claude login...'));
+          console.log();
+
+          const loginProc = spawn('claude', ['login'], {
+            stdio: 'inherit',
+            shell: true
+          });
+
+          await new Promise<void>((resolve) => {
+            loginProc.on('close', () => resolve());
+          });
+
+          console.log();
+          console.log(chalk.green('  ✓ Claude CLI ready'));
+          console.log();
+
+          // Remove from missing and continue
+          const idx = missingTools.indexOf('Claude CLI');
+          if (idx > -1) missingTools.splice(idx, 1);
+          hasMissingRequired = missingTools.length > 0;
+
+        } catch (err) {
+          console.log();
+          console.log(chalk.red('  Failed to install. Try manually:'));
+          console.log(chalk.cyan('    npm install -g @anthropic-ai/claude-code'));
+          console.log();
+
+          track(Events.CLI_INIT, {
+            success: false,
+            reason: 'install_failed',
+            missingTools: missingTools.join(','),
+          });
+          return;
+        }
+      } else {
+        console.log();
+        console.log(chalk.dim('  To install manually:'));
+        console.log(chalk.cyan('    npm install -g @anthropic-ai/claude-code'));
+        console.log(chalk.cyan('    claude login'));
+        console.log();
+
+        track(Events.CLI_INIT, {
+          success: false,
+          reason: 'user_declined_install',
+          missingTools: missingTools.join(','),
+        });
+        return;
+      }
+    }
+
+    // If still missing requirements after install attempt
+    if (hasMissingRequired) {
+      console.log(chalk.dim('  Install missing tools, then run: squads init'));
+      console.log();
+
+      track(Events.CLI_INIT, {
+        success: false,
+        reason: 'missing_requirements',
+        missingTools: missingTools.join(','),
+      });
+      return;
+    }
   }
 
   // Check Git status
