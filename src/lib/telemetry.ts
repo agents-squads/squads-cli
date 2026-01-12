@@ -37,6 +37,36 @@ let flushScheduled = false;
 let cachedSystemContext: Record<string, string | undefined> | null = null;
 
 /**
+ * Detect user type for segmentation.
+ * - 'agent': Autonomous agent execution (via squads run)
+ * - 'ci': CI/CD environment (GitHub Actions, Azure Pipelines, etc)
+ * - 'human': Interactive terminal usage
+ */
+function detectUserType(): 'human' | 'agent' | 'ci' {
+  // Agent execution (set by squads run command)
+  // SQUADS_AGENT contains the agent name when running via squads run
+  if (process.env.SQUADS_AGENT) {
+    return 'agent';
+  }
+
+  // CI/CD environments
+  if (
+    process.env.CI === 'true' ||
+    process.env.GITHUB_ACTIONS === 'true' ||
+    process.env.GITLAB_CI === 'true' ||
+    process.env.JENKINS_URL ||
+    process.env.BUILDKITE === 'true' ||
+    process.env.CIRCLECI === 'true' ||
+    process.env.AZURE_PIPELINES === 'true' ||
+    process.env.TF_BUILD === 'True'
+  ) {
+    return 'ci';
+  }
+
+  return 'human';
+}
+
+/**
  * Get minimal system context for error identification.
  * Computed once per session for performance.
  */
@@ -50,6 +80,11 @@ function getSystemContext(): Record<string, string | undefined> {
     shell: process.env.SHELL?.split('/').pop() || process.env.ComSpec?.split('\\').pop(),
     terminal: process.env.TERM_PROGRAM || undefined,
     ci: process.env.CI === 'true' ? 'true' : undefined,
+    userType: detectUserType(),
+    // Agent context (set by squads run)
+    squad: process.env.SQUADS_SQUAD || undefined,
+    agent: process.env.SQUADS_AGENT || undefined,
+    executionId: process.env.SQUADS_EXECUTION_ID || undefined,
   };
 
   return cachedSystemContext;
