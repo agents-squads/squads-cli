@@ -203,6 +203,55 @@ function checkRequirements(): RequirementCheck[] {
   return checks;
 }
 
+async function installGitHooks(cwd: string): Promise<boolean> {
+  const hooksDir = path.join(cwd, '.git', 'hooks');
+
+  // Check if this is a git repo
+  if (!(await fileExists(path.join(cwd, '.git')))) {
+    return false;
+  }
+
+  try {
+    // Ensure hooks directory exists
+    await fs.mkdir(hooksDir, { recursive: true });
+
+    // Post-commit hook: sync Slack channels when SQUAD.md changes
+    const postCommitHook = `#!/bin/bash
+# Auto-sync Slack channels when SQUAD.md files change
+# Installed by: squads init
+
+# Check if any SQUAD.md files were changed in the last commit
+CHANGED_SQUADS=$(git diff-tree --no-commit-id --name-only -r HEAD | grep "SQUAD.md" || true)
+
+if [ -n "$CHANGED_SQUADS" ]; then
+  echo "SQUAD.md changed - syncing Slack channels..."
+
+  # Run sync in background (don't block commit)
+  (
+    # Small delay to let commit finish cleanly
+    sleep 1
+
+    # Load env if available
+    if [ -f ".env" ]; then
+      export $(grep -E "^SLACK_BOT_TOKEN=" .env | xargs 2>/dev/null)
+    fi
+
+    # Run sync if token available
+    if [ -n "$SLACK_BOT_TOKEN" ]; then
+      squads slack sync 2>&1 | sed 's/^/  [slack-sync] /'
+    fi
+  ) &
+fi
+`;
+
+    await fs.writeFile(path.join(hooksDir, 'post-commit'), postCommitHook, { mode: 0o755 });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function setupInfrastructure(cwd: string): Promise<boolean> {
   const spinner = ora('Setting up infrastructure...').start();
 
@@ -866,6 +915,9 @@ If yes → \`squads learn "<insight>"\`
       JSON.stringify(claudeSettings, null, 2)
     );
 
+    // Install git hooks (Slack sync on SQUAD.md changes)
+    const hooksInstalled = await installGitHooks(cwd);
+
     // Create git commit template
     const commitTemplate = `
 # Commit message format:
@@ -1040,6 +1092,9 @@ squads goal list       # View goals
   console.log(chalk.dim('  • .claude/settings.json    - Claude Code hooks'));
   console.log(chalk.dim('  • .claude/skills/          - Workflow + learn skills'));
   console.log(chalk.dim('  • CLAUDE.md                - Agent instructions'));
+  if (gitStatus.isGitRepo) {
+    console.log(chalk.dim('  • .git/hooks/post-commit   - Slack channel sync'));
+  }
   console.log();
 
   // Optional email capture for updates (skip with --yes or non-interactive)
