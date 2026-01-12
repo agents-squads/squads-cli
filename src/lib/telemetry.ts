@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
+import { version as cliVersion } from '../version.js';
 
 interface TelemetryEvent {
   event: string;
@@ -161,7 +162,7 @@ export async function track(event: string, properties?: Record<string, string | 
       ...properties,
       ...getSystemContext(),
       anonymousId: config.anonymousId,
-      cliVersion: process.env.npm_package_version || 'unknown',
+      cliVersion,
     },
   };
 
