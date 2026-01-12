@@ -1,12 +1,21 @@
 # squads-cli
 
 [![npm version](https://img.shields.io/npm/v/squads-cli)](https://www.npmjs.com/package/squads-cli)
+[![npm downloads](https://img.shields.io/npm/dw/squads-cli)](https://www.npmjs.com/package/squads-cli)
+[![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 
-**Organize, run, and track autonomous AI agents.** Built for Claude Code.
+**Manage AI agent teams from your terminal.** One CLI to orchestrate Claude Code, Cursor, Gemini CLI, and any AI coding assistant.
+
+```bash
+npm install -g squads-cli && squads init
+```
+
+> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes your agents by domain (engineering, research, marketing), gives them persistent memory, and tracks their goals—all from simple markdown files.
 
 ![squads dashboard](./assets/dashboard.png)
+
+⭐ **If you find this useful, [star the repo](https://github.com/agents-squads/squads-cli)** — it helps others discover it!
 
 ```
 $ squads status
@@ -27,15 +36,13 @@ $ squads status
   └────────────────────────────────────────────────────────┘
 ```
 
-## Why squads-cli?
-
-AI agents are powerful individually. But real work requires coordination.
+## Key Features
 
 - **Squads** — Group agents by domain (engineering, research, marketing)
 - **Memory** — Persistent state that survives across sessions
 - **Goals** — Track objectives and measure progress
-- **Sessions** — Real-time detection of running AI assistants
-- **Stack** — Local infrastructure for telemetry and memory
+- **Sessions** — Real-time detection of running AI assistants (Claude, Cursor, Aider, Gemini, Copilot)
+- **Stack** — Local infrastructure for telemetry and cost tracking
 
 No complex infrastructure. Just markdown files and a CLI.
 
