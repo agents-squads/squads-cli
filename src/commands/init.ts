@@ -11,10 +11,21 @@ interface InitOptions {
   template: string;
   skipInfra?: boolean;
   force?: boolean;
+  yes?: boolean;
 }
 
-// Simple yes/no prompt
-async function confirm(question: string, defaultYes = true): Promise<boolean> {
+// Check if running in interactive mode (has TTY)
+function isInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+// Simple yes/no prompt - returns default if non-interactive
+async function confirm(question: string, defaultYes = true, forceYes = false): Promise<boolean> {
+  // In non-interactive mode or with --yes, use defaults
+  if (forceYes || !isInteractive()) {
+    return defaultYes;
+  }
+
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -35,8 +46,13 @@ async function confirm(question: string, defaultYes = true): Promise<boolean> {
   });
 }
 
-// Optional email prompt for updates
-async function promptEmail(): Promise<string | null> {
+// Optional email prompt for updates - skips in non-interactive mode
+async function promptEmail(forceSkip = false): Promise<string | null> {
+  // Skip in non-interactive mode or with --yes
+  if (forceSkip || !isInteractive()) {
+    return null;
+  }
+
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -395,7 +411,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     // Offer to install Claude CLI automatically
     if (missingTools.includes('Claude CLI')) {
-      const shouldInstall = await confirm('Install Claude CLI now?', true);
+      const shouldInstall = await confirm('Install Claude CLI now?', true, options.yes);
 
       if (shouldInstall) {
         console.log();
@@ -997,7 +1013,7 @@ squads goal list       # View goals
       console.log(chalk.dim('  Docker is installed but not running.'));
       console.log(chalk.dim('  Start Docker to enable infrastructure setup.'));
     } else {
-      const setupInfra = await confirm('Set up local infrastructure (postgres, redis)?', true);
+      const setupInfra = await confirm('Set up local infrastructure (postgres, redis)?', true, options.yes);
 
       if (setupInfra) {
         console.log();
@@ -1026,8 +1042,8 @@ squads goal list       # View goals
   console.log(chalk.dim('  • CLAUDE.md                - Agent instructions'));
   console.log();
 
-  // Optional email capture for updates
-  const email = await promptEmail();
+  // Optional email capture for updates (skip with --yes or non-interactive)
+  const email = await promptEmail(options.yes);
   if (email) {
     await track(Events.CLI_INIT, {
       event: 'email_capture',
