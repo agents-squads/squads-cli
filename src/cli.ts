@@ -103,6 +103,7 @@ import {
 import { registerTriggerCommand } from './commands/trigger.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerSkillCommand } from './commands/skill.js';
+import { registerApprovalCommand } from './commands/approval.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
@@ -495,7 +496,8 @@ memory
   .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
   .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
   .option('--learnings', 'Sync learnings.md files to Postgres')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings }));
+  .option('--auto-learn', 'Auto-generate learnings from session commits')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
 
 memory
   .command('search <query>')
@@ -777,6 +779,9 @@ stack
 
 // Trigger command group - smart value-driven triggers
 registerTriggerCommand(program);
+
+// Approval command group - human-in-the-loop for agents
+registerApprovalCommand(program);
 
 // Autonomous command group - scheduled routines
 registerAutonomousCommand(program);

@@ -2,7 +2,7 @@ import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -86,6 +86,7 @@ interface DashboardCache {
   sessionSummary: SessionSummary;
   npmStats: NpmStats | null;
   quotaInfo: QuotaInfo | null;
+  capacity: ClaudeCodeCapacity | null;
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
@@ -116,7 +117,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   // Clean up stale file-based sessions (sync, fast)
   cleanupStaleSessions();
 
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo] = await Promise.all([
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity] = await Promise.all([
     // Git stats (local, ~1s)
     Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
@@ -139,10 +140,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     timeout(fetchNpmStats('squads-cli'), 2000, null),
     // Quota/autonomy info (local network, 2s timeout)
     timeout(fetchQuotaInfo(), 2000, null),
+    // Claude Code capacity (local file read, fast)
+    fetchClaudeCodeCapacity(),
   ]);
 
   // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo };
+  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity };
 
   // === PHASE 2: Build squad metrics (sync, fast) ===
   const squadData: SquadMetrics[] = [];
@@ -324,6 +327,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   renderGitPerformanceCached(cache);
   renderTokenEconomicsCached(cache, goalCount);
   renderQuotaCached(cache);
+  renderCapacityCached(cache);
   renderInfrastructureCached(cache);
   renderAcquisitionCached(cache);
 
@@ -1132,6 +1136,60 @@ function renderQuotaCached(cache: DashboardCache): void {
   // Learnings count
   if (quota.learningCount > 0) {
     writeLine(`  ${colors.dim}Learnings:${RESET} ${colors.purple}${quota.learningCount}${RESET} ${colors.dim}captured${RESET}`);
+  }
+
+  writeLine();
+}
+
+function renderCapacityCached(cache: DashboardCache): void {
+  const cap = cache.capacity;
+
+  if (!cap) {
+    // No capacity data - skip section
+    return;
+  }
+
+  // Helper to format tokens
+  const formatTokens = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+    return n.toString();
+  };
+
+  writeLine(`  ${bold}Subscription Capacity${RESET} ${colors.dim}(from Claude Code)${RESET}`);
+  writeLine();
+
+  // Weekly capacity bar
+  const weeklyPct = cap.weeklyCapacityPct;
+  const weeklyColor = weeklyPct > 80 ? colors.red : weeklyPct > 60 ? colors.yellow : colors.green;
+  const weeklyBarWidth = 20;
+  const weeklyFilled = Math.min(Math.round((weeklyPct / 100) * weeklyBarWidth), weeklyBarWidth);
+  const weeklyBar = `${weeklyColor}${'█'.repeat(weeklyFilled)}${colors.dim}${'░'.repeat(weeklyBarWidth - weeklyFilled)}${RESET}`;
+
+  writeLine(`  ${colors.dim}Weekly:${RESET}  ${weeklyBar} ${weeklyColor}${weeklyPct}%${RESET} ${colors.dim}(resets ${cap.weeklyResetDate})${RESET}`);
+  writeLine(`           ${colors.dim}${formatTokens(cap.weeklyTokensUsed)} / ${formatTokens(cap.weeklyTokensLimit)} tokens${RESET}`);
+
+  // Model breakdown
+  const opusPct = cap.weeklyTokensUsed > 0 ? Math.round((cap.opusTokensUsed / cap.weeklyTokensUsed) * 100) : 0;
+  const sonnetPct = cap.weeklyTokensUsed > 0 ? Math.round((cap.sonnetTokensUsed / cap.weeklyTokensUsed) * 100) : 0;
+
+  writeLine(`           ${colors.dim}opus${RESET} ${colors.purple}${opusPct}%${RESET}  ${colors.dim}sonnet${RESET} ${colors.cyan}${sonnetPct}%${RESET}`);
+
+  // Session capacity (if significant)
+  if (cap.sessionCapacityPct > 10) {
+    const sessionPct = cap.sessionCapacityPct;
+    const sessionColor = sessionPct > 80 ? colors.red : sessionPct > 60 ? colors.yellow : colors.green;
+    writeLine(`  ${colors.dim}Session:${RESET} ${sessionColor}${sessionPct}%${RESET} ${colors.dim}(resets ${cap.sessionResetTime})${RESET}`);
+  }
+
+  // Capacity interpretation
+  const headroom = 100 - weeklyPct;
+  if (headroom > 50) {
+    writeLine(`  ${colors.green}●${RESET} ${colors.dim}${headroom}% headroom for autonomous agents${RESET}`);
+  } else if (headroom > 20) {
+    writeLine(`  ${colors.yellow}●${RESET} ${colors.dim}${headroom}% remaining - monitor usage${RESET}`);
+  } else {
+    writeLine(`  ${colors.red}●${RESET} ${colors.dim}Low capacity - consider Sonnet for routine tasks${RESET}`);
   }
 
   writeLine();
