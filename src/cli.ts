@@ -186,6 +186,7 @@ program
   .option('-t, --template <template>', 'Project template', 'default')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
   .option('--force', 'Skip requirement checks (for CI/testing)')
+  .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
   .action(initCommand);
 
 // Run command - runs squads or individual agents
