@@ -925,3 +925,136 @@ export async function fetchNpmStats(packageName: string = process.env.SQUADS_NPM
     return null;
   }
 }
+
+/**
+ * Claude Code subscription capacity data
+ * Read from ~/.claude/stats-cache.json
+ */
+export interface ClaudeCodeCapacity {
+  // Weekly capacity (from stats-cache.json token data)
+  weeklyTokensUsed: number;
+  weeklyTokensLimit: number;
+  weeklyCapacityPct: number;
+  // Session capacity (estimated from current session)
+  sessionTokensUsed: number;
+  sessionTokensLimit: number;
+  sessionCapacityPct: number;
+  // By model breakdown
+  opusTokensUsed: number;
+  sonnetTokensUsed: number;
+  haikuTokensUsed: number;
+  // Reset info
+  weeklyResetDate: string;
+  sessionResetTime: string;
+}
+
+// Max5 plan estimated limits (based on observed behavior)
+// These are approximations - actual limits vary
+const MAX5_WEEKLY_TOKEN_LIMIT = 50_000_000; // ~50M tokens/week
+const MAX5_SESSION_TOKEN_LIMIT = 2_000_000; // ~2M tokens/session
+
+/**
+ * Fetch Claude Code capacity from stats-cache.json
+ */
+export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | null> {
+  const { readFile } = await import('fs/promises');
+  const { homedir } = await import('os');
+  const { join } = await import('path');
+
+  try {
+    const cacheFile = join(homedir(), '.claude', 'stats-cache.json');
+    const content = await readFile(cacheFile, 'utf-8');
+    const data = JSON.parse(content) as {
+      dailyModelTokens?: Array<{
+        date: string;
+        tokensByModel: Record<string, number>;
+      }>;
+      modelUsage?: Record<string, {
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadInputTokens?: number;
+        cacheCreationInputTokens?: number;
+      }>;
+    };
+
+    // Calculate weekly token usage (last 7 days)
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const weekStart = weekAgo.toISOString().split('T')[0];
+
+    let weeklyOpus = 0;
+    let weeklyNonOpus = 0;
+
+    if (data.dailyModelTokens) {
+      for (const day of data.dailyModelTokens) {
+        if (day.date >= weekStart) {
+          for (const [model, tokens] of Object.entries(day.tokensByModel)) {
+            if (model.includes('opus')) {
+              weeklyOpus += tokens;
+            } else {
+              weeklyNonOpus += tokens;
+            }
+          }
+        }
+      }
+    }
+
+    const weeklyTotal = weeklyOpus + weeklyNonOpus;
+
+    // Calculate session usage (today's tokens as proxy)
+    const today = now.toISOString().split('T')[0];
+    let sessionTokens = 0;
+    if (data.dailyModelTokens) {
+      const todayData = data.dailyModelTokens.find(d => d.date === today);
+      if (todayData) {
+        sessionTokens = Object.values(todayData.tokensByModel).reduce((a, b) => a + b, 0);
+      }
+    }
+
+    // Calculate weekly reset (next Sunday 9:59pm in local timezone)
+    const daysUntilSunday = (7 - now.getDay()) % 7 || 7;
+    const nextSunday = new Date(now);
+    nextSunday.setDate(now.getDate() + daysUntilSunday);
+    nextSunday.setHours(21, 59, 0, 0);
+
+    // Session reset (end of current session - approximate as end of day)
+    const sessionReset = new Date(now);
+    sessionReset.setHours(18, 59, 0, 0);
+    if (sessionReset < now) {
+      sessionReset.setDate(sessionReset.getDate() + 1);
+    }
+
+    // Calculate Sonnet/Haiku usage
+    let sonnetTokens = 0;
+    let haikuTokens = 0;
+    if (data.dailyModelTokens) {
+      for (const day of data.dailyModelTokens) {
+        if (day.date >= weekStart) {
+          for (const [model, tokens] of Object.entries(day.tokensByModel)) {
+            if (model.includes('sonnet')) {
+              sonnetTokens += tokens;
+            } else if (model.includes('haiku')) {
+              haikuTokens += tokens;
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      weeklyTokensUsed: weeklyTotal,
+      weeklyTokensLimit: MAX5_WEEKLY_TOKEN_LIMIT,
+      weeklyCapacityPct: Math.round((weeklyTotal / MAX5_WEEKLY_TOKEN_LIMIT) * 100),
+      sessionTokensUsed: sessionTokens,
+      sessionTokensLimit: MAX5_SESSION_TOKEN_LIMIT,
+      sessionCapacityPct: Math.round((sessionTokens / MAX5_SESSION_TOKEN_LIMIT) * 100),
+      opusTokensUsed: weeklyOpus,
+      sonnetTokensUsed: sonnetTokens,
+      haikuTokensUsed: haikuTokens,
+      weeklyResetDate: nextSunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      sessionResetTime: sessionReset.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    };
+  } catch {
+    return null;
+  }
+}

@@ -428,6 +428,174 @@ interface LearningEntry {
   source_file: string;
 }
 
+interface GeneratedLearning {
+  squad: string;
+  insight: string;
+  category: 'success' | 'failure' | 'pattern' | 'tip';
+  tags: string[];
+  context: string; // commit hashes
+}
+
+// Commit message prefixes that indicate learning categories
+const COMMIT_CATEGORY_MAP: Record<string, 'success' | 'failure' | 'pattern' | 'tip'> = {
+  'feat': 'success',
+  'fix': 'failure',
+  'refactor': 'pattern',
+  'perf': 'pattern',
+  'docs': 'tip',
+  'chore': 'tip',
+  'test': 'pattern',
+  'style': 'tip',
+};
+
+// Patterns that indicate significant learnings worth capturing
+const SIGNIFICANT_PATTERNS = [
+  { pattern: /\d+\s*(agents?|files?|components?)/i, weight: 2 },  // Batch operations
+  { pattern: /parallel|concurrent|async/i, weight: 2 },           // Parallelization
+  { pattern: /automat|hook|trigger/i, weight: 2 },                // Automation
+  { pattern: /integrat|connect|bridge/i, weight: 1.5 },           // Integration
+  { pattern: /improv|optim|enhanc|better/i, weight: 1.5 },        // Improvements
+  { pattern: /new|add|implement|create/i, weight: 1 },            // New features
+];
+
+/**
+ * Analyze commits and generate learnings based on patterns
+ */
+function analyzeCommitsForLearnings(commits: CommitInfo[]): GeneratedLearning[] {
+  const learnings: GeneratedLearning[] = [];
+  const squadCommits = groupCommitsBySquad(commits);
+
+  for (const [squad, squadCommitList] of squadCommits) {
+    // Group by category (feat, fix, etc.)
+    const byCategory = new Map<string, CommitInfo[]>();
+
+    for (const commit of squadCommitList) {
+      // Extract conventional commit prefix
+      const match = commit.message.match(/^(\w+)(?:\(.*?\))?:\s*/);
+      const prefix = match ? match[1].toLowerCase() : 'other';
+
+      if (!byCategory.has(prefix)) {
+        byCategory.set(prefix, []);
+      }
+      byCategory.get(prefix)!.push(commit);
+    }
+
+    // Generate learnings for significant patterns
+    for (const [prefix, categoryCommits] of byCategory) {
+      if (categoryCommits.length === 0) continue;
+
+      const category = COMMIT_CATEGORY_MAP[prefix] || 'tip';
+
+      // Calculate significance score
+      let significanceScore = categoryCommits.length; // Base: number of commits
+      const allMessages = categoryCommits.map(c => c.message).join(' ');
+
+      for (const { pattern, weight } of SIGNIFICANT_PATTERNS) {
+        if (pattern.test(allMessages)) {
+          significanceScore *= weight;
+        }
+      }
+
+      // Only generate learning if significant enough (score > 2)
+      if (significanceScore < 2) continue;
+
+      // Generate insight text
+      let insight: string;
+      if (categoryCommits.length === 1) {
+        // Single commit - use message directly
+        insight = categoryCommits[0].message.replace(/^(\w+)(?:\(.*?\))?:\s*/, '');
+      } else {
+        // Multiple commits - summarize
+        const summaryParts = categoryCommits
+          .slice(0, 3)
+          .map(c => c.message.replace(/^(\w+)(?:\(.*?\))?:\s*/, ''));
+
+        insight = `${prefix}: ${summaryParts.join('; ')}${categoryCommits.length > 3 ? ` (+${categoryCommits.length - 3} more)` : ''}`;
+      }
+
+      // Extract tags from file paths
+      const tags = new Set<string>();
+      for (const commit of categoryCommits) {
+        for (const file of commit.files) {
+          if (file.includes('agents')) tags.add('agents');
+          if (file.includes('memory')) tags.add('memory');
+          if (file.includes('cli')) tags.add('cli');
+          if (file.includes('web')) tags.add('web');
+          if (file.includes('hook')) tags.add('hooks');
+        }
+      }
+
+      learnings.push({
+        squad,
+        insight,
+        category,
+        tags: Array.from(tags),
+        context: categoryCommits.map(c => c.hash).join(', '),
+      });
+    }
+  }
+
+  return learnings;
+}
+
+/**
+ * Append auto-generated learnings to learnings.md files
+ */
+function appendAutoLearnings(memoryDir: string, learnings: GeneratedLearning[]): number {
+  let appended = 0;
+  const date = new Date().toISOString().split('T')[0];
+
+  for (const learning of learnings) {
+    const squadDir = join(memoryDir, learning.squad);
+
+    // Find or create agent directory
+    let agentDir: string;
+    if (existsSync(squadDir)) {
+      const dirs = readdirSync(squadDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
+      agentDir = dirs.length > 0 ? join(squadDir, dirs[0]) : join(squadDir, `${learning.squad}-lead`);
+    } else {
+      mkdirSync(squadDir, { recursive: true });
+      agentDir = join(squadDir, `${learning.squad}-lead`);
+    }
+
+    if (!existsSync(agentDir)) {
+      mkdirSync(agentDir, { recursive: true });
+    }
+
+    const learningsPath = join(agentDir, 'learnings.md');
+
+    // Build learning entry
+    const categoryEmoji = {
+      success: '✓',
+      failure: '✗',
+      pattern: '◆',
+      tip: '→',
+    }[learning.category];
+
+    const tagsStr = learning.tags.length > 0 ? ` #${learning.tags.join(' #')}` : '';
+    const entry = `\n${date} ${categoryEmoji} **${learning.category.charAt(0).toUpperCase() + learning.category.slice(1)}**: ${learning.insight}${tagsStr}\n`;
+
+    // Append to file
+    let content = '';
+    if (existsSync(learningsPath)) {
+      content = readFileSync(learningsPath, 'utf-8');
+      // Check if this insight already exists (avoid duplicates)
+      if (content.includes(learning.insight.slice(0, 50))) {
+        continue;
+      }
+    } else {
+      content = `# ${learning.squad} Squad - Learnings\n\nAuto-captured insights from session activity.\n`;
+    }
+
+    writeFileSync(learningsPath, content + entry);
+    appended++;
+  }
+
+  return appended;
+}
+
 /**
  * Parse a learnings.md file into individual learning entries
  */
@@ -604,8 +772,8 @@ function gitPushMemory(): { success: boolean; output: string } {
   }
 }
 
-export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings });
+export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean; autoLearn?: boolean } = {}): Promise<void> {
+  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn });
 
   // If --dimensions flag, sync squad/agent definitions to Postgres dim tables
   if (options.dimensions) {
@@ -616,6 +784,78 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
   // If --learnings flag, sync learnings.md files to Postgres
   if (options.learnings) {
     await syncLearningsToPostgres(options.verbose);
+    return;
+  }
+
+  // If --auto-learn flag, generate and append learnings from commits
+  if (options.autoLearn) {
+    const memoryDir = findMemoryDir();
+    if (!memoryDir) {
+      writeLine(`  ${colors.yellow}No .agents/memory directory found${RESET}`);
+      return;
+    }
+
+    writeLine();
+    writeLine(`  ${gradient('squads')} ${colors.dim}memory sync --auto-learn${RESET}`);
+    writeLine();
+
+    // Get commits since last sync (or last 20)
+    const lastSync = getLastSyncTime(memoryDir);
+    const commits = getRecentCommits(lastSync || undefined);
+
+    if (commits.length === 0) {
+      writeLine(`  ${colors.dim}No commits to analyze${RESET}`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${icons.progress} Analyzing ${colors.cyan}${commits.length}${RESET} commits...`);
+
+    // Analyze and generate learnings
+    const learnings = analyzeCommitsForLearnings(commits);
+
+    if (learnings.length === 0) {
+      writeLine(`  ${colors.dim}No significant patterns detected${RESET}`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${icons.success} Found ${colors.cyan}${learnings.length}${RESET} learnable patterns`);
+    writeLine();
+
+    // Show what will be captured
+    if (options.verbose) {
+      for (const learning of learnings) {
+        const emoji = { success: '✓', failure: '✗', pattern: '◆', tip: '→' }[learning.category];
+        writeLine(`    ${colors.cyan}${learning.squad}${RESET} ${emoji} ${learning.insight.slice(0, 60)}${learning.insight.length > 60 ? '...' : ''}`);
+      }
+      writeLine();
+    }
+
+    // Append to learnings.md files
+    const appended = appendAutoLearnings(memoryDir, learnings);
+
+    writeLine(`  ${icons.success} Captured ${colors.green}${appended}${RESET} learnings to memory`);
+
+    // Show summary by squad
+    const bySquad = new Map<string, number>();
+    for (const l of learnings) {
+      bySquad.set(l.squad, (bySquad.get(l.squad) || 0) + 1);
+    }
+    for (const [squad, count] of bySquad) {
+      writeLine(`    ${colors.cyan}${squad}${RESET}: ${count} learnings`);
+    }
+
+    writeLine();
+
+    // Update last sync time
+    updateLastSyncTime(memoryDir);
+
+    // Sync to Postgres if requested
+    if (options.postgres) {
+      await syncLearningsToPostgres(options.verbose);
+    }
+
     return;
   }
   const memoryDir = findMemoryDir();
