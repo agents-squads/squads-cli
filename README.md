@@ -5,13 +5,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**The orchestration layer for Claude Code.** Organize AI agents into domain-aligned squads with persistent memory, goal tracking, and coordinated execution.
+**Open source CLI for AI agent coordination.** Organize agents into domain-aligned squads with persistent memory, goal tracking, and coordinated execution.
 
 ```bash
 npm install -g squads-cli && squads init
 ```
 
-> **Built for the Anthropic ecosystem.** Claude Code + MCP + Agent SDK. Squads gives your Claude agents memory that persists across sessions, organizes them by business domain, and coordinates multi-agent workflows. No framework lock-in—just markdown files and a CLI.
+> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes agents by business domain, gives them persistent memory, tracks goals, and delivers outcomes—not just answers. Works with any AI coding assistant.
 
 ![squads dashboard](./assets/dashboard.png)
 
@@ -36,24 +36,24 @@ $ squads status
   └────────────────────────────────────────────────────────┘
 ```
 
-## Why Claude-Native?
+## Why squads-cli?
 
-| Generic Frameworks | squads-cli |
-|--------------------|------------|
+| Other Frameworks | squads-cli |
+|------------------|------------|
 | Framework lock-in | Markdown files you own |
 | Complex setup | `npm install -g` and go |
 | No memory | Persistent state across sessions |
 | Single agent focus | Domain-aligned teams |
-| Provider-agnostic (jack of all) | Claude-optimized (master of one) |
+| Code-heavy | CLI-first, zero code to start |
 
-**Works with:** Claude Code, Claude Desktop, MCP servers, Agent SDK
+**Works with:** Claude Code, Cursor, Aider, Gemini, GitHub Copilot, and more.
 
 ## Key Features
 
 - **Squads** — Group agents by domain (engineering, research, marketing)
-- **Memory** — Persistent state that survives across Claude sessions
+- **Memory** — Persistent state that survives across sessions
 - **Goals** — Track objectives and measure progress
-- **Sessions** — Real-time detection of running Claude instances
+- **Sessions** — Real-time detection of running AI assistants
 - **Hooks** — Inject context at session start, sync memory at session end
 - **Stack** — Optional local infrastructure for telemetry and cost tracking
 
