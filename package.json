@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.4.12",
-  "description": "Claude Code orchestration CLI - domain-aligned agent squads with persistent memory",
+  "description": "Open source CLI for AI agent coordination and execution. Domain-aligned squads with persistent memory and goals.",
   "type": "module",
   "bin": {
     "squads": "./dist/cli.js"
