@@ -207,6 +207,32 @@ services:
       - squads
 
   # =============================================================================
+  # Engram MCP Server - Claude Code memory integration
+  # =============================================================================
+  engram-mcp:
+    build:
+      context: ../../engram/mcp-server
+      dockerfile: Dockerfile
+    container_name: squads-engram-mcp
+    restart: unless-stopped
+    environment:
+      MEM0_API_URL: http://mem0:8000
+      MEM0_API_KEY: ${MEM0_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${ENGRAM_MCP_PORT:-8081}:8080"
+    depends_on:
+      mem0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - squads
+
+  # =============================================================================
   # Scheduler API - Trigger management and webhooks
   # =============================================================================
   scheduler-api:

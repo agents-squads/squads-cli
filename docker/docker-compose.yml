@@ -1,35 +1,35 @@
-# Squads Local Stack - Consolidated
-# Full telemetry pipeline: OTel → Bridge → Langfuse (local or cloud)
+# Squads Stack - Consolidated Infrastructure
 #
 # Usage:
-#   cd docker && docker-compose up -d
+#   cd squads-cli/docker && docker compose up -d
 #
-# Access:
-#   Langfuse UI: http://localhost:3100
-#   Postgres:    localhost:5433
+# Services:
+#   - postgres:5433     Primary database (pgvector)
+#   - redis:6379        Caching & queues
+#   - otel-collector    Receives telemetry from Claude Code
+#   - squads-bridge     Stores telemetry in Postgres
+#   - scheduler-api     Triggers, webhooks, approvals
+#   - scheduler-worker  Agent execution
 
 name: agents-squads
 
 services:
   # =============================================================================
-  # PostgreSQL - Primary data store
+  # PostgreSQL with pgvector - Primary data store
   # =============================================================================
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: squads-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: squads
       POSTGRES_PASSWORD: squads
       POSTGRES_DB: squads
-      # Create both databases on init
-      POSTGRES_MULTIPLE_DATABASES: langfuse
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - squads_postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-squads.sql:ro
-      - ./init-langfuse-db.sh:/docker-entrypoint-initdb.d/00-init-langfuse.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U squads -d squads"]
       interval: 5s
@@ -59,34 +59,6 @@ services:
       - squads
 
   # =============================================================================
-  # Langfuse - LLM Observability (local instance)
-  # =============================================================================
-  langfuse:
-    image: langfuse/langfuse:2
-    container_name: squads-langfuse
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://squads:squads@postgres:5432/langfuse
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-squads-local-dev-secret}
-      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
-      SALT: ${LANGFUSE_SALT:-squads-local-salt}
-      TELEMETRY_ENABLED: "false"
-      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
-    ports:
-      - "${LANGFUSE_PORT:-3100}:3000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/public/health || exit 1"]
-      interval: 30s
-      timeout: 15s
-      retries: 10
-      start_period: 60s
-    networks:
-      - squads
-
-  # =============================================================================
   # OpenTelemetry Collector - Receives telemetry from Claude Code
   # =============================================================================
   otel-collector:
@@ -104,7 +76,7 @@ services:
       - squads
 
   # =============================================================================
-  # Squads Bridge - Telemetry storage (postgres first, Langfuse optional)
+  # Squads Bridge - Telemetry storage in Postgres
   # =============================================================================
   squads-bridge:
     build:
@@ -114,18 +86,10 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8080
-      DEBUG: "1"
-      # Primary storage: PostgreSQL (durable)
+      DEBUG: "${DEBUG:-0}"
       DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
-      # Cache: Redis (real-time stats, session cache)
       REDIS_URL: redis://redis:6379/0
-      # Budget tracking
       SQUADS_DAILY_BUDGET: ${SQUADS_DAILY_BUDGET:-50.0}
-      # Optional: Forward to Langfuse (set LANGFUSE_ENABLED=true to enable)
-      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "${BRIDGE_PORT:-8088}:8080"
     depends_on:
@@ -137,50 +101,127 @@ services:
       - squads
 
   # =============================================================================
-  # Anthropic Proxy - Captures rate limit headers
+  # Scheduler API - Triggers, webhooks, approvals
   # =============================================================================
-  anthropic-proxy:
+  scheduler-api:
     build:
-      context: ./squads-bridge
-      dockerfile: Dockerfile.proxy
-    container_name: squads-anthropic-proxy
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-scheduler-api
     restart: unless-stopped
-    profiles: ["proxy"]  # Only start with: docker-compose --profile proxy up
+    command: uvicorn api:app --host 0.0.0.0 --port 8090
+    env_file:
+      - ../../hq/.env
     environment:
-      PORT: 8089
-      DEBUG: "${DEBUG:-0}"
-      ANTHROPIC_API_URL: https://api.anthropic.com
-      REDIS_URL: redis://redis:6379/0
-      SQUADS_BRIDGE_URL: http://squads-bridge:8080
+      # Override database URL for container network
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
     ports:
-      - "${ANTHROPIC_PROXY_PORT:-8089}:8089"
+      - "${SCHEDULER_API_PORT:-8090}:8090"
     depends_on:
-      redis:
+      postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - squads
 
   # =============================================================================
-  # Neo4j - Graph database for agent memory (future)
+  # Scheduler Worker - Trigger evaluation and agent execution
   # =============================================================================
-  neo4j:
-    image: neo4j:5-community
-    container_name: squads-neo4j
+  scheduler-worker:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-scheduler-worker
     restart: unless-stopped
-    profiles: ["full"]  # Only start with: docker-compose --profile full up
+    command: python scheduler.py
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-squads_local_dev}
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      HQ_PATH: /hq
+      SQUADS_CLI: squads
     volumes:
-      - squads_neo4j_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ../../hq:/hq:ro
+    depends_on:
+      - scheduler-api
+    networks:
+      - squads
+
+  # =============================================================================
+  # Slack Bot - Approvals and PR management
+  # =============================================================================
+  slack-bot:
+    build:
+      context: ../../slack-bot
+      dockerfile: Dockerfile
+    container_name: squads-slack-bot
+    restart: unless-stopped
+    env_file:
+      - ../../hq/.env
+    environment:
+      # Scheduler API for approvals
+      SCHEDULER_API_URL: http://scheduler-api:8090
+      # HTTP port for CLI integration
+      HTTP_PORT: 3001
+      # GitHub CLI authentication (for PR/issue operations)
+      GH_TOKEN: ${GH_TOKEN:-}
+      # Approval channels - defaults to SLACK_CHANNEL if per-type not set
+      SLACK_CHANNEL_ISSUES: ${SLACK_CHANNEL_ISSUES:-${SLACK_CHANNEL:-social}}
+      SLACK_CHANNEL_PRS: ${SLACK_CHANNEL_PRS:-${SLACK_CHANNEL:-social}}
+      SLACK_CHANNEL_CONTENT: ${SLACK_CHANNEL_CONTENT:-${SLACK_CHANNEL:-social}}
+      SLACK_CHANNEL_RUNS: ${SLACK_CHANNEL_RUNS:-${SLACK_CHANNEL:-social}}
+      SLACK_CHANNEL_BRIEFS: ${SLACK_CHANNEL_BRIEFS:-${SLACK_CHANNEL:-social}}
+    ports:
+      - "${SLACK_BOT_PORT:-3001}:3001"
+    depends_on:
+      - scheduler-api
+    networks:
+      - squads
+
+  # =============================================================================
+  # Slack Worker - Auto-respond to Slack messages
+  # =============================================================================
+  slack-worker:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-slack-worker
+    restart: unless-stopped
+    command: python -u slack_worker.py
+    env_file:
+      - ../../hq/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      SLACK_BOT_URL: http://slack-bot:3001
+      HQ_PATH: /hq
+      SLACK_WORKER_POLL_INTERVAL: "5"
+      SLACK_WORKER_MODEL: "claude-sonnet-4-20250514"
+    volumes:
+      - ../../hq:/hq:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      slack-bot:
+        condition: service_started
+    networks:
+      - squads
+
+  # =============================================================================
+  # Ngrok - Webhook tunnel (optional, for Stripe webhooks in dev)
+  # =============================================================================
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: squads-ngrok
+    restart: unless-stopped
+    profiles: ["webhooks"]
+    command: http scheduler-api:8090 --log stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    depends_on:
+      - scheduler-api
     networks:
       - squads
 
@@ -191,4 +232,3 @@ networks:
 volumes:
   squads_postgres_data:
   squads_redis_data:
-  squads_neo4j_data:

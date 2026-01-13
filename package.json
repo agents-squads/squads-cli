@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.4.12",
-  "description": "A CLI for humans and agents",
+  "description": "Claude Code orchestration CLI - domain-aligned agent squads with persistent memory",
   "type": "module",
   "bin": {
     "squads": "./dist/cli.js"
@@ -39,13 +39,17 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "ai",
-    "agents",
-    "squads",
-    "cli",
-    "automation",
     "claude",
-    "llm"
+    "claude-code",
+    "anthropic",
+    "mcp",
+    "agent-sdk",
+    "multi-agent",
+    "orchestration",
+    "ai-agents",
+    "persistent-memory",
+    "squads",
+    "cli"
   ],
   "author": "Agents Squads <hello@agents-squads.com>",
   "license": "MIT",

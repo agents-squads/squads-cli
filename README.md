@@ -5,13 +5,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Scale your organization with AI agent teams.** Domain-aligned squads that execute real business work—research, engineering, marketing, customer ops.
+**The orchestration layer for Claude Code.** Organize AI agents into domain-aligned squads with persistent memory, goal tracking, and coordinated execution.
 
 ```bash
 npm install -g squads-cli && squads init
 ```
 
-> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes agents by business domain, gives them persistent memory, tracks goals, and delivers outcomes—not just answers.
+> **Built for the Anthropic ecosystem.** Claude Code + MCP + Agent SDK. Squads gives your Claude agents memory that persists across sessions, organizes them by business domain, and coordinates multi-agent workflows. No framework lock-in—just markdown files and a CLI.
 
 ![squads dashboard](./assets/dashboard.png)
 
@@ -36,13 +36,26 @@ $ squads status
   └────────────────────────────────────────────────────────┘
 ```
 
+## Why Claude-Native?
+
+| Generic Frameworks | squads-cli |
+|--------------------|------------|
+| Framework lock-in | Markdown files you own |
+| Complex setup | `npm install -g` and go |
+| No memory | Persistent state across sessions |
+| Single agent focus | Domain-aligned teams |
+| Provider-agnostic (jack of all) | Claude-optimized (master of one) |
+
+**Works with:** Claude Code, Claude Desktop, MCP servers, Agent SDK
+
 ## Key Features
 
 - **Squads** — Group agents by domain (engineering, research, marketing)
-- **Memory** — Persistent state that survives across sessions
+- **Memory** — Persistent state that survives across Claude sessions
 - **Goals** — Track objectives and measure progress
-- **Sessions** — Real-time detection of running AI assistants (Claude, Cursor, Aider, Gemini, Copilot)
-- **Stack** — Local infrastructure for telemetry and cost tracking
+- **Sessions** — Real-time detection of running Claude instances
+- **Hooks** — Inject context at session start, sync memory at session end
+- **Stack** — Optional local infrastructure for telemetry and cost tracking
 
 No complex infrastructure. Just markdown files and a CLI.
 
