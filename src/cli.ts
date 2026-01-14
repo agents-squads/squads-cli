@@ -808,12 +808,14 @@ tonight
   .option('-c, --cost-cap <usd>', 'Max USD to spend (default: 50)', '50')
   .option('-s, --stop-at <time>', 'Stop time HH:MM (default: 07:00)', '07:00')
   .option('-r, --max-retries <n>', 'Max restarts per agent (default: 3)', '3')
+  .option('-n, --notify <method>', 'Notification method: slack | none', 'none')
   .option('-d, --dry-run', 'Show what would run without executing')
   .option('-v, --verbose', 'Verbose output')
   .action((targets, options) => tonightCommand(targets, {
     costCap: parseFloat(options.costCap),
     stopAt: options.stopAt,
     maxRetries: parseInt(options.maxRetries, 10),
+    notify: options.notify,
     dryRun: options.dryRun,
     verbose: options.verbose,
   }));
