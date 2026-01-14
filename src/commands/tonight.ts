@@ -5,6 +5,11 @@ import { execSync, spawn } from 'child_process';
 import { findSquadsDir } from '../lib/squad-parser.js';
 import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
 import { track, Events } from '../lib/telemetry.js';
+import {
+  isSlackConfigured,
+  notifyTonightStart,
+  notifyTonightComplete,
+} from '../lib/slack.js';
 
 /**
  * Get the project root directory (where .agents/ lives)
@@ -47,6 +52,8 @@ interface TonightState {
   totalCost: number;
   stopped: boolean;
   stoppedReason?: string;
+  notify?: string;
+  targets?: string[];
 }
 
 const TONIGHT_STATE_FILE = '.agents/tonight-state.json';
@@ -251,6 +258,8 @@ export async function tonightCommand(
     sessions: [],
     totalCost: await getCurrentCost(),
     stopped: false,
+    notify: options.notify,
+    targets,
   };
 
   // Launch agents
@@ -286,6 +295,13 @@ export async function tonightCommand(
     costCap,
     stopAt,
   });
+
+  // Slack notification (if enabled)
+  const notifySlack = options.notify === 'slack';
+  if (notifySlack && isSlackConfigured()) {
+    await notifyTonightStart(targets, { costCap, stopAt });
+    writeLine(`  ${colors.green}✓${RESET} Slack notifications enabled`);
+  }
 
   writeLine();
   writeLine(`  ${colors.green}✓${RESET} Tonight mode active`);
@@ -435,6 +451,21 @@ export async function tonightStopCommand(): Promise<void> {
 
     const reportPath = await generateReport(state, projectRoot);
     writeLine(`  ${colors.green}✓${RESET} Report: ${reportPath}`);
+
+    // Slack notification (if enabled)
+    if (state.notify === 'slack' && state.targets && isSlackConfigured()) {
+      const duration = Math.round((Date.now() - new Date(state.startedAt).getTime()) / 1000 / 60);
+      const completed = state.sessions.filter(s => s.status === 'completed').length;
+      const failed = state.sessions.filter(s => s.status === 'failed').length;
+
+      await notifyTonightComplete(state.targets, {
+        duration,
+        cost: state.totalCost,
+        completed,
+        failed,
+      });
+      writeLine(`  ${colors.green}✓${RESET} Slack notification sent`);
+    }
 
     // Clean up state
     await fs.unlink(statePath).catch(() => {});
