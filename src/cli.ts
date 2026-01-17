@@ -184,6 +184,7 @@ program
   .command('init')
   .description('Initialize a new squad project')
   .option('-t, --template <template>', 'Project template', 'default')
+  .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
