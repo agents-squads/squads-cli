@@ -12,6 +12,18 @@ interface InitOptions {
   skipInfra?: boolean;
   force?: boolean;
   yes?: boolean;
+  provider?: string;
+}
+
+type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
+
+interface ProviderConfig {
+  name: string;
+  cliCheck?: string;
+  envKey?: string;
+  installCmd?: string;
+  requiresSubscription: boolean;
+  requiresApiKey: boolean;
 }
 
 // Check if running in interactive mode (has TTY)
@@ -76,6 +88,99 @@ async function promptEmail(forceSkip = false): Promise<string | null> {
       } else {
         console.log(chalk.dim('  Invalid email, skipping...'));
         resolve(null);
+      }
+    });
+  });
+}
+
+// Provider configurations
+const PROVIDERS: Record<Provider, ProviderConfig> = {
+  claude: {
+    name: 'Claude Code (Anthropic)',
+    cliCheck: 'claude',
+    installCmd: 'npm install -g @anthropic-ai/claude-code',
+    requiresSubscription: true,
+    requiresApiKey: false,
+  },
+  gemini: {
+    name: 'Gemini (Google)',
+    envKey: 'GEMINI_API_KEY',
+    requiresSubscription: false,
+    requiresApiKey: true,
+  },
+  openai: {
+    name: 'GPT (OpenAI)',
+    envKey: 'OPENAI_API_KEY',
+    requiresSubscription: false,
+    requiresApiKey: true,
+  },
+  ollama: {
+    name: 'Ollama (Local)',
+    cliCheck: 'ollama',
+    requiresSubscription: false,
+    requiresApiKey: false,
+  },
+  cursor: {
+    name: 'Cursor IDE',
+    requiresSubscription: true,
+    requiresApiKey: false,
+  },
+  aider: {
+    name: 'Aider',
+    cliCheck: 'aider',
+    installCmd: 'pip install aider-chat',
+    requiresSubscription: false,
+    requiresApiKey: true,
+  },
+  none: {
+    name: 'Planning Only (no agent execution)',
+    requiresSubscription: false,
+    requiresApiKey: false,
+  },
+};
+
+// Prompt for provider selection
+async function promptProvider(forceProvider?: string): Promise<Provider> {
+  // If provider specified via CLI flag, use it
+  if (forceProvider && forceProvider in PROVIDERS) {
+    return forceProvider as Provider;
+  }
+
+  // In non-interactive mode, default to claude
+  if (!isInteractive()) {
+    return 'claude';
+  }
+
+  console.log();
+  console.log(chalk.bold('  Select your AI assistant:'));
+  console.log();
+  console.log(`  ${chalk.cyan('1)')} Claude Code ${chalk.dim('(recommended)')}`);
+  console.log(`  ${chalk.cyan('2)')} Gemini`);
+  console.log(`  ${chalk.cyan('3)')} OpenAI GPT`);
+  console.log(`  ${chalk.cyan('4)')} Ollama ${chalk.dim('(local)')}`);
+  console.log(`  ${chalk.cyan('5)')} Cursor IDE`);
+  console.log(`  ${chalk.cyan('6)')} Aider`);
+  console.log(`  ${chalk.cyan('7)')} Other/None ${chalk.dim('(planning only)')}`);
+  console.log();
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`  ${chalk.dim('Enter choice [1-7]:')} `, (answer) => {
+      rl.close();
+      const choice = answer.trim() || '1';
+      switch (choice) {
+        case '1': resolve('claude'); break;
+        case '2': resolve('gemini'); break;
+        case '3': resolve('openai'); break;
+        case '4': resolve('ollama'); break;
+        case '5': resolve('cursor'); break;
+        case '6': resolve('aider'); break;
+        case '7': resolve('none'); break;
+        default: resolve('claude'); break;
       }
     });
   });
@@ -412,11 +517,19 @@ function sleep(ms: number): Promise<void> {
 export async function initCommand(options: InitOptions): Promise<void> {
   const cwd = process.cwd();
 
+  // Step 1: Select provider FIRST
+  const selectedProvider = await promptProvider(options.provider);
+  const providerConfig = PROVIDERS[selectedProvider];
+
+  console.log();
+  console.log(`  ${chalk.green('✓')} Provider: ${chalk.cyan(providerConfig.name)}`);
+
+  // Step 2: Check provider-specific requirements
   console.log();
   console.log(chalk.bold('  Checking requirements...'));
   console.log();
 
-  // Check requirements
+  // Check requirements (now provider-aware)
   const checks = checkRequirements();
   let hasMissingRequired = false;
   let hasDocker = false;
@@ -424,7 +537,15 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   const missingTools: string[] = [];
 
-  for (const check of checks) {
+  // Filter checks based on provider - Claude CLI is only required for Claude provider
+  const relevantChecks = checks.filter(check => {
+    if (check.name === 'Claude CLI' && selectedProvider !== 'claude') {
+      return false; // Skip Claude check for non-Claude providers
+    }
+    return true;
+  });
+
+  for (const check of relevantChecks) {
     if (check.status === 'ok') {
       console.log(`  ${chalk.green('✓')} ${check.name}`);
       if (check.name === 'Docker') {
@@ -564,7 +685,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const spinner = ora('Creating squad structure...').start();
 
   try {
-    // Create directory structure
+    // Create directory structure (provider-aware)
     const dirs = [
       '.agents/squads',
       '.agents/squads/demo',
@@ -572,15 +693,28 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/memory/getting-started',
       '.agents/memory/general/shared', // For cross-squad learnings
       '.agents/outputs',
-      '.claude',
-      '.claude/skills',
-      '.claude/skills/squads-workflow',
-      '.claude/skills/squads-learn',
+      '.agents/config', // Provider config
     ];
+
+    // Add provider-specific directories
+    if (selectedProvider === 'claude') {
+      dirs.push('.claude', '.claude/skills', '.claude/skills/squads-workflow', '.claude/skills/squads-learn');
+    } else if (selectedProvider === 'gemini') {
+      dirs.push('.gemini');
+    }
 
     for (const dir of dirs) {
       await fs.mkdir(path.join(cwd, dir), { recursive: true });
     }
+
+    // Create provider config
+    const providerYaml = `# Squads Provider Configuration
+# Selected during: squads init
+# Change with: squads init --provider <name>
+
+provider: ${selectedProvider}
+`;
+    await fs.writeFile(path.join(cwd, '.agents/config/provider.yaml'), providerYaml);
 
     // Create demo squad
     const demoSquadMd = `# Demo Squad
@@ -621,14 +755,14 @@ All demo data is clearly labeled [demo] so you can distinguish it from real data
       demoSquadMd
     );
 
-    // Create demo welcome agent
+    // Create demo welcome agent (uses semantic model name)
     const welcomeAgent = `# Welcome Agent
 
 ## Purpose
 Create a welcome GitHub issue to demonstrate squads functionality.
 
 ## Model
-claude-haiku-3-5
+simple
 
 ## Tools
 - Bash (gh cli)
@@ -654,14 +788,14 @@ Confirmation message with issue URL.
       welcomeAgent
     );
 
-    // Create demo analyzer agent
+    // Create demo analyzer agent (uses semantic model name)
     const analyzerAgent = `# Project Analyzer Agent
 
 ## Purpose
 Analyze project structure and provide insights.
 
 ## Model
-claude-haiku-3-5
+simple
 
 ## Tools
 - Read
@@ -760,13 +894,15 @@ When a task could be automated:
 **Memory is your cross-session brain.** Without it, every session starts fresh. With it, you build on previous work.
 `;
 
-    await fs.writeFile(
-      path.join(cwd, '.claude/skills/squads-workflow/instruction.md'),
-      squadsWorkflowSkill
-    );
+    // Only create Claude-specific skills for Claude provider
+    if (selectedProvider === 'claude') {
+      await fs.writeFile(
+        path.join(cwd, '.claude/skills/squads-workflow/instruction.md'),
+        squadsWorkflowSkill
+      );
 
-    // Create squads-learn skill
-    const squadsLearnSkill = `---
+      // Create squads-learn skill
+      const squadsLearnSkill = `---
 name: squads-learn
 description: Capture learnings after completing work. Use when finishing a task, fixing a bug, discovering a pattern, or learning something worth remembering for future sessions.
 ---
@@ -813,10 +949,11 @@ Before marking done, ask:
 If yes → \`squads learn "<insight>"\`
 `;
 
-    await fs.writeFile(
-      path.join(cwd, '.claude/skills/squads-learn/SKILL.md'),
-      squadsLearnSkill
-    );
+      await fs.writeFile(
+        path.join(cwd, '.claude/skills/squads-learn/SKILL.md'),
+        squadsLearnSkill
+      );
+    }
 
     // Create seed memory
     const seedMemory = `# Getting Started with Squads
@@ -882,38 +1019,40 @@ If yes → \`squads learn "<insight>"\`
       businessBrief
     );
 
-    // Create Claude Code settings with hooks
-    const claudeSettings = {
-      hooks: {
-        SessionStart: [
-          {
-            hooks: [
-              {
-                type: 'command',
-                command: 'squads status',
-                timeout: 10,
-              },
-            ],
-          },
-        ],
-        Stop: [
-          {
-            hooks: [
-              {
-                type: 'command',
-                command: 'squads memory sync && echo "\\n💡 Capture learnings: squads learn \\"<what you learned>\\"\\n"',
-                timeout: 15,
-              },
-            ],
-          },
-        ],
-      },
-    };
+    // Create provider-specific settings
+    if (selectedProvider === 'claude') {
+      const claudeSettings = {
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'squads status',
+                  timeout: 10,
+                },
+              ],
+            },
+          ],
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'squads memory sync && echo "\\n💡 Capture learnings: squads learn \\"<what you learned>\\"\\n"',
+                  timeout: 15,
+                },
+              ],
+            },
+          ],
+        },
+      };
 
-    await fs.writeFile(
-      path.join(cwd, '.claude/settings.json'),
-      JSON.stringify(claudeSettings, null, 2)
-    );
+      await fs.writeFile(
+        path.join(cwd, '.claude/settings.json'),
+        JSON.stringify(claudeSettings, null, 2)
+      );
+    }
 
     // Install git hooks (Slack sync on SQUAD.md changes)
     const hooksInstalled = await installGitHooks(cwd);
@@ -932,39 +1071,92 @@ If yes → \`squads learn "<insight>"\`
       commitTemplate
     );
 
-    // Create CLAUDE.md if it doesn't exist
-    const claudeMdPath = path.join(cwd, 'CLAUDE.md');
-    if (!(await fileExists(claudeMdPath))) {
+    // Create AGENTS.md (vendor-neutral) for ALL providers
+    const agentsMdPath = path.join(cwd, 'AGENTS.md');
+    if (!(await fileExists(agentsMdPath))) {
       await fs.writeFile(
-        claudeMdPath,
-        `# Project Instructions
+        agentsMdPath,
+        `# AGENTS.md
+# Project guidance for AI coding agents (vendor-neutral)
 
-## What is Squads?
+This project uses AI agent squads for development and operations.
 
-Squads is a framework for building AI agent teams that automate real work.
-Each **squad** is a team of **agents** (markdown prompts) that execute via Claude.
+## Provider: ${providerConfig.name}
 
-## For Claude (READ THIS)
+Configure in: \`.agents/config/provider.yaml\`
 
-**Skill available**: Use \`/squads-workflow\` for detailed workflow guidance.
+## Repository Structure
 
-### Session Start
-
-You'll see \`squads status\` automatically. For complex tasks, also run:
-\`\`\`bash
-squads context                # Business context, goals, decisions
-squads memory query "<topic>" # What we already know
+\`\`\`
+.agents/
+├── squads/           # Agent team definitions
+│   └── <squad>/
+│       ├── SQUAD.md  # Squad definition
+│       └── *.md      # Agent files
+├── memory/           # Persistent context
+├── config/           # Provider and model configuration
+└── outputs/          # Agent outputs
 \`\`\`
 
-**Skip for simple tasks** (typo fixes, quick questions).
+## Agent Guidelines
 
-### Before Research
-Always check memory first:
+### Before Starting Work
+1. Run \`squads status\` to understand current state
+2. Check \`squads memory query "<topic>"\` for existing knowledge
+3. Read relevant SQUAD.md files
+
+### During Work
+- Update todo list frequently for visibility
+- Prefer editing existing files over creating new ones
+- Keep changes focused - one task per commit/PR
+
+### After Work
+- Update memory in \`.agents/memory/<squad>/<agent>/state.md\`
+- Create GitHub issues for follow-up work
+
+## Quick Reference
+
 \`\`\`bash
-squads memory query "<topic>"
+squads status          # Overview
+squads dash            # Full dashboard
+squads run demo        # Try demo squad
+squads list            # All agents
+squads memory query X  # Search memory
+squads goal list       # View goals
 \`\`\`
 
-### Creating Agents
+## Model Aliases
+
+Agents can use semantic model names that resolve per provider:
+- \`leader\` - Most capable (complex tasks)
+- \`worker\` - Balanced (standard tasks)
+- \`simple\` - Fast (simple tasks)
+`
+      );
+    }
+
+    // Create provider-specific instruction file
+    if (selectedProvider === 'claude') {
+      const claudeMdPath = path.join(cwd, 'CLAUDE.md');
+      if (!(await fileExists(claudeMdPath))) {
+        await fs.writeFile(
+          claudeMdPath,
+          `# Claude-Specific Instructions
+
+Extends AGENTS.md with Claude Code specific features.
+
+## Skill Available
+
+Use \`/squads-workflow\` for detailed workflow guidance.
+
+## Session Hooks
+
+Claude Code hooks are configured in \`.claude/settings.json\`:
+- **SessionStart**: Runs \`squads status\` automatically
+- **Stop**: Syncs memory and prompts for learnings
+
+## Creating Agents
+
 Agents live in \`.agents/squads/<squad-name>/<agent-name>.md\`:
 
 \`\`\`markdown
@@ -972,6 +1164,9 @@ Agents live in \`.agents/squads/<squad-name>/<agent-name>.md\`:
 
 ## Purpose
 One sentence: what this agent does.
+
+## Model
+simple  # or: worker, leader
 
 ## Instructions
 1. Specific step
@@ -982,66 +1177,54 @@ One sentence: what this agent does.
 What it produces and where it goes.
 \`\`\`
 
-### Running Agents
-\`\`\`bash
-squads run <squad>           # Run all agents in squad
-squads run <squad>/<agent>   # Run specific agent
-\`\`\`
-
-### Tracking Progress
-\`\`\`bash
-squads dash                  # Full dashboard with goals
-squads goal list             # View all goals
-squads goal set <squad> "X"  # Add a goal
-\`\`\`
-
-### Common User Requests
-
-| User says | You should |
-|-----------|------------|
-| "Create an agent to..." | Create \`.agents/squads/<squad>/<name>.md\` |
-| "Automate X" | Create agent, then \`squads run\` |
-| "What's the status?" | Run \`squads dash\` or \`squads status\` |
-| "Run the X agent" | \`squads run <squad>/x\` |
-| "Check memory" | \`squads memory query "<topic>"\` |
-| "Get context" | \`squads context\` |
-
-## Quick Reference
-
-\`\`\`bash
-squads context         # Business context for alignment
-squads status          # Overview
-squads dash            # Full dashboard
-squads run demo        # Try demo squad
-squads list            # All agents
-squads memory query X  # Search memory
-squads goal list       # View goals
-\`\`\`
-
-## Project Structure
+## Commit Signature
 
 \`\`\`
-.agents/
-├── squads/           # Agent teams
-│   └── <squad>/
-│       ├── SQUAD.md  # Squad definition
-│       └── *.md      # Agent files
-├── memory/           # Persistent context
-└── outputs/          # Agent outputs
+Co-Authored-By: Claude <model> <noreply@anthropic.com>
 \`\`\`
 `
-      );
+        );
+      }
+    } else if (selectedProvider === 'gemini') {
+      const geminiMdPath = path.join(cwd, 'GEMINI.md');
+      if (!(await fileExists(geminiMdPath))) {
+        await fs.writeFile(
+          geminiMdPath,
+          `# Gemini-Specific Instructions
+
+Extends AGENTS.md with Gemini specific features.
+
+## API Key Required
+
+Set \`GEMINI_API_KEY\` environment variable.
+Get your key at: https://aistudio.google.com/apikey
+
+## Running Agents
+
+\`\`\`bash
+squads run <squad>/<agent>
+\`\`\`
+
+## Commit Signature
+
+\`\`\`
+Co-Authored-By: Gemini <model> <noreply@google.com>
+\`\`\`
+`
+        );
+      }
     }
 
     spinner.succeed('Squad structure created');
 
-    // Track successful initialization
+    // Track successful initialization (now with provider)
     await track(Events.CLI_INIT, {
       success: true,
       hasGit: gitStatus.isGitRepo,
       hasRemote: gitStatus.hasRemote,
       template: options.template,
       hasDocker,
+      provider: selectedProvider,
     });
 
   } catch (error) {
@@ -1084,14 +1267,20 @@ squads goal list       # View goals
   console.log(chalk.green.bold('  ✓ Squads initialized!'));
   console.log();
 
-  // Show what was created (compact)
+  // Show what was created (compact, provider-aware)
   console.log(chalk.dim('  Created:'));
   console.log(chalk.dim('  • .agents/squads/demo/     - Demo squad with 2 agents'));
+  console.log(chalk.dim('  • .agents/config/          - Provider configuration'));
   console.log(chalk.dim('  • .agents/BUSINESS_BRIEF   - Business context template'));
   console.log(chalk.dim('  • .agents/memory/          - Seed memory + learnings'));
-  console.log(chalk.dim('  • .claude/settings.json    - Claude Code hooks'));
-  console.log(chalk.dim('  • .claude/skills/          - Workflow + learn skills'));
-  console.log(chalk.dim('  • CLAUDE.md                - Agent instructions'));
+  console.log(chalk.dim('  • AGENTS.md                - Agent instructions'));
+  if (selectedProvider === 'claude') {
+    console.log(chalk.dim('  • .claude/settings.json    - Claude Code hooks'));
+    console.log(chalk.dim('  • .claude/skills/          - Workflow + learn skills'));
+    console.log(chalk.dim('  • CLAUDE.md                - Claude-specific instructions'));
+  } else if (selectedProvider === 'gemini') {
+    console.log(chalk.dim('  • GEMINI.md                - Gemini-specific instructions'));
+  }
   if (gitStatus.isGitRepo) {
     console.log(chalk.dim('  • .git/hooks/post-commit   - Slack channel sync'));
   }
