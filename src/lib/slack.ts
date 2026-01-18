@@ -163,7 +163,8 @@ export async function postNotification(
   if (!channelId) return null;
 
   const emoji = options?.emoji || ':robot_face:';
-  const blocks = [
+  // Type blocks array to accept different Slack block types
+  const blocks: Array<Record<string, unknown>> = [
     {
       type: 'section',
       text: {
@@ -177,7 +178,7 @@ export async function postNotification(
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: options.context }],
-    } as typeof blocks[0]);
+    });
   }
 
   try {

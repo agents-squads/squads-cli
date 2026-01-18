@@ -22,6 +22,8 @@ export interface SquadContext {
     weekly?: number;
     perExecution?: number;
   };
+  /** Cooldown between executions in seconds */
+  cooldown?: number;
 }
 
 // Multi-LLM provider configuration
@@ -60,6 +62,12 @@ export interface Agent {
   effort?: EffortLevel;
   /** LLM provider override (from agent file frontmatter) */
   provider?: string;
+  /** Agent purpose (short description) */
+  purpose?: string;
+  /** Cron schedule for scheduled agents */
+  schedule?: string;
+  /** Output destinations */
+  outputs?: string[];
 }
 
 export interface Pipeline {
@@ -116,6 +124,12 @@ export interface Squad {
   stack?: string;
   /** Multi-LLM provider configuration */
   providers?: SquadProviders;
+  /** Domain this squad operates in */
+  domain?: string;
+  /** Permissions for this squad */
+  permissions?: Record<string, boolean>;
+  /** Raw frontmatter for accessing KPIs and other custom fields */
+  frontmatter?: Record<string, unknown>;
 }
 
 /**
@@ -250,6 +264,8 @@ export function parseSquadFile(filePath: string): Squad {
     repo: fm.repo,
     stack: fm.stack,
     providers: fm.providers,
+    // Preserve raw frontmatter for KPIs and other custom fields
+    frontmatter: frontmatter as Record<string, unknown>,
   };
 
   let currentSection = '';
