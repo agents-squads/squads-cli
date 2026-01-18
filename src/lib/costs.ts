@@ -948,10 +948,19 @@ export interface ClaudeCodeCapacity {
   sessionResetTime: string;
 }
 
-// Max5 plan estimated limits (based on observed behavior)
-// These are approximations - actual limits vary
-const MAX5_WEEKLY_TOKEN_LIMIT = 50_000_000; // ~50M tokens/week
-const MAX5_SESSION_TOKEN_LIMIT = 2_000_000; // ~2M tokens/session
+// Claude Code subscription capacity estimation
+// The actual limits use "usage units" not raw tokens
+// Opus costs ~5x more usage units than Sonnet/Haiku
+// Based on user reports: Max 20x gives ~24-40 hours Opus/week
+// Conservative estimate: ~4M "weighted tokens" per week for Max 20x
+const OPUS_WEIGHT = 5;      // Opus costs ~5x more against limit
+const SONNET_WEIGHT = 1;    // Sonnet is the baseline
+const HAIKU_WEIGHT = 0.25;  // Haiku is cheaper
+
+// Effective weekly limit in weighted tokens (conservative for Max 20x)
+// Adjust via SQUADS_WEEKLY_LIMIT env var if your plan differs
+const DEFAULT_WEEKLY_WEIGHTED_LIMIT = 4_000_000;
+const MAX5_SESSION_TOKEN_LIMIT = 2_000_000; // ~2M tokens/session (raw)
 
 /**
  * Fetch Claude Code capacity from stats-cache.json
@@ -999,7 +1008,11 @@ export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | nu
       }
     }
 
-    const weeklyTotal = weeklyOpus + weeklyNonOpus;
+    const weeklyTotalRaw = weeklyOpus + weeklyNonOpus;
+
+    // Calculate weighted usage (Opus costs 5x more against limit)
+    // This better reflects actual subscription capacity consumption
+    const weeklyLimit = parseInt(process.env.SQUADS_WEEKLY_LIMIT || '', 10) || DEFAULT_WEEKLY_WEIGHTED_LIMIT;
 
     // Calculate session usage (today's tokens as proxy)
     const today = now.toISOString().split('T')[0];
@@ -1041,10 +1054,17 @@ export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | nu
       }
     }
 
+    // Calculate weighted weekly usage
+    const weeklyWeighted = Math.round(
+      (weeklyOpus * OPUS_WEIGHT) +
+      (sonnetTokens * SONNET_WEIGHT) +
+      (haikuTokens * HAIKU_WEIGHT)
+    );
+
     return {
-      weeklyTokensUsed: weeklyTotal,
-      weeklyTokensLimit: MAX5_WEEKLY_TOKEN_LIMIT,
-      weeklyCapacityPct: Math.round((weeklyTotal / MAX5_WEEKLY_TOKEN_LIMIT) * 100),
+      weeklyTokensUsed: weeklyWeighted, // Now weighted, not raw
+      weeklyTokensLimit: weeklyLimit,
+      weeklyCapacityPct: Math.round((weeklyWeighted / weeklyLimit) * 100),
       sessionTokensUsed: sessionTokens,
       sessionTokensLimit: MAX5_SESSION_TOKEN_LIMIT,
       sessionCapacityPct: Math.round((sessionTokens / MAX5_SESSION_TOKEN_LIMIT) * 100),
