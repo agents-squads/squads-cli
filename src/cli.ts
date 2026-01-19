@@ -73,6 +73,7 @@ import {
   learnSearchCommand
 } from './commands/learn.js';
 import { dashboardCommand } from './commands/dashboard.js';
+import { renderDashboard, showAvailableDashboards, findDashboard } from './lib/dashboard/index.js';
 import { issuesCommand } from './commands/issues.js';
 import { solveIssuesCommand } from './commands/solve-issues.js';
 import { openIssuesCommand } from './commands/open-issues.js';
@@ -238,13 +239,36 @@ program
 
 // Dashboard command
 program
-  .command('dashboard')
+  .command('dashboard [name]')
   .alias('dash')
-  .description('Show comprehensive goals and metrics dashboard')
+  .description('Show dashboards. Use "squads dash" for overview, "squads dash <name>" for specific dashboard, "squads dash --list" to see all.')
   .option('-v, --verbose', 'Show additional details')
   .option('-c, --ceo', 'Executive summary with priorities and blockers')
   .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
-  .action((options) => dashboardCommand({ ...options, fast: !options.full }));
+  .option('-l, --list', 'List available declarative dashboards')
+  .option('--view <view>', 'Render specific view from dashboard')
+  .action(async (name, options) => {
+    // List available dashboards
+    if (options.list) {
+      showAvailableDashboards();
+      return;
+    }
+
+    // If a name is provided, try declarative dashboard first
+    if (name) {
+      const def = findDashboard(name);
+      if (def) {
+        const views = options.view ? [options.view] : undefined;
+        await renderDashboard(name, { verbose: options.verbose, views });
+        return;
+      }
+      // Fall through to default dashboard with a warning
+      console.log(`  Dashboard "${name}" not found. Showing default dashboard.\n`);
+    }
+
+    // Default: show the comprehensive dashboard
+    dashboardCommand({ ...options, fast: !options.full });
+  });
 
 // Autonomy command - show autonomous operation readiness
 program
