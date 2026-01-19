@@ -22,6 +22,15 @@ interface TaskEntry {
   startedAt: string;
 }
 
+interface TmuxSession {
+  name: string;
+  created: Date;
+  ageHours: number;
+  squad: string;
+  agent: string;
+  isZombie: boolean;
+}
+
 interface ProcessInfo {
   pid: string;
   cpu: string;
@@ -118,13 +127,130 @@ function formatCommand(cmd: string, maxLen = 45): string {
   return truncate(cmd, maxLen);
 }
 
-export async function workersCommand(options: { verbose?: boolean; kill?: string } = {}): Promise<void> {
+/**
+ * Get tmux sessions that were spawned by squads run
+ * Detects zombies: sessions older than 24h are likely stuck
+ */
+function getTmuxSessions(): TmuxSession[] {
+  const sessions: TmuxSession[] = [];
+  const ZOMBIE_THRESHOLD_HOURS = 24;
+
+  try {
+    // Get tmux sessions with creation time
+    const output = execSync(
+      'tmux list-sessions -F "#{session_name}|#{session_created}" 2>/dev/null',
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!output) return sessions;
+
+    for (const line of output.split('\n')) {
+      const [name, createdTs] = line.split('|');
+
+      // Only track squads-* sessions
+      if (!name.startsWith('squads-')) continue;
+
+      // Parse session name: squads-{squad}-{agent}-{timestamp}
+      const parts = name.replace('squads-', '').split('-');
+      const squad = parts[0] || 'unknown';
+      const agent = parts.slice(1, -1).join('-') || 'unknown';
+
+      const created = new Date(parseInt(createdTs) * 1000);
+      const ageHours = (Date.now() - created.getTime()) / (1000 * 60 * 60);
+      const isZombie = ageHours > ZOMBIE_THRESHOLD_HOURS;
+
+      sessions.push({
+        name,
+        created,
+        ageHours,
+        squad,
+        agent,
+        isZombie,
+      });
+    }
+  } catch {
+    // tmux not running or no sessions
+  }
+
+  return sessions;
+}
+
+/**
+ * Kill zombie tmux sessions (older than 24h)
+ * Returns number of sessions killed
+ */
+function cleanupZombies(sessions: TmuxSession[]): number {
+  const zombies = sessions.filter(s => s.isZombie);
+  let killed = 0;
+
+  for (const zombie of zombies) {
+    try {
+      execSync(`tmux kill-session -t "${zombie.name}" 2>/dev/null`, { stdio: 'pipe' });
+      killed++;
+    } catch {
+      // Session may have already ended
+    }
+  }
+
+  return killed;
+}
+
+function formatAge(hours: number): string {
+  if (hours < 1) return '<1h';
+  if (hours < 24) return `${Math.floor(hours)}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+export async function workersCommand(options: { verbose?: boolean; kill?: string; cleanup?: boolean } = {}): Promise<void> {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}workers${RESET}`);
   writeLine();
 
+  // Get tmux sessions first (needed for cleanup)
+  const tmuxSessions = getTmuxSessions();
+  const zombies = tmuxSessions.filter(s => s.isZombie);
+
+  // Cleanup zombies if requested
+  if (options.cleanup) {
+    if (zombies.length === 0) {
+      writeLine(`  ${icons.success} No zombie sessions to clean up`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${colors.yellow}Cleaning up ${zombies.length} zombie session(s)...${RESET}`);
+    writeLine();
+
+    for (const zombie of zombies) {
+      writeLine(`  ${icons.pending} Killing ${colors.cyan}${zombie.squad}/${zombie.agent}${RESET} ${colors.dim}(${formatAge(zombie.ageHours)} old)${RESET}`);
+    }
+
+    const killed = cleanupZombies(tmuxSessions);
+    writeLine();
+    writeLine(`  ${icons.success} Cleaned up ${colors.green}${killed}${RESET} zombie session(s)`);
+    writeLine();
+    return;
+  }
+
   // Kill a process if requested
   if (options.kill) {
+    // Check if it's a tmux session name
+    const tmuxSession = tmuxSessions.find(s => s.name === options.kill || s.name.includes(options.kill!));
+    if (tmuxSession) {
+      try {
+        execSync(`tmux kill-session -t "${tmuxSession.name}" 2>/dev/null`, { stdio: 'pipe' });
+        writeLine(`  ${icons.success} Killed tmux session ${colors.cyan}${tmuxSession.name}${RESET}`);
+        writeLine();
+        return;
+      } catch {
+        writeLine(`  ${icons.error} Failed to kill tmux session ${colors.red}${tmuxSession.name}${RESET}`);
+        writeLine();
+        return;
+      }
+    }
+
+    // Otherwise try as PID
     try {
       execSync(`kill ${options.kill}`, { stdio: 'pipe' });
       writeLine(`  ${icons.success} Killed process ${colors.cyan}${options.kill}${RESET}`);
@@ -144,8 +270,8 @@ export async function workersCommand(options: { verbose?: boolean; kill?: string
   // Summary stats
   const stats = [
     `${colors.cyan}${categorized.claude.length}${RESET} claude`,
-    `${colors.green}${activeTasks.length}${RESET} tasks`,
-    `${colors.purple}${categorized.devServers.length}${RESET} dev servers`,
+    `${colors.green}${tmuxSessions.length}${RESET} agents`,
+    `${zombies.length > 0 ? colors.red : colors.dim}${zombies.length}${RESET} zombies`,
   ].join(`  ${colors.dim}│${RESET}  `);
   writeLine(`  ${stats}`);
   writeLine();
@@ -217,15 +343,53 @@ export async function workersCommand(options: { verbose?: boolean; kill?: string
     writeLine();
   }
 
+  // Tmux sessions (agent workers from squads run)
+  if (tmuxSessions.length > 0) {
+    writeLine(`  ${bold}Agent Workers${RESET} ${colors.dim}(squads run background)${RESET}`);
+    writeLine();
+
+    const w = { squad: 14, agent: 18, age: 6, status: 12 };
+    const tableWidth = w.squad + w.agent + w.age + w.status + 8;
+
+    writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+    writeLine(`  ${colors.purple}${box.vertical}${RESET} ${bold}${padEnd('SQUAD', w.squad)}${padEnd('AGENT', w.agent)}${padEnd('AGE', w.age)}${padEnd('STATUS', w.status)}${RESET} ${colors.purple}${box.vertical}${RESET}`);
+    writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+
+    for (const session of tmuxSessions) {
+      const ageColor = session.isZombie ? colors.red : colors.dim;
+      const status = session.isZombie
+        ? `${colors.red}${icons.error} zombie${RESET}`
+        : `${colors.green}${icons.active} running${RESET}`;
+
+      const row = `  ${colors.purple}${box.vertical}${RESET} ` +
+        `${colors.cyan}${padEnd(session.squad, w.squad)}${RESET}` +
+        `${colors.dim}${padEnd(session.agent, w.agent)}${RESET}` +
+        `${ageColor}${padEnd(formatAge(session.ageHours), w.age)}${RESET}` +
+        `${padEnd(status, w.status + 10)}` + // Extra for color codes
+        ` ${colors.purple}${box.vertical}${RESET}`;
+      writeLine(row);
+    }
+
+    writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+    writeLine();
+
+    if (zombies.length > 0) {
+      writeLine(`  ${colors.yellow}${icons.warning} ${zombies.length} zombie session(s) detected (>24h old)${RESET}`);
+      writeLine(`  ${colors.dim}Run \`squads workers --cleanup\` to remove them${RESET}`);
+      writeLine();
+    }
+  }
+
   // No workers message
-  if (categorized.claude.length === 0 && activeTasks.length === 0) {
+  if (categorized.claude.length === 0 && tmuxSessions.length === 0 && activeTasks.length === 0) {
     writeLine(`  ${colors.dim}No active workers${RESET}`);
     writeLine();
   }
 
   // Commands
-  writeLine(`  ${colors.dim}$${RESET} squads workers --kill <pid>  ${colors.dim}Kill a process${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads progress             ${colors.dim}Task history${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads workers --kill <pid|session>  ${colors.dim}Kill a process or tmux session${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads workers --cleanup             ${colors.dim}Kill all zombie sessions (>24h)${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} tmux attach -t <session>             ${colors.dim}Attach to a session${RESET}`);
   writeLine();
 }
 
