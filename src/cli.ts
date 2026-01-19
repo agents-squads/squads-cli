@@ -430,9 +430,10 @@ program
 // Workers command - show running processes and tasks
 program
   .command('workers')
-  .description('Show active workers: Claude sessions, tasks, dev servers')
+  .description('Show active workers: Claude sessions, agent workers, tasks')
   .option('-v, --verbose', 'Show more details')
-  .option('-k, --kill <pid>', 'Kill a process by PID')
+  .option('-k, --kill <pid>', 'Kill a process by PID or tmux session name')
+  .option('-c, --cleanup', 'Kill all zombie sessions (>24h old)')
   .action(workersCommand);
 
 // Health command - quick infrastructure check
