@@ -102,6 +102,7 @@ import {
   applyStackConfig
 } from './commands/stack.js';
 import { registerTriggerCommand } from './commands/trigger.js';
+import { registerCronCommand } from './commands/cron.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerSkillCommand } from './commands/skill.js';
 import { registerApprovalCommand } from './commands/approval.js';
@@ -807,6 +808,9 @@ stack
 
 // Trigger command group - smart value-driven triggers
 registerTriggerCommand(program);
+
+// Cron command group - local macOS cron scheduling
+registerCronCommand(program);
 
 // Approval command group - human-in-the-loop for agents
 registerApprovalCommand(program);
