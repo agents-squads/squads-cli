@@ -26,41 +26,26 @@ const LOCAL_SERVICES = [
 ];
 
 /**
- * Check if a port is open (service running)
+ * Check if a port is open (service running) via TCP socket
  */
 async function isPortOpen(port: number): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1000);
+  return new Promise((resolve) => {
+    const net = require('net');
+    const socket = new net.Socket();
 
-    // Try to connect via HTTP if possible, otherwise just check port
-    const response = await fetch(`http://localhost:${port}`, {
-      signal: controller.signal,
-      method: 'HEAD',
-    }).catch(() => null);
-
-    clearTimeout(timeout);
-    return response !== null;
-  } catch {
-    // For non-HTTP services, try TCP
-    return new Promise((resolve) => {
-      const net = require('net');
-      const socket = new net.Socket();
-
-      socket.setTimeout(1000);
-      socket.on('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.on('error', () => resolve(false));
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-
-      socket.connect(port, 'localhost');
+    socket.setTimeout(1000);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(true);
     });
-  }
+    socket.on('error', () => resolve(false));
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+
+    socket.connect(port, 'localhost');
+  });
 }
 
 /**
