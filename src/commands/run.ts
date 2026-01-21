@@ -378,6 +378,78 @@ function updateExecutionStatus(
 }
 
 /**
+ * Parse cooldown duration string to milliseconds
+ * Supports: "6h", "23h", "7d", "30m", "6 hours", "7 days"
+ */
+function parseCooldownDuration(cooldown: string): number {
+  const match = cooldown.match(/^(\d+)\s*(h|d|m|hours?|days?|minutes?)?$/i);
+  if (!match) return 6 * 60 * 60 * 1000; // Default 6 hours
+
+  const value = parseInt(match[1], 10);
+  const unit = (match[2] || 'h').toLowerCase();
+
+  if (unit.startsWith('d')) return value * 24 * 60 * 60 * 1000;
+  if (unit.startsWith('m')) return value * 60 * 1000;
+  return value * 60 * 60 * 1000; // hours
+}
+
+/**
+ * Get the timestamp of the last execution from executions.md
+ */
+function getLastExecutionTime(squadName: string, agentName: string): Date | null {
+  const logPath = getExecutionLogPath(squadName, agentName);
+  if (!logPath || !existsSync(logPath)) return null;
+
+  const content = readFileSync(logPath, 'utf-8');
+
+  // Find all timestamps in the format **2026-01-21T14:00:02.358Z**
+  const timestamps = content.match(/\*\*(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\*\*/g);
+  if (!timestamps || timestamps.length === 0) return null;
+
+  // Get the last (most recent) timestamp
+  const lastTimestamp = timestamps[timestamps.length - 1].replace(/\*\*/g, '');
+  return new Date(lastTimestamp);
+}
+
+/**
+ * Local cooldown check - works without bridge
+ * Returns { ok: true } if allowed, { ok: false, ... } if blocked
+ */
+function checkLocalCooldown(
+  squadName: string,
+  agentName: string,
+  cooldownMs: number
+): { ok: boolean; elapsedMs?: number; cooldownMs: number } {
+  const lastExec = getLastExecutionTime(squadName, agentName);
+  if (!lastExec) return { ok: true, cooldownMs };
+
+  const elapsedMs = Date.now() - lastExec.getTime();
+  if (elapsedMs < cooldownMs) {
+    return { ok: false, elapsedMs, cooldownMs };
+  }
+
+  return { ok: true, elapsedMs, cooldownMs };
+}
+
+/**
+ * Format milliseconds as human-readable duration
+ */
+function formatDuration(ms: number): string {
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+  }
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${minutes}m`;
+}
+
+/**
  * Extract MCP servers mentioned in an agent definition
  * Looks for patterns like: mcp-server-name, chrome-devtools, firecrawl, etc.
  */
@@ -811,6 +883,29 @@ async function runAgent(
   // Show preflight status in verbose mode
   if (options.verbose && Object.keys(preflight.gates).length > 0) {
     writeLine(`  ${colors.dim}Preflight: quota ${preflight.gates.quota?.ok ? '✓' : '✗'} cooldown ${preflight.gates.cooldown?.ok ? '✓' : '✗'}${RESET}`);
+  }
+
+  // Local cooldown check (when bridge is unavailable or has no execution history)
+  // Skip for manual triggers - only enforce for scheduled/cron runs
+  const isScheduledRun = options.trigger === 'scheduled' || options.trigger === 'smart';
+  const bridgeHasNoHistory = preflight.gates.cooldown?.elapsed_sec === null;
+  if (isScheduledRun && (!preflight.gates.cooldown || bridgeHasNoHistory)) {
+    // Default cooldown: 6 hours for scheduled runs
+    const defaultCooldownMs = 6 * 60 * 60 * 1000;
+    const localCooldown = checkLocalCooldown(squadName, agentName, defaultCooldownMs);
+
+    if (!localCooldown.ok) {
+      spinner.stop();
+      writeLine();
+      writeLine(`  ${colors.yellow}${icons.warning} Skipping: cooldown not elapsed${RESET}`);
+      writeLine(`  ${colors.dim}Last run: ${formatDuration(localCooldown.elapsedMs!)} ago (cooldown: ${formatDuration(localCooldown.cooldownMs)})${RESET}`);
+      writeLine();
+      return;
+    }
+
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Local cooldown: ✓ (${formatDuration(localCooldown.elapsedMs || 0)} since last run)${RESET}`);
+    }
   }
 
   // Log execution start
