@@ -436,6 +436,7 @@ program
   .option('-v, --verbose', 'Show more details')
   .option('-k, --kill <pid>', 'Kill a process by PID or tmux session name')
   .option('-c, --cleanup', 'Kill all zombie sessions (>24h old)')
+  .option('-a, --all', 'Kill ALL agent tmux sessions (not interactive terminals)')
   .action(workersCommand);
 
 // Health command - quick infrastructure check
