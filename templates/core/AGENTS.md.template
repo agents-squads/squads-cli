@@ -3,6 +3,14 @@
 
 This project uses AI agent squads for development and operations.
 
+## Getting Started
+
+If this project is not yet set up, run:
+```bash
+squads setup    # Guided onboarding (recommended)
+squads init     # Quick init (non-interactive)
+```
+
 ## Provider: {{PROVIDER_NAME}}
 
 Configure in: `.agents/config/provider.yaml`
@@ -39,6 +47,7 @@ Configure in: `.agents/config/provider.yaml`
 ## Quick Reference
 
 ```bash
+squads setup           # Guided onboarding (new projects)
 squads status          # Overview
 squads dash            # Full dashboard
 squads run <squad>     # Run a squad
