@@ -208,6 +208,8 @@ function generatePlist(agent: ScheduledAgent): string {
     <string>${agent.squad}</string>
     <string>--agent</string>
     <string>${agent.agent}</string>
+    <string>--trigger</string>
+    <string>scheduled</string>
     <string>-e</string>
   </array>
 
