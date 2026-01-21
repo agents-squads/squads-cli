@@ -2,6 +2,15 @@
 
 Extends AGENTS.md with Claude Code specific features.
 
+## New Project Setup
+
+If this project needs squads setup, run:
+```bash
+squads setup    # Guided 6-step onboarding with prereq checks
+```
+
+This validates Docker, GitHub CLI, Claude CLI, then helps create first squad.
+
 ## Skill Available
 
 Use `/squads-workflow` for detailed workflow guidance.
