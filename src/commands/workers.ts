@@ -202,7 +202,7 @@ function formatAge(hours: number): string {
   return `${days}d`;
 }
 
-export async function workersCommand(options: { verbose?: boolean; kill?: string; cleanup?: boolean } = {}): Promise<void> {
+export async function workersCommand(options: { verbose?: boolean; kill?: string; cleanup?: boolean; all?: boolean } = {}): Promise<void> {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}workers${RESET}`);
   writeLine();
@@ -210,6 +210,35 @@ export async function workersCommand(options: { verbose?: boolean; kill?: string
   // Get tmux sessions first (needed for cleanup)
   const tmuxSessions = getTmuxSessions();
   const zombies = tmuxSessions.filter(s => s.isZombie);
+
+  // Kill ALL agent tmux sessions if requested (safe - doesn't touch interactive terminals)
+  if (options.all) {
+    if (tmuxSessions.length === 0) {
+      writeLine(`  ${icons.success} No agent sessions to clean up`);
+      writeLine();
+      return;
+    }
+
+    writeLine(`  ${colors.yellow}Killing ${tmuxSessions.length} agent session(s)...${RESET}`);
+    writeLine(`  ${colors.dim}(Only tmux sessions from 'squads run', not interactive terminals)${RESET}`);
+    writeLine();
+
+    let killed = 0;
+    for (const session of tmuxSessions) {
+      writeLine(`  ${icons.pending} Killing ${colors.cyan}${session.squad}/${session.agent}${RESET} ${colors.dim}(${formatAge(session.ageHours)} old)${RESET}`);
+      try {
+        execSync(`tmux kill-session -t "${session.name}" 2>/dev/null`, { stdio: 'pipe' });
+        killed++;
+      } catch {
+        // Session may have already ended
+      }
+    }
+
+    writeLine();
+    writeLine(`  ${icons.success} Killed ${colors.green}${killed}${RESET} agent session(s)`);
+    writeLine();
+    return;
+  }
 
   // Cleanup zombies if requested
   if (options.cleanup) {

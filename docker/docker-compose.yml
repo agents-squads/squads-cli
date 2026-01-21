@@ -115,6 +115,14 @@ services:
     environment:
       # Override database URL for container network
       DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      # HQ path for agent file access
+      HQ_PATH: /hq
+      # GCP credentials for KMS
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
+      GCP_PROJECT: agents-squads-prod
+    volumes:
+      - ../../hq:/hq:ro
+      - ~/.config/gcloud:/gcloud:ro
     ports:
       - "${SCHEDULER_API_PORT:-8090}:8090"
     depends_on:
@@ -199,8 +207,12 @@ services:
       HQ_PATH: /hq
       SLACK_WORKER_POLL_INTERVAL: "5"
       SLACK_WORKER_MODEL: "claude-sonnet-4-20250514"
+      # GCP credentials for KMS
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
+      GCP_PROJECT: agents-squads-prod
     volumes:
       - ../../hq:/hq:ro
+      - ~/.config/gcloud:/gcloud:ro
     depends_on:
       postgres:
         condition: service_healthy
