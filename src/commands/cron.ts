@@ -205,7 +205,10 @@ function generatePlist(agent: ScheduledAgent): string {
   <array>
     <string>${squadsPath}</string>
     <string>run</string>
-    <string>${agent.squad}/${agent.agent}</string>
+    <string>${agent.squad}</string>
+    <string>--agent</string>
+    <string>${agent.agent}</string>
+    <string>-e</string>
   </array>
 
   <key>WorkingDirectory</key>
