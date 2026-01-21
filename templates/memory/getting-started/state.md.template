@@ -1,0 +1,19 @@
+# Getting Started with Squads
+
+## What You've Set Up
+
+- **Your first squad** ready to run (`squads run {{SQUAD_ID}}`)
+- **Memory system** for persistent context
+- **Hooks** that sync status and memory automatically
+
+## Next Steps
+
+1. Run your squad: `squads run {{SQUAD_ID}} --execute`
+2. Check the dashboard: `squads dash`
+3. Create more squads in `.agents/squads/`
+
+## Tips
+
+- Check memory before researching: `squads memory query "<topic>"`
+- Use `squads context` for business alignment on complex tasks
+- Agents are reusable - if you do something twice, make it an agent

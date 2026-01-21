@@ -43,6 +43,7 @@ for (const envPath of envPaths) {
   }
 }
 import { initCommand } from './commands/init.js';
+import { setupCommand } from './commands/setup.js';
 import { runCommand } from './commands/run.js';
 import { listCommand } from './commands/list.js';
 import { statusCommand } from './commands/status.js';
@@ -181,16 +182,27 @@ program
     await statusCommand(undefined, {});
   });
 
-// Init command
+// Init command - by default runs guided setup, use --quick for fast init
 program
   .command('init')
-  .description('Initialize a new squad project')
+  .description('Initialize a new squad project (runs guided setup by default)')
   .option('-t, --template <template>', 'Project template', 'default')
   .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
+  .option('-q, --quick', 'Quick init - create files only, skip guided setup')
   .action(initCommand);
+
+// Setup command - full guided onboarding experience
+program
+  .command('setup')
+  .description('Guided onboarding: set up infrastructure, auth, and first squad')
+  .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
+  .option('--skip-infra', 'Skip infrastructure setup')
+  .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
+  .option('-r, --resume', 'Resume from last checkpoint')
+  .action(setupCommand);
 
 // Run command - runs squads or individual agents
 program

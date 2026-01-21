@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
-import { join, basename } from 'path';
+import { join, basename, dirname } from 'path';
 import matter from 'gray-matter';
 import { resolveMcpConfig, type McpResolution } from './mcp-config.js';
 
@@ -249,7 +249,8 @@ export function parseSquadFile(filePath: string): Squad {
   const lines = bodyContent.split('\n');
 
   const squad: Squad = {
-    name: fm.name || basename(filePath).replace('.md', ''),
+    // Use directory name (e.g., "demo" from ".agents/squads/demo/SQUAD.md")
+    name: fm.name || basename(dirname(filePath)),
     mission: fm.mission || '',
     agents: [],
     pipelines: [],

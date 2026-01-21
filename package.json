@@ -16,6 +16,7 @@
   },
   "files": [
     "dist",
+    "templates",
     "docker/docker-compose.yml",
     "docker/docker-compose.engram.yml",
     "docker/.env.example",
@@ -28,7 +29,7 @@
     "docker/telemetry-ping/"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && cp -r templates dist/",
     "dev": "tsup --watch",
     "start": "node dist/cli.js",
     "lint": "eslint src",
