@@ -1,0 +1,55 @@
+# AGENTS.md
+# Project guidance for AI coding agents (vendor-neutral)
+
+This project uses AI agent squads for development and operations.
+
+## Provider: {{PROVIDER_NAME}}
+
+Configure in: `.agents/config/provider.yaml`
+
+## Repository Structure
+
+```
+.agents/
+├── squads/           # Agent team definitions
+│   └── <squad>/
+│       ├── SQUAD.md  # Squad definition
+│       └── *.md      # Agent files
+├── memory/           # Persistent context
+├── config/           # Provider and model configuration
+└── outputs/          # Agent outputs
+```
+
+## Agent Guidelines
+
+### Before Starting Work
+1. Run `squads status` to understand current state
+2. Check `squads memory query "<topic>"` for existing knowledge
+3. Read relevant SQUAD.md files
+
+### During Work
+- Update todo list frequently for visibility
+- Prefer editing existing files over creating new ones
+- Keep changes focused - one task per commit/PR
+
+### After Work
+- Update memory in `.agents/memory/<squad>/<agent>/state.md`
+- Create GitHub issues for follow-up work
+
+## Quick Reference
+
+```bash
+squads status          # Overview
+squads dash            # Full dashboard
+squads run <squad>     # Run a squad
+squads list            # All agents
+squads memory query X  # Search memory
+squads goal list       # View goals
+```
+
+## Model Aliases
+
+Agents can use semantic model names that resolve per provider:
+- `leader` - Most capable (complex tasks)
+- `worker` - Balanced (standard tasks)
+- `simple` - Fast (simple tasks)

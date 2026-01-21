@@ -1,0 +1,41 @@
+# Claude-Specific Instructions
+
+Extends AGENTS.md with Claude Code specific features.
+
+## Skill Available
+
+Use `/squads-workflow` for detailed workflow guidance.
+
+## Session Hooks
+
+Claude Code hooks are configured in `.claude/settings.json`:
+- **SessionStart**: Runs `squads status` automatically
+- **Stop**: Syncs memory and prompts for learnings
+
+## Creating Agents
+
+Agents live in `.agents/squads/<squad-name>/<agent-name>.md`:
+
+```markdown
+# Agent Name
+
+## Purpose
+One sentence: what this agent does.
+
+## Model
+simple  # or: worker, leader
+
+## Instructions
+1. Specific step
+2. Another step
+3. Output location
+
+## Output
+What it produces and where it goes.
+```
+
+## Commit Signature
+
+```
+Co-Authored-By: Claude <model> <noreply@anthropic.com>
+```
