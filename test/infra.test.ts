@@ -19,14 +19,20 @@ import { execSync } from 'child_process';
 const TIMEOUT = 10000;
 
 // Service endpoints
+// Required: postgres, redis, bridge, otel
+// Optional: mem0, langfuse
+// Deprecated: engram (replaced by squads-memory CLI)
 const SERVICES = {
-  postgres: { port: 5433, type: 'tcp' },
-  redis: { port: 6379, type: 'tcp' },
-  bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health' },
-  langfuse: { port: 3100, type: 'http', url: 'http://localhost:3100/api/public/health' },
-  mem0: { port: 8000, type: 'http', url: 'http://localhost:8000/health' },
-  engram: { port: 8080, type: 'http', url: 'http://localhost:8080/' },
-  otel: { port: 4318, type: 'tcp' },
+  // Required services
+  postgres: { port: 5433, type: 'tcp', required: true },
+  redis: { port: 6379, type: 'tcp', required: true },
+  bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health', required: true },
+  otel: { port: 4318, type: 'tcp', required: true },
+  // Optional services
+  langfuse: { port: 3100, type: 'http', url: 'http://localhost:3100/api/public/health', required: false },
+  mem0: { port: 8000, type: 'http', url: 'http://localhost:8000/health', required: false },
+  // Deprecated: replaced by squads-memory CLI
+  engram: { port: 8080, type: 'http', url: 'http://localhost:8080/', required: false, deprecated: true },
 };
 
 /**
@@ -116,11 +122,13 @@ describeInfra('infra', () => {
       expect(isContainerRunning('squads-bridge')).toBe(true);
     });
 
-    it('squads-mem0 is running', () => {
+    // Optional: mem0 provides semantic memory but file-based memory works as fallback
+    it.skip('squads-mem0 is running (optional)', () => {
       expect(isContainerRunning('squads-mem0')).toBe(true);
     });
 
-    it('squads-engram-mcp is running', () => {
+    // Deprecated: engram-mcp replaced by squads-memory CLI
+    it.skip('squads-engram-mcp is running (deprecated)', () => {
       expect(isContainerRunning('squads-engram-mcp')).toBe(true);
     });
   });
@@ -141,12 +149,14 @@ describeInfra('infra', () => {
       expect(healthy).toBe(true);
     }, TIMEOUT);
 
-    it('mem0 health endpoint responds', async () => {
+    // Optional: mem0 provides semantic memory but file-based memory works as fallback
+    it.skip('mem0 health endpoint responds (optional)', async () => {
       const healthy = await isHttpHealthy('http://localhost:8000/health');
       expect(healthy).toBe(true);
     }, TIMEOUT);
 
-    it('engram-mcp endpoint responds', async () => {
+    // Deprecated: engram-mcp replaced by squads-memory CLI
+    it.skip('engram-mcp endpoint responds (deprecated)', async () => {
       const healthy = await isHttpHealthy('http://localhost:8080/');
       expect(healthy).toBe(true);
     }, TIMEOUT);
@@ -167,11 +177,27 @@ describeInfra('infra', () => {
   });
 
   describe('memory operations', () => {
-    it('engram-mcp can list tools', async () => {
-      // The MCP server should respond to HTTP requests
+    // Deprecated: engram-mcp replaced by squads-memory CLI
+    // Memory operations now use: squads memory read|write|search
+    it.skip('engram-mcp can list tools (deprecated)', async () => {
       const response = await fetch('http://localhost:8080/');
       expect(response.ok).toBe(true);
     }, TIMEOUT);
+
+    it('squads-memory CLI is available', () => {
+      try {
+        execSync('squads memory health', {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        expect(true).toBe(true);
+      } catch (e: unknown) {
+        // CLI may fail if mem0 not running, but CLI itself should exist
+        const error = e as { status?: number };
+        // Exit code 0 or 1 (service down) are fine, 127 (not found) is not
+        expect(error.status).not.toBe(127);
+      }
+    });
   });
 
   describe('telemetry pipeline', () => {
