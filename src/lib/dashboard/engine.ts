@@ -159,7 +159,7 @@ async function fetchViewData(
     def.table,
     metrics,
     view.group_by,
-    where,
+    where ?? undefined,
     view.sort,
     view.limit
   );
