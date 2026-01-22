@@ -152,7 +152,7 @@ export async function feedbackAddCommand(
     const agentName = squad?.agents[0]?.name || `${squadName}-lead`;
 
     for (const learning of options.learning) {
-      appendToMemory(squadName, agentName, 'learnings', `From feedback (${date}): ${learning}`);
+      await appendToMemory(squadName, agentName, 'learnings', `From feedback (${date}): ${learning}`);
     }
   }
 

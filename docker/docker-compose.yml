@@ -115,6 +115,8 @@ services:
     environment:
       # Override database URL for container network
       DATABASE_URL: postgresql://squads:squads@postgres:5432/squads
+      # Redis URL for caching and event buffer
+      REDIS_URL: redis://redis:6379/0
       # HQ path for agent file access
       HQ_PATH: /hq
       # GCP credentials for KMS
@@ -127,6 +129,8 @@ services:
       - "${SCHEDULER_API_PORT:-8090}:8090"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/health"]

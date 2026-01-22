@@ -81,6 +81,7 @@
     "dotenv": "^17.2.3",
     "gray-matter": "^4.0.3",
     "inquirer": "^9.2.12",
+    "ioredis": "^5.9.2",
     "minimatch": "^10.1.1",
     "open": "^11.0.0",
     "ora": "^8.0.1",
