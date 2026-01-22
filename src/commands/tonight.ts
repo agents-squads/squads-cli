@@ -314,8 +314,20 @@ export async function tonightCommand(
   writeLine(`  ${colors.dim}Logs: ${logDir}${RESET}`);
   writeLine();
 
+  // Calculate stop timestamp for proper overnight handling
+  // If stop time (e.g., 07:00) is before or equal to current time, it means tomorrow
+  const now = new Date();
+  const [stopHour, stopMin] = stopAt.split(':').map(Number);
+  const stopTime = new Date();
+  stopTime.setHours(stopHour, stopMin, 0, 0);
+  if (stopTime <= now) {
+    stopTime.setDate(stopTime.getDate() + 1);
+  }
+  const stopTimestamp = Math.floor(stopTime.getTime() / 1000);
+
   // Start watcher in background
   const watcherCmd = `
+    STOP_TS=${stopTimestamp}
     while true; do
       sleep 60
       # Check cost
@@ -325,13 +337,10 @@ export async function tonightCommand(
         tmux ls 2>/dev/null | grep squads-tonight | cut -d: -f1 | xargs -I{} tmux kill-session -t {}
         break
       fi
-      # Check time
-      HOUR=$(date +%H)
-      MIN=$(date +%M)
-      STOP_HOUR=${stopAt.split(':')[0]}
-      STOP_MIN=${stopAt.split(':')[1]}
-      if [ "$HOUR" -ge "$STOP_HOUR" ] && [ "$MIN" -ge "$STOP_MIN" ]; then
-        echo "Stop time reached" >> '${logDir}/watcher.log'
+      # Check time using unix timestamps (handles overnight correctly)
+      NOW_TS=$(date +%s)
+      if [ "$NOW_TS" -ge "$STOP_TS" ]; then
+        echo "Stop time reached: ${stopAt}" >> '${logDir}/watcher.log'
         tmux ls 2>/dev/null | grep squads-tonight | cut -d: -f1 | xargs -I{} tmux kill-session -t {}
         break
       fi
