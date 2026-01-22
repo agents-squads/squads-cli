@@ -161,6 +161,28 @@ async function fetchLearnings(squad: string, limit = 5): Promise<Learning[]> {
 }
 
 /**
+ * Load approval/escalation instructions from config file.
+ * Returns the instructions content or empty string if not found.
+ */
+function loadApprovalInstructions(): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+
+  // Try .agents/config/approval-instructions.md
+  const instructionsPath = join(dirname(squadsDir), 'config', 'approval-instructions.md');
+
+  if (existsSync(instructionsPath)) {
+    try {
+      return readFileSync(instructionsPath, 'utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  return '';
+}
+
+/**
  * Generate a unique execution ID for telemetry tracking
  */
 function generateExecutionId(): string {
@@ -929,6 +951,12 @@ async function runAgent(
     writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
   }
 
+  // Load approval/escalation instructions
+  const approvalInstructions = loadApprovalInstructions();
+  const approvalContext = approvalInstructions
+    ? `\n${approvalInstructions}\n`
+    : '';
+
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || 30;
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
@@ -940,7 +968,7 @@ The agent definition contains:
 - Tools it can use (MCP servers, skills)
 - Step-by-step instructions
 - Expected output format
-${learningContext}
+${learningContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
@@ -1135,6 +1163,8 @@ async function executeWithClaude(
           SQUADS_TASK_TYPE: execContext.taskType,
           SQUADS_TRIGGER: execContext.trigger,
           SQUADS_EXECUTION_ID: execContext.executionId,
+          // Bridge API for approvals and escalations
+          BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
           // OTel resource attributes for telemetry pipeline
           OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
           // Claude-specific options
@@ -1201,6 +1231,8 @@ async function executeWithClaude(
       SQUADS_TASK_TYPE: execContext.taskType,
       SQUADS_TRIGGER: execContext.trigger,
       SQUADS_EXECUTION_ID: execContext.executionId,
+      // Bridge API for approvals and escalations
+      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
       // OTel resource attributes for telemetry pipeline
       OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
       // Claude-specific options
