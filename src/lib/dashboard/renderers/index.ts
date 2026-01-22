@@ -41,7 +41,7 @@ export function renderView(
     case 'pie':
       return renderPie(view, data, metricDefs, dimensionDefs);
 
-    case 'list':
+    case 'list': {
       // Detect if this looks like a recent items list
       const hasTimeCol = view.columns?.some(c =>
         c.format === 'relative_time' || c.field.includes('_at')
@@ -50,6 +50,7 @@ export function renderView(
         return renderRecentList(view, data);
       }
       return renderList(view, data);
+    }
 
     case 'histogram':
       // TODO: Implement histogram

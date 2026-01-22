@@ -34,36 +34,41 @@ export function formatValue(
   const strValue = String(value);
 
   switch (format) {
-    case 'number':
+    case 'number': {
       const num = typeof value === 'number' ? value : parseFloat(strValue);
       if (isNaN(num)) return strValue;
       if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
       if (num >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
       return num.toLocaleString();
+    }
 
-    case 'currency':
+    case 'currency': {
       const amount = typeof value === 'number' ? value : parseFloat(strValue);
       if (isNaN(amount)) return strValue;
       return `$${amount.toFixed(2)}`;
+    }
 
-    case 'percent':
+    case 'percent': {
       const pct = typeof value === 'number' ? value : parseFloat(strValue);
       if (isNaN(pct)) return strValue;
       return `${pct.toFixed(1)}%`;
+    }
 
-    case 'duration':
+    case 'duration': {
       const secs = typeof value === 'number' ? value : parseFloat(strValue);
       if (isNaN(secs)) return strValue;
       if (secs < 60) return `${secs.toFixed(1)}s`;
       if (secs < 3600) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
       return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+    }
 
-    case 'tokens':
+    case 'tokens': {
       const tokens = typeof value === 'number' ? value : parseInt(strValue, 10);
       if (isNaN(tokens)) return strValue;
       if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
       if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}k`;
       return tokens.toLocaleString();
+    }
 
     case 'relative_time':
       return formatRelativeTime(value);
@@ -74,10 +79,11 @@ export function formatValue(
     case 'status_badge':
       return formatStatusBadge(strValue);
 
-    case 'progress_bar':
+    case 'progress_bar': {
       const progress = typeof value === 'number' ? value : parseFloat(strValue);
       if (isNaN(progress)) return strValue;
       return progressBar(progress, 8);
+    }
 
     default:
       if (truncateLen && strValue.length > truncateLen) {

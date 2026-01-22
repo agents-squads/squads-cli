@@ -192,11 +192,12 @@ export function parseDateRange(preset: string): { start: Date; end: Date } {
       end.setDate(0); // Last day of previous month
       return { start, end };
 
-    case 'this_quarter':
+    case 'this_quarter': {
       const q = Math.floor(now.getMonth() / 3);
       start.setMonth(q * 3);
       start.setDate(1);
       return { start, end };
+    }
 
     default:
       // Default to last 7 days

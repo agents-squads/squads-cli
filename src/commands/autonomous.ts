@@ -215,7 +215,9 @@ function isRunning(): { running: boolean; pid?: number } {
     // Process not running, clean up stale PID file
     try {
       unlinkSync(PID_FILE);
-    } catch {}
+    } catch {
+      // Ignore - file may already be deleted
+    }
     return { running: false };
   }
 }
