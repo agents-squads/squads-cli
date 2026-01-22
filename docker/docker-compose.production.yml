@@ -1,0 +1,202 @@
+# Squads Stack - Production Configuration
+#
+# Usage:
+#   cp .env.production.example .env.production
+#   # Edit .env.production with real secrets
+#   docker compose -f docker-compose.production.yml up -d
+#
+# Services:
+#   - caddy           Reverse proxy with automatic HTTPS
+#   - postgres        Primary database (pgvector)
+#   - redis           Caching & job queues
+#   - scheduler-api   Triggers, webhooks, approvals
+#   - scheduler-worker Agent execution
+#   - slack-bot       Slack approvals and commands
+#   - slack-worker    Auto-respond to Slack messages
+
+name: squads-production
+
+services:
+  # =============================================================================
+  # Caddy - Reverse Proxy with automatic HTTPS
+  # =============================================================================
+  caddy:
+    image: caddy:2-alpine
+    container_name: squads-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:-api.agents-squads.com}
+    depends_on:
+      - scheduler-api
+      - slack-bot
+    networks:
+      - squads
+
+  # =============================================================================
+  # PostgreSQL with pgvector - Primary data store
+  # =============================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: squads-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-squads}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB: ${POSTGRES_DB:-squads}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-squads.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-squads} -d ${POSTGRES_DB:-squads}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - squads
+    # Not exposed externally - access via internal network only
+
+  # =============================================================================
+  # Redis - Caching and job queues
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: squads-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - squads
+    # Not exposed externally
+
+  # =============================================================================
+  # Scheduler API - Triggers, webhooks, approvals
+  # =============================================================================
+  scheduler-api:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-scheduler-api
+    restart: unless-stopped
+    command: uvicorn api:app --host 0.0.0.0 --port 8090
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-squads}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-squads}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      HQ_PATH: /hq
+    volumes:
+      - ../../hq:/hq:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
+  # Scheduler Worker - Trigger evaluation and agent execution
+  # =============================================================================
+  scheduler-worker:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-scheduler-worker
+    restart: unless-stopped
+    command: python scheduler.py
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-squads}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-squads}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      HQ_PATH: /hq
+      SQUADS_CLI: squads
+    volumes:
+      - ../../hq:/hq:ro
+    depends_on:
+      scheduler-api:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
+  # Slack Bot - Approvals and commands
+  # =============================================================================
+  slack-bot:
+    build:
+      context: ../../slack-bot
+      dockerfile: Dockerfile
+    container_name: squads-slack-bot
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      SCHEDULER_API_URL: http://scheduler-api:8090
+      HTTP_PORT: 3001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      scheduler-api:
+        condition: service_healthy
+    networks:
+      - squads
+
+  # =============================================================================
+  # Slack Worker - Auto-respond to Slack messages
+  # =============================================================================
+  slack-worker:
+    build:
+      context: ../../hq/squads-scheduler
+      dockerfile: Dockerfile
+    container_name: squads-slack-worker
+    restart: unless-stopped
+    command: python -u slack_worker.py
+    env_file:
+      - .env.production
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-squads}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-squads}
+      SLACK_BOT_URL: http://slack-bot:3001
+      HQ_PATH: /hq
+      SLACK_WORKER_POLL_INTERVAL: "5"
+      SLACK_WORKER_MODEL: "claude-sonnet-4-20250514"
+    volumes:
+      - ../../hq:/hq:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      slack-bot:
+        condition: service_healthy
+    networks:
+      - squads
+
+networks:
+  squads:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
