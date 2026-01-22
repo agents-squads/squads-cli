@@ -365,7 +365,7 @@ export function displayCheckResults(checks: CheckResult[]): {
       writeLine(`  ${icon} ${statusColor}${check.name}${RESET}${suffix}`);
 
       if (check.hint) {
-        writeLine(`    ${colors.cyan}${icons.arrow} ${check.hint}${RESET}`);
+        writeLine(`    ${colors.cyan}→ ${check.hint}${RESET}`);
       }
 
       if (check.status === 'error' || check.status === 'missing') {

@@ -3,7 +3,7 @@
  * Renders data as a list of items
  */
 
-import type { ViewDefinition, QueryResult } from '../types.js';
+import type { ViewDefinition, QueryResult, ColumnDefinition } from '../types.js';
 import { colors, bold, RESET, padEnd, truncate, formatValue } from './base.js';
 
 export function renderList(
@@ -24,7 +24,7 @@ export function renderList(
   }
 
   // Get columns from view definition or infer from data
-  const columns = view.columns || data.columns.map(c => ({ field: c }));
+  const columns: ColumnDefinition[] = view.columns || data.columns.map(c => ({ field: c }));
 
   // Render each row
   for (const row of data.rows) {
@@ -69,7 +69,7 @@ export function renderDetailedList(
     lines.push('');
   }
 
-  const columns = view.columns || data.columns.map(c => ({ field: c }));
+  const columns: ColumnDefinition[] = view.columns || data.columns.map(c => ({ field: c }));
 
   // Render each row as a multi-line block
   for (let i = 0; i < data.rows.length; i++) {
