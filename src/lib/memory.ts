@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import { withLock } from './lock.js';
 
 export interface MemoryEntry {
   squad: string;
@@ -211,7 +212,37 @@ export function getSquadState(squadName: string): MemoryEntry[] {
   return entries;
 }
 
-export function updateMemory(
+/**
+ * Update memory file with distributed locking
+ * Safe for concurrent access from multiple agents
+ */
+export async function updateMemory(
+  squadName: string,
+  agentName: string,
+  type: MemoryEntry['type'],
+  content: string
+): Promise<void> {
+  const memoryDir = findMemoryDir();
+  if (!memoryDir) {
+    throw new Error('No .agents/memory directory found');
+  }
+
+  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+  const dir = dirname(filePath);
+
+  await withLock(filePath, () => {
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(filePath, content);
+  });
+}
+
+/**
+ * Sync version for backward compatibility (no locking - use with caution)
+ * @deprecated Use async updateMemory() for safe concurrent access
+ */
+export function updateMemorySync(
   squadName: string,
   agentName: string,
   type: MemoryEntry['type'],
@@ -232,7 +263,45 @@ export function updateMemory(
   writeFileSync(filePath, content);
 }
 
-export function appendToMemory(
+/**
+ * Append to memory file with distributed locking
+ * Safe for concurrent access from multiple agents
+ */
+export async function appendToMemory(
+  squadName: string,
+  agentName: string,
+  type: MemoryEntry['type'],
+  addition: string
+): Promise<void> {
+  const memoryDir = findMemoryDir();
+  if (!memoryDir) {
+    throw new Error('No .agents/memory directory found');
+  }
+
+  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+
+  await withLock(filePath, () => {
+    let existing = '';
+    if (existsSync(filePath)) {
+      existing = readFileSync(filePath, 'utf-8');
+    }
+
+    const timestamp = new Date().toISOString().split('T')[0];
+    const newContent = existing + `\n\n---\n_Added: ${timestamp}_\n\n${addition}`;
+
+    const dir = dirname(filePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(filePath, newContent.trim());
+  });
+}
+
+/**
+ * Sync version for backward compatibility (no locking - use with caution)
+ * @deprecated Use async appendToMemory() for safe concurrent access
+ */
+export function appendToMemorySync(
   squadName: string,
   agentName: string,
   type: MemoryEntry['type'],
@@ -253,5 +322,5 @@ export function appendToMemory(
   const timestamp = new Date().toISOString().split('T')[0];
   const newContent = existing + `\n\n---\n_Added: ${timestamp}_\n\n${addition}`;
 
-  updateMemory(squadName, agentName, type, newContent.trim());
+  updateMemorySync(squadName, agentName, type, newContent.trim());
 }

@@ -183,7 +183,7 @@ export async function memoryUpdateCommand(
   writeLine();
 
   try {
-    appendToMemory(squadName, agentName, type, content);
+    await appendToMemory(squadName, agentName, type, content);
     writeLine(`  ${icons.success} Updated ${colors.cyan}${type}${RESET} for ${colors.white}${squadName}/${agentName}${RESET}`);
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Failed to update memory: ${error}${RESET}`);
