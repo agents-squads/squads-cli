@@ -1,38 +1,29 @@
 /**
  * Infrastructure Integration Tests
  *
- * Tests the full local stack (postgres, redis, neo4j, mem0, engram-mcp, bridge, etc.)
+ * Tests the local stack: postgres, redis, bridge, otel
  * Run with: npm test -- --grep "infra"
  *
  * Prerequisites:
- *   cd docker && docker-compose -f docker-compose.engram.yml up -d
+ *   cd docker && docker compose up -d
  *
  * Note: These tests are skipped in CI since they require local Docker services.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { execSync } from 'child_process';
 
 // Skip infrastructure tests in CI (require local Docker services)
 const describeInfra = process.env.CI ? describe.skip : describe;
-import { execSync } from 'child_process';
 
 const TIMEOUT = 10000;
 
-// Service endpoints
-// Required: postgres, redis, bridge, otel
-// Optional: mem0, langfuse
-// Deprecated: engram (replaced by squads-memory CLI)
+// Required infrastructure services
 const SERVICES = {
-  // Required services
-  postgres: { port: 5433, type: 'tcp', required: true },
-  redis: { port: 6379, type: 'tcp', required: true },
-  bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health', required: true },
-  otel: { port: 4318, type: 'tcp', required: true },
-  // Optional services
-  langfuse: { port: 3100, type: 'http', url: 'http://localhost:3100/api/public/health', required: false },
-  mem0: { port: 8000, type: 'http', url: 'http://localhost:8000/health', required: false },
-  // Deprecated: replaced by squads-memory CLI
-  engram: { port: 8080, type: 'http', url: 'http://localhost:8080/', required: false, deprecated: true },
+  postgres: { port: 5433, type: 'tcp' },
+  redis: { port: 6379, type: 'tcp' },
+  bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health' },
+  otel: { port: 4318, type: 'tcp' },
 };
 
 /**
@@ -121,16 +112,6 @@ describeInfra('infra', () => {
     it('squads-bridge is running', () => {
       expect(isContainerRunning('squads-bridge')).toBe(true);
     });
-
-    // Optional: mem0 provides semantic memory but file-based memory works as fallback
-    it.skip('squads-mem0 is running (optional)', () => {
-      expect(isContainerRunning('squads-mem0')).toBe(true);
-    });
-
-    // Deprecated: engram-mcp replaced by squads-memory CLI
-    it.skip('squads-engram-mcp is running (deprecated)', () => {
-      expect(isContainerRunning('squads-engram-mcp')).toBe(true);
-    });
   });
 
   describe('service connectivity', () => {
@@ -146,18 +127,6 @@ describeInfra('infra', () => {
 
     it('bridge health endpoint responds', async () => {
       const healthy = await isHttpHealthy('http://localhost:8088/health');
-      expect(healthy).toBe(true);
-    }, TIMEOUT);
-
-    // Optional: mem0 provides semantic memory but file-based memory works as fallback
-    it.skip('mem0 health endpoint responds (optional)', async () => {
-      const healthy = await isHttpHealthy('http://localhost:8000/health');
-      expect(healthy).toBe(true);
-    }, TIMEOUT);
-
-    // Deprecated: engram-mcp replaced by squads-memory CLI
-    it.skip('engram-mcp endpoint responds (deprecated)', async () => {
-      const healthy = await isHttpHealthy('http://localhost:8080/');
       expect(healthy).toBe(true);
     }, TIMEOUT);
   });
@@ -177,13 +146,6 @@ describeInfra('infra', () => {
   });
 
   describe('memory operations', () => {
-    // Deprecated: engram-mcp replaced by squads-memory CLI
-    // Memory operations now use: squads memory read|write|search
-    it.skip('engram-mcp can list tools (deprecated)', async () => {
-      const response = await fetch('http://localhost:8080/');
-      expect(response.ok).toBe(true);
-    }, TIMEOUT);
-
     it('squads-memory CLI is available', () => {
       try {
         execSync('squads memory health', {
@@ -207,8 +169,6 @@ describeInfra('infra', () => {
     }, TIMEOUT);
 
     it('bridge receives telemetry', async () => {
-      // Send a test span to OTEL collector and verify it reaches bridge
-      // This is a simplified check - full e2e would need span verification
       const response = await fetch('http://localhost:8088/health');
       expect(response.ok).toBe(true);
     }, TIMEOUT);
