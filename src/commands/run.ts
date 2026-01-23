@@ -1392,13 +1392,20 @@ async function executeWithClaude(
     });
   }
 
-  // Background mode: run via tmux for session management
-  const sessionName = process.env.SQUADS_TMUX_SESSION ||
-    `squads-${squadName}-${agentName}-${Date.now()}`;
+  // Background mode: run via nohup with log file (tmux has issues with --print output)
+  const timestamp = Date.now();
+  const logDir = join(projectRoot, '.agents', 'logs', squadName);
+  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+
+  // Ensure log directory exists
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+  }
 
   if (verbose) {
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-    writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
     writeLine(`  ${colors.dim}MCP config: ${mcpConfigPath}${RESET}`);
     writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
     writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
@@ -1413,19 +1420,14 @@ async function executeWithClaude(
   }
 
   // Build Claude command with all permissions bypassed for autonomous execution
-  // Auto-cleanup: kill tmux session when Claude exits (success or failure)
   // --print ensures non-interactive mode (exits after completion, no REPL)
-  const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+  // nohup with log redirect works better than tmux for capturing --print output
+  const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'`;
 
-  // Create detached tmux session running Claude
-  const tmux = spawn('tmux', [
-    'new-session',
-    '-d',           // Detached
-    '-s', sessionName,
-    '-x', '200',    // Wide terminal for better output
-    '-y', '50',
-    '/bin/sh', '-c', claudeCmd
-  ], {
+  // Run via nohup with output to log file
+  const nohupCmd = `nohup /bin/sh -c '${claudeCmd.replace(/'/g, "'\\''")}' > '${logFile}' 2>&1 & echo $! > '${pidFile}'`;
+
+  const nohup = spawn('/bin/sh', ['-c', nohupCmd], {
     stdio: 'ignore',
     detached: true,
     env: {
@@ -1446,13 +1448,13 @@ async function executeWithClaude(
     },
   });
 
-  tmux.unref();
+  nohup.unref();
 
   if (verbose) {
-    writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Monitor: tail -f ${logFile}${RESET}`);
   }
 
-  return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;
+  return `Log: ${logFile}. Monitor: tail -f ${logFile}`;
 }
 
 /**
