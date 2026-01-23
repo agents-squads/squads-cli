@@ -1421,36 +1421,39 @@ async function executeWithClaude(
 
   // Build Claude command with all permissions bypassed for autonomous execution
   // --print ensures non-interactive mode (exits after completion, no REPL)
-  // nohup with log redirect works better than tmux for capturing --print output
-  // Build command with output redirect inside the command (not outside nohup)
-  // Use stdbuf to force line buffering so output appears in log file immediately
-  const claudeCmd = `cd '${projectRoot}' && stdbuf -oL -eL claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  // Use shell 'exec' to replace shell with claude while keeping file redirect
+  // This ensures output goes to log even after parent exits
+  const envExports = [
+    `export SQUADS_SQUAD='${execContext.squad}'`,
+    `export SQUADS_AGENT='${execContext.agent}'`,
+    `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
+    `export SQUADS_TRIGGER='${execContext.trigger}'`,
+    `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
+    `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
+    `export OTEL_RESOURCE_ATTRIBUTES='squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}'`,
+    ...(effort ? [`export CLAUDE_EFFORT='${effort}'`] : []),
+    ...(skills && skills.length > 0 ? [`export CLAUDE_SKILLS='${skills.join(',')}'`] : []),
+  ].join('; ');
 
-  // Run via nohup - redirect is inside claudeCmd, not outside
-  const nohupCmd = `nohup /bin/sh -c '${claudeCmd.replace(/'/g, "'\\''")}' & echo $! > '${pidFile}'`;
+  // Build shell command:
+  // 1. cd to project root
+  // 2. export env vars
+  // 3. exec claude (replaces shell, keeps file descriptors)
+  // The redirect to logfile happens before exec, so it persists
+  const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
-  const nohup = spawn('/bin/sh', ['-c', nohupCmd], {
-    stdio: 'ignore',
+
+  // Get child PID by using a wrapper that writes PID then execs
+  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+
+  const child = spawn('sh', ['-c', wrapperScript], {
+    cwd: projectRoot,
     detached: true,
-    env: {
-      ...spawnEnv,
-      // Telemetry context for per-agent cost tracking
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      // Bridge API for approvals and escalations
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
-      // OTel resource attributes for telemetry pipeline
-      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-      // Claude-specific options
-      ...(effort && { CLAUDE_EFFORT: effort }),
-      ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
-    },
+    stdio: 'ignore',
+    env: spawnEnv,
   });
 
-  nohup.unref();
+  child.unref();
 
   if (verbose) {
     writeLine(`  ${colors.dim}Monitor: tail -f ${logFile}${RESET}`);
