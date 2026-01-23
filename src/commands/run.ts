@@ -1143,26 +1143,33 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Aim to complete within ${Math.floor(timeoutMins * 0.7)} minutes
 
 After completion:
-1. Update the agent's memory in .agents/memory/${squadName}/${agentName}/state.md
-   IMPORTANT: Use ISO timestamps (e.g., 2026-01-23T14:30:00Z) not just dates.
-   This allows tracking multiple executions per day.
-2. Log any learnings to learnings.md
-3. Create a branch, commit, push, and open a PR:
-   BRANCH="${squadName}/${agentName}-$(date -u +%Y%m%d-%H%M%S)"
-   git checkout -b "$BRANCH"
-   git add .agents/memory/${squadName}/
-   git commit -m "feat(${squadName}): ${agentName} execution $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+## 1. Update Memory (commit directly to main - auto-merged)
+Update your memory files in .agents/memory/${squadName}/${agentName}/:
+- state.md - Your working state
+- learnings.md - What you learned
+- executions.md - Log this execution
+
+Use ISO timestamps (e.g., 2026-01-23T14:30:00Z).
+
+\`\`\`bash
+git add .agents/memory/${squadName}/${agentName}/
+git commit -m "memory(${squadName}): ${agentName} state update
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
-   git push -u origin "$BRANCH"
-   gh pr create --title "feat(${squadName}): ${agentName} execution" --body "Automated execution by ${agentName} agent.
+git push origin main
+\`\`\`
 
-## Changes
-- Updated agent memory/state
-- Logged learnings (if any)
+## 2. Work Products (PR to correct repo - needs review)
+If you created work products (code, content, reports), commit to the CORRECT repo:
+- Code changes → squads-cli, engineering repos
+- Web content → agents-squads-web
+- Research/reports → intelligence, research repos
+- Outreach drafts → customer repo
 
-🤖 Generated with [Agents Squads](https://agents-squads.com)" --base main
-4. Summarize what was accomplished
+Create a PR in that repo for human review. Do NOT put work products in hq.
+
+## 3. Summarize what was accomplished
 
 CRITICAL: When you have completed your tasks OR reached the time limit:
 - Type /exit immediately to end this session
