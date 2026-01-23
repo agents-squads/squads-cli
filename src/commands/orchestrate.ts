@@ -22,6 +22,9 @@ import {
   getPendingEvents,
   watchForEvents,
 } from '../lib/orchestration/lead-orchestrator.js';
+import { resolveMcpConfigPath } from '../lib/mcp-config.js';
+import { findSquadsDir, loadSquad } from '../lib/squad-parser.js';
+import { findMemoryDir } from '../lib/memory.js';
 
 // ANSI colors
 const colors = {
@@ -35,6 +38,57 @@ const colors = {
 
 function writeLine(msg: string) {
   process.stdout.write(msg + '\n');
+}
+
+/**
+ * Gather context for the lead agent (similar to run.ts gatherSquadContext)
+ */
+function gatherLeadContext(squadName: string, leadAgent: string): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+
+  const memoryDir = findMemoryDir();
+  const sections: string[] = [];
+
+  // 1. SQUAD.md - full content for lead (they need everything)
+  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
+  if (existsSync(squadFile)) {
+    try {
+      const squadContent = readFileSync(squadFile, 'utf-8');
+      // Extract key sections
+      const missionMatch = squadContent.match(/## Mission[\s\S]*?(?=\n## |$)/i);
+      const goalsMatch = squadContent.match(/## (?:Goals|Objectives)[\s\S]*?(?=\n## |$)/i);
+
+      let context = '';
+      if (missionMatch) context += missionMatch[0] + '\n';
+      if (goalsMatch) context += goalsMatch[0] + '\n';
+
+      if (context) {
+        sections.push(`## Squad Mission & Goals\n${context.trim()}`);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  // 2. Lead's previous state
+  if (memoryDir) {
+    const stateFile = join(memoryDir, squadName, leadAgent, 'state.md');
+    if (existsSync(stateFile)) {
+      try {
+        const stateContent = readFileSync(stateFile, 'utf-8');
+        if (stateContent.trim()) {
+          sections.push(`## Your Previous State\n${stateContent.trim()}`);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  if (sections.length === 0) return '';
+
+  return `\n# EXISTING CONTEXT\nBuild on this - do NOT start from scratch:\n\n${sections.join('\n\n')}\n`;
 }
 
 interface OrchestrateOptions {
@@ -113,13 +167,32 @@ async function orchestrateSquad(
   const eventsDir = initEventsDir(projectRoot);
   writeLine(`  ${colors.dim}Events: ${eventsDir}${colors.reset}`);
 
-  // Build lead prompt
-  const leadPrompt = buildLeadPrompt({
+  // Get MCP config for the squad
+  const squad = loadSquad(squadName);
+  const mcpServers = squad?.context?.mcp || [];
+  const mcpConfigPath = mcpServers.length > 0
+    ? resolveMcpConfigPath(squadName, mcpServers)
+    : join(process.env.HOME || '', '.claude.json');
+
+  // Gather context for the lead
+  const leadContext = gatherLeadContext(squadName, leadAgent);
+  if (options.verbose && leadContext) {
+    writeLine(`  ${colors.dim}Context: ~${Math.ceil(leadContext.length / 4)} tokens${colors.reset}`);
+  }
+
+  // Build lead prompt with context
+  const basePrompt = buildLeadPrompt({
     squad: squadName,
     lead: leadAgent,
     projectRoot,
     agents: workers,
   });
+
+  // Inject context and add timestamp instruction
+  const leadPrompt = `${basePrompt}
+${leadContext}
+IMPORTANT: When updating state.md, use ISO timestamps (e.g., 2026-01-23T02:45:00Z) not just dates.
+This allows tracking multiple executions per day.`;
 
   // Session name
   const sessionName = `squads-lead-${squadName}-${Date.now()}`;
@@ -131,7 +204,8 @@ async function orchestrateSquad(
 
     const claude = spawn('claude', [
       '--permission-mode', 'bypassPermissions',
-      '-p', leadPrompt,
+      '--mcp-config', mcpConfigPath,
+      '--', leadPrompt,
     ], {
       stdio: 'inherit',
       env: {
@@ -150,7 +224,7 @@ async function orchestrateSquad(
     // Run lead in tmux (background)
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
 
-    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions -p '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
     const tmux = spawn('tmux', [
       'new-session',

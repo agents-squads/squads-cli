@@ -1122,9 +1122,11 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 
 After completion:
 1. Update the agent's memory in .agents/memory/${squadName}/${agentName}/state.md
+   IMPORTANT: Use ISO timestamps (e.g., 2026-01-23T14:30:00Z) not just dates.
+   This allows tracking multiple executions per day.
 2. Log any learnings to learnings.md
 3. Commit and push your work:
-   git add .agents/memory/${squadName}/ && git commit -m "feat(${squadName}): ${agentName} execution $(date +%Y-%m-%d)
+   git add .agents/memory/${squadName}/ && git commit -m "feat(${squadName}): ${agentName} execution $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Co-Authored-By: Claude <noreply@anthropic.com>" && git push origin main
 4. Summarize what was accomplished
