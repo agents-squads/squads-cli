@@ -1463,7 +1463,7 @@ async function executeWithClaude(
   // 3. exec claude (replaces shell, keeps file descriptors)
   // The redirect to logfile happens before exec, so it persists
   // Note: MCP config removed - causes blocking issues in background execution
-  const modelFlag = model ? `--model ${model}` : '';
+const modelFlag = model ? `--model ${model}` : '';
   const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
