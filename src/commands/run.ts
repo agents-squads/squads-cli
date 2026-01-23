@@ -977,7 +977,11 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 After completion:
 1. Update the agent's memory in .agents/memory/${squadName}/${agentName}/state.md
 2. Log any learnings to learnings.md
-3. Summarize what was accomplished
+3. Commit and push your work:
+   git add .agents/memory/${squadName}/ && git commit -m "feat(${squadName}): ${agentName} execution $(date +%Y-%m-%d)
+
+Co-Authored-By: Claude <noreply@anthropic.com>" && git push origin main
+4. Summarize what was accomplished
 
 CRITICAL: When you have completed your tasks OR reached the time limit:
 - Type /exit immediately to end this session
