@@ -1114,6 +1114,13 @@ The agent definition contains:
 - Tools it can use (MCP servers, skills)
 - Step-by-step instructions
 - Expected output format
+
+TOOL PREFERENCE: Always prefer CLI tools over MCP servers when both can accomplish the task:
+- Use \`squads\` CLI for squad operations (run, memory, status, feedback)
+- Use \`gh\` CLI for GitHub (issues, PRs, repos)
+- Use \`git\` CLI for version control
+- Use Bash for file operations, builds, tests
+- Only use MCP tools when CLI cannot do it or MCP is significantly better
 ${squadContext}${learningContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first

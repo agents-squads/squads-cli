@@ -188,9 +188,15 @@ async function orchestrateSquad(
     agents: workers,
   });
 
-  // Inject context and add timestamp instruction
+  // Inject context and add instructions
   const leadPrompt = `${basePrompt}
 ${leadContext}
+TOOL PREFERENCE: Always prefer CLI tools over MCP servers:
+- Use \`squads run\` to spawn workers (not MCP)
+- Use \`gh\` for GitHub operations
+- Use \`git\` for version control
+- Only use MCP when CLI cannot do it
+
 IMPORTANT: When updating state.md, use ISO timestamps (e.g., 2026-01-23T02:45:00Z) not just dates.
 This allows tracking multiple executions per day.`;
 
