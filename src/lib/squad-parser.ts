@@ -105,6 +105,8 @@ export interface Routine {
 
 export interface Squad {
   name: string;
+  /** Directory name for file path resolution (e.g., "engineering") */
+  dir: string;
   mission: string;
   agents: Agent[];
   pipelines: Pipeline[];
@@ -248,9 +250,14 @@ export function parseSquadFile(filePath: string): Squad {
 
   const lines = bodyContent.split('\n');
 
+  // Directory name is used for file paths (e.g., "engineering", "marketing")
+  const dirName = basename(dirname(filePath));
+
   const squad: Squad = {
-    // Use directory name (e.g., "demo" from ".agents/squads/demo/SQUAD.md")
-    name: fm.name || basename(dirname(filePath)),
+    // Display name can be different from dir (e.g., "Engineering Squad")
+    name: fm.name || dirName,
+    // Directory name for file path resolution
+    dir: dirName,
     mission: fm.mission || '',
     agents: [],
     pipelines: [],

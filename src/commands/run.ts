@@ -720,7 +720,7 @@ async function runSquad(
     const agentFiles = squad.agents
       .map(a => ({
         name: a.name,
-        path: join(squadsDir, squad.name, `${a.name}.md`)
+        path: join(squadsDir, squad.dir, `${a.name}.md`)
       }))
       .filter(a => existsSync(a.path));
 
@@ -749,7 +749,7 @@ async function runSquad(
     writeLine();
 
     const launches = agentFiles.map(agent =>
-      runAgent(agent.name, agent.path, squad.name, options)
+      runAgent(agent.name, agent.path, squad.dir, options)
     );
 
     await Promise.all(launches);
@@ -770,11 +770,11 @@ async function runSquad(
 
     for (let i = 0; i < pipeline.agents.length; i++) {
       const agentName = pipeline.agents[i];
-      const agentPath = join(squadsDir, squad.name, `${agentName}.md`);
+      const agentPath = join(squadsDir, squad.dir, `${agentName}.md`);
 
       if (existsSync(agentPath)) {
         writeLine(`  ${colors.dim}[${i + 1}/${pipeline.agents.length}]${RESET}`);
-        await runAgent(agentName, agentPath, squad.name, options);
+        await runAgent(agentName, agentPath, squad.dir, options);
         writeLine();
       } else {
         writeLine(`  ${icons.warning} ${colors.yellow}Agent ${agentName} not found, skipping${RESET}`);
@@ -783,9 +783,9 @@ async function runSquad(
   } else {
     // If specific agent requested via -a flag, run that agent
     if (options.agent) {
-      const agentPath = join(squadsDir, squad.name, `${options.agent}.md`);
+      const agentPath = join(squadsDir, squad.dir, `${options.agent}.md`);
       if (existsSync(agentPath)) {
-        await runAgent(options.agent, agentPath, squad.name, options);
+        await runAgent(options.agent, agentPath, squad.dir, options);
       } else {
         writeLine(`  ${icons.error} ${colors.red}Agent ${options.agent} not found${RESET}`);
         return;
@@ -797,9 +797,9 @@ async function runSquad(
       );
 
       if (orchestrator) {
-        const agentPath = join(squadsDir, squad.name, `${orchestrator.name}.md`);
+        const agentPath = join(squadsDir, squad.dir, `${orchestrator.name}.md`);
         if (existsSync(agentPath)) {
-          await runAgent(orchestrator.name, agentPath, squad.name, options);
+          await runAgent(orchestrator.name, agentPath, squad.dir, options);
         }
       } else {
         writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
@@ -840,7 +840,7 @@ async function runLeadMode(
   const agentFiles = squad.agents
     .map(a => ({
       name: a.name,
-      path: join(squadsDir, squad.name, `${a.name}.md`),
+      path: join(squadsDir, squad.dir, `${a.name}.md`),
       role: a.role || '',
     }))
     .filter(a => existsSync(a.path));
@@ -886,7 +886,7 @@ ${agentPaths}
 
 1. **Assess the situation**: Check for pending work:
    - Run \`gh issue list --repo agents-squads/hq --label squad:${squad.name}\` for assigned issues
-   - Check .agents/memory/${squad.name}/ for squad state and pending tasks
+   - Check .agents/memory/${squad.dir}/ for squad state and pending tasks
    - Review recent activity with \`git log --oneline -10\`
 
 2. **Delegate work using Task tool**: For each piece of work:
@@ -901,7 +901,7 @@ ${agentPaths}
    - Monitor progress and handle failures
 
 4. **Report and update memory**:
-   - Update .agents/memory/${squad.name}/state.md with completed work
+   - Update .agents/memory/${squad.dir}/state.md with completed work
    - Log learnings to learnings.md
    - Create issues for follow-up work if needed
 
