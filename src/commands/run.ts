@@ -1,7 +1,7 @@
 import ora from 'ora';
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
@@ -180,6 +180,142 @@ function loadApprovalInstructions(): string {
   }
 
   return '';
+}
+
+/**
+ * Gather squad context for prompt injection.
+ * Includes SQUAD.md mission/goals, agent's existing state, and relevant briefs.
+ * This ensures agents build on existing knowledge rather than starting from scratch.
+ */
+function gatherSquadContext(
+  squadName: string,
+  agentName: string,
+  options: { verbose?: boolean; maxTokens?: number } = {}
+): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+
+  const memoryDir = findMemoryDir();
+  const maxTokens = options.maxTokens || 8000; // ~8k tokens of context by default
+  const sections: string[] = [];
+  let estimatedTokens = 0;
+
+  // Helper to estimate tokens (rough: ~4 chars per token)
+  const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+
+  // 1. SQUAD.md - mission, goals, and key context
+  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
+  if (existsSync(squadFile)) {
+    try {
+      const squadContent = readFileSync(squadFile, 'utf-8');
+      // Extract key sections (skip frontmatter YAML, focus on mission/goals)
+      const missionMatch = squadContent.match(/## Mission[\s\S]*?(?=\n## |$)/i);
+      const goalsMatch = squadContent.match(/## (?:Goals|Objectives)[\s\S]*?(?=\n## |$)/i);
+      const contextMatch = squadContent.match(/## Context[\s\S]*?(?=\n## |$)/i);
+
+      let squadContext = '';
+      if (missionMatch) squadContext += missionMatch[0] + '\n';
+      if (goalsMatch) squadContext += goalsMatch[0] + '\n';
+      if (contextMatch) squadContext += contextMatch[0] + '\n';
+
+      // If no structured sections found, include first 2000 chars
+      if (!squadContext && squadContent.length > 0) {
+        squadContext = squadContent.substring(0, 2000);
+      }
+
+      if (squadContext) {
+        const tokens = estimateTokens(squadContext);
+        if (estimatedTokens + tokens < maxTokens) {
+          sections.push(`## Squad Context (${squadName})\n${squadContext.trim()}`);
+          estimatedTokens += tokens;
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+  }
+
+  // 2. Agent's existing state (state.md) - what the agent knows
+  if (memoryDir) {
+    const stateFile = join(memoryDir, squadName, agentName, 'state.md');
+    if (existsSync(stateFile)) {
+      try {
+        const stateContent = readFileSync(stateFile, 'utf-8');
+        const tokens = estimateTokens(stateContent);
+
+        if (estimatedTokens + tokens < maxTokens && stateContent.trim()) {
+          sections.push(`## Your Previous State\nThis is your memory from your last execution:\n\n${stateContent.trim()}`);
+          estimatedTokens += tokens;
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 3. Related briefs (if any exist in memory/squad/agent/briefs/)
+  if (memoryDir) {
+    const briefsDir = join(memoryDir, squadName, agentName, 'briefs');
+    if (existsSync(briefsDir)) {
+      try {
+        const briefFiles = readdirSync(briefsDir)
+          .filter(f => f.endsWith('.md'))
+          .slice(0, 3); // Max 3 briefs
+
+        for (const briefFile of briefFiles) {
+          const briefPath = join(briefsDir, briefFile);
+          const briefContent = readFileSync(briefPath, 'utf-8');
+          const tokens = estimateTokens(briefContent);
+
+          if (estimatedTokens + tokens < maxTokens) {
+            sections.push(`## Brief: ${briefFile.replace('.md', '')}\n${briefContent.trim()}`);
+            estimatedTokens += tokens;
+          } else {
+            break; // Stop adding briefs if we're over budget
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 4. Squad-level briefs (shared context for all agents in squad)
+  if (memoryDir) {
+    const squadBriefsDir = join(memoryDir, squadName, '_briefs');
+    if (existsSync(squadBriefsDir)) {
+      try {
+        const squadBriefs = readdirSync(squadBriefsDir)
+          .filter(f => f.endsWith('.md'))
+          .slice(0, 2); // Max 2 squad briefs
+
+        for (const briefFile of squadBriefs) {
+          const briefPath = join(squadBriefsDir, briefFile);
+          const briefContent = readFileSync(briefPath, 'utf-8');
+          const tokens = estimateTokens(briefContent);
+
+          if (estimatedTokens + tokens < maxTokens) {
+            sections.push(`## Squad Brief: ${briefFile.replace('.md', '')}\n${briefContent.trim()}`);
+            estimatedTokens += tokens;
+          } else {
+            break;
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  if (sections.length === 0) {
+    return '';
+  }
+
+  if (options.verbose) {
+    writeLine(`  ${colors.dim}Context: ${sections.length} sections (~${estimatedTokens} tokens)${RESET}`);
+  }
+
+  return `\n# EXISTING CONTEXT\nBuild on this existing knowledge - do NOT start from scratch:\n\n${sections.join('\n\n')}\n`;
 }
 
 /**
@@ -839,9 +975,16 @@ async function runAgent(
 
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
+    // Show context that would be injected
+    const dryRunContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose });
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
       writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
+      if (dryRunContext) {
+        writeLine();
+        writeLine(`  ${colors.cyan}Context to inject (${Math.ceil(dryRunContext.length / 4)} tokens):${RESET}`);
+        writeLine(`  ${colors.dim}${dryRunContext.slice(0, 800)}...${RESET}`);
+      }
     }
     return;
   }
@@ -957,6 +1100,9 @@ async function runAgent(
     ? `\n${approvalInstructions}\n`
     : '';
 
+  // Gather squad context (SQUAD.md, agent state, briefs)
+  const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose });
+
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || 30;
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
@@ -968,7 +1114,7 @@ The agent definition contains:
 - Tools it can use (MCP servers, skills)
 - Step-by-step instructions
 - Expected output format
-${learningContext}${approvalContext}
+${squadContext}${learningContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
