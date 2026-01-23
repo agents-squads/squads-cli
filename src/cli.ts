@@ -109,6 +109,7 @@ import { registerSkillCommand } from './commands/skill.js';
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { registerSlackCommand } from './commands/slack.js';
+import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
@@ -831,6 +832,9 @@ registerApprovalCommand(program);
 
 // Autonomous command group - scheduled routines
 registerAutonomousCommand(program);
+
+// Orchestrate command - lead-coordinated squad execution
+registerOrchestrateCommand(program);
 
 // Skill command group - Agent Skills API
 registerSkillCommand(program);
