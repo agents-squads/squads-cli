@@ -1392,13 +1392,20 @@ async function executeWithClaude(
     });
   }
 
-  // Background mode: run via tmux for session management
-  const sessionName = process.env.SQUADS_TMUX_SESSION ||
-    `squads-${squadName}-${agentName}-${Date.now()}`;
+  // Background mode: run via nohup with log file (tmux has issues with --print output)
+  const timestamp = Date.now();
+  const logDir = join(projectRoot, '.agents', 'logs', squadName);
+  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+
+  // Ensure log directory exists
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+  }
 
   if (verbose) {
     writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-    writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
     writeLine(`  ${colors.dim}MCP config: ${mcpConfigPath}${RESET}`);
     writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
     writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
@@ -1413,46 +1420,47 @@ async function executeWithClaude(
   }
 
   // Build Claude command with all permissions bypassed for autonomous execution
-  // Auto-cleanup: kill tmux session when Claude exits (success or failure)
   // --print ensures non-interactive mode (exits after completion, no REPL)
-  const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+  // Use shell 'exec' to replace shell with claude while keeping file redirect
+  // This ensures output goes to log even after parent exits
+  const envExports = [
+    `export SQUADS_SQUAD='${execContext.squad}'`,
+    `export SQUADS_AGENT='${execContext.agent}'`,
+    `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
+    `export SQUADS_TRIGGER='${execContext.trigger}'`,
+    `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
+    `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
+    `export OTEL_RESOURCE_ATTRIBUTES='squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}'`,
+    ...(effort ? [`export CLAUDE_EFFORT='${effort}'`] : []),
+    ...(skills && skills.length > 0 ? [`export CLAUDE_SKILLS='${skills.join(',')}'`] : []),
+  ].join('; ');
 
-  // Create detached tmux session running Claude
-  const tmux = spawn('tmux', [
-    'new-session',
-    '-d',           // Detached
-    '-s', sessionName,
-    '-x', '200',    // Wide terminal for better output
-    '-y', '50',
-    '/bin/sh', '-c', claudeCmd
-  ], {
-    stdio: 'ignore',
+  // Build shell command:
+  // 1. cd to project root
+  // 2. export env vars
+  // 3. exec claude (replaces shell, keeps file descriptors)
+  // The redirect to logfile happens before exec, so it persists
+  // Note: MCP config removed - causes blocking issues in background execution
+  const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+
+
+  // Get child PID by using a wrapper that writes PID then execs
+  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+
+  const child = spawn('sh', ['-c', wrapperScript], {
+    cwd: projectRoot,
     detached: true,
-    env: {
-      ...spawnEnv,
-      // Telemetry context for per-agent cost tracking
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      // Bridge API for approvals and escalations
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
-      // OTel resource attributes for telemetry pipeline
-      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-      // Claude-specific options
-      ...(effort && { CLAUDE_EFFORT: effort }),
-      ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
-    },
+    stdio: 'ignore',
+    env: spawnEnv,
   });
 
-  tmux.unref();
+  child.unref();
 
   if (verbose) {
-    writeLine(`  ${colors.dim}Attach: tmux attach -t ${sessionName}${RESET}`);
+    writeLine(`  ${colors.dim}Monitor: tail -f ${logFile}${RESET}`);
   }
 
-  return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;
+  return `Log: ${logFile}. Monitor: tail -f ${logFile}`;
 }
 
 /**
