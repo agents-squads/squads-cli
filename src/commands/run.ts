@@ -1423,7 +1423,8 @@ async function executeWithClaude(
   // --print ensures non-interactive mode (exits after completion, no REPL)
   // nohup with log redirect works better than tmux for capturing --print output
   // Build command with output redirect inside the command (not outside nohup)
-  const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  // Use stdbuf to force line buffering so output appears in log file immediately
+  const claudeCmd = `cd '${projectRoot}' && stdbuf -oL -eL claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
   // Run via nohup - redirect is inside claudeCmd, not outside
   const nohupCmd = `nohup /bin/sh -c '${claudeCmd.replace(/'/g, "'\\''")}' & echo $! > '${pidFile}'`;
