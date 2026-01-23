@@ -938,7 +938,20 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   writeLine();
 
   try {
-    const result = await executeWithClaude(prompt, options.verbose, timeoutMins, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
+    // Find lead agent name from agent files or use default
+    const leadAgentName = agentFiles.find(a => a.name.includes('lead'))?.name || `${squad.dir}-lead`;
+
+    const result = await executeWithClaude(prompt, {
+      verbose: options.verbose,
+      timeoutMinutes: timeoutMins,
+      foreground: options.foreground,
+      useApi: options.useApi,
+      effort: options.effort,
+      skills: options.skills,
+      trigger: options.trigger || 'manual',
+      squadName: squad.dir,
+      agentName: leadAgentName,
+    });
 
     if (options.foreground) {
       writeLine();
@@ -1182,7 +1195,17 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
 
       if (isAnthropic) {
         // Use full Claude execution with MCP, permissions, etc.
-        result = await executeWithClaude(prompt, options.verbose, options.timeout || 30, options.foreground, options.useApi, options.effort, options.skills, options.trigger || 'manual');
+        result = await executeWithClaude(prompt, {
+          verbose: options.verbose,
+          timeoutMinutes: options.timeout || 30,
+          foreground: options.foreground,
+          useApi: options.useApi,
+          effort: options.effort,
+          skills: options.skills,
+          trigger: options.trigger || 'manual',
+          squadName,
+          agentName,
+        });
       } else {
         // Use simplified provider execution
         result = await executeWithProvider(provider, prompt, {
@@ -1242,25 +1265,37 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
   });
 }
 
+interface ExecuteWithClaudeOptions {
+  verbose?: boolean;
+  timeoutMinutes?: number;
+  foreground?: boolean;
+  useApi?: boolean;
+  effort?: EffortLevel;
+  skills?: string[];
+  trigger?: ExecutionContext['trigger'];
+  squadName: string;
+  agentName: string;
+}
+
 async function executeWithClaude(
   prompt: string,
-  verbose?: boolean,
-  _timeoutMinutes: number = 30,
-  foreground?: boolean,
-  useApi?: boolean,
-  effort?: EffortLevel,
-  skills?: string[],
-  trigger: ExecutionContext['trigger'] = 'manual'
+  options: ExecuteWithClaudeOptions
 ): Promise<string> {
+  const {
+    verbose,
+    timeoutMinutes: _timeoutMinutes = 30,
+    foreground,
+    useApi,
+    effort,
+    skills,
+    trigger = 'manual',
+    squadName,
+    agentName,
+  } = options;
+
   // Ensure the project is trusted (prevents workspace trust dialog)
   const projectRoot = getProjectRoot();
   ensureProjectTrusted(projectRoot);
-
-  // Extract squad/agent from prompt for telemetry tagging
-  const squadMatch = prompt.match(/squad (\w+)/);
-  const agentMatch = prompt.match(/(\w+) agent/);
-  const squadName = process.env.SQUADS_SQUAD || squadMatch?.[1] || 'unknown';
-  const agentName = process.env.SQUADS_AGENT || agentMatch?.[1] || 'unknown';
 
   // Load squad for context-based MCP config resolution
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
