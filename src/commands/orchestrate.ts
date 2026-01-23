@@ -130,7 +130,7 @@ async function orchestrateSquad(
     writeLine(`${colors.dim}Press Ctrl+C to stop${colors.reset}\n`);
 
     const claude = spawn('claude', [
-      '--permission-mode', 'acceptEdits',
+      '--permission-mode', 'bypassPermissions',
       '-p', leadPrompt,
     ], {
       stdio: 'inherit',
@@ -151,7 +151,7 @@ async function orchestrateSquad(
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
     const mcpConfigPath = join(process.env.HOME || '~', '.claude.json');
 
-    const claudeCmd = `cd '${projectRoot}' && claude --permission-mode acceptEdits --mcp-config '${mcpConfigPath}' -p '${escapedPrompt}'`;
+    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -p '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
     const tmux = spawn('tmux', [
       'new-session',
