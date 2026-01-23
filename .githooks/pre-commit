@@ -1,0 +1,44 @@
+#!/bin/bash
+# Pre-commit hook to prevent PII/internal data from being committed
+
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Patterns to block (case insensitive)
+BLOCKED_PATTERNS=(
+  "innspiral"
+  "sg2030"
+  "parque.arauco"
+  "sodimac"
+  "enaex"
+  "hortifrut"
+  "aguas.andinas"
+  "ivan.vera"
+  "password="
+  "api_key="
+  "secret_key="
+)
+
+FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|js|jsx|md|json|yaml|yml)$')
+
+if [ -z "$FILES" ]; then
+  exit 0
+fi
+
+FOUND=0
+
+for pattern in "${BLOCKED_PATTERNS[@]}"; do
+  MATCHES=$(echo "$FILES" | xargs grep -l -i "$pattern" 2>/dev/null)
+  if [ -n "$MATCHES" ]; then
+    echo -e "${RED}BLOCKED: Found '$pattern' in:${NC}"
+    echo "$MATCHES"
+    FOUND=1
+  fi
+done
+
+if [ $FOUND -eq 1 ]; then
+  echo -e "${RED}Commit blocked - remove sensitive data${NC}"
+  exit 1
+fi
+
+exit 0
