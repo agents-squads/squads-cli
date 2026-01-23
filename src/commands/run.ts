@@ -1440,7 +1440,8 @@ async function executeWithClaude(
   // 2. export env vars
   // 3. exec claude (replaces shell, keeps file descriptors)
   // The redirect to logfile happens before exec, so it persists
-  const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  // Note: MCP config removed - causes blocking issues in background execution
+  const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
