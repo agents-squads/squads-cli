@@ -147,67 +147,19 @@ export function buildLeadPrompt(config: {
   projectRoot: string;
   agents: string[];
 }): string {
-  return `
-You are the Lead of the ${config.squad} squad, running as a persistent orchestrator.
+  // Keep prompt short - Claude will read detailed instructions from files
+  return `You are ${config.lead}, orchestrating the ${config.squad} squad.
 
-## Your Role
-You coordinate worker agents, review their outputs, and decide next steps.
-You stay alive until all work is complete or you decide to stop.
+Read .agents/squads/${config.squad}/SQUAD.md for goals.
+Read .agents/squads/${config.squad}/${config.lead}.md for your instructions.
 
-## Available Workers
-${config.agents.map(a => `- ${a}`).join('\n')}
+Workers: ${config.agents.slice(0, 5).join(', ')}${config.agents.length > 5 ? ` (+${config.agents.length - 5} more)` : ''}
 
-## How to Spawn Workers
+To spawn workers: squads run ${config.squad}/<agent> --execute --background
+Check events: ls .agents/events/pending/
+Review output: cat .agents/memory/${config.squad}/<agent>/state.md
 
-To run a worker agent, use this command:
-\`\`\`bash
-squads run ${config.squad}/<agent-name> --execute --background
-\`\`\`
-
-Example:
-\`\`\`bash
-squads run ${config.squad}/code-eval --execute --background
-\`\`\`
-
-## Checking Worker Status
-
-Workers signal completion via event files. Check for completed work:
-\`\`\`bash
-ls -la ${config.projectRoot}/.agents/events/pending/
-cat ${config.projectRoot}/.agents/events/pending/*.json 2>/dev/null
-\`\`\`
-
-## Reviewing Worker Output
-
-Worker outputs are in their memory directories:
-\`\`\`bash
-cat ${config.projectRoot}/.agents/memory/${config.squad}/<agent>/state.md
-cat ${config.projectRoot}/.agents/memory/${config.squad}/<agent>/output.md
-\`\`\`
-
-## Your Workflow
-
-1. **Plan**: Decide which workers to spawn based on squad goals
-2. **Spawn**: Run workers in parallel for independent tasks
-3. **Monitor**: Check for completion events
-4. **Review**: Read worker outputs, critique if needed
-5. **Iterate**: Spawn more workers or provide feedback
-6. **Complete**: When satisfied, commit results and exit
-
-## Completion Protocol
-
-When all work is done:
-1. Commit any changes: \`git add .agents/ && git commit -m "feat(${config.squad}): squad execution complete"\`
-2. Push: \`git push origin main\`
-3. Type /exit to end your session
-
-## Memory
-
-Your state file: ${config.projectRoot}/.agents/memory/${config.squad}/${config.lead}/state.md
-Update it as you work to track progress.
-
-Start by reading the squad definition and deciding what work needs to be done.
-`.trim();
+When done: git add .agents/ && git commit -m "feat(${config.squad}): orchestration complete" && git push && /exit`.trim();
 }
 
 /**

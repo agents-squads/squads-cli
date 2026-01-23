@@ -149,9 +149,8 @@ async function orchestrateSquad(
   } else {
     // Run lead in tmux (background)
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
-    const mcpConfigPath = join(process.env.HOME || '~', '.claude.json');
 
-    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -p '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions -p '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
     const tmux = spawn('tmux', [
       'new-session',
