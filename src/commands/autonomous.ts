@@ -187,7 +187,7 @@ async function syncRoutines(): Promise<void> {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ squad: name, routines }),
         });
-      } catch {
+      } catch (_error) {
         // Bridge might not support routines endpoint yet
       }
     }
@@ -211,11 +211,11 @@ function isRunning(): { running: boolean; pid?: number } {
     // Check if process is alive (signal 0 doesn't kill, just checks)
     process.kill(pid, 0);
     return { running: true, pid };
-  } catch {
+  } catch (_error) {
     // Process not running, clean up stale PID file
     try {
       unlinkSync(PID_FILE);
-    } catch {
+    } catch (_cleanupError) {
       // Ignore - file may already be deleted
     }
     return { running: false };
