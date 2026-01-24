@@ -3,10 +3,10 @@
  * Uses Redis when available, falls back to file-based locks
  */
 
-import Redis from 'ioredis';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
+import type Redis from 'ioredis';
 
 // Lock configuration
 const LOCK_TTL_MS = 30000; // 30 seconds max lock hold time
@@ -19,13 +19,17 @@ let redisAvailable: boolean | null = null;
 
 /**
  * Get or create Redis client
+ * Lazy-loads ioredis only when Redis is actually needed
  */
 async function getRedis(): Promise<Redis | null> {
   if (redisAvailable === false) return null;
 
   if (!redisClient) {
     try {
-      redisClient = new Redis({
+      // Lazy-load ioredis to avoid startup penalty
+      const { default: RedisConstructor } = await import('ioredis');
+
+      redisClient = new RedisConstructor({
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379'),
         connectTimeout: 1000,
