@@ -507,19 +507,23 @@ Report saved to .agents/outputs/demo/agent-frameworks-report.md
         await fs.writeFile(path.join(cwd, 'CLAUDE.md'), claudeMd);
       }
 
+      // Get absolute path to squads binary
+      const npmPrefix = execSync('npm config get prefix').toString().trim();
+      const squadsPath = path.join(npmPrefix, 'bin', 'squads');
+
       const claudeSettings = {
         hooks: {
           SessionStart: [{
             hooks: [{
               type: 'command',
-              command: 'squads status',
+              command: `${squadsPath} status`,
               timeout: 10,
             }],
           }],
           Stop: [{
             hooks: [{
               type: 'command',
-              command: 'squads memory sync && echo "\\n💡 Capture learnings: squads learn \\"<what you learned>\\"\\n"',
+              command: `${squadsPath} memory sync && echo "\\n💡 Capture learnings: ${squadsPath} learn \\"<what you learned>\\"\\n"`,
               timeout: 15,
             }],
           }],
