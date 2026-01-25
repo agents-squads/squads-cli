@@ -89,66 +89,39 @@ interface DashboardCache {
   capacity: ClaudeCodeCapacity | null;
 }
 
-export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_DASHBOARD, { verbose: options.verbose, ceo: options.ceo, fast: options.fast });
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) {
-    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
-    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
-    return;
-  }
+// Dashboard stats aggregated from squad data
+interface DashboardStats {
+  activeSquads: number;
+  totalSquads: number;
+  totalPRs: number;
+  totalIssuesClosed: number;
+  totalIssuesOpen: number;
+  overallProgress: number;
+}
 
-  // CEO mode: executive summary
-  if (options.ceo) {
-    await renderCeoReport(squadsDir);
-    return;
-  }
-
-  const baseDir = findAgentsSquadsDir();
-  const squadNames = listSquads(squadsDir);
-  const skipGitHub = options.fast !== false; // Default to fast mode (skip GitHub API)
-
-  // === PHASE 1: Parallel data fetching ===
-  // Fetch all expensive data in parallel to minimize wall time
-  // Wrap slow calls with race timeout to ensure CLI responsiveness
-  const timeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
-    Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
-
-  // Clean up stale file-based sessions (sync, fast)
-  cleanupStaleSessions();
-
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity] = await Promise.all([
-    // Git stats (local, ~1s)
-    Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
-    // GitHub stats (network, ~20-30s) - skip by default for fast mode
-    skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
-    // Langfuse costs (network, 2s timeout)
-    timeout(fetchCostSummary(100), 2000, null),
-    // Bridge stats (local network, 2s timeout)
-    timeout(fetchBridgeStats(), 2000, null),
-    // Activity sparkline (local, <1s)
-    Promise.resolve(baseDir ? getActivitySparkline(baseDir, 14) : []),
-    // Database availability check (1.5s timeout)
-    timeout(isDatabaseAvailable(), 1500, false),
-    // Dashboard history (1.5s timeout)
-    timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
-    // Insights (2s timeout)
-    timeout(fetchInsights('week').catch(() => null), 2000, null),
-    // Session summary (parallel lsof, ~1s)
-    getLiveSessionSummaryAsync(),
-    // NPM download stats (network, 2s timeout)
-    timeout(fetchNpmStats('squads-cli'), 2000, null),
-    // Quota/autonomy info (local network, 2s timeout)
-    timeout(fetchQuotaInfo(), 2000, null),
-    // Claude Code capacity (local file read, fast)
-    fetchClaudeCodeCapacity(),
-  ]);
-
-  // Create cache for render functions
-  const cache: DashboardCache = { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity };
-
-  // === PHASE 2: Build squad metrics (sync, fast) ===
+/**
+ * Build squad metrics from squad data and git/github stats
+ */
+function collectSquadMetrics(
+  squadNames: string[],
+  gitStats: GitPerformanceStats | null,
+  ghStats: GitHubStats | null
+): SquadMetrics[] {
   const squadData: SquadMetrics[] = [];
+
+  // Map repos to squads for commit attribution
+  const repoSquadMap: Record<string, string[]> = {
+    website: ['agents-squads-web'],
+    product: ['squads-cli'],
+    engineering: ['hq', 'squads-cli'],
+    research: ['research'],
+    intelligence: ['intelligence'],
+    customer: ['customer'],
+    finance: ['finance'],
+    company: ['company', 'hq'],
+    marketing: ['marketing', 'agents-squads-web'],
+    cli: ['squads-cli'],
+  };
 
   for (const name of squadNames) {
     const squad = loadSquad(name);
@@ -173,19 +146,6 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
       : 0;
 
     // Calculate commit counts from git stats
-    const repoSquadMap: Record<string, string[]> = {
-      website: ['agents-squads-web'],
-      product: ['squads-cli'],
-      engineering: ['hq', 'squads-cli'],
-      research: ['research'],
-      intelligence: ['intelligence'],
-      customer: ['customer'],
-      finance: ['finance'],
-      company: ['company', 'hq'],
-      marketing: ['marketing', 'agents-squads-web'],
-      cli: ['squads-cli'],
-    };
-
     let squadCommits = 0;
     if (gitStats) {
       for (const [repo, commits] of gitStats.commitsByRepo) {
@@ -218,12 +178,40 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     });
   }
 
-  // === PHASE 3: Render (sync, fast) ===
+  return squadData;
+}
+
+/**
+ * Calculate aggregated dashboard stats from squad metrics
+ */
+function calculateDashboardStats(squadData: SquadMetrics[], ghStats: GitHubStats | null): DashboardStats {
   const activeSquads = squadData.filter(s => s.status === 'active').length;
   const totalPRs = ghStats ? ghStats.prsMerged : 0;
   const totalIssuesClosed = ghStats ? ghStats.issuesClosed : 0;
   const totalIssuesOpen = ghStats ? ghStats.issuesOpen : 0;
+  const overallProgress = squadData.length > 0
+    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
+    : 0;
 
+  return {
+    activeSquads,
+    totalSquads: squadData.length,
+    totalPRs,
+    totalIssuesClosed,
+    totalIssuesOpen,
+    overallProgress,
+  };
+}
+
+/**
+ * Render the dashboard header with session and stats info
+ */
+function renderDashboardHeader(
+  stats: DashboardStats,
+  sessionSummary: SessionSummary,
+  gitStats: GitPerformanceStats | null,
+  ghStats: GitHubStats | null
+): void {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}dashboard${RESET}`);
 
@@ -252,11 +240,11 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine();
 
   // Stats row - show different info based on whether GitHub data is available
-  const statsParts = [`${colors.cyan}${activeSquads}${RESET}/${squadData.length} squads`];
+  const statsParts = [`${colors.cyan}${stats.activeSquads}${RESET}/${stats.totalSquads} squads`];
   if (ghStats) {
-    statsParts.push(`${colors.green}${totalPRs}${RESET} PRs merged`);
-    statsParts.push(`${colors.purple}${totalIssuesClosed}${RESET} closed`);
-    statsParts.push(`${colors.yellow}${totalIssuesOpen}${RESET} open`);
+    statsParts.push(`${colors.green}${stats.totalPRs}${RESET} PRs merged`);
+    statsParts.push(`${colors.purple}${stats.totalIssuesClosed}${RESET} closed`);
+    statsParts.push(`${colors.yellow}${stats.totalIssuesOpen}${RESET} open`);
   } else {
     statsParts.push(`${colors.cyan}${gitStats?.totalCommits || 0}${RESET} commits`);
     statsParts.push(`${colors.dim}use -f for PRs/issues${RESET}`);
@@ -264,12 +252,14 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   writeLine(`  ${statsParts.join(`  ${colors.dim}│${RESET}  `)}`);
   writeLine();
 
-  const overallProgress = squadData.length > 0
-    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
-    : 0;
-  writeLine(`  ${progressBar(overallProgress, 32)} ${colors.dim}${overallProgress}% goal progress${RESET}`);
+  writeLine(`  ${progressBar(stats.overallProgress, 32)} ${colors.dim}${stats.overallProgress}% goal progress${RESET}`);
   writeLine();
+}
 
+/**
+ * Render the squads table showing activity per squad
+ */
+function renderSquadsTable(squadData: SquadMetrics[]): void {
   // Squad table - add 2 chars padding to each column for spacing
   const w = { name: 13, commits: 9, prs: 5, issues: 8, goals: 7, bar: 10 };
   const tableWidth = w.name + w.commits + w.prs + w.issues + w.goals + w.bar + 6;
@@ -316,26 +306,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
+}
 
-  // Compute goal counts for efficiency metrics
-  const goalCount = {
-    active: squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0),
-    completed: squadData.reduce((sum, s) => sum + s.goals.filter(g => g.completed).length, 0),
-  };
-
-  // Render sections using cached data (no more network calls)
-  renderGitPerformanceCached(cache);
-  renderTokenEconomicsCached(cache, goalCount);
-  renderQuotaCached(cache);
-  renderCapacityCached(cache);
-  renderInfrastructureCached(cache);
-  renderAcquisitionCached(cache);
-
-  // These still need async but are fast
-  renderHistoricalTrendsCached(cache);
-  renderInsightsCached(cache);
-
-  // Working On section - shows recent commits
+/**
+ * Render the working on section showing recent commits
+ */
+function renderWorkingOn(gitStats: GitPerformanceStats | null): void {
   if (gitStats && gitStats.recentCommits && gitStats.recentCommits.length > 0) {
     writeLine(`  ${bold}Working On${RESET}`);
     writeLine();
@@ -347,8 +323,12 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     }
     writeLine();
   }
+}
 
-  // Goals section - sorted from tactical (what to do NOW) to strategic (long-term vision)
+/**
+ * Render the goals section sorted from tactical to strategic
+ */
+function renderGoalsSection(squadData: SquadMetrics[]): void {
   const allActiveGoals = squadData.flatMap(s =>
     s.goals.filter(g => !g.completed).map(g => ({
       squad: s.name,
@@ -400,16 +380,114 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
     }
     writeLine();
   }
+}
 
+/**
+ * Render the footer with command hints
+ */
+function renderDashboardFooter(): void {
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}    ${colors.dim}Execute a squad${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads goal set    ${colors.dim}Add a goal${RESET}`);
   writeLine();
+}
+
+export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
+  await track(Events.CLI_DASHBOARD, { verbose: options.verbose, ceo: options.ceo, fast: options.fast });
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) {
+    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
+    return;
+  }
+
+  // CEO mode: executive summary
+  if (options.ceo) {
+    await renderCeoReport(squadsDir);
+    return;
+  }
+
+  const baseDir = findAgentsSquadsDir();
+  const squadNames = listSquads(squadsDir);
+  const skipGitHub = options.fast !== false; // Default to fast mode (skip GitHub API)
+
+  // === PHASE 1: Parallel data fetching ===
+  const cache = await fetchDashboardData(baseDir, skipGitHub);
+
+  // === PHASE 2: Build squad metrics ===
+  const squadData = collectSquadMetrics(squadNames, cache.gitStats, cache.ghStats);
+
+  // === PHASE 3: Calculate stats and render ===
+  const stats = calculateDashboardStats(squadData, cache.ghStats);
+
+  // Render dashboard sections
+  renderDashboardHeader(stats, cache.sessionSummary, cache.gitStats, cache.ghStats);
+  renderSquadsTable(squadData);
+
+  // Compute goal counts for efficiency metrics
+  const goalCount = {
+    active: squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0),
+    completed: squadData.reduce((sum, s) => sum + s.goals.filter(g => g.completed).length, 0),
+  };
+
+  // Render sections using cached data (no more network calls)
+  renderGitPerformanceCached(cache);
+  renderTokenEconomicsCached(cache, goalCount);
+  renderQuotaCached(cache);
+  renderCapacityCached(cache);
+  renderInfrastructureCached(cache);
+  renderAcquisitionCached(cache);
+  renderHistoricalTrendsCached(cache);
+  renderInsightsCached(cache);
+  renderWorkingOn(cache.gitStats);
+  renderGoalsSection(squadData);
+  renderDashboardFooter();
 
   // Save snapshot in background (don't block)
   saveSnapshotCached(squadData, cache, baseDir).catch(() => {});
 
   // Close database pool to allow process to exit immediately
   await closeDatabase();
+}
+
+/**
+ * Fetch all dashboard data in parallel with timeouts
+ */
+async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): Promise<DashboardCache> {
+  // Wrap slow calls with race timeout to ensure CLI responsiveness
+  const timeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
+
+  // Clean up stale file-based sessions (sync, fast)
+  cleanupStaleSessions();
+
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity] = await Promise.all([
+    // Git stats (local, ~1s)
+    Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
+    // GitHub stats (network, ~20-30s) - skip by default for fast mode
+    skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
+    // Langfuse costs (network, 2s timeout)
+    timeout(fetchCostSummary(100), 2000, null),
+    // Bridge stats (local network, 2s timeout)
+    timeout(fetchBridgeStats(), 2000, null),
+    // Activity sparkline (local, <1s)
+    Promise.resolve(baseDir ? getActivitySparkline(baseDir, 14) : []),
+    // Database availability check (1.5s timeout)
+    timeout(isDatabaseAvailable(), 1500, false),
+    // Dashboard history (1.5s timeout)
+    timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
+    // Insights (2s timeout)
+    timeout(fetchInsights('week').catch(() => null), 2000, null),
+    // Session summary (parallel lsof, ~1s)
+    getLiveSessionSummaryAsync(),
+    // NPM download stats (network, 2s timeout)
+    timeout(fetchNpmStats('squads-cli'), 2000, null),
+    // Quota/autonomy info (local network, 2s timeout)
+    timeout(fetchQuotaInfo(), 2000, null),
+    // Claude Code capacity (local file read, fast)
+    fetchClaudeCodeCapacity(),
+  ]);
+
+  return { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity };
 }
 
 /**
