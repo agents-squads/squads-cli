@@ -147,6 +147,8 @@ program
   .version(version)
   // Enable typo suggestions (Commander.js built-in feature)
   .showSuggestionAfterError(true)
+  // Show help after missing required arguments
+  .showHelpAfterError('(Run with --help for usage information)')
   // Configure help to exit with code 0 (Unix convention)
   .configureOutput({
     outputError: (str, write) => write(str),
