@@ -101,8 +101,10 @@ function getRecentCommits(since?: string): CommitInfo[] {
         });
       }
     }
-  } catch {
-    // Not in a git repo or other error
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('Git log failed (not a git repo or other error):', err);
+    }
   }
 
   return commits;
