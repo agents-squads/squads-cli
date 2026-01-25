@@ -18,8 +18,6 @@ import { join } from 'path';
 import {
   initEventsDir,
   buildLeadPrompt,
-  buildWorkerCommand,
-  getPendingEvents,
   watchForEvents,
 } from '../lib/orchestration/lead-orchestrator.js';
 import { resolveMcpConfigPath } from '../lib/mcp-config.js';

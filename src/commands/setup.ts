@@ -26,10 +26,6 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import {
-  checkDockerPrereqs,
-  checkClaudeCli,
-  checkGhCli,
-  checkGhPermissions,
   runPrereqChecks,
   runAuthChecks,
   displayCheckResults,
