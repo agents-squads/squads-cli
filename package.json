@@ -1,6 +1,6 @@
 {
   "name": "squads-cli",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Open source CLI for AI agent coordination and execution. Domain-aligned squads with persistent memory and goals.",
   "type": "module",
   "bin": {
