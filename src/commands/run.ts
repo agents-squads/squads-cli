@@ -660,8 +660,21 @@ export async function runCommand(
     process.exit(1);
   }
 
+  // Check if target uses squad/agent syntax (e.g., "demo/researcher")
+  let squadName = target;
+  let agentFromSlash: string | undefined;
+
+  if (target.includes('/')) {
+    const parts = target.split('/');
+    squadName = parts[0];
+    agentFromSlash = parts[1];
+    if (!options.agent) {
+      options.agent = agentFromSlash;
+    }
+  }
+
   // Check if target is a squad or an agent
-  const squad = loadSquad(target);
+  const squad = loadSquad(squadName);
 
   if (squad) {
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
