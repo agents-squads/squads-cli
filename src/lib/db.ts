@@ -43,20 +43,24 @@ function getPool(): InstanceType<typeof Pool> | null {
  * Check if database is available
  */
 export async function isDatabaseAvailable(): Promise<boolean> {
+  const pool = getPool();
+  if (!pool) {
+    return false;
+  }
+  let client: Awaited<ReturnType<typeof pool.connect>> | null = null;
   try {
-    const pool = getPool();
-    if (!pool) {
-      return false;
-    }
-    const client = await pool.connect();
+    client = await pool.connect();
     await client.query('SELECT 1');
-    client.release();
     return true;
   } catch (err) {
     if (process.env.DEBUG) {
       console.error('DB availability check failed:', err);
     }
     return false;
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
 
@@ -107,13 +111,13 @@ export interface SquadSnapshotData {
  * Save a dashboard snapshot to the database
  */
 export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promise<number | null> {
-  try {
-    const pool = getPool();
-    if (!pool) {
-      return null;
-    }
-    const client = await pool.connect();
+  const pool = getPool();
+  if (!pool) {
+    return null;
+  }
+  const client = await pool.connect();
 
+  try {
     const result = await client.query(`
       INSERT INTO squads.dashboard_snapshots (
         total_squads, total_commits, total_prs_merged, total_issues_closed, total_issues_open,
@@ -144,7 +148,6 @@ export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promis
       JSON.stringify(snapshot.reposData),
     ]);
 
-    client.release();
     return result.rows[0]?.id ?? null;
   } catch (err) {
     // Log error for debugging, but don't crash
@@ -152,6 +155,8 @@ export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promis
       console.error('DB save error:', err);
     }
     return null;
+  } finally {
+    client.release();
   }
 }
 
@@ -159,13 +164,13 @@ export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promis
  * Get recent dashboard snapshots for trend analysis
  */
 export async function getDashboardHistory(limit: number = 30): Promise<DashboardSnapshot[]> {
-  try {
-    const pool = getPool();
-    if (!pool) {
-      return [];
-    }
-    const client = await pool.connect();
+  const pool = getPool();
+  if (!pool) {
+    return [];
+  }
+  const client = await pool.connect();
 
+  try {
     const result = await client.query(`
       SELECT
         total_squads, total_commits, total_prs_merged, total_issues_closed, total_issues_open,
@@ -176,8 +181,6 @@ export async function getDashboardHistory(limit: number = 30): Promise<Dashboard
       ORDER BY captured_at DESC
       LIMIT $1
     `, [limit]);
-
-    client.release();
 
     return result.rows.map((row: Record<string, unknown>) => ({
       totalSquads: row.total_squads,
@@ -204,6 +207,8 @@ export async function getDashboardHistory(limit: number = 30): Promise<Dashboard
       console.error('Failed to get snapshots from database:', err);
     }
     return [];
+  } finally {
+    client.release();
   }
 }
 
