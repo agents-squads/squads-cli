@@ -933,6 +933,49 @@ squads tonight status                Check progress
 squads tonight stop                  Kill all agents
 squads tonight report                View morning report
 
+squads cron sync                     Sync agent schedules to launchd (macOS)
+squads cron list [squad]             List scheduled agents
+squads cron status                   Show launchd status and next runs
+squads cron enable <agent>           Enable an agent's schedule
+squads cron disable <agent>          Disable an agent's schedule
+squads cron logs [agent]             Show execution logs
+
+squads approval send <type>          Send approval request to Slack
+squads approval list                 List pending approvals
+squads approval check <id>           Check approval status
+squads approval cancel <id>          Cancel pending approval
+
+squads orchestrate <squad>           Run squad with lead agent orchestration
+  -f, --foreground                   Run in foreground (no tmux)
+
+squads skill list                    List uploaded skills
+squads skill upload <path>           Upload skill directory to Anthropic API
+squads skill delete <id>             Delete a skill
+squads skill show <id>               Show skill details
+squads skill convert <agent>         Convert agent.md to SKILL.md format
+
+squads permissions show <squad>      Show permission context for a squad
+squads permissions check <squad>     Validate permissions before execution
+  -a, --agent <agent>                Specify agent for context
+
+squads slack sync                    Sync squad channels with Slack
+squads slack channels                List Slack channels
+squads slack test                    Test Slack connection
+
+squads providers                     Show available LLM CLI providers
+  --json                             JSON output
+
+squads autonomy                      Show autonomy score and confidence metrics
+  -s, --squad <squad>                Filter by squad
+  -p, --period <period>              Period: today, week, month
+  --json                             JSON output
+
+squads kpi show <squad>              Show KPI status for a squad
+squads kpi record <squad> <kpi> <value>  Record KPI value
+squads kpi trend <squad> <kpi>       Show KPI trend over time
+squads kpi insights <squad>          Generate AI insights from KPIs
+  --json                             JSON output
+
 squads update                        Interactive update
   -y, --yes                          Auto-confirm
   -c, --check                        Check only
