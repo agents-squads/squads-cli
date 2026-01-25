@@ -136,7 +136,60 @@ squads env show <squad>       # Squad execution context (MCP, model, budget)
 squads env list               # List all squad environments
 squads cost                   # Cost summary (today, week, by squad)
 squads budget <squad>         # Check budget status
+squads providers              # Show available LLM CLI providers
 squads version                # Show version information
+```
+
+### Scheduling & Automation
+```bash
+squads cron sync              # Sync schedules from agent .md files
+squads cron list              # List scheduled agents
+squads cron status            # Show cron status and next runs
+squads cron logs [agent]      # Show execution logs
+squads cron enable <agent>    # Enable schedule
+squads cron disable <agent>   # Disable schedule
+squads tonight run <targets>  # Start overnight execution
+squads tonight status         # Check overnight status
+squads autonomous start       # Start scheduler daemon
+squads autonomous stop        # Stop scheduler daemon
+squads autonomous status      # Check daemon status
+```
+
+### Approvals & Permissions
+```bash
+squads approval send <type>   # Send approval request to Slack
+squads approval list          # List approvals
+squads approval check <id>    # Check approval status
+squads approval cancel <id>   # Cancel pending approval
+squads permissions show <squad>   # Show permission context
+squads permissions check <squad>  # Validate before execution
+```
+
+### Orchestration
+```bash
+squads orchestrate <squad>    # Run squad with lead agent orchestration
+```
+
+### Skills
+```bash
+squads skill list             # List available skills
+squads skill upload <file>    # Upload a skill
+squads skill delete <name>    # Delete a skill
+```
+
+### Slack Integration
+```bash
+squads slack auth             # Authenticate with Slack
+squads slack status           # Check Slack connection
+squads slack test             # Send test message
+```
+
+### Metrics
+```bash
+squads autonomy               # Show autonomy score and confidence
+squads kpi list               # List KPIs defined in squads
+squads kpi show <squad>       # Show KPIs for a squad
+squads kpi update <squad>     # Update KPI values
 ```
 
 ## Development Workflow
