@@ -240,6 +240,92 @@ $ squads update
   ● Updated to 0.2.0
 ```
 
+### Agent History
+
+Track and review agent execution history with costs and performance metrics:
+
+```
+$ squads history
+
+  squads history
+
+  Last 7 days of agent executions
+
+  ┌────────────────────────────────────────────────────────────┐
+  │ TIMESTAMP          SQUAD        AGENT       COST    STATUS │
+  ├────────────────────────────────────────────────────────────┤
+  │ 2026-01-06 10:30   engineering  ci-lead     $0.45  ✓      │
+  │ 2026-01-06 09:15   website      seo-critic  $0.23  ✓      │
+  │ 2026-01-05 16:20   customer     lead        $0.89  ✓      │
+  └────────────────────────────────────────────────────────────┘
+
+  Total cost: $1.57  │  3 executions
+```
+
+Filter by squad and get detailed metrics:
+
+```bash
+squads history -s engineering -v    # Verbose with token details
+squads history -d 30 -j             # Last 30 days, JSON output
+```
+
+### Context Feed
+
+Get curated context for agents based on goals, memory, and recent activity:
+
+```bash
+# Human-readable summary
+squads context -s engineering
+
+# JSON for agent consumption
+squads context -s engineering --json
+
+# Search memory for specific topic
+squads context -t "authentication" -s website
+```
+
+Perfect for injecting relevant context into agent prompts or hooks.
+
+### Live Monitoring
+
+**Watch Mode** — Refresh any command in real-time:
+
+```bash
+squads watch status              # Refresh every 2 seconds
+squads watch "dash --ceo" -n 5   # Custom interval
+```
+
+**Live Dashboard** — Interactive TUI like htop:
+
+```bash
+squads live                      # Full dashboard
+```
+
+**Process Table** — Real-time process monitoring:
+
+```bash
+squads top                       # Live process table
+```
+
+### Infrastructure Health
+
+Quick health check across all services without verbose Docker output:
+
+```
+$ squads health
+
+  squads health
+
+  ✓ postgres   healthy
+  ✓ redis      healthy
+  ✓ bridge     healthy
+  ✓ langfuse   healthy
+
+  ● 4/4 core services healthy
+```
+
+Use `-v` to see logs for failing services.
+
 ## Core Concepts
 
 ### Squads = Domain-Aligned Teams
