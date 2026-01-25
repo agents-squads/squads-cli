@@ -122,6 +122,11 @@ function saveConfig(config: TelemetryConfig): void {
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
+/**
+ * Check if telemetry is enabled.
+ * Telemetry is disabled if SQUADS_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1.
+ * @returns true if telemetry collection is enabled
+ */
 export function isEnabled(): boolean {
   // Check environment variable first (allows CI/testing override)
   if (process.env.SQUADS_TELEMETRY_DISABLED === '1') {
@@ -134,22 +139,41 @@ export function isEnabled(): boolean {
   return getConfig().enabled;
 }
 
+/**
+ * Enable telemetry collection.
+ * Persists the setting to ~/.squads-cli/telemetry.json
+ */
 export function enable(): void {
   const config = getConfig();
   config.enabled = true;
   saveConfig(config);
 }
 
+/**
+ * Disable telemetry collection.
+ * Persists the setting to ~/.squads-cli/telemetry.json
+ */
 export function disable(): void {
   const config = getConfig();
   config.enabled = false;
   saveConfig(config);
 }
 
+/**
+ * Get the anonymous identifier for this CLI installation.
+ * Generated once on first run and persisted.
+ * @returns UUID string
+ */
 export function getAnonymousId(): string {
   return getConfig().anonymousId;
 }
 
+/**
+ * Track a telemetry event with optional properties.
+ * Events are batched and flushed asynchronously.
+ * @param event - Event name (e.g., 'cli.status', 'cli.error')
+ * @param properties - Optional key-value pairs of event metadata
+ */
 export async function track(event: string, properties?: Record<string, string | number | boolean | undefined>): Promise<void> {
   if (!isEnabled()) return;
 
@@ -273,7 +297,10 @@ function storeEventLocally(event: TelemetryEvent): void {
   writeFileSync(EVENTS_PATH, JSON.stringify(events, null, 2));
 }
 
-// Pre-defined events for consistency
+/**
+ * Pre-defined event names for consistency across the CLI.
+ * Use these constants instead of string literals.
+ */
 export const Events = {
   // Lifecycle
   CLI_INIT: 'cli.init',
@@ -336,7 +363,16 @@ export const Events = {
   CONDENSER_SUMMARIZE: 'condenser.summarize',
 } as const;
 
-// Track command execution time (legacy helper)
+/**
+ * Track command execution time.
+ * Call at start of command, returns function to call when command completes.
+ * @param command - Command name (without 'cli.' prefix)
+ * @returns Callback to invoke when command completes
+ * @example
+ * const done = trackCommand('status');
+ * // ... execute command ...
+ * done(); // Records duration
+ */
 export function trackCommand(command: string): () => void {
   const start = Date.now();
 
@@ -349,6 +385,10 @@ export function trackCommand(command: string): () => void {
 // Register exit handler to flush remaining events
 let exitHandlerRegistered = false;
 
+/**
+ * Register process exit handlers to flush pending telemetry events.
+ * Call once at CLI startup. Handles SIGINT, SIGTERM, and normal exit.
+ */
 export function registerExitHandler(): void {
   if (exitHandlerRegistered) return;
   exitHandlerRegistered = true;
