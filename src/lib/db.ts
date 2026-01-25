@@ -184,7 +184,10 @@ export async function getDashboardHistory(limit: number = 30): Promise<Dashboard
       authorsData: row.authors_data || [],
       reposData: row.repos_data || [],
     }));
-  } catch {
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('Failed to get snapshots from database:', err);
+    }
     return [];
   }
 }
