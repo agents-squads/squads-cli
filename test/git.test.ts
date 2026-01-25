@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { checkGitStatus, checkGitStatusAsync } from '../src/lib/git';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { checkGitStatus, checkGitStatusAsync, initGitRepo, getRepoName } from '../src/lib/git';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
@@ -124,6 +124,74 @@ describe('git utilities', () => {
       expect(asyncResult.isDirty).toBe(syncResult.isDirty);
       expect(asyncResult.uncommittedCount).toBe(syncResult.uncommittedCount);
       expect(asyncResult.branch).toBe(syncResult.branch);
+    });
+  });
+
+  describe('initGitRepo', () => {
+    it('initializes a git repository in an empty directory', () => {
+      const result = initGitRepo(tempDir);
+      expect(result).toBe(true);
+      expect(existsSync(join(tempDir, '.git'))).toBe(true);
+    });
+
+    it('returns true for already initialized repo', () => {
+      execSync('git init', { cwd: tempDir, stdio: 'pipe' });
+      const result = initGitRepo(tempDir);
+      // Git reinit succeeds silently
+      expect(result).toBe(true);
+    });
+
+    it('returns false for invalid directory', () => {
+      const result = initGitRepo('/nonexistent/path/that/does/not/exist');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('getRepoName', () => {
+    it('parses SSH URL format', () => {
+      const result = getRepoName('git@github.com:user/repo.git');
+      expect(result).toBe('user/repo');
+    });
+
+    it('parses HTTPS URL format', () => {
+      const result = getRepoName('https://github.com/user/repo.git');
+      expect(result).toBe('user/repo');
+    });
+
+    it('handles URL without .git suffix', () => {
+      const result = getRepoName('https://github.com/user/repo');
+      expect(result).toBe('user/repo');
+    });
+
+    it('handles SSH URL without .git suffix', () => {
+      const result = getRepoName('git@github.com:user/repo');
+      expect(result).toBe('user/repo');
+    });
+
+    it('returns null for undefined input', () => {
+      const result = getRepoName(undefined);
+      expect(result).toBeNull();
+    });
+
+    it('returns null for empty string', () => {
+      const result = getRepoName('');
+      expect(result).toBeNull();
+    });
+
+    it('handles repos with dashes and underscores', () => {
+      const result = getRepoName('git@github.com:my-org/my_repo-name.git');
+      expect(result).toBe('my-org/my_repo-name');
+    });
+
+    it('handles GitLab SSH URLs', () => {
+      const result = getRepoName('git@gitlab.com:group/project.git');
+      expect(result).toBe('group/project');
+    });
+
+    it('handles nested paths for GitLab subgroups', () => {
+      // Note: This tests the current behavior - only captures last two segments
+      const result = getRepoName('git@gitlab.com:group/subgroup/project.git');
+      expect(result).toBe('subgroup/project');
     });
   });
 
