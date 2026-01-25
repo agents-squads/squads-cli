@@ -64,8 +64,28 @@ async function fetchScheduler<T>(
 }
 
 async function listTriggers(squad?: string): Promise<void> {
-  const params = squad ? `?squad=${squad}` : "";
-  const triggers = await fetchScheduler<Trigger[]>(`/triggers${params}`);
+  let triggers: Trigger[];
+
+  try {
+    const params = squad ? `?squad=${squad}` : "";
+    triggers = await fetchScheduler<Trigger[]>(`/triggers${params}`);
+  } catch (error: unknown) {
+    // Check for connection refused (scheduler offline)
+    const isConnectionError = error instanceof Error &&
+      (error.cause?.toString().includes('ECONNREFUSED') ||
+       error.message.includes('fetch failed'));
+
+    if (isConnectionError) {
+      console.error(chalk.red("\n  Scheduler not running\n"));
+      console.log(chalk.gray("  The trigger system requires the local stack to be running.\n"));
+      console.log(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
+      console.log(`  ${chalk.cyan("$ squads stack status")}   Check stack status\n`);
+      return;
+    }
+
+    // Re-throw unexpected errors
+    throw error;
+  }
 
   if (triggers.length === 0) {
     console.log(chalk.gray("No triggers found"));
