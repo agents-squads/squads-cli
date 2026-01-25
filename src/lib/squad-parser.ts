@@ -156,6 +156,11 @@ export interface ExecutionContext extends SquadContext {
   };
 }
 
+/**
+ * Find the .agents/squads directory by searching current directory and parents.
+ * Searches up to 5 parent directories.
+ * @returns Path to squads directory or null if not found
+ */
 export function findSquadsDir(): string | null {
   // Look for .agents/squads in current directory or parent directories
   let dir = process.cwd();
@@ -173,6 +178,10 @@ export function findSquadsDir(): string | null {
   return null;
 }
 
+/**
+ * Find the root directory of the squads project (where .agents/ lives).
+ * @returns Path to project root or null if not in a squads project
+ */
 export function findProjectRoot(): string | null {
   // Find the root of the squads project (where .agents/ lives)
   const squadsDir = findSquadsDir();
@@ -181,6 +190,11 @@ export function findProjectRoot(): string | null {
   return join(squadsDir, '..', '..');
 }
 
+/**
+ * Check if the project has local infrastructure configuration.
+ * Looks for .env file with infra-related keys (LANGFUSE_, SQUADS_BRIDGE, etc).
+ * @returns True if local infra config exists
+ */
 export function hasLocalInfraConfig(): boolean {
   // Check if the project has a local .env file with infra config
   const projectRoot = findProjectRoot();
@@ -195,6 +209,12 @@ export function hasLocalInfraConfig(): boolean {
   return infraKeys.some(key => content.includes(key));
 }
 
+/**
+ * List all squad names in the given squads directory.
+ * Only includes directories containing a SQUAD.md file.
+ * @param squadsDir - Path to the .agents/squads directory
+ * @returns Array of squad directory names
+ */
 export function listSquads(squadsDir: string): string[] {
   const squads: string[] = [];
 
@@ -211,6 +231,13 @@ export function listSquads(squadsDir: string): string[] {
   return squads;
 }
 
+/**
+ * List all agents in the squads directory or a specific squad.
+ * Agents are markdown files (excluding SQUAD.md) in squad directories.
+ * @param squadsDir - Path to the .agents/squads directory
+ * @param squadName - Optional squad name to filter agents
+ * @returns Array of Agent objects with basic metadata
+ */
 export function listAgents(squadsDir: string, squadName?: string): Agent[] {
   const agents: Agent[] = [];
 
@@ -241,6 +268,12 @@ export function listAgents(squadsDir: string, squadName?: string): Agent[] {
   return agents;
 }
 
+/**
+ * Parse a SQUAD.md file into a Squad object.
+ * Extracts frontmatter metadata, agents, pipelines, goals, and routines.
+ * @param filePath - Path to the SQUAD.md file
+ * @returns Parsed Squad object with all extracted data
+ */
 export function parseSquadFile(filePath: string): Squad {
   const rawContent = readFileSync(filePath, 'utf-8');
 
@@ -406,6 +439,12 @@ export function parseSquadFile(filePath: string): Squad {
   return squad;
 }
 
+/**
+ * Load and parse a squad by name.
+ * Convenience function that finds the squads directory and parses the squad file.
+ * @param squadName - Name of the squad directory (e.g., "engineering")
+ * @returns Parsed Squad object or null if not found
+ */
 export function loadSquad(squadName: string): Squad | null {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return null;
@@ -416,6 +455,11 @@ export function loadSquad(squadName: string): Squad | null {
   return parseSquadFile(squadFile);
 }
 
+/**
+ * Load raw content of an agent definition file.
+ * @param agentPath - Path to the agent markdown file
+ * @returns Raw file content or empty string if file doesn't exist
+ */
 export function loadAgentDefinition(agentPath: string): string {
   if (!existsSync(agentPath)) return '';
   return readFileSync(agentPath, 'utf-8');
@@ -454,6 +498,13 @@ export function parseAgentProvider(agentPath: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Add a new goal to a squad's SQUAD.md file.
+ * Creates the Goals section if it doesn't exist.
+ * @param squadName - Name of the squad directory
+ * @param goal - Goal description text
+ * @returns True if goal was added successfully
+ */
 export function addGoalToSquad(squadName: string, goal: string): boolean {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return false;
@@ -499,6 +550,14 @@ export function addGoalToSquad(squadName: string, goal: string): boolean {
   return true;
 }
 
+/**
+ * Update an existing goal in a squad's SQUAD.md file.
+ * Can mark goal as completed or update progress text.
+ * @param squadName - Name of the squad directory
+ * @param goalIndex - Zero-based index of the goal to update
+ * @param updates - Object with optional completed and progress fields
+ * @returns True if goal was updated successfully
+ */
 export function updateGoalInSquad(
   squadName: string,
   goalIndex: number,
