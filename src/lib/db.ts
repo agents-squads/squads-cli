@@ -8,16 +8,21 @@ const require = createRequire(import.meta.url);
 const pg = require('pg');
 const { Pool } = pg;
 
-// Connection config from environment or defaults
-const DATABASE_URL = process.env.SQUADS_DATABASE_URL ||
-  'postgresql://user:password@localhost:5432/squads';
+// Connection config from environment
+// No hardcoded fallback - database is optional, use env var to configure
+const DATABASE_URL = process.env.SQUADS_DATABASE_URL;
 
 let pool: InstanceType<typeof Pool> | null = null;
 
 /**
  * Get or create the connection pool
+ * Returns null if DATABASE_URL is not configured
  */
-function getPool(): InstanceType<typeof Pool> {
+function getPool(): InstanceType<typeof Pool> | null {
+  if (!DATABASE_URL) {
+    return null;
+  }
+
   if (!pool) {
     pool = new Pool({
       connectionString: DATABASE_URL,
@@ -40,6 +45,9 @@ function getPool(): InstanceType<typeof Pool> {
 export async function isDatabaseAvailable(): Promise<boolean> {
   try {
     const pool = getPool();
+    if (!pool) {
+      return false;
+    }
     const client = await pool.connect();
     await client.query('SELECT 1');
     client.release();
@@ -101,6 +109,9 @@ export interface SquadSnapshotData {
 export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promise<number | null> {
   try {
     const pool = getPool();
+    if (!pool) {
+      return null;
+    }
     const client = await pool.connect();
 
     const result = await client.query(`
@@ -149,7 +160,11 @@ export async function saveDashboardSnapshot(snapshot: DashboardSnapshot): Promis
  */
 export async function getDashboardHistory(limit: number = 30): Promise<DashboardSnapshot[]> {
   try {
-    const client = await getPool().connect();
+    const pool = getPool();
+    if (!pool) {
+      return [];
+    }
+    const client = await pool.connect();
 
     const result = await client.query(`
       SELECT
