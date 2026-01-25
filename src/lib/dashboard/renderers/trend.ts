@@ -4,7 +4,7 @@
  */
 
 import type { ViewDefinition, MetricDefinition, QueryResult } from '../types.js';
-import { colors, bold, RESET, writeLine, formatValue, sparkline } from './base.js';
+import { colors, bold, RESET, formatValue, sparkline } from './base.js';
 
 export function renderTrend(
   view: ViewDefinition,

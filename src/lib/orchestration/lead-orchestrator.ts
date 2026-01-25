@@ -8,7 +8,6 @@
  * 4. Lead reviews outputs and decides next steps
  */
 
-import { spawn, execSync } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, watch } from 'fs';
 import { join } from 'path';
 
@@ -179,7 +178,7 @@ export function watchForEvents(
           const content = readFileSync(filepath, 'utf-8');
           const event = JSON.parse(content) as WorkerEvent;
           callback(event);
-        } catch (e) {
+        } catch {
           // Ignore parse errors
         }
       }

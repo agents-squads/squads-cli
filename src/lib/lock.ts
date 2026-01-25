@@ -131,7 +131,7 @@ function acquireFileLock(lockPath: string, lockId: string): boolean {
 
     // Check if lock exists and is still valid
     if (existsSync(lockPath)) {
-      const { statSync, readFileSync } = require('fs');
+      const { statSync } = require('fs');
       const stats = statSync(lockPath);
       const ageMs = Date.now() - stats.mtimeMs;
 

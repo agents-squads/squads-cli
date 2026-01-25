@@ -12,7 +12,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
-import { findSquadsDir, listSquads, loadSquad, Routine } from "../lib/squad-parser.js";
+import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
 
 const PID_FILE = "/tmp/squads-autonomous.pid";
 const LOG_FILE = "/tmp/squads-autonomous.log";
@@ -22,21 +22,7 @@ interface RoutineWithSquad extends Routine {
   squad: string;
 }
 
-interface SchedulerStatus {
-  running: boolean;
-  pid?: number;
-  routines: {
-    total: number;
-    enabled: number;
-    bySquad: Record<string, number>;
-  };
-  nextRuns: Array<{
-    routine: string;
-    squad: string;
-    schedule: string;
-    nextRun: string;
-  }>;
-}
+// Note: SchedulerStatus interface was removed (unused)
 
 /**
  * Parse cron expression to get next run time (simplified)
@@ -186,7 +172,7 @@ async function syncRoutines(): Promise<void> {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ squad: name, routines }),
         });
-      } catch (_error) {
+      } catch {
         // Bridge might not support routines endpoint yet
       }
     }
@@ -210,11 +196,11 @@ function isRunning(): { running: boolean; pid?: number } {
     // Check if process is alive (signal 0 doesn't kill, just checks)
     process.kill(pid, 0);
     return { running: true, pid };
-  } catch (_error) {
+  } catch {
     // Process not running, clean up stale PID file
     try {
       unlinkSync(PID_FILE);
-    } catch (_cleanupError) {
+    } catch {
       // Ignore - file may already be deleted
     }
     return { running: false };
@@ -236,21 +222,8 @@ async function startScheduler(): Promise<void> {
   // First sync routines
   await syncRoutines();
 
-  // Spawn the scheduler as a background process
-  // Using node with a simple scheduler script
-  const schedulerScript = `
-    const { spawn } = require('child_process');
-    const cron = require('node-cron');
-
-    // Load routines and schedule them
-    // This is a placeholder - in production, read from DB
-    console.log('Scheduler started');
-
-    // Keep process alive
-    setInterval(() => {}, 60000);
-  `;
-
-  // For now, just create a simple marker and show what would run
+  // NOTE: Full scheduler implementation pending - using bridge-based scheduling instead
+  // For now, just show what would run
   const routines = collectRoutines().filter((r) => r.enabled !== false);
 
   if (routines.length === 0) {

@@ -21,16 +21,6 @@ export interface Learning {
 }
 
 /**
- * Get the learnings file path for a squad
- */
-function getLearningsPath(squadName: string): string | null {
-  const memoryDir = findMemoryDir();
-  if (!memoryDir) return null;
-
-  return join(memoryDir, squadName, 'shared', 'learnings.md');
-}
-
-/**
  * Parse existing learnings from a file
  */
 function parseLearnings(content: string): Learning[] {

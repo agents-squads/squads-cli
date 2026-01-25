@@ -12,7 +12,7 @@ import type {
 } from './types.js';
 import { loadDashboard, listDashboards, findDashboard } from './loader.js';
 import { postgresSource, buildQuery, buildWhereClause, parseDateRange } from './sources/postgres.js';
-import { renderView, writeLine, colors, bold, RESET, gradient } from './renderers/index.js';
+import { renderView, writeLine, colors, RESET, gradient } from './renderers/index.js';
 
 export { loadDashboard, listDashboards, findDashboard } from './loader.js';
 export * from './types.js';

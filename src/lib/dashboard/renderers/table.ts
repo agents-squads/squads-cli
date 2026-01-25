@@ -4,7 +4,7 @@
  */
 
 import type { ViewDefinition, MetricDefinition, DimensionDefinition, QueryResult } from '../types.js';
-import { colors, bold, RESET, box, padEnd, writeLine, formatValue, calculateColumnWidths } from './base.js';
+import { colors, bold, RESET, box, padEnd, formatValue, calculateColumnWidths } from './base.js';
 
 export function renderTable(
   view: ViewDefinition,

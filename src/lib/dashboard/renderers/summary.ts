@@ -4,7 +4,7 @@
  */
 
 import type { ViewDefinition, MetricDefinition, QueryResult } from '../types.js';
-import { colors, bold, RESET, writeLine, formatValue } from './base.js';
+import { colors, bold, RESET, formatValue } from './base.js';
 
 export function renderSummary(
   view: ViewDefinition,
