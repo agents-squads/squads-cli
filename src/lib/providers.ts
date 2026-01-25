@@ -184,7 +184,10 @@ export const PROVIDERS: Record<Exclude<ProviderName, 'unknown'>, ProviderConfig>
 };
 
 /**
- * Detect provider from model name
+ * Detect the LLM provider from a model name string.
+ * Supports Anthropic, OpenAI, Google, Mistral, Groq, AWS Bedrock, and Azure.
+ * @param model - Model identifier (e.g., 'claude-3-5-sonnet', 'gpt-4o')
+ * @returns Provider name or 'unknown' if unrecognized
  */
 export function detectProviderFromModel(model: string): ProviderName {
   const modelLower = model.toLowerCase();
@@ -240,7 +243,9 @@ export function detectProviderFromModel(model: string): ProviderName {
 }
 
 /**
- * Detect all available providers from environment
+ * Detect all LLM providers configured via environment variables.
+ * Checks for API keys and infers plan type based on tier/budget settings.
+ * @returns Array of detected providers with their configuration details
  */
 export function detectProvidersFromEnv(): ProviderDetection[] {
   const detected: ProviderDetection[] = [];
@@ -342,7 +347,11 @@ export function detectProvidersFromEnv(): ProviderDetection[] {
 }
 
 /**
- * Get pricing for a specific model
+ * Get pricing information for a specific model.
+ * Attempts exact match first, then case-insensitive, then partial match.
+ * @param provider - Provider name
+ * @param model - Model identifier
+ * @returns Pricing in dollars per 1M tokens (input/output/cached)
  */
 export function getModelPricing(provider: ProviderName, model: string): ModelPricing {
   if (provider === 'unknown') {
@@ -378,8 +387,13 @@ export function getModelPricing(provider: ProviderName, model: string): ModelPri
 }
 
 /**
- * Calculate cost for token usage
- * @returns Cost in dollars
+ * Calculate cost for token usage based on provider pricing.
+ * @param provider - Provider name
+ * @param model - Model identifier
+ * @param inputTokens - Number of input tokens
+ * @param outputTokens - Number of output tokens
+ * @param cachedTokens - Number of cached tokens (for providers that support it)
+ * @returns Total cost in dollars
  */
 export function calcCost(
   provider: ProviderName,
@@ -401,7 +415,9 @@ export function calcCost(
 }
 
 /**
- * Get provider display name
+ * Get human-readable display name for a provider.
+ * @param provider - Provider name
+ * @returns Display name (e.g., 'Anthropic', 'OpenAI', 'AWS Bedrock')
  */
 export function getProviderDisplayName(provider: ProviderName): string {
   if (provider === 'unknown') return 'Unknown';
@@ -409,7 +425,9 @@ export function getProviderDisplayName(provider: ProviderName): string {
 }
 
 /**
- * Check if a provider is configured (has API key)
+ * Check if a provider has its API key configured in environment variables.
+ * @param provider - Provider name
+ * @returns true if any of the provider's API key env vars are set
  */
 export function isProviderConfigured(provider: ProviderName): boolean {
   if (provider === 'unknown') return false;
