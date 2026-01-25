@@ -225,7 +225,7 @@ async function collectBriefingData(options: BriefingOptions): Promise<BriefingDa
     fetchBridgeStats(),
     fetchRateLimits(),
     getLiveSessionSummaryAsync(),
-    baseDir ? Promise.resolve(getMultiRepoGitStats(baseDir, 7)) : Promise.resolve(null),
+    baseDir ? getMultiRepoGitStats(baseDir, 7) : Promise.resolve(null),
   ]);
 
   // Build squad briefings

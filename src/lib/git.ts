@@ -223,7 +223,7 @@ export interface SquadGitHubStats {
   recentPRs: { title: string; number: number; merged: boolean }[];
 }
 
-export function getGitHubStats(basePath: string, days: number = 30): GitHubStats {
+export async function getGitHubStats(basePath: string, days: number = 30): Promise<GitHubStats> {
   const stats: GitHubStats = {
     prsOpened: 0,
     prsMerged: 0,
@@ -321,8 +321,8 @@ export function getGitHubStats(basePath: string, days: number = 30): GitHubStats
     }
   }
 
-  // Add commit counts per squad
-  const gitStats = getMultiRepoGitStats(basePath, days);
+  // Add commit counts per squad (now async)
+  const gitStats = await getMultiRepoGitStats(basePath, days);
   for (const [repo, commits] of gitStats.commitsByRepo) {
     // Map repo to squad
     for (const [squad, repos] of Object.entries(SQUAD_REPO_MAP)) {
@@ -526,7 +526,13 @@ function detectSquadFromIssue(issue: { title: string; labels: { name: string }[]
   return 'engineering';
 }
 
-export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPerformanceStats {
+/**
+ * Get git stats across multiple repos (async version - runs git commands in parallel)
+ * @param basePath - Base path containing all repos
+ * @param days - Number of days to look back
+ * @returns Promise resolving to GitPerformanceStats
+ */
+export async function getMultiRepoGitStats(basePath: string, days: number = 30): Promise<GitPerformanceStats> {
   const stats: GitPerformanceStats = {
     totalCommits: 0,
     commitsByDay: new Map(),
@@ -542,62 +548,70 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
   // Collect all commits with full info for sorting
   const allCommits: CommitInfo[] = [];
 
-  for (const repo of SQUAD_REPOS) {
+  // Filter to repos that exist (sync check is fast)
+  const validRepos = SQUAD_REPOS.filter(repo => {
     const repoPath = join(basePath, repo);
-    if (!existsSync(repoPath) || !existsSync(join(repoPath, '.git'))) {
-      continue;
-    }
+    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
+  });
 
-    try {
-      // Get commits from this repo (use %aN to respect .mailmap)
-      const logOutput = execSync(
-        `git log --since="${days} days ago" --format="%H|%aN|%ad|%s" --date=short 2>/dev/null`,
-        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-
-      if (!logOutput) continue;
-
-      const commits = logOutput.split('\n').filter(l => l.trim());
-      const authors = new Set<string>();
-      let lastCommit = '';
-
-      for (const line of commits) {
-        const parts = line.split('|');
-        const [hash, author, date, ...messageParts] = parts;
-        const message = messageParts.join('|'); // Handle | in commit messages
-        if (!hash) continue;
-
-        stats.totalCommits++;
-        authors.add(author);
-        if (!lastCommit) lastCommit = date;
-
-        // By day
-        const dayCount = stats.commitsByDay.get(date) || 0;
-        stats.commitsByDay.set(date, dayCount + 1);
-
-        // By author
-        const authorCount = stats.commitsByAuthor.get(author) || 0;
-        stats.commitsByAuthor.set(author, authorCount + 1);
-
-        // By repo
-        const repoCount = stats.commitsByRepo.get(repo) || 0;
-        stats.commitsByRepo.set(repo, repoCount + 1);
-
-        // Collect for recent commits
-        allCommits.push({ hash, author, date, message, repo });
+  // Run git log in parallel across all repos
+  const results = await Promise.all(
+    validRepos.map(async (repo) => {
+      const repoPath = join(basePath, repo);
+      try {
+        // Get commits from this repo (use %aN to respect .mailmap)
+        const { stdout } = await execAsync(
+          `git log --since="${days} days ago" --format="%H|%aN|%ad|%s" --date=short 2>/dev/null`,
+          { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 }
+        );
+        return { repo, repoPath, output: stdout.trim() };
+      } catch {
+        return { repo, repoPath, output: '' };
       }
+    })
+  );
 
-      stats.repos.push({
-        name: repo,
-        path: repoPath,
-        commits: commits.length,
-        lastCommit,
-        authors: Array.from(authors),
-      });
+  // Process results
+  for (const { repo, repoPath, output } of results) {
+    if (!output) continue;
 
-    } catch {
-      // Skip repos that fail
+    const commits = output.split('\n').filter(l => l.trim());
+    const authors = new Set<string>();
+    let lastCommit = '';
+
+    for (const line of commits) {
+      const parts = line.split('|');
+      const [hash, author, date, ...messageParts] = parts;
+      const message = messageParts.join('|'); // Handle | in commit messages
+      if (!hash) continue;
+
+      stats.totalCommits++;
+      authors.add(author);
+      if (!lastCommit) lastCommit = date;
+
+      // By day
+      const dayCount = stats.commitsByDay.get(date) || 0;
+      stats.commitsByDay.set(date, dayCount + 1);
+
+      // By author
+      const authorCount = stats.commitsByAuthor.get(author) || 0;
+      stats.commitsByAuthor.set(author, authorCount + 1);
+
+      // By repo
+      const repoCount = stats.commitsByRepo.get(repo) || 0;
+      stats.commitsByRepo.set(repo, repoCount + 1);
+
+      // Collect for recent commits
+      allCommits.push({ hash, author, date, message, repo });
     }
+
+    stats.repos.push({
+      name: repo,
+      path: repoPath,
+      commits: commits.length,
+      lastCommit,
+      authors: Array.from(authors),
+    });
   }
 
   // Calculate derived stats
@@ -627,8 +641,13 @@ export function getMultiRepoGitStats(basePath: string, days: number = 30): GitPe
   return stats;
 }
 
-// Get recent activity sparkline data (last 7 days)
-export function getActivitySparkline(basePath: string, days: number = 7): number[] {
+/**
+ * Get recent activity sparkline data (async version - runs git commands in parallel)
+ * @param basePath - Base path containing all repos
+ * @param days - Number of days to look back (default: 7)
+ * @returns Promise resolving to array of commit counts per day
+ */
+export async function getActivitySparkline(basePath: string, days: number = 7): Promise<number[]> {
   const activity: number[] = [];
   const now = new Date();
 
@@ -637,30 +656,39 @@ export function getActivitySparkline(basePath: string, days: number = 7): number
     activity.push(0);
   }
 
-  for (const repo of SQUAD_REPOS) {
+  // Filter to repos that exist (sync check is fast)
+  const validRepos = SQUAD_REPOS.filter(repo => {
     const repoPath = join(basePath, repo);
-    if (!existsSync(repoPath) || !existsSync(join(repoPath, '.git'))) {
-      continue;
-    }
+    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
+  });
 
-    try {
-      const logOutput = execSync(
-        `git log --since="${days} days ago" --format="%ad" --date=short 2>/dev/null`,
-        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-
-      if (!logOutput) continue;
-
-      for (const dateStr of logOutput.split('\n')) {
-        const commitDate = new Date(dateStr);
-        const daysAgo = Math.floor((now.getTime() - commitDate.getTime()) / (1000 * 60 * 60 * 24));
-        const index = days - 1 - daysAgo;
-        if (index >= 0 && index < days) {
-          activity[index]++;
-        }
+  // Run git log in parallel across all repos
+  const results = await Promise.all(
+    validRepos.map(async (repo) => {
+      const repoPath = join(basePath, repo);
+      try {
+        const { stdout } = await execAsync(
+          `git log --since="${days} days ago" --format="%ad" --date=short 2>/dev/null`,
+          { cwd: repoPath, maxBuffer: 10 * 1024 * 1024 }
+        );
+        return stdout.trim();
+      } catch {
+        return '';
       }
-    } catch {
-      // Skip
+    })
+  );
+
+  // Process results
+  for (const output of results) {
+    if (!output) continue;
+
+    for (const dateStr of output.split('\n')) {
+      const commitDate = new Date(dateStr);
+      const daysAgo = Math.floor((now.getTime() - commitDate.getTime()) / (1000 * 60 * 60 * 24));
+      const index = days - 1 - daysAgo;
+      if (index >= 0 && index < days) {
+        activity[index]++;
+      }
     }
   }
 
