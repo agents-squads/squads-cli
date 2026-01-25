@@ -663,11 +663,23 @@ async function _renderTokenEconomics(_squadNames: string[]): Promise<void> {
   writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(last 100 calls)${RESET}`);
   writeLine();
 
-  // Budget bar
-  const barWidth = 32;
-  const costBar = formatCostBar(costs.usedPercent, barWidth);
-  writeLine(`  ${colors.dim}Budget $${costs.dailyBudget}${RESET} [${costBar}] ${costs.usedPercent.toFixed(1)}%`);
-  writeLine(`  ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} used  ${colors.dim}│${RESET}  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} idle`);
+  // Budget bar - display depends on plan type
+  const maxPlan = isMaxPlan();
+  if (maxPlan) {
+    // On Max plan, costs are informational (no real budget constraint)
+    writeLine(`  ${colors.dim}Daily spend${RESET} ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} ${colors.dim}(target: $${costs.dailyBudget})${RESET}`);
+  } else {
+    // On usage plan, show budget bar with clear labeling
+    const barWidth = 32;
+    const costBar = formatCostBar(Math.min(costs.usedPercent, 100), barWidth);
+    const pctColor = costs.usedPercent > 100 ? colors.red : costs.usedPercent > 80 ? colors.yellow : colors.green;
+    writeLine(`  ${colors.dim}Daily target $${costs.dailyBudget}${RESET} [${costBar}] ${pctColor}$${costs.totalCost.toFixed(2)}${RESET}`);
+    if (costs.usedPercent > 100) {
+      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.dim}${costs.usedPercent.toFixed(0)}% of target - consider increasing SQUADS_DAILY_BUDGET${RESET}`);
+    } else {
+      writeLine(`  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} ${colors.dim}remaining of daily target${RESET}`);
+    }
+  }
   writeLine();
 
   // Anthropic tier and limits
