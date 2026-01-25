@@ -159,21 +159,21 @@ export class TokenPruner {
       // Messages at or after protection index are kept as-is
       if (i >= protectionIndex) {
         // Remove internal annotations
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+         
         const { _tokens, _prunable, ...clean } = msg;
         return clean;
       }
 
       // Non-tool messages are kept
       if (!this.isToolResult(msg)) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+         
         const { _tokens, _prunable, ...clean } = msg;
         return clean;
       }
 
       // Protected tools are kept
       if (this.isProtectedTool(msg)) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+         
         const { _tokens, _prunable, ...clean } = msg;
         return clean;
       }

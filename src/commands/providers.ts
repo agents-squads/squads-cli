@@ -9,7 +9,6 @@
 
 import {
   colors,
-  bold,
   RESET,
   gradient,
   icons,

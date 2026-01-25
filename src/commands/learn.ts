@@ -1,13 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { findMemoryDir, appendToMemory } from '../lib/memory.js';
+import { findMemoryDir } from '../lib/memory.js';
 import { findSquadsDir, listSquads } from '../lib/squad-parser.js';
 import {
   colors,
-  bold,
   RESET,
   gradient,
-  box,
   icons,
   writeLine,
 } from '../lib/terminal.js';

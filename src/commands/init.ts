@@ -9,24 +9,17 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
-import { existsSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
   loadTemplate,
-  toKebabCase,
   type TemplateVariables,
 } from '../lib/templates.js';
 import {
-  checkClaudeCli,
-  checkGhCli,
-  checkDockerPrereqs,
   commandExists,
-  isDockerRunning,
   PROVIDERS,
-  type CheckResult,
 } from '../lib/setup-checks.js';
 import { setupCommand } from './setup.js';
 
