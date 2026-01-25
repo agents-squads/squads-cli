@@ -9,7 +9,6 @@ import {
   loadAgentDefinition,
   parseAgentProvider,
   EffortLevel,
-  resolveExecutionContext,
   Squad,
 } from '../lib/squad-parser.js';
 import { resolveMcpConfigPath } from '../lib/mcp-config.js';
@@ -30,10 +29,8 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import {
-  LLM_CLIS,
   getCLIConfig,
   isProviderCLIAvailable,
-  type CLIConfig,
 } from '../lib/llm-clis.js';
 
 interface RunOptions {

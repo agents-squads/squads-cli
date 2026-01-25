@@ -12,7 +12,6 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
-import { spawn, ChildProcess } from "child_process";
 import { findSquadsDir, listSquads, loadSquad, Routine } from "../lib/squad-parser.js";
 
 const PID_FILE = "/tmp/squads-autonomous.pid";
