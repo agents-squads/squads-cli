@@ -7,14 +7,12 @@
  * Prerequisites:
  *   cd docker && docker compose up -d
  *
- * Note: These tests are skipped in CI since they require local Docker services.
+ * Note: These tests are skipped in CI or when local Docker services aren't running.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { execSync } from 'child_process';
-
-// Skip infrastructure tests in CI (require local Docker services)
-const describeInfra = process.env.CI ? describe.skip : describe;
+import * as net from 'net';
 
 const TIMEOUT = 10000;
 
@@ -27,11 +25,52 @@ const SERVICES = {
 };
 
 /**
+ * Synchronous check if infrastructure is likely available.
+ * Uses Docker availability as proxy - if Docker is available,
+ * services might be running. Actual service checks happen in tests.
+ */
+function checkInfraAvailable(): boolean {
+  // In CI, always skip - services won't be running
+  if (process.env.CI) {
+    return false;
+  }
+
+  // Check if Docker is available
+  try {
+    execSync('docker info', { stdio: 'ignore' });
+  } catch {
+    return false;
+  }
+
+  // Check if primary service (postgres) container exists and is running
+  try {
+    const output = execSync("docker inspect squads-postgres --format '{{.State.Running}}'", {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+    return output === 'true';
+  } catch {
+    return false;
+  }
+}
+
+const infraAvailable = checkInfraAvailable();
+
+if (!infraAvailable && !process.env.CI) {
+  console.warn(
+    '\n⚠️  Infrastructure services not running - skipping infra tests.\n' +
+      '   Start with: cd docker && docker compose up -d\n'
+  );
+}
+
+// Use describe.skipIf to conditionally skip all infra tests
+const describeInfra = describe.skipIf(!infraAvailable);
+
+/**
  * Check if a port is open (TCP connection test)
  */
 async function isPortOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const net = require('net');
     const socket = new net.Socket();
 
     socket.setTimeout(2000);
@@ -81,25 +120,7 @@ function isContainerRunning(name: string): boolean {
   }
 }
 
-/**
- * Check if Docker is available
- */
-function isDockerAvailable(): boolean {
-  try {
-    execSync('docker info', { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 describeInfra('infra', () => {
-  beforeAll(() => {
-    if (!isDockerAvailable()) {
-      console.warn('Docker not available - skipping infra tests');
-    }
-  });
-
   describe('container health', () => {
     it('squads-postgres is running', () => {
       expect(isContainerRunning('squads-postgres')).toBe(true);
@@ -137,7 +158,7 @@ describeInfra('infra', () => {
         const response = await fetch('http://localhost:8088/health');
         const data = await response.json();
         expect(data).toBeDefined();
-      } catch (e) {
+      } catch {
         // If bridge doesn't have /health JSON, check status code
         const response = await fetch('http://localhost:8088/health');
         expect(response.ok).toBe(true);
