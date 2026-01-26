@@ -1,5 +1,9 @@
 /**
- * squads cron - Manage local launchd schedules for agents (macOS)
+ * squads cron - Manage local launchd schedules for agents (macOS only)
+ *
+ * NOTE: This command uses macOS launchd for scheduling. It is intentionally
+ * macOS-only and will show a warning on other platforms. For cross-platform
+ * scheduling, use the VM-based scheduler via `squads trigger`.
  *
  * Commands:
  *   squads cron sync              Sync agent schedules from .md files to launchd
@@ -15,8 +19,21 @@ import chalk from "chalk";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { homedir } from "os";
+import { homedir, platform } from "os";
 import matter from "gray-matter";
+
+/**
+ * Check if running on macOS and show warning if not
+ * @returns true if on macOS, false otherwise
+ */
+function checkPlatform(): boolean {
+  if (platform() !== "darwin") {
+    console.log(chalk.yellow("\n  ⚠ squads cron is macOS-only (uses launchd)"));
+    console.log(chalk.gray("  For cross-platform scheduling, use: squads trigger\n"));
+    return false;
+  }
+  return true;
+}
 
 const HQ_PATH = process.env.HQ_PATH || join(homedir(), "agents-squads", "hq");
 const SQUADS_PATH = join(HQ_PATH, ".agents", "squads");
@@ -571,13 +588,14 @@ async function toggleAgent(agentRef: string, enable: boolean): Promise<void> {
 export function registerCronCommand(program: Command): void {
   const cron = program
     .command("cron")
-    .description("Manage local cron schedules for agents");
+    .description("Manage local cron schedules for agents (macOS only)");
 
   cron
     .command("sync")
     .description("Sync agent schedules from .md files to launchd")
     .option("-n, --dry-run", "Show what would be installed without installing")
     .action(async (options) => {
+      if (!checkPlatform()) return;
       await syncCron({ dryRun: options.dryRun });
     });
 
@@ -585,6 +603,7 @@ export function registerCronCommand(program: Command): void {
     .command("list [squad]")
     .description("List scheduled agents")
     .action(async (squad?: string) => {
+      if (!checkPlatform()) return;
       await listCron(squad);
     });
 
@@ -592,6 +611,7 @@ export function registerCronCommand(program: Command): void {
     .command("status")
     .description("Show cron status and next runs")
     .action(async () => {
+      if (!checkPlatform()) return;
       await cronStatus();
     });
 
@@ -599,6 +619,7 @@ export function registerCronCommand(program: Command): void {
     .command("logs [agent]")
     .description("Show execution logs")
     .action(async (agent?: string) => {
+      if (!checkPlatform()) return;
       await showLogs(agent);
     });
 
@@ -606,6 +627,7 @@ export function registerCronCommand(program: Command): void {
     .command("enable <agent>")
     .description("Enable an agent's schedule")
     .action(async (agent: string) => {
+      if (!checkPlatform()) return;
       await toggleAgent(agent, true);
     });
 
@@ -613,6 +635,7 @@ export function registerCronCommand(program: Command): void {
     .command("disable <agent>")
     .description("Disable an agent's schedule")
     .action(async (agent: string) => {
+      if (!checkPlatform()) return;
       await toggleAgent(agent, false);
     });
 }
