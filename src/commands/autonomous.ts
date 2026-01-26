@@ -12,10 +12,11 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
+import { tmpdir } from "os";
 import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
 
-const PID_FILE = "/tmp/squads-autonomous.pid";
-const LOG_FILE = "/tmp/squads-autonomous.log";
+const PID_FILE = join(tmpdir(), "squads-autonomous.pid");
+const LOG_FILE = join(tmpdir(), "squads-autonomous.log");
 const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || "http://localhost:8088";
 
 interface RoutineWithSquad extends Routine {
