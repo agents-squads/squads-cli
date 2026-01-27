@@ -1,0 +1,82 @@
+name: P1 Issue Aging Alert
+
+on:
+  schedule:
+    # Run daily at 9am UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-p1-aging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for aging P1 issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ALERT_THRESHOLD_DAYS = 5;
+            const CRITICAL_THRESHOLD_DAYS = 7;
+
+            // Get all open issues with P1 label
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'P1',
+              per_page: 100
+            });
+
+            const now = new Date();
+            const agingIssues = [];
+            const criticalIssues = [];
+
+            for (const issue of issues.data) {
+              const createdAt = new Date(issue.created_at);
+              const ageInDays = Math.floor((now - createdAt) / (1000 * 60 * 60 * 24));
+
+              if (ageInDays >= CRITICAL_THRESHOLD_DAYS) {
+                criticalIssues.push({ number: issue.number, title: issue.title, age: ageInDays });
+              } else if (ageInDays >= ALERT_THRESHOLD_DAYS) {
+                agingIssues.push({ number: issue.number, title: issue.title, age: ageInDays });
+              }
+            }
+
+            // Log results
+            if (criticalIssues.length > 0) {
+              core.warning(`🚨 CRITICAL: ${criticalIssues.length} P1 issue(s) exceed 7-day threshold!`);
+              for (const issue of criticalIssues) {
+                core.error(`#${issue.number}: ${issue.title} (${issue.age} days old)`);
+              }
+            }
+
+            if (agingIssues.length > 0) {
+              core.warning(`⚠️ WARNING: ${agingIssues.length} P1 issue(s) approaching 7-day threshold`);
+              for (const issue of agingIssues) {
+                core.warning(`#${issue.number}: ${issue.title} (${issue.age} days old)`);
+              }
+            }
+
+            if (criticalIssues.length === 0 && agingIssues.length === 0) {
+              core.info('✅ No P1 issues exceeding age thresholds');
+            }
+
+            // Create summary
+            const summary = `## P1 Issue Aging Report
+
+            | Status | Count |
+            |--------|-------|
+            | 🚨 Critical (>7 days) | ${criticalIssues.length} |
+            | ⚠️ Warning (>5 days) | ${agingIssues.length} |
+            | Total P1 Issues | ${issues.data.length} |
+
+            ${criticalIssues.length > 0 ? `### Critical Issues\n${criticalIssues.map(i => `- #${i.number}: ${i.title} (${i.age} days)`).join('\n')}` : ''}
+
+            ${agingIssues.length > 0 ? `### Approaching Threshold\n${agingIssues.map(i => `- #${i.number}: ${i.title} (${i.age} days)`).join('\n')}` : ''}
+            `;
+
+            await core.summary.addRaw(summary).write();
+
+            // Fail the workflow if critical issues exist (triggers notification)
+            if (criticalIssues.length > 0) {
+              core.setFailed(`${criticalIssues.length} P1 issue(s) exceed the 7-day threshold`);
+            }
