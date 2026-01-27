@@ -8,7 +8,7 @@
  * outputs can be removed entirely without summarization.
  */
 
-import { estimateTokens, estimateMessageTokens } from './tokens.js';
+import { estimateMessageTokens } from './tokens.js';
 
 /**
  * Configuration for token pruning.

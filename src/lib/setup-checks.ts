@@ -6,7 +6,6 @@
 import { execSync, spawn } from 'child_process';
 import {
   colors,
-  bold,
   RESET,
   icons,
   writeLine,

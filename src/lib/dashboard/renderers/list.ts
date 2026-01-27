@@ -4,7 +4,7 @@
  */
 
 import type { ViewDefinition, QueryResult, ColumnDefinition } from '../types.js';
-import { colors, bold, RESET, padEnd, truncate, formatValue } from './base.js';
+import { colors, bold, RESET, formatValue } from './base.js';
 
 export function renderList(
   view: ViewDefinition,

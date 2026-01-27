@@ -534,22 +534,6 @@ function updateExecutionStatus(
 }
 
 /**
- * Parse cooldown duration string to milliseconds
- * Supports: "6h", "23h", "7d", "30m", "6 hours", "7 days"
- */
-function parseCooldownDuration(cooldown: string): number {
-  const match = cooldown.match(/^(\d+)\s*(h|d|m|hours?|days?|minutes?)?$/i);
-  if (!match) return 6 * 60 * 60 * 1000; // Default 6 hours
-
-  const value = parseInt(match[1], 10);
-  const unit = (match[2] || 'h').toLowerCase();
-
-  if (unit.startsWith('d')) return value * 24 * 60 * 60 * 1000;
-  if (unit.startsWith('m')) return value * 60 * 1000;
-  return value * 60 * 60 * 1000; // hours
-}
-
-/**
  * Get the timestamp of the last execution from executions.md
  */
 function getLastExecutionTime(squadName: string, agentName: string): Date | null {
