@@ -232,7 +232,8 @@ function successRate(completed: number, failed: number): string {
 
 async function showStatus(): Promise<void> {
   try {
-    const stats = await fetchScheduler<SchedulerStats>("/stats");
+    // Fetch stats - handle both old and new API formats
+    const stats = await fetchScheduler<SchedulerStats & { executions_24h?: { running?: number; queued?: number; total_24h?: number } }>("/stats");
 
     console.log(chalk.bold("\nScheduler Status\n"));
 
@@ -242,42 +243,68 @@ async function showStatus(): Promise<void> {
     console.log(`    Enabled:   ${chalk.green(stats.triggers.enabled)}`);
     console.log(`    Fired 24h: ${stats.triggers.fired_24h}`);
 
-    // Current state (NOW)
-    console.log(chalk.cyan("\n  Now"));
-    const running = stats.current.running;
-    const queued = stats.current.queued;
-    if (running > 0 || queued > 0) {
-      console.log(`    Running:   ${chalk.yellow(running)}`);
-      console.log(`    Queued:    ${queued}`);
-    } else {
-      console.log(chalk.gray("    No active executions"));
-    }
+    // Check if new API format (has 'current' field)
+    const hasNewFormat = stats.current !== undefined;
 
-    // Last 1 hour
-    console.log(chalk.cyan("\n  Last 1h"));
-    const h1 = stats.executions_1h;
-    if (h1.total > 0) {
-      console.log(`    Completed: ${chalk.green(h1.completed)}${successRate(h1.completed, h1.failed)}`);
-      if (h1.failed > 0) console.log(`    Failed:    ${chalk.red(h1.failed)}`);
-    } else {
-      console.log(chalk.gray("    No executions"));
-    }
+    if (hasNewFormat) {
+      // NEW FORMAT: Time-windowed stats
 
-    // Last 24 hours
-    console.log(chalk.cyan("\n  Last 24h"));
-    const h24 = stats.executions_24h;
-    console.log(`    Completed: ${chalk.green(h24.completed)}${successRate(h24.completed, h24.failed)}`);
-    if (h24.failed > 0) console.log(`    Failed:    ${chalk.red(h24.failed)}`);
-
-    // Recent activity
-    if (stats.recent && stats.recent.length > 0) {
-      console.log(chalk.cyan("\n  Recent Activity"));
-      for (const r of stats.recent.slice(0, 5)) {
-        const status = r.status === "completed" ? chalk.green("✓") : chalk.red("✗");
-        const duration = r.duration_seconds ? chalk.gray(` (${formatDuration(r.duration_seconds)})`) : "";
-        const time = chalk.gray(formatTimeAgo(r.created_at));
-        console.log(`    ${status} ${r.squad}/${r.agent}${duration} ${time}`);
+      // Current state (NOW)
+      console.log(chalk.cyan("\n  Now"));
+      const running = stats.current.running;
+      const queued = stats.current.queued;
+      if (running > 0 || queued > 0) {
+        console.log(`    Running:   ${chalk.yellow(running)}`);
+        console.log(`    Queued:    ${queued}`);
+      } else {
+        console.log(chalk.gray("    No active executions"));
       }
+
+      // Last 1 hour
+      console.log(chalk.cyan("\n  Last 1h"));
+      const h1 = stats.executions_1h;
+      if (h1 && h1.total > 0) {
+        console.log(`    Completed: ${chalk.green(h1.completed)}${successRate(h1.completed, h1.failed)}`);
+        if (h1.failed > 0) console.log(`    Failed:    ${chalk.red(h1.failed)}`);
+      } else {
+        console.log(chalk.gray("    No executions"));
+      }
+
+      // Last 24 hours
+      console.log(chalk.cyan("\n  Last 24h"));
+      const h24 = stats.executions_24h;
+      console.log(`    Completed: ${chalk.green(h24.completed)}${successRate(h24.completed, h24.failed)}`);
+      if (h24.failed > 0) console.log(`    Failed:    ${chalk.red(h24.failed)}`);
+
+      // Recent activity
+      if (stats.recent && stats.recent.length > 0) {
+        console.log(chalk.cyan("\n  Recent Activity"));
+        for (const r of stats.recent.slice(0, 5)) {
+          const status = r.status === "completed" ? chalk.green("✓") : chalk.red("✗");
+          const duration = r.duration_seconds ? chalk.gray(` (${formatDuration(r.duration_seconds)})`) : "";
+          const time = chalk.gray(formatTimeAgo(r.created_at));
+          console.log(`    ${status} ${r.squad}/${r.agent}${duration} ${time}`);
+        }
+      }
+    } else {
+      // OLD FORMAT: Backward compatibility
+      const exec = stats.executions_24h as { completed: number; failed: number; running?: number; queued?: number; total_24h?: number };
+
+      // Current state from old format
+      console.log(chalk.cyan("\n  Now"));
+      const running = exec.running ?? 0;
+      const queued = exec.queued ?? 0;
+      if (running > 0 || queued > 0) {
+        console.log(`    Running:   ${chalk.yellow(running)}`);
+        console.log(`    Queued:    ${queued}`);
+      } else {
+        console.log(chalk.gray("    No active executions"));
+      }
+
+      // 24h stats from old format
+      console.log(chalk.cyan("\n  Last 24h"));
+      console.log(`    Completed: ${chalk.green(exec.completed)}${successRate(exec.completed, exec.failed)}`);
+      if (exec.failed > 0) console.log(`    Failed:    ${chalk.red(exec.failed)}`);
     }
 
     console.log();
