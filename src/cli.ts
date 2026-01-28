@@ -84,6 +84,7 @@ import { progressCommand, progressStartCommand, progressCompleteCommand } from '
 import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
 import { healthCommand } from './commands/health.js';
+import { baselineCommand } from './commands/baseline.js';
 import { workersCommand } from './commands/workers.js';
 import { contextFeedCommand } from './commands/context-feed.js';
 import { watchCommand } from './commands/watch.js';
@@ -461,6 +462,15 @@ program
   .description('Quick health check for all infrastructure services')
   .option('-v, --verbose', 'Show optional services')
   .action((options) => healthCommand(options));
+
+// Baseline command - capture and compare ROI baselines
+program
+  .command('baseline [subcommand]')
+  .description('Capture and compare ROI baselines (list, compare)')
+  .option('-n, --name <name>', 'Name for the baseline')
+  .option('-c, --compare', 'Compare current metrics to latest baseline')
+  .option('-l, --list', 'List all baselines')
+  .action((subcommand, options) => baselineCommand(subcommand, options));
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
