@@ -384,6 +384,50 @@ function detectTaskType(agentName: string): ExecutionContext['taskType'] {
   return 'execution';
 }
 
+type ModelTier = 'opus' | 'sonnet' | 'haiku';
+
+/**
+ * Resolve model based on squad context and task type.
+ * Priority: explicit --model flag > squad context routing > undefined (Claude default)
+ *
+ * Routing logic:
+ * - evaluation (critics, tests) → cheap model (haiku) - simple validation
+ * - research (analysts, intel) → default model (sonnet) - balanced
+ * - execution (builders, fixers) → default model (sonnet) - balanced
+ * - lead (orchestrators) → expensive model (opus) - complex coordination
+ */
+function resolveModel(
+  explicitModel: ModelTier | undefined,
+  squad: Squad | null,
+  taskType: ExecutionContext['taskType']
+): ModelTier | undefined {
+  // Explicit --model flag always wins
+  if (explicitModel) {
+    return explicitModel;
+  }
+
+  // No squad context = let Claude Code decide
+  const modelConfig = squad?.context?.model;
+  if (!modelConfig) {
+    return undefined;
+  }
+
+  // Route by task type
+  switch (taskType) {
+    case 'evaluation':
+      // Critics/evals are simple - use cheap model
+      return (modelConfig.cheap as ModelTier) || (modelConfig.default as ModelTier);
+    case 'lead':
+      // Leads need complex reasoning - use expensive model
+      return (modelConfig.expensive as ModelTier) || (modelConfig.default as ModelTier);
+    case 'research':
+    case 'execution':
+    default:
+      // Default for most tasks
+      return modelConfig.default as ModelTier;
+  }
+}
+
 /**
  * Ensure the project directory is trusted in Claude's config.
  * This prevents the workspace trust dialog from blocking autonomous execution.
@@ -1320,11 +1364,17 @@ async function executeWithClaude(
   // Select MCP config based on squad context (dynamic) or legacy mapping (fallback)
   const mcpConfigPath = selectMcpConfig(squadName, squad);
 
+  // Detect task type for telemetry and model routing
+  const taskType = detectTaskType(agentName);
+
+  // Resolve model: explicit --model > squad context routing > undefined (Claude default)
+  const resolvedModel = resolveModel(model, squad, taskType);
+
   // Build execution context for telemetry
   const execContext: ExecutionContext = {
     squad: squadName,
     agent: agentName,
-    taskType: detectTaskType(agentName),
+    taskType,
     trigger,
     executionId: generateExecutionId(),
   };
@@ -1355,8 +1405,9 @@ async function executeWithClaude(
       if (skills && skills.length > 0) {
         writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
       }
-      if (model) {
-        writeLine(`  ${colors.dim}Model: ${model}${RESET}`);
+      if (resolvedModel) {
+        const source = model ? 'explicit' : 'auto-routed';
+        writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
       }
     }
 
@@ -1364,7 +1415,7 @@ async function executeWithClaude(
     const claudeArgs = [
       '--dangerously-skip-permissions',
       '--mcp-config', mcpConfigPath,
-      ...(model ? ['--model', model] : []),
+      ...(resolvedModel ? ['--model', resolvedModel] : []),
       '--',
       prompt
     ];
@@ -1430,8 +1481,9 @@ async function executeWithClaude(
     if (skills && skills.length > 0) {
       writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
     }
-    if (model) {
-      writeLine(`  ${colors.dim}Model: ${model}${RESET}`);
+    if (resolvedModel) {
+      const source = model ? 'explicit' : 'auto-routed';
+      writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
     }
   }
 
@@ -1457,7 +1509,7 @@ async function executeWithClaude(
   // 3. exec claude (replaces shell, keeps file descriptors)
   // The redirect to logfile happens before exec, so it persists
   // Note: MCP config removed - causes blocking issues in background execution
-const modelFlag = model ? `--model ${model}` : '';
+  const modelFlag = resolvedModel ? `--model ${resolvedModel}` : '';
   const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
