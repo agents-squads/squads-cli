@@ -49,6 +49,10 @@ describe('lead-orchestrator', () => {
 
   describe('signalWorkerComplete', () => {
     beforeEach(() => {
+      // Create fresh test directory structure for each test
+      if (!existsSync(testRoot)) {
+        mkdirSync(testRoot, { recursive: true });
+      }
       initEventsDir(testRoot);
     });
 
@@ -234,6 +238,13 @@ describe('lead-orchestrator', () => {
   });
 
   describe('buildLeadPrompt', () => {
+    beforeEach(() => {
+      // Clean up for prompt tests
+      if (existsSync(testRoot)) {
+        rmSync(testRoot, { recursive: true, force: true });
+      }
+    });
+
     it('generates lead agent prompt', () => {
       const prompt = buildLeadPrompt({
         squad: 'cli',

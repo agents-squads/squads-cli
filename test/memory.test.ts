@@ -7,7 +7,7 @@ import {
   updateMemorySync,
   appendToMemorySync,
 } from '../src/lib/memory';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -17,7 +17,9 @@ describe('memory utilities', () => {
   let originalCwd: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'squads-memory-test-'));
+    // Use realpathSync to resolve /var -> /private/var symlink on macOS
+    const rawTempDir = mkdtempSync(join(tmpdir(), 'squads-memory-test-'));
+    tempDir = realpathSync(rawTempDir);
     memoryDir = join(tempDir, '.agents', 'memory');
     mkdirSync(memoryDir, { recursive: true });
     originalCwd = process.cwd();
@@ -32,7 +34,8 @@ describe('memory utilities', () => {
   describe('findMemoryDir', () => {
     it('finds .agents/memory in current directory', () => {
       const result = findMemoryDir();
-      expect(result).toBe(memoryDir);
+      // Use realpathSync on result too for consistent comparison
+      expect(result ? realpathSync(result) : result).toBe(memoryDir);
     });
 
     it('finds .agents/memory in parent directory', () => {
@@ -41,7 +44,8 @@ describe('memory utilities', () => {
       process.chdir(subDir);
 
       const result = findMemoryDir();
-      expect(result).toBe(memoryDir);
+      // Use realpathSync on result too for consistent comparison
+      expect(result ? realpathSync(result) : result).toBe(memoryDir);
     });
 
     it('returns null when no memory dir found', () => {

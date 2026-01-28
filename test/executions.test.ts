@@ -3,9 +3,21 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// Mock the memory module to use a temp directory
-const TEST_DIR = join(tmpdir(), `squads-test-${Date.now()}`);
-const MEMORY_DIR = join(TEST_DIR, '.agents', 'memory');
+// Create test dirs upfront so mock returns consistent value
+let TEST_DIR: string;
+let MEMORY_DIR: string;
+
+// Initialize before anything else runs
+function initTestDirs() {
+  TEST_DIR = join(tmpdir(), `squads-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  MEMORY_DIR = join(TEST_DIR, '.agents', 'memory');
+  mkdirSync(join(MEMORY_DIR, 'cli', 'code-eval'), { recursive: true });
+  mkdirSync(join(MEMORY_DIR, 'cli', 'test-eval'), { recursive: true });
+  mkdirSync(join(MEMORY_DIR, 'website', 'web-lead'), { recursive: true });
+}
+
+// Initialize on module load
+initTestDirs();
 
 vi.mock('../src/lib/memory.js', () => ({
   findMemoryDir: () => MEMORY_DIR,
@@ -22,10 +34,11 @@ import {
 
 describe('executions', () => {
   beforeEach(() => {
-    // Create test directory structure
-    mkdirSync(join(MEMORY_DIR, 'cli', 'code-eval'), { recursive: true });
-    mkdirSync(join(MEMORY_DIR, 'cli', 'test-eval'), { recursive: true });
-    mkdirSync(join(MEMORY_DIR, 'website', 'web-lead'), { recursive: true });
+    // Clean and recreate test directory structure for each test
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+    initTestDirs();
   });
 
   afterEach(() => {
