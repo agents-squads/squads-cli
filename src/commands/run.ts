@@ -32,6 +32,7 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from '../lib/llm-clis.js';
+import { detectProviderFromModel } from '../lib/providers.js';
 
 interface RunOptions {
   verbose?: boolean;
@@ -384,29 +385,56 @@ function detectTaskType(agentName: string): ExecutionContext['taskType'] {
   return 'execution';
 }
 
-type ModelTier = 'opus' | 'sonnet' | 'haiku';
+/** Claude Code --model flag aliases */
+type ClaudeModelAlias = 'opus' | 'sonnet' | 'haiku';
+
+/**
+ * Map full model names to Claude Code --model aliases.
+ * Claude Code only accepts: opus, sonnet, haiku (not full model IDs)
+ */
+function getClaudeModelAlias(model: string): ClaudeModelAlias | undefined {
+  const lower = model.toLowerCase();
+
+  // Direct aliases
+  if (lower === 'opus' || lower === 'sonnet' || lower === 'haiku') {
+    return lower as ClaudeModelAlias;
+  }
+
+  // Full model name mapping
+  if (lower.includes('opus')) return 'opus';
+  if (lower.includes('sonnet')) return 'sonnet';
+  if (lower.includes('haiku')) return 'haiku';
+
+  // Unknown Claude model - let Claude Code handle it
+  return undefined;
+}
 
 /**
  * Resolve model based on squad context and task type.
- * Priority: explicit --model flag > squad context routing > undefined (Claude default)
+ * Priority: explicit --model flag > squad context routing > undefined (provider default)
+ *
+ * Supports multi-provider models:
+ * - Anthropic: claude-opus-4-5, claude-sonnet-4, claude-3-5-haiku, opus, sonnet, haiku
+ * - Google: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash
+ * - Others: model names passed through to provider CLI
  *
  * Routing logic:
- * - evaluation (critics, tests) → cheap model (haiku) - simple validation
- * - research (analysts, intel) → default model (sonnet) - balanced
- * - execution (builders, fixers) → default model (sonnet) - balanced
- * - lead (orchestrators) → expensive model (opus) - complex coordination
+ * - evaluation (critics, tests) → cheap model - simple validation
+ * - research (analysts, intel) → default model - balanced
+ * - execution (builders, fixers) → default model - balanced
+ * - lead (orchestrators) → expensive model - complex coordination
  */
 function resolveModel(
-  explicitModel: ModelTier | undefined,
+  explicitModel: string | undefined,
   squad: Squad | null,
   taskType: ExecutionContext['taskType']
-): ModelTier | undefined {
+): string | undefined {
   // Explicit --model flag always wins
   if (explicitModel) {
     return explicitModel;
   }
 
-  // No squad context = let Claude Code decide
+  // No squad context = let provider decide
   const modelConfig = squad?.context?.model;
   if (!modelConfig) {
     return undefined;
@@ -416,15 +444,15 @@ function resolveModel(
   switch (taskType) {
     case 'evaluation':
       // Critics/evals are simple - use cheap model
-      return (modelConfig.cheap as ModelTier) || (modelConfig.default as ModelTier);
+      return modelConfig.cheap || modelConfig.default;
     case 'lead':
       // Leads need complex reasoning - use expensive model
-      return (modelConfig.expensive as ModelTier) || (modelConfig.default as ModelTier);
+      return modelConfig.expensive || modelConfig.default;
     case 'research':
     case 'execution':
     default:
       // Default for most tasks
-      return modelConfig.default as ModelTier;
+      return modelConfig.default;
   }
 }
 
@@ -1367,8 +1395,31 @@ async function executeWithClaude(
   // Detect task type for telemetry and model routing
   const taskType = detectTaskType(agentName);
 
-  // Resolve model: explicit --model > squad context routing > undefined (Claude default)
+  // Resolve model: explicit --model > squad context routing > undefined (provider default)
   const resolvedModel = resolveModel(model, squad, taskType);
+
+  // Detect provider from model (defaults to anthropic if no model specified)
+  const detectedProvider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
+
+  // For non-Anthropic providers, delegate to executeWithProvider
+  if (detectedProvider !== 'anthropic' && detectedProvider !== 'unknown') {
+    if (verbose) {
+      const source = model ? 'explicit' : 'auto-routed';
+      writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
+      writeLine(`  ${colors.dim}Provider: ${detectedProvider}${RESET}`);
+    }
+
+    return executeWithProvider(detectedProvider, prompt, {
+      verbose,
+      foreground,
+      cwd: getProjectRoot(),
+      squadName,
+      agentName,
+    });
+  }
+
+  // For Anthropic, convert full model name to Claude Code alias
+  const claudeModelAlias = resolvedModel ? getClaudeModelAlias(resolvedModel) : undefined;
 
   // Build execution context for telemetry
   const execContext: ExecutionContext = {
@@ -1405,17 +1456,18 @@ async function executeWithClaude(
       if (skills && skills.length > 0) {
         writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
       }
-      if (resolvedModel) {
+      if (resolvedModel || claudeModelAlias) {
         const source = model ? 'explicit' : 'auto-routed';
-        writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
+        const displayModel = resolvedModel || claudeModelAlias;
+        writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
       }
     }
 
-    // Build args array with optional model flag
+    // Build args array with optional model flag (Claude Code only accepts aliases)
     const claudeArgs = [
       '--dangerously-skip-permissions',
       '--mcp-config', mcpConfigPath,
-      ...(resolvedModel ? ['--model', resolvedModel] : []),
+      ...(claudeModelAlias ? ['--model', claudeModelAlias] : []),
       '--',
       prompt
     ];
@@ -1481,9 +1533,10 @@ async function executeWithClaude(
     if (skills && skills.length > 0) {
       writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
     }
-    if (resolvedModel) {
+    if (resolvedModel || claudeModelAlias) {
       const source = model ? 'explicit' : 'auto-routed';
-      writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
+      const displayModel = resolvedModel || claudeModelAlias;
+      writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
     }
   }
 
@@ -1509,7 +1562,7 @@ async function executeWithClaude(
   // 3. exec claude (replaces shell, keeps file descriptors)
   // The redirect to logfile happens before exec, so it persists
   // Note: MCP config removed - causes blocking issues in background execution
-  const modelFlag = resolvedModel ? `--model ${resolvedModel}` : '';
+  const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
   const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
