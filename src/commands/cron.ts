@@ -49,12 +49,7 @@ interface ScheduledAgent {
   description?: string;
 }
 
-interface CronEntry {
-  schedule: string;
-  command: string;
-  agent: string;
-  squad: string;
-}
+// Note: CronEntry interface was removed (unused)
 
 /**
  * Parse agent .md file for schedule frontmatter
@@ -109,9 +104,9 @@ function scanScheduledAgents(): ScheduledAgent[] {
         if (!file.endsWith(".md") || file === "SQUAD.md") continue;
 
         const agentPath = join(squadPath, file);
-        const { schedule, trigger } = parseAgentSchedule(agentPath);
+        const { schedule } = parseAgentSchedule(agentPath);
 
-        // Include if has schedule (either explicit or trigger: scheduled)
+        // Include if has schedule
         if (schedule && schedule !== "null") {
           const agent = file.replace(".md", "");
           scheduled.push({
@@ -144,7 +139,7 @@ function cronToLaunchd(cron: string): Record<string, number>[] {
   const intervals: Record<string, number>[] = [];
 
   // Handle */N patterns (run every N)
-  const parseField = (field: string, key: string): number | number[] | null => {
+  const parseField = (field: string, _key: string): number | number[] | null => {
     if (field === "*") return null;
     if (field.startsWith("*/")) {
       // For */5, we'd need multiple entries - simplify to just run at :00
@@ -303,15 +298,6 @@ function humanReadableSchedule(cron: string): string {
 }
 
 /**
- * Calculate next run time from cron schedule
- */
-function getNextRun(schedule: string): string {
-  // Simple calculation - just show the schedule for now
-  // Could use a cron parser library for accurate next-run calculation
-  return humanReadableSchedule(schedule);
-}
-
-/**
  * Sync agent schedules to launchd
  */
 async function syncCron(options: { dryRun?: boolean } = {}): Promise<void> {
@@ -399,7 +385,7 @@ async function syncCron(options: { dryRun?: boolean } = {}): Promise<void> {
 
         if (isNew) installed++;
         else updated++;
-      } catch (error) {
+      } catch {
         console.log(chalk.red(`    ✗ ${agent.agent} (load failed)`));
       }
     }
@@ -580,7 +566,7 @@ async function toggleAgent(agentRef: string, enable: boolean): Promise<void> {
       execSync(`launchctl unload "${plistPath}"`, { encoding: "utf-8" });
       console.log(chalk.yellow(`\n  ○ Disabled ${label}\n`));
     }
-  } catch (error) {
+  } catch {
     console.log(chalk.red(`\n  Failed to ${enable ? "enable" : "disable"} ${label}\n`));
   }
 }

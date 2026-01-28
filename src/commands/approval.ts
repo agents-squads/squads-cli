@@ -84,7 +84,7 @@ async function sendApproval(
       } else {
         payload = JSON.parse(options.json);
       }
-    } catch (e) {
+    } catch {
       console.error(chalk.red("Invalid JSON payload"));
       process.exit(1);
     }

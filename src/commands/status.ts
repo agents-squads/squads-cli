@@ -4,7 +4,7 @@ import {
   findSquadsDir,
   loadSquad,
   listSquads,
-  listAgents,
+  listAgents
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../lib/sessions.js';
@@ -23,7 +23,6 @@ import {
 
 interface StatusOptions {
   verbose?: boolean;
-  goals?: boolean;
 }
 
 export async function statusCommand(
@@ -48,49 +47,14 @@ export async function statusCommand(
 
 async function showOverallStatus(
   squadsDir: string,
-  options: StatusOptions
+  _options: StatusOptions
 ): Promise<void> {
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
-  const showGoals = options.goals !== false; // Default to true
 
   // Get active sessions (real-time process detection with parallel lsof)
   cleanupStaleSessions();
   const sessionSummary = await getLiveSessionSummaryAsync();
-
-  // Collect goal stats for all squads
-  interface GoalInfo {
-    squad: string;
-    description: string;
-    completed: boolean;
-    progress?: string;
-  }
-  const allGoals: GoalInfo[] = [];
-  const squadGoalStats: Map<string, { active: number; completed: number; total: number }> = new Map();
-
-  for (const name of squads) {
-    const squad = loadSquad(name);
-    if (squad && squad.goals) {
-      const active = squad.goals.filter(g => !g.completed).length;
-      const completed = squad.goals.filter(g => g.completed).length;
-      squadGoalStats.set(name, { active, completed, total: squad.goals.length });
-
-      for (const goal of squad.goals) {
-        allGoals.push({
-          squad: name,
-          description: goal.description,
-          completed: goal.completed,
-          progress: goal.progress
-        });
-      }
-    } else {
-      squadGoalStats.set(name, { active: 0, completed: 0, total: 0 });
-    }
-  }
-
-  const totalGoals = allGoals.length;
-  const completedGoals = allGoals.filter(g => g.completed).length;
-  const activeGoals = allGoals.filter(g => !g.completed);
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
@@ -119,25 +83,22 @@ async function showOverallStatus(
   }
   writeLine();
 
-  // Stats row with goals
+  // Stats row
   const totalSquads = squads.length;
-  const activeCount = squads.length;
-  const goalProgress = totalGoals > 0
-    ? `${colors.dim}│${RESET}  ${colors.green}${completedGoals}${RESET}${colors.dim}/${totalGoals} goals${RESET}`
-    : '';
-  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}  ${goalProgress}`);
+  const activeCount = squads.length; // All loaded squads are "active"
+  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}`);
   writeLine();
 
-  // Table with goals column
-  const w = { name: 16, agents: 8, goals: 10, activity: 12 };
-  const tableWidth = w.name + w.agents + w.goals + w.activity + 6;
+  // Table
+  const w = { name: 16, agents: 8, memory: 14, activity: 12 };
+  const tableWidth = w.name + w.agents + w.memory + w.activity + 6;
 
   writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
 
   const header = `  ${colors.purple}${box.vertical}${RESET} ` +
     `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
     `${bold}${padEnd('AGENTS', w.agents)}${RESET}` +
-    `${bold}${padEnd('GOALS', w.goals)}${RESET}` +
+    `${bold}${padEnd('MEMORY', w.memory)}${RESET}` +
     `${bold}ACTIVITY${RESET}` +
     ` ${colors.purple}${box.vertical}${RESET}`;
   writeLine(header);
@@ -146,19 +107,9 @@ async function showOverallStatus(
 
   for (const squadName of squads) {
     const agents = listAgents(squadsDir, squadName);
-    const goalStat = squadGoalStats.get(squadName) || { active: 0, completed: 0, total: 0 };
 
-    // Goals column
-    let goalsDisplay: string;
-    if (goalStat.total === 0) {
-      goalsDisplay = `${colors.dim}—${RESET}`;
-    } else if (goalStat.active === 0) {
-      goalsDisplay = `${colors.green}${goalStat.completed}/${goalStat.total}${RESET}`;
-    } else {
-      goalsDisplay = `${colors.cyan}${goalStat.completed}/${goalStat.total}${RESET}`;
-    }
-
-    // Check memory for activity
+    // Check memory
+    let memoryStatus = `${colors.dim}none${RESET}`;
     let lastActivity = `${colors.dim}—${RESET}`;
     let activityColor = colors.dim;
 
@@ -166,6 +117,7 @@ async function showOverallStatus(
       const squadMemoryPath = join(memoryDir, squadName);
       if (existsSync(squadMemoryPath)) {
         const states = getSquadState(squadName);
+        memoryStatus = `${colors.green}${states.length} ${states.length === 1 ? 'entry' : 'entries'}${RESET}`;
 
         // Find most recent file
         let mostRecent = 0;
@@ -198,7 +150,7 @@ async function showOverallStatus(
     const row = `  ${colors.purple}${box.vertical}${RESET} ` +
       `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +
       `${padEnd(String(agents.length), w.agents)}` +
-      `${padEnd(goalsDisplay, w.goals)}` +
+      `${padEnd(memoryStatus, w.memory)}` +
       `${padEnd(`${activityColor}${lastActivity}${RESET}`, w.activity)}` +
       `${colors.purple}${box.vertical}${RESET}`;
 
@@ -206,43 +158,11 @@ async function showOverallStatus(
   }
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
-
-  // Sprint Goals section
-  if (showGoals && activeGoals.length > 0) {
-    writeLine();
-    writeLine(`  ${bold}Sprint Goals${RESET} ${colors.dim}(${activeGoals.length} active)${RESET}`);
-    writeLine();
-
-    // Show top 5 active goals, prioritize those with progress
-    const sortedGoals = [...activeGoals].sort((a, b) => {
-      // Goals with progress come first
-      if (a.progress && !b.progress) return -1;
-      if (!a.progress && b.progress) return 1;
-      return 0;
-    });
-
-    const topGoals = sortedGoals.slice(0, 5);
-    for (const goal of topGoals) {
-      const icon = goal.progress ? icons.progress : icons.active;
-      const desc = goal.description.length > 55
-        ? goal.description.substring(0, 52) + '...'
-        : goal.description;
-      writeLine(`  ${icon} ${colors.dim}[${goal.squad}]${RESET} ${desc}`);
-      if (goal.progress) {
-        writeLine(`    ${colors.dim}└ ${goal.progress}${RESET}`);
-      }
-    }
-
-    if (activeGoals.length > 5) {
-      writeLine(`  ${colors.dim}  +${activeGoals.length - 5} more goals${RESET}`);
-    }
-  }
-
   writeLine();
 
   // Commands
   writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}<squad>${RESET}    ${colors.dim}Squad details${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads goal list        ${colors.dim}All goals${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads dash             ${colors.dim}Full dashboard${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}       ${colors.dim}Execute a squad${RESET}`);
   writeLine();
 }

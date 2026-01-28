@@ -461,16 +461,16 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
   cleanupStaleSessions();
 
   const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity] = await Promise.all([
-    // Git stats (local, ~1s)
-    Promise.resolve(baseDir ? getMultiRepoGitStats(baseDir, 30) : null),
+    // Git stats (local, parallel across repos)
+    baseDir ? getMultiRepoGitStats(baseDir, 30) : Promise.resolve(null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
     skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
     // Langfuse costs (network, 2s timeout)
     timeout(fetchCostSummary(100), 2000, null),
     // Bridge stats (local network, 2s timeout)
     timeout(fetchBridgeStats(), 2000, null),
-    // Activity sparkline (local, <1s)
-    Promise.resolve(baseDir ? getActivitySparkline(baseDir, 14) : []),
+    // Activity sparkline (local, parallel across repos)
+    baseDir ? getActivitySparkline(baseDir, 14) : Promise.resolve([]),
     // Database availability check (1.5s timeout)
     timeout(isDatabaseAvailable(), 1500, false),
     // Dashboard history (1.5s timeout)
@@ -503,7 +503,7 @@ async function _saveSnapshot(
   if (!dbAvailable) return;
 
   // Fetch additional data for snapshot
-  const gitStats = _baseDir ? getMultiRepoGitStats(_baseDir, 30) : null;
+  const gitStats = _baseDir ? await getMultiRepoGitStats(_baseDir, 30) : null;
   const costs = await fetchCostSummary(100);
 
   // Build squad snapshot data
@@ -591,8 +591,10 @@ async function _renderGitPerformance(): Promise<void> {
     return;
   }
 
-  const stats = getMultiRepoGitStats(baseDir, 30);
-  const activity = getActivitySparkline(baseDir, 14);
+  const [stats, activity] = await Promise.all([
+    getMultiRepoGitStats(baseDir, 30),
+    getActivitySparkline(baseDir, 14),
+  ]);
 
   if (stats.totalCommits === 0) {
     writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no commits in 30d)${RESET}`);
