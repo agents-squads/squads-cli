@@ -210,3 +210,331 @@ describe('markdown table parsing edge cases', () => {
     expect(goals[0].description).toBe('Fix <bug> & "issue"');
   });
 });
+
+// Tests for addGoalToSquad and updateGoalInSquad using temporary directories
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { vi, beforeEach, afterEach } from 'vitest';
+import { addGoalToSquad, updateGoalInSquad, parseSquadFile } from '../src/lib/squad-parser.js';
+
+describe('squad-parser file modifications', () => {
+  const testDir = join(tmpdir(), 'squad-parser-test-' + Date.now());
+  const squadsDir = join(testDir, '.agents', 'squads');
+  const testSquadDir = join(squadsDir, 'test-squad');
+  const squadFile = join(testSquadDir, 'SQUAD.md');
+
+  const originalCwd = process.cwd;
+
+  beforeEach(() => {
+    // Create test directory structure
+    mkdirSync(testSquadDir, { recursive: true });
+
+    // Mock process.cwd to return our test directory
+    vi.spyOn(process, 'cwd').mockReturnValue(testDir);
+  });
+
+  afterEach(() => {
+    // Restore process.cwd
+    vi.restoreAllMocks();
+
+    // Clean up test directory
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  describe('addGoalToSquad', () => {
+    it('creates Goals section if missing', () => {
+      const content = `# Test Squad
+
+## Mission
+
+Build great things.
+
+## Dependencies
+
+- squad-a
+`;
+      writeFileSync(squadFile, content);
+
+      const result = addGoalToSquad('test-squad', 'New goal to add');
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('## Goals');
+      expect(updated).toContain('- [ ] New goal to add');
+      // Goals section should be before Dependencies
+      const goalsIdx = updated.indexOf('## Goals');
+      const depsIdx = updated.indexOf('## Dependencies');
+      expect(goalsIdx).toBeLessThan(depsIdx);
+    });
+
+    it('inserts goal at end of file when no Dependencies section', () => {
+      const content = `# Test Squad
+
+## Mission
+
+Build great things.
+`;
+      writeFileSync(squadFile, content);
+
+      const result = addGoalToSquad('test-squad', 'New goal at end');
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('## Goals');
+      expect(updated).toContain('- [ ] New goal at end');
+    });
+
+    it('appends after last goal in existing Goals section', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] First goal
+- [x] Completed goal
+
+## Dependencies
+
+- squad-a
+`;
+      writeFileSync(squadFile, content);
+
+      const result = addGoalToSquad('test-squad', 'Third goal');
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      const lines = updated.split('\n');
+      const goalLines = lines.filter(l => l.match(/^-\s*\[[ x]\]/));
+      expect(goalLines).toHaveLength(3);
+      expect(goalLines[2]).toContain('Third goal');
+    });
+
+    it('adds goal when Goals section exists but is empty', () => {
+      const content = `# Test Squad
+
+## Goals
+
+## Dependencies
+
+- squad-a
+`;
+      writeFileSync(squadFile, content);
+
+      const result = addGoalToSquad('test-squad', 'First goal in empty section');
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [ ] First goal in empty section');
+    });
+
+    it('returns false for non-existent squad', () => {
+      const result = addGoalToSquad('nonexistent-squad', 'Some goal');
+      expect(result).toBe(false);
+    });
+
+    it('handles special characters in goal description', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Existing goal
+`;
+      writeFileSync(squadFile, content);
+
+      const result = addGoalToSquad('test-squad', 'Fix <bug> & improve "perf"');
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('Fix <bug> & improve "perf"');
+    });
+  });
+
+  describe('updateGoalInSquad', () => {
+    it('marks goal as completed', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] First goal
+- [ ] Second goal
+
+## Agents
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: true });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [x] First goal');
+      expect(updated).toContain('- [ ] Second goal');
+    });
+
+    it('marks completed goal as incomplete', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [x] Completed goal
+- [ ] Pending goal
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: false });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [ ] Completed goal');
+    });
+
+    it('adds progress annotation', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Goal without progress
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: false, progress: '50%' });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [ ] Goal without progress (progress: 50%)');
+    });
+
+    it('updates existing progress annotation', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Goal with progress (progress: 25%)
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: false, progress: '75%' });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('(progress: 75%)');
+      expect(updated).not.toContain('(progress: 25%)');
+    });
+
+    it('removes progress annotation when empty', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Goal with progress (progress: 50%)
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: false, progress: '' });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).not.toContain('progress:');
+    });
+
+    it('updates goal by index (second goal)', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] First goal
+- [ ] Second goal
+- [ ] Third goal
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 1, { completed: true });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [ ] First goal');
+      expect(updated).toContain('- [x] Second goal');
+      expect(updated).toContain('- [ ] Third goal');
+    });
+
+    it('returns false for out-of-bounds index', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Only goal
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 5, { completed: true });
+      expect(result).toBe(false);
+    });
+
+    it('returns false for non-existent squad', () => {
+      const result = updateGoalInSquad('nonexistent-squad', 0, { completed: true });
+      expect(result).toBe(false);
+    });
+
+    it('handles both completed and progress updates together', () => {
+      const content = `# Test Squad
+
+## Goals
+
+- [ ] Goal to complete
+`;
+      writeFileSync(squadFile, content);
+
+      const result = updateGoalInSquad('test-squad', 0, { completed: true, progress: '100%' });
+      expect(result).toBe(true);
+
+      const updated = readFileSync(squadFile, 'utf-8');
+      expect(updated).toContain('- [x] Goal to complete (progress: 100%)');
+    });
+  });
+
+  describe('parseSquadFile integration with modifications', () => {
+    it('parses goals after addGoalToSquad', () => {
+      const content = `# Test Squad
+
+## Mission
+
+Build things.
+
+## Goals
+
+- [ ] Existing goal
+`;
+      writeFileSync(squadFile, content);
+
+      addGoalToSquad('test-squad', 'New goal');
+
+      const squad = parseSquadFile(squadFile);
+      expect(squad.goals).toHaveLength(2);
+      expect(squad.goals[0].description).toBe('Existing goal');
+      expect(squad.goals[1].description).toBe('New goal');
+    });
+
+    it('parses updated goals correctly', () => {
+      const content = `# Test Squad
+
+## Mission
+
+Build things.
+
+## Goals
+
+- [ ] First goal
+- [ ] Second goal
+`;
+      writeFileSync(squadFile, content);
+
+      updateGoalInSquad('test-squad', 0, { completed: true, progress: '100%' });
+
+      const squad = parseSquadFile(squadFile);
+      expect(squad.goals[0].completed).toBe(true);
+      expect(squad.goals[0].progress).toBe('100%');
+      expect(squad.goals[1].completed).toBe(false);
+    });
+  });
+});

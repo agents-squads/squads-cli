@@ -28,35 +28,19 @@ interface Trigger {
   fire_count: number;
 }
 
-interface RecentExecution {
-  squad: string;
-  agent: string;
-  status: string;
-  created_at: string;
-  duration_seconds: number | null;
-}
-
 interface SchedulerStats {
   triggers: {
     total: number;
     enabled: number;
     fired_24h: number;
   };
-  current: {
+  executions_24h: {
+    total_24h: number;
+    completed: number;
+    failed: number;
     running: number;
     queued: number;
   };
-  executions_1h: {
-    total: number;
-    completed: number;
-    failed: number;
-  };
-  executions_24h: {
-    total: number;
-    completed: number;
-    failed: number;
-  };
-  recent: RecentExecution[];
 }
 
 async function fetchScheduler<T>(
@@ -201,112 +185,22 @@ async function toggleTrigger(name: string, enable: boolean): Promise<void> {
   console.log(`${trigger.name} ${status}`);
 }
 
-function formatDuration(seconds: number | null): string {
-  if (seconds === null || seconds === undefined) return "";
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return secs > 0 ? `${mins}m${secs}s` : `${mins}m`;
-}
-
-function formatTimeAgo(isoDate: string): string {
-  const date = new Date(isoDate);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return `${Math.floor(diffHours / 24)}d ago`;
-}
-
-function successRate(completed: number, failed: number): string {
-  const total = completed + failed;
-  if (total === 0) return "";
-  const rate = Math.round((completed / total) * 100);
-  const color = rate >= 95 ? chalk.green : rate >= 80 ? chalk.yellow : chalk.red;
-  return color(` (${rate}%)`);
-}
-
 async function showStatus(): Promise<void> {
   try {
-    // Fetch stats - handle both old and new API formats
-    const stats = await fetchScheduler<SchedulerStats & { executions_24h?: { running?: number; queued?: number; total_24h?: number } }>("/stats");
+    const stats = await fetchScheduler<SchedulerStats>("/stats");
 
     console.log(chalk.bold("\nScheduler Status\n"));
 
-    // Triggers
     console.log(chalk.cyan("  Triggers"));
     console.log(`    Total:     ${stats.triggers.total}`);
     console.log(`    Enabled:   ${chalk.green(stats.triggers.enabled)}`);
     console.log(`    Fired 24h: ${stats.triggers.fired_24h}`);
 
-    // Check if new API format (has 'current' field)
-    const hasNewFormat = stats.current !== undefined;
-
-    if (hasNewFormat) {
-      // NEW FORMAT: Time-windowed stats
-
-      // Current state (NOW)
-      console.log(chalk.cyan("\n  Now"));
-      const running = stats.current.running;
-      const queued = stats.current.queued;
-      if (running > 0 || queued > 0) {
-        console.log(`    Running:   ${chalk.yellow(running)}`);
-        console.log(`    Queued:    ${queued}`);
-      } else {
-        console.log(chalk.gray("    No active executions"));
-      }
-
-      // Last 1 hour
-      console.log(chalk.cyan("\n  Last 1h"));
-      const h1 = stats.executions_1h;
-      if (h1 && h1.total > 0) {
-        console.log(`    Completed: ${chalk.green(h1.completed)}${successRate(h1.completed, h1.failed)}`);
-        if (h1.failed > 0) console.log(`    Failed:    ${chalk.red(h1.failed)}`);
-      } else {
-        console.log(chalk.gray("    No executions"));
-      }
-
-      // Last 24 hours
-      console.log(chalk.cyan("\n  Last 24h"));
-      const h24 = stats.executions_24h;
-      console.log(`    Completed: ${chalk.green(h24.completed)}${successRate(h24.completed, h24.failed)}`);
-      if (h24.failed > 0) console.log(`    Failed:    ${chalk.red(h24.failed)}`);
-
-      // Recent activity
-      if (stats.recent && stats.recent.length > 0) {
-        console.log(chalk.cyan("\n  Recent Activity"));
-        for (const r of stats.recent.slice(0, 5)) {
-          const status = r.status === "completed" ? chalk.green("✓") : chalk.red("✗");
-          const duration = r.duration_seconds ? chalk.gray(` (${formatDuration(r.duration_seconds)})`) : "";
-          const time = chalk.gray(formatTimeAgo(r.created_at));
-          console.log(`    ${status} ${r.squad}/${r.agent}${duration} ${time}`);
-        }
-      }
-    } else {
-      // OLD FORMAT: Backward compatibility
-      const exec = stats.executions_24h as { completed: number; failed: number; running?: number; queued?: number; total_24h?: number };
-
-      // Current state from old format
-      console.log(chalk.cyan("\n  Now"));
-      const running = exec.running ?? 0;
-      const queued = exec.queued ?? 0;
-      if (running > 0 || queued > 0) {
-        console.log(`    Running:   ${chalk.yellow(running)}`);
-        console.log(`    Queued:    ${queued}`);
-      } else {
-        console.log(chalk.gray("    No active executions"));
-      }
-
-      // 24h stats from old format
-      console.log(chalk.cyan("\n  Last 24h"));
-      console.log(`    Completed: ${chalk.green(exec.completed)}${successRate(exec.completed, exec.failed)}`);
-      if (exec.failed > 0) console.log(`    Failed:    ${chalk.red(exec.failed)}`);
-    }
-
+    console.log(chalk.cyan("\n  Executions (24h)"));
+    console.log(`    Completed: ${chalk.green(stats.executions_24h.completed)}`);
+    console.log(`    Failed:    ${chalk.red(stats.executions_24h.failed)}`);
+    console.log(`    Running:   ${chalk.yellow(stats.executions_24h.running)}`);
+    console.log(`    Queued:    ${stats.executions_24h.queued}`);
     console.log();
   } catch {
     console.error(chalk.red("Scheduler not running or unreachable"));

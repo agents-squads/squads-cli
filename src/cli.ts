@@ -253,7 +253,6 @@ program
   .command('status [squad]')
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
-  .option('--no-goals', 'Hide sprint goals section')
   .action(statusCommand);
 
 // Dashboard command

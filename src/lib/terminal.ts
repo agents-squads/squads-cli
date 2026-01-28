@@ -24,8 +24,31 @@ const USE_TRUE_COLOR = supportsTrueColor();
 export const rgb = (r: number, g: number, b: number) => `${ESC}38;2;${r};${g};${b}m`;
 export const bgRgb = (r: number, g: number, b: number) => `${ESC}48;2;${r};${g};${b}m`;
 
+// Detect light terminal background
+// Uses COLORFGBG env var (format: "fg;bg" where bg > 7 = light)
+// or SQUADS_THEME env var for explicit override
+function isLightBackground(): boolean {
+  const theme = process.env.SQUADS_THEME?.toLowerCase();
+  if (theme === 'light') return true;
+  if (theme === 'dark') return false;
+
+  // COLORFGBG is set by some terminals (xterm, rxvt, etc.)
+  // Format: "foreground;background" where numbers are ANSI color indices
+  // Light backgrounds typically use indices > 7 (white = 15, light gray = 7)
+  const colorfgbg = process.env.COLORFGBG;
+  if (colorfgbg) {
+    const parts = colorfgbg.split(';');
+    const bg = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(bg) && (bg === 15 || bg === 7)) return true;
+  }
+
+  return false;
+}
+
+const USE_LIGHT_MODE = isLightBackground();
+
 // Basic ANSI color codes (work everywhere)
-const ansi = {
+const ansiDark = {
   purple: `${ESC}35m`,      // magenta
   pink: `${ESC}95m`,        // bright magenta
   cyan: `${ESC}36m`,        // cyan
@@ -37,8 +60,20 @@ const ansi = {
   white: `${ESC}97m`,       // bright white
 };
 
-// Named colors (our brand palette) - with fallback
-export const colors = USE_TRUE_COLOR ? {
+const ansiLight = {
+  purple: `${ESC}35m`,      // magenta (same, works on light)
+  pink: `${ESC}35m`,        // magenta (bright is too light)
+  cyan: `${ESC}36m`,        // cyan
+  green: `${ESC}32m`,       // green
+  yellow: `${ESC}33m`,      // yellow
+  red: `${ESC}31m`,         // red
+  gray: `${ESC}90m`,        // bright black (gray)
+  dim: `${ESC}90m`,         // bright black (gray)
+  white: `${ESC}30m`,       // black for light backgrounds
+};
+
+// Dark mode palette (original - for dark backgrounds)
+const darkPalette = {
   purple: rgb(168, 85, 247),    // #a855f7
   pink: rgb(236, 72, 153),      // #ec4899
   cyan: rgb(6, 182, 212),       // #06b6d4
@@ -48,7 +83,25 @@ export const colors = USE_TRUE_COLOR ? {
   gray: rgb(107, 114, 128),     // #6b7280
   dim: rgb(75, 85, 99),         // #4b5563
   white: rgb(255, 255, 255),
-} : ansi;
+};
+
+// Light mode palette (darker colors for contrast on light backgrounds)
+const lightPalette = {
+  purple: rgb(124, 58, 237),    // #7c3aed (purple-600)
+  pink: rgb(219, 39, 119),      // #db2777 (pink-600)
+  cyan: rgb(8, 145, 178),       // #0891b2 (cyan-600)
+  green: rgb(22, 163, 74),      // #16a34a (green-600)
+  yellow: rgb(202, 138, 4),     // #ca8a04 (yellow-600)
+  red: rgb(220, 38, 38),        // #dc2626 (red-600)
+  gray: rgb(75, 85, 99),        // #4b5563 (gray-600)
+  dim: rgb(107, 114, 128),      // #6b7280 (gray-500)
+  white: rgb(0, 0, 0),          // black for light backgrounds
+};
+
+// Named colors (our brand palette) - with theme and fallback support
+export const colors = USE_TRUE_COLOR
+  ? (USE_LIGHT_MODE ? lightPalette : darkPalette)
+  : (USE_LIGHT_MODE ? ansiLight : ansiDark);
 
 // Styles
 export const bold = `${ESC}1m`;

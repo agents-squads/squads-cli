@@ -34,11 +34,9 @@ import {
   isDockerRunning,
   commandExists,
   PROVIDERS,
-  type CheckResult,
 } from '../lib/setup-checks.js';
 import {
   loadTemplate,
-  loadTemplateDirectory,
   toKebabCase,
   toTitleCase,
   getTemplateSource,
@@ -48,7 +46,7 @@ import {
   type TemplateVariables,
 } from '../lib/templates.js';
 import { stackUpCommand, stackHealthCommand } from './stack.js';
-import { checkGitStatus, getRepoName } from '../lib/git.js';
+import { checkGitStatus } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
 
 export interface SetupOptions {
@@ -380,7 +378,7 @@ async function stepInfra(state: SetupState, options: SetupOptions): Promise<bool
 
   try {
     await stackUpCommand();
-  } catch (error) {
+  } catch {
     writeLine(`  ${colors.yellow}${icons.warning}${RESET} Stack startup had issues`);
     // Continue - may already be running
   }
@@ -494,7 +492,7 @@ async function stepAuth(state: SetupState, options: SetupOptions): Promise<boole
 /**
  * Step 4: First goal flow (interactive)
  */
-async function stepGoal(state: SetupState, options: SetupOptions): Promise<boolean> {
+async function stepGoal(state: SetupState, _options: SetupOptions): Promise<boolean> {
   writeLine();
   writeLine(`  ${bold}Step 4: Your First Goal${RESET}`);
   writeLine();
@@ -572,7 +570,7 @@ async function stepGoal(state: SetupState, options: SetupOptions): Promise<boole
 /**
  * Step 5: Create squad + files
  */
-async function stepCreate(state: SetupState, options: SetupOptions): Promise<boolean> {
+async function stepCreate(state: SetupState, _options: SetupOptions): Promise<boolean> {
   writeLine();
   writeLine(`  ${bold}Step 5: Creating Squad${RESET}`);
   writeLine();

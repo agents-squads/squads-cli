@@ -10,7 +10,7 @@ export function renderBar(
   view: ViewDefinition,
   data: QueryResult,
   metricDefs: MetricDefinition[],
-  dimensionDefs: DimensionDefinition[]
+  _dimensionDefs: DimensionDefinition[]
 ): string[] {
   const lines: string[] = [];
 
@@ -68,8 +68,8 @@ export function renderBar(
 export function renderPie(
   view: ViewDefinition,
   data: QueryResult,
-  metricDefs: MetricDefinition[],
-  dimensionDefs: DimensionDefinition[]
+  _metricDefs: MetricDefinition[],
+  _dimensionDefs: DimensionDefinition[]
 ): string[] {
   const lines: string[] = [];
 

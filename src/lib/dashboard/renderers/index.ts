@@ -4,11 +4,11 @@
  */
 
 import type { ViewDefinition, MetricDefinition, DimensionDefinition, QueryResult } from '../types.js';
-import { renderSummary, renderSummaryBox } from './summary.js';
-import { renderTable, renderSimpleTable } from './table.js';
+import { renderSummary } from './summary.js';
+import { renderTable } from './table.js';
 import { renderTrend, renderStackedTrend } from './trend.js';
 import { renderBar, renderPie } from './bar.js';
-import { renderList, renderDetailedList, renderRecentList } from './list.js';
+import { renderList, renderRecentList } from './list.js';
 import { colors, RESET } from './base.js';
 
 export * from './base.js';

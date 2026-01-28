@@ -18,7 +18,6 @@ import {
   generateKpiInsight,
   parseKpiDefinitions,
   getValuesForPeriod,
-  calculateTrend,
 } from '../lib/kpi.js';
 import {
   colors,
@@ -202,7 +201,6 @@ export async function kpiTrendCommand(
 
     for (const v of values.slice(-10)) {
       const barLength = Math.round((v.value / maxValue) * 30);
-      const targetBar = Math.round((definition.target / maxValue) * 30);
       const bar = '█'.repeat(barLength);
       const targetMark = v.value >= definition.target ? colors.green : colors.red;
 

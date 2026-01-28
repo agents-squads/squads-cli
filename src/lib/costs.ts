@@ -992,7 +992,6 @@ export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | nu
     const weekStart = weekAgo.toISOString().split('T')[0];
 
     let weeklyOpus = 0;
-    let weeklyNonOpus = 0;
 
     if (data.dailyModelTokens) {
       for (const day of data.dailyModelTokens) {
@@ -1000,15 +999,11 @@ export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | nu
           for (const [model, tokens] of Object.entries(day.tokensByModel)) {
             if (model.includes('opus')) {
               weeklyOpus += tokens;
-            } else {
-              weeklyNonOpus += tokens;
             }
           }
         }
       }
     }
-
-    const weeklyTotalRaw = weeklyOpus + weeklyNonOpus;
 
     // Calculate weighted usage (Opus costs 5x more against limit)
     // This better reflects actual subscription capacity consumption
