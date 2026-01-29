@@ -15,6 +15,21 @@ import { track } from '../lib/telemetry.js';
 const AUTH_URL = process.env.SQUADS_AUTH_URL || 'https://app.agents-squads.com/auth';
 const CALLBACK_PORT = 54321;
 
+async function isAuthEndpointAvailable(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(AUTH_URL, {
+      method: 'HEAD',
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return response.ok || response.status < 500;
+  } catch {
+    return false;
+  }
+}
+
 export async function loginCommand(): Promise<void> {
   const existingSession = loadSession();
 
@@ -25,14 +40,39 @@ export async function loginCommand(): Promise<void> {
     return;
   }
 
+  // Check if auth endpoint is available
+  const spinner = ora('Checking authentication service...').start();
+  const isAvailable = await isAuthEndpointAvailable();
+
+  if (!isAvailable) {
+    spinner.stop();
+    spinner.clear();
+    console.log(`
+${chalk.bold.cyan('Pro & Enterprise Login')} ${chalk.yellow('(Coming Soon)')}
+${chalk.dim('─'.repeat(40))}
+
+Authentication is coming soon for Pro & Enterprise teams.
+
+${chalk.bold('In the meantime:')}
+  ${chalk.dim('→')} Explore the CLI: ${chalk.cyan('squads status')}
+  ${chalk.dim('→')} Run agents: ${chalk.cyan('squads run <squad>')}
+  ${chalk.dim('→')} Join waitlist: ${chalk.cyan('https://agents-squads.com/waitlist')}
+
+${chalk.dim('Questions?')} ${chalk.cyan('hello@agents-squads.com')}
+`);
+    await track('cli.login.unavailable');
+    return;
+  }
+
+  spinner.text = 'Opening browser to authenticate...';
+  spinner.succeed();
+
   console.log(`
 ${chalk.bold.magenta('Squads CLI Login')}
 ${chalk.dim('─'.repeat(40))}
-
-Opening browser to authenticate...
 `);
 
-  const spinner = ora('Waiting for authentication...').start();
+  const authSpinner = ora('Waiting for authentication...').start();
 
   try {
     // Start local callback server
@@ -47,7 +87,7 @@ Opening browser to authenticate...
 
     // Check if personal email
     if (isPersonalEmail(email)) {
-      spinner.fail('Personal emails not supported');
+      authSpinner.fail('Personal emails not supported');
       console.log(`
 ${chalk.yellow('⚠ Squads CLI is for Pro & Enterprise teams only.')}
 
@@ -72,7 +112,7 @@ ${chalk.dim('Want to stay updated?')}
     };
 
     saveSession(session);
-    spinner.succeed(`Logged in as ${chalk.cyan(email)}`);
+    authSpinner.succeed(`Logged in as ${chalk.cyan(email)}`);
 
     await track('cli.login.success', { domain: session.domain });
 
@@ -93,7 +133,7 @@ ${chalk.dim('Questions? Email us at')} ${chalk.cyan('hello@agents-squads.com')}
 `);
 
   } catch (error) {
-    spinner.fail('Login failed');
+    authSpinner.fail('Login failed');
     console.error(chalk.red(error instanceof Error ? error.message : 'Unknown error'));
   }
 }
