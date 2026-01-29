@@ -315,6 +315,7 @@ export const Events = {
   CLI_CONTEXT: 'cli.context',
   CLI_COST: 'cli.cost',
   CLI_EXEC: 'cli.exec',
+  CLI_BASELINE: 'cli.baseline',
 
   // Goals
   CLI_GOAL_SET: 'cli.goal.set',

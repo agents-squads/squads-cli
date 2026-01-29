@@ -1073,3 +1073,130 @@ export async function fetchClaudeCodeCapacity(): Promise<ClaudeCodeCapacity | nu
     return null;
   }
 }
+
+// === ROI and Cost Projection Types ===
+
+/**
+ * ROI metrics for measuring value delivered vs cost
+ */
+export interface ROIMetrics {
+  totalCostUsd: number;
+  costPerGoal: number;
+  costPerCommit: number;
+  costPerPR: number;
+  estimatedValueUsd: number;
+  roiMultiplier: number;
+  dailyProjectedCost: number;
+  weeklyProjectedCost: number;
+  monthlyProjectedCost: number;
+  hoursTracked: number;
+  costPerHour: number;
+}
+
+/**
+ * Before/after comparison for a period
+ */
+export interface BeforeAfterMetrics {
+  periodStart: string;
+  periodEnd: string;
+  baselineCostUsd: number;
+  baselineGoals: number;
+  baselineCommits: number;
+  baselinePRs: number;
+  baselineTokens: number;
+  currentCostUsd: number;
+  currentGoals: number;
+  currentCommits: number;
+  currentPRs: number;
+  currentTokens: number;
+  costDelta: number;
+  goalsDelta: number;
+  commitsDelta: number;
+  prsDelta: number;
+  tokensDelta: number;
+  costPerGoalBefore: number;
+  costPerGoalAfter: number;
+  efficiencyImprovement: number;
+}
+
+/**
+ * Squad-level cost projection
+ */
+export interface SquadCostProjection {
+  squad: string;
+  currentDailyCost: number;
+  projectedDailyCost: number;
+  projectedWeeklyCost: number;
+  projectedMonthlyCost: number;
+  costTrend: 'increasing' | 'stable' | 'decreasing';
+  trendPct: number;
+}
+
+/**
+ * Calculate ROI metrics from cost and activity data
+ */
+export function calculateROIMetrics(
+  costs: CostSummary | null,
+  goalsCompleted: number,
+  commits: number,
+  prsMerged: number,
+  hoursTracked: number = 0
+): ROIMetrics {
+  const totalCost = costs?.totalCost || 0;
+  const costPerGoal = goalsCompleted > 0 ? totalCost / goalsCompleted : 0;
+  const costPerCommit = commits > 0 ? totalCost / commits : 0;
+  const costPerPR = prsMerged > 0 ? totalCost / prsMerged : 0;
+
+  const GOAL_VALUE = parseFloat(process.env.SQUADS_GOAL_VALUE || '100');
+  const PR_VALUE = parseFloat(process.env.SQUADS_PR_VALUE || '200');
+  const COMMIT_VALUE = parseFloat(process.env.SQUADS_COMMIT_VALUE || '25');
+
+  const estimatedValue = (goalsCompleted * GOAL_VALUE) + (prsMerged * PR_VALUE) + (commits * COMMIT_VALUE);
+  const roiMultiplier = totalCost > 0 ? estimatedValue / totalCost : 0;
+
+  const now = new Date();
+  const hoursElapsed = hoursTracked > 0 ? hoursTracked : Math.max(now.getHours() + now.getMinutes() / 60, 1);
+  const costPerHour = totalCost / hoursElapsed;
+
+  return {
+    totalCostUsd: totalCost,
+    costPerGoal,
+    costPerCommit,
+    costPerPR,
+    estimatedValueUsd: estimatedValue,
+    roiMultiplier,
+    dailyProjectedCost: costPerHour * 24,
+    weeklyProjectedCost: costPerHour * 24 * 7,
+    monthlyProjectedCost: costPerHour * 24 * 30,
+    hoursTracked: hoursElapsed,
+    costPerHour,
+  };
+}
+
+/**
+ * Calculate cost projections per squad
+ */
+export function calculateSquadCostProjections(
+  bridgeStats: BridgeStats | null,
+  _history: Array<{ squad: string; costUsd: number }[]> | null
+): SquadCostProjection[] {
+  if (!bridgeStats || bridgeStats.bySquad.length === 0) {
+    return [];
+  }
+
+  const now = new Date();
+  const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1);
+
+  return bridgeStats.bySquad.map(squad => {
+    const hourlyRate = squad.costUsd / hoursElapsed;
+    return {
+      squad: squad.squad,
+      currentDailyCost: squad.costUsd,
+      projectedDailyCost: hourlyRate * 24,
+      projectedWeeklyCost: hourlyRate * 24 * 7,
+      projectedMonthlyCost: hourlyRate * 24 * 30,
+      costTrend: 'stable' as const,
+      trendPct: 0,
+    };
+  });
+}

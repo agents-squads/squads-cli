@@ -221,3 +221,231 @@ export async function closeDatabase(): Promise<void> {
     pool = null;
   }
 }
+
+// === Baseline Storage for ROI Tracking ===
+
+/**
+ * Baseline metrics snapshot for before/after comparison
+ */
+export interface BaselineSnapshot {
+  id?: number;
+  name: string; // User-defined name for this baseline
+  capturedAt: string;
+  costUsd: number;
+  goalsCompleted: number;
+  goalsActive: number;
+  commits: number;
+  prsMerged: number;
+  issuesClosed: number;
+  inputTokens: number;
+  outputTokens: number;
+  squadMetrics: Array<{
+    squad: string;
+    costUsd: number;
+    goals: number;
+    commits: number;
+    prs: number;
+  }>;
+}
+
+/**
+ * Save a baseline snapshot for ROI comparison
+ */
+export async function saveBaseline(baseline: BaselineSnapshot): Promise<number | null> {
+  const pool = getPool();
+  if (!pool) {
+    return null;
+  }
+  const client = await pool.connect();
+
+  try {
+    // First, ensure the baseline table exists (create if not)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS squads.baselines (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        captured_at TIMESTAMPTZ DEFAULT NOW(),
+        cost_usd NUMERIC(12,4) DEFAULT 0,
+        goals_completed INT DEFAULT 0,
+        goals_active INT DEFAULT 0,
+        commits INT DEFAULT 0,
+        prs_merged INT DEFAULT 0,
+        issues_closed INT DEFAULT 0,
+        input_tokens BIGINT DEFAULT 0,
+        output_tokens BIGINT DEFAULT 0,
+        squad_metrics JSONB DEFAULT '[]'
+      )
+    `);
+
+    const result = await client.query(`
+      INSERT INTO squads.baselines (
+        name, cost_usd, goals_completed, goals_active, commits,
+        prs_merged, issues_closed, input_tokens, output_tokens, squad_metrics
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id
+    `, [
+      baseline.name,
+      baseline.costUsd,
+      baseline.goalsCompleted,
+      baseline.goalsActive,
+      baseline.commits,
+      baseline.prsMerged,
+      baseline.issuesClosed,
+      baseline.inputTokens,
+      baseline.outputTokens,
+      JSON.stringify(baseline.squadMetrics),
+    ]);
+
+    return result.rows[0]?.id ?? null;
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('DB save baseline error:', err);
+    }
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Get the most recent baseline
+ */
+export async function getLatestBaseline(): Promise<BaselineSnapshot | null> {
+  const pool = getPool();
+  if (!pool) {
+    return null;
+  }
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query(`
+      SELECT
+        id, name, captured_at, cost_usd, goals_completed, goals_active,
+        commits, prs_merged, issues_closed, input_tokens, output_tokens, squad_metrics
+      FROM squads.baselines
+      ORDER BY captured_at DESC
+      LIMIT 1
+    `);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0] as Record<string, unknown>;
+    return {
+      id: row.id as number,
+      name: row.name as string,
+      capturedAt: (row.captured_at as Date).toISOString(),
+      costUsd: parseFloat(String(row.cost_usd)),
+      goalsCompleted: row.goals_completed as number,
+      goalsActive: row.goals_active as number,
+      commits: row.commits as number,
+      prsMerged: row.prs_merged as number,
+      issuesClosed: row.issues_closed as number,
+      inputTokens: row.input_tokens as number,
+      outputTokens: row.output_tokens as number,
+      squadMetrics: (row.squad_metrics as Array<{squad: string; costUsd: number; goals: number; commits: number; prs: number}>) || [],
+    };
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('Failed to get baseline from database:', err);
+    }
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Get a baseline by name
+ */
+export async function getBaselineByName(name: string): Promise<BaselineSnapshot | null> {
+  const pool = getPool();
+  if (!pool) {
+    return null;
+  }
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query(`
+      SELECT
+        id, name, captured_at, cost_usd, goals_completed, goals_active,
+        commits, prs_merged, issues_closed, input_tokens, output_tokens, squad_metrics
+      FROM squads.baselines
+      WHERE name = $1
+      ORDER BY captured_at DESC
+      LIMIT 1
+    `, [name]);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0] as Record<string, unknown>;
+    return {
+      id: row.id as number,
+      name: row.name as string,
+      capturedAt: (row.captured_at as Date).toISOString(),
+      costUsd: parseFloat(String(row.cost_usd)),
+      goalsCompleted: row.goals_completed as number,
+      goalsActive: row.goals_active as number,
+      commits: row.commits as number,
+      prsMerged: row.prs_merged as number,
+      issuesClosed: row.issues_closed as number,
+      inputTokens: row.input_tokens as number,
+      outputTokens: row.output_tokens as number,
+      squadMetrics: (row.squad_metrics as Array<{squad: string; costUsd: number; goals: number; commits: number; prs: number}>) || [],
+    };
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('Failed to get baseline by name:', err);
+    }
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * List all baselines
+ */
+export async function listBaselines(limit: number = 10): Promise<BaselineSnapshot[]> {
+  const pool = getPool();
+  if (!pool) {
+    return [];
+  }
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query(`
+      SELECT
+        id, name, captured_at, cost_usd, goals_completed, goals_active,
+        commits, prs_merged, issues_closed, input_tokens, output_tokens, squad_metrics
+      FROM squads.baselines
+      ORDER BY captured_at DESC
+      LIMIT $1
+    `, [limit]);
+
+    return result.rows.map((row: Record<string, unknown>) => ({
+      id: row.id as number,
+      name: row.name as string,
+      capturedAt: (row.captured_at as Date).toISOString(),
+      costUsd: parseFloat(String(row.cost_usd)),
+      goalsCompleted: row.goals_completed as number,
+      goalsActive: row.goals_active as number,
+      commits: row.commits as number,
+      prsMerged: row.prs_merged as number,
+      issuesClosed: row.issues_closed as number,
+      inputTokens: row.input_tokens as number,
+      outputTokens: row.output_tokens as number,
+      squadMetrics: (row.squad_metrics as Array<{squad: string; costUsd: number; goals: number; commits: number; prs: number}>) || [],
+    }));
+  } catch (err) {
+    if (process.env.DEBUG) {
+      console.error('Failed to list baselines:', err);
+    }
+    return [];
+  } finally {
+    client.release();
+  }
+}
