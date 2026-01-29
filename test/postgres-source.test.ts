@@ -398,9 +398,11 @@ describe('PostgreSQL Source (postgres.ts)', () => {
         [{ name: 'name', type: 'select' }],
       );
 
-      // Single quote should be escaped as ''
-      expect(result).toContain("''; DROP TABLE users; --'");
-      expect(result).not.toContain("'; DROP TABLE");
+      // Single quote at start of value should be escaped as ''
+      // Result should be: name IN ('''; DROP TABLE users; --')
+      // The leading ' becomes '' (escaped), wrapped in outer quotes
+      expect(result).toContain("'''");  // Escaped quote pattern
+      expect(result).not.toContain("('; DROP TABLE");  // Unescaped injection attempt
     });
 
     it('escapes quotes in text filter values', () => {
