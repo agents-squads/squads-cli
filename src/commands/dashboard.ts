@@ -2,9 +2,9 @@ import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity } from '../lib/costs.js';
+import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
-import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase } from '../lib/db.js';
+import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase, getLatestBaseline, BaselineSnapshot } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
 import { track, Events } from '../lib/telemetry.js';
@@ -87,6 +87,9 @@ interface DashboardCache {
   npmStats: NpmStats | null;
   quotaInfo: QuotaInfo | null;
   capacity: ClaudeCodeCapacity | null;
+  baseline: BaselineSnapshot | null;
+  roiMetrics: ROIMetrics | null;
+  squadProjections: SquadCostProjection[];
 }
 
 // Dashboard stats aggregated from squad data
@@ -432,6 +435,7 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
   // Render sections using cached data (no more network calls)
   renderGitPerformanceCached(cache);
   renderTokenEconomicsCached(cache, goalCount);
+  renderROICached(cache, goalCount);
   renderQuotaCached(cache);
   renderCapacityCached(cache);
   renderInfrastructureCached(cache);
@@ -460,7 +464,7 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
   // Clean up stale file-based sessions (sync, fast)
   cleanupStaleSessions();
 
-  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity] = await Promise.all([
+  const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity, baseline] = await Promise.all([
     // Git stats (local, parallel across repos)
     baseDir ? getMultiRepoGitStats(baseDir, 30) : Promise.resolve(null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
@@ -485,9 +489,15 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
     timeout(fetchQuotaInfo(), 2000, null),
     // Claude Code capacity (local file read, fast)
     fetchClaudeCodeCapacity(),
+    // Latest baseline for ROI comparison (1.5s timeout)
+    timeout(getLatestBaseline().catch(() => null), 1500, null),
   ]);
 
-  return { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity };
+  // Calculate ROI metrics
+  const roiMetrics = calculateROIMetrics(costs, 0, gitStats?.totalCommits || 0, ghStats?.prsMerged || 0);
+  const squadProjections = calculateSquadCostProjections(bridgeStats, null);
+
+  return { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity, baseline, roiMetrics, squadProjections };
 }
 
 /**
@@ -1673,5 +1683,93 @@ function renderInsightsCached(cache: DashboardCache): void {
   }
 
   // Skip quality metrics for brevity in cached version
+  writeLine();
+}
+
+/**
+ * Render ROI metrics section showing cost projections and before/after comparison
+ */
+function renderROICached(cache: DashboardCache, goalCount: { active: number; completed: number }): void {
+  const { costs, bridgeStats, baseline, squadProjections } = cache;
+
+  if (!costs && !bridgeStats) {
+    return;
+  }
+
+  const roiMetrics = calculateROIMetrics(
+    costs,
+    goalCount.completed,
+    cache.gitStats?.totalCommits || 0,
+    cache.ghStats?.prsMerged || 0
+  );
+
+  writeLine(`  ${bold}ROI & Projections${RESET}`);
+  writeLine();
+
+  // Cost per output metrics
+  if (roiMetrics.totalCostUsd > 0) {
+    const metricsLine = [];
+    if (roiMetrics.costPerGoal > 0) {
+      metricsLine.push(`${colors.cyan}$${roiMetrics.costPerGoal.toFixed(2)}${RESET}${colors.dim}/goal${RESET}`);
+    }
+    if (roiMetrics.costPerPR > 0) {
+      metricsLine.push(`${colors.cyan}$${roiMetrics.costPerPR.toFixed(2)}${RESET}${colors.dim}/PR${RESET}`);
+    }
+    if (roiMetrics.costPerCommit > 0) {
+      metricsLine.push(`${colors.cyan}$${roiMetrics.costPerCommit.toFixed(2)}${RESET}${colors.dim}/commit${RESET}`);
+    }
+    if (metricsLine.length > 0) {
+      writeLine(`  ${colors.dim}Cost/Output:${RESET} ${metricsLine.join(`  ${colors.dim}|${RESET}  `)}`);
+    }
+  }
+
+  // ROI multiplier
+  if (roiMetrics.roiMultiplier > 0) {
+    const roiColor = roiMetrics.roiMultiplier >= 3 ? colors.green :
+                     roiMetrics.roiMultiplier >= 1 ? colors.cyan : colors.yellow;
+    writeLine(`  ${colors.dim}Est. ROI:${RESET}    ${roiColor}${roiMetrics.roiMultiplier.toFixed(1)}x${RESET} ${colors.dim}($${roiMetrics.estimatedValueUsd.toFixed(0)} value / $${roiMetrics.totalCostUsd.toFixed(2)} cost)${RESET}`);
+  }
+
+  // Cost projections
+  writeLine();
+  writeLine(`  ${colors.dim}Projections${RESET}`);
+  const dailyBudget = costs?.dailyBudget || 200;
+  const projColor = roiMetrics.dailyProjectedCost > dailyBudget ? colors.red :
+                    roiMetrics.dailyProjectedCost > dailyBudget * 0.8 ? colors.yellow : colors.green;
+  writeLine(`  ${colors.dim}Daily:${RESET}   ${projColor}~$${roiMetrics.dailyProjectedCost.toFixed(2)}${RESET}  ${colors.dim}Weekly:${RESET} ${colors.cyan}~$${roiMetrics.weeklyProjectedCost.toFixed(0)}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.purple}~$${roiMetrics.monthlyProjectedCost.toFixed(0)}${RESET}`);
+
+  // Squad-level projections
+  if (squadProjections.length > 0) {
+    writeLine();
+    writeLine(`  ${colors.dim}By Squad (projected monthly)${RESET}`);
+    const topSquads = squadProjections
+      .sort((a, b) => b.projectedMonthlyCost - a.projectedMonthlyCost)
+      .slice(0, 4);
+    for (const sq of topSquads) {
+      const trendIcon = sq.costTrend === 'increasing' ? `${colors.red}↑${RESET}` :
+                        sq.costTrend === 'decreasing' ? `${colors.green}↓${RESET}` : `${colors.dim}-${RESET}`;
+      writeLine(`  ${colors.cyan}${padEnd(sq.squad, 14)}${RESET}${colors.dim}~$${sq.projectedMonthlyCost.toFixed(0)}/mo${RESET} ${trendIcon}`);
+    }
+  }
+
+  // Before/after comparison with baseline
+  if (baseline) {
+    writeLine();
+    writeLine(`  ${colors.dim}vs Baseline${RESET} ${colors.dim}(${baseline.name})${RESET}`);
+    const costDelta = roiMetrics.totalCostUsd - baseline.costUsd;
+    const goalsDelta = goalCount.completed - baseline.goalsCompleted;
+    const costPerGoalBefore = baseline.goalsCompleted > 0 ? baseline.costUsd / baseline.goalsCompleted : 0;
+    const costPerGoalAfter = goalCount.completed > 0 ? roiMetrics.totalCostUsd / goalCount.completed : 0;
+    const efficiencyChange = costPerGoalBefore > 0 ? ((costPerGoalBefore - costPerGoalAfter) / costPerGoalBefore) * 100 : 0;
+
+    const costColor = costDelta > 0 ? colors.red : colors.green;
+    const goalsColor = goalsDelta >= 0 ? colors.green : colors.red;
+    const effColor = efficiencyChange > 0 ? colors.green : efficiencyChange < 0 ? colors.red : colors.dim;
+    writeLine(`  ${colors.dim}Cost:${RESET}  ${costColor}${costDelta >= 0 ? '+' : ''}$${costDelta.toFixed(2)}${RESET}  ${colors.dim}Goals:${RESET} ${goalsColor}${goalsDelta >= 0 ? '+' : ''}${goalsDelta}${RESET}  ${colors.dim}Efficiency:${RESET} ${effColor}${efficiencyChange >= 0 ? '+' : ''}${efficiencyChange.toFixed(0)}%${RESET}`);
+  } else {
+    writeLine();
+    writeLine(`  ${colors.dim}No baseline set. Capture one with:${RESET} squads baseline`);
+  }
+
   writeLine();
 }
