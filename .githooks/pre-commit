@@ -4,8 +4,8 @@
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Patterns to block (case insensitive)
-BLOCKED_PATTERNS=(
+# Patterns to block everywhere (PII, client names)
+BLOCKED_PATTERNS_ALL=(
   "innspiral"
   "sg2030"
   "parque.arauco"
@@ -14,12 +14,17 @@ BLOCKED_PATTERNS=(
   "hortifrut"
   "aguas.andinas"
   "ivan.vera"
+)
+
+# Patterns to block only in source files (not README/docs with examples)
+BLOCKED_PATTERNS_SOURCE=(
   "password="
   "api_key="
   "secret_key="
 )
 
 FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|js|jsx|md|json|yaml|yml)$')
+SOURCE_FILES=$(echo "$FILES" | grep -v -E '(README|CHANGELOG|CONTRIBUTING)\.md$')
 
 if [ -z "$FILES" ]; then
   exit 0
@@ -27,7 +32,8 @@ fi
 
 FOUND=0
 
-for pattern in "${BLOCKED_PATTERNS[@]}"; do
+# Check all files for PII patterns
+for pattern in "${BLOCKED_PATTERNS_ALL[@]}"; do
   MATCHES=$(echo "$FILES" | xargs grep -l -i "$pattern" 2>/dev/null)
   if [ -n "$MATCHES" ]; then
     echo -e "${RED}BLOCKED: Found '$pattern' in:${NC}"
@@ -35,6 +41,18 @@ for pattern in "${BLOCKED_PATTERNS[@]}"; do
     FOUND=1
   fi
 done
+
+# Check only source files for credential patterns (exclude README with examples)
+if [ -n "$SOURCE_FILES" ]; then
+  for pattern in "${BLOCKED_PATTERNS_SOURCE[@]}"; do
+    MATCHES=$(echo "$SOURCE_FILES" | xargs grep -l -i "$pattern" 2>/dev/null)
+    if [ -n "$MATCHES" ]; then
+      echo -e "${RED}BLOCKED: Found '$pattern' in:${NC}"
+      echo "$MATCHES"
+      FOUND=1
+    fi
+  done
+fi
 
 if [ $FOUND -eq 1 ]; then
   echo -e "${RED}Commit blocked - remove sensitive data${NC}"

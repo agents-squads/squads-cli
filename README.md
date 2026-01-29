@@ -4,8 +4,11 @@
 [![npm downloads](https://img.shields.io/npm/dw/squads-cli)](https://www.npmjs.com/package/squads-cli)
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-agents--squads.com-purple)](https://agents-squads.com/docs)
 
 **Open source CLI for AI agent coordination.** Organize agents into domain-aligned squads with persistent memory, goal tracking, and coordinated execution.
+
+📖 **[Documentation](https://agents-squads.com/docs)** · 🚀 **[Getting Started](https://agents-squads.com/onboarding)** · 💡 **[Architecture Guide](https://agents-squads.com/engineering/squads-architecture)**
 
 ```bash
 npm install -g squads-cli && squads init
@@ -1073,6 +1076,8 @@ squads whoami                        Show user
 
 ## Claude Code Integration
 
+For comprehensive documentation on hooks and skills, see the **[Hooks and Skills Guide](https://agents-squads.com/engineering/hooks-and-skills)**.
+
 ### Option 1: Session Hooks (Recommended)
 
 Add to `.claude/settings.json`:
@@ -1245,10 +1250,23 @@ npm run lint          # ESLint
 npm run typecheck     # TypeScript check
 ```
 
-## Related
+## Documentation & Resources
 
+**Official Documentation:**
+- 📖 [Documentation](https://agents-squads.com/docs) — Complete CLI reference and tutorials
+- 🚀 [Getting Started](https://agents-squads.com/onboarding) — Quick setup guide
+- 🏗️ [Architecture Guide](https://agents-squads.com/engineering/squads-architecture) — How squads work under the hood
+- ⚡ [Hooks and Skills](https://agents-squads.com/engineering/hooks-and-skills) — Claude Code integration patterns
+- 💰 [Cost Management](https://agents-squads.com/engineering/cost-management) — Budget tracking and optimization
+
+**Related Repositories:**
 - [agents-squads](https://github.com/agents-squads/agents-squads) — Full framework with infrastructure
 - [engram](https://github.com/agents-squads/engram) — Persistent memory for AI agents
+- [squads-infra](https://github.com/agents-squads/squads-infra) — Docker infrastructure stack
+
+**Research & Intelligence:**
+- [AI Agent Research](https://agents-squads.com/research) — Latest AI agent analysis
+- [Enterprise AI Report](https://agents-squads.com/intelligence/enterprise-ai-agents-2025) — Market intelligence
 
 ## License
 
