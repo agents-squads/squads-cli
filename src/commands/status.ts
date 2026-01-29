@@ -4,7 +4,8 @@ import {
   findSquadsDir,
   loadSquad,
   listSquads,
-  listAgents
+  listAgents,
+  resolveExecutionContext,
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../lib/sessions.js';
@@ -224,6 +225,52 @@ async function showSquadStatus(
     writeLine(`  ${bold}Pipelines${RESET}`);
     for (const pipeline of squad.pipelines) {
       writeLine(`  ${colors.dim}${pipeline.agents.join(' → ')}${RESET}`);
+    }
+  }
+
+  // Context profile
+  const execContext = resolveExecutionContext(squad);
+  const hasContext = execContext.resolved.skills.length > 0 ||
+                     execContext.resolved.mcpServers.length > 0 ||
+                     (squad.context?.model?.default);
+
+  if (hasContext) {
+    writeLine();
+    writeLine(`  ${bold}Context${RESET}`);
+
+    // MCP servers
+    if (execContext.resolved.mcpServers.length > 0) {
+      const sourceLabel = execContext.resolved.mcpSource === 'squad-local' ? `${colors.green}local${RESET}` :
+                          execContext.resolved.mcpSource === 'generated' ? `${colors.cyan}generated${RESET}` :
+                          execContext.resolved.mcpSource === 'user-override' ? `${colors.yellow}override${RESET}` :
+                          '';
+      writeLine(`  ${colors.dim}MCP:${RESET}    ${colors.cyan}${execContext.resolved.mcpServers.join(', ')}${RESET}${sourceLabel ? ` ${colors.dim}(${sourceLabel})${RESET}` : ''}`);
+    }
+
+    // Skills (grouped by source)
+    if (execContext.resolved.skills.length > 0) {
+      const bySource = execContext.resolved.skills.reduce((acc, s) => {
+        acc[s.source] = acc[s.source] || [];
+        acc[s.source].push(s.name);
+        return acc;
+      }, {} as Record<string, string[]>);
+
+      const skillParts: string[] = [];
+      if (bySource['squad-local']) {
+        skillParts.push(`${colors.green}${bySource['squad-local'].join(', ')}${RESET} ${colors.dim}(local)${RESET}`);
+      }
+      if (bySource['project']) {
+        skillParts.push(`${colors.cyan}${bySource['project'].join(', ')}${RESET}`);
+      }
+      if (bySource['global']) {
+        skillParts.push(`${colors.dim}${bySource['global'].join(', ')}${RESET}`);
+      }
+      writeLine(`  ${colors.dim}Skills:${RESET} ${skillParts.join(', ')}`);
+    }
+
+    // Model
+    if (squad.context?.model?.default) {
+      writeLine(`  ${colors.dim}Model:${RESET}  ${colors.white}${squad.context.model.default}${RESET}`);
     }
   }
 

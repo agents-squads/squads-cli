@@ -4,6 +4,8 @@ import {
   listSquads,
   SquadContext,
   resolveExecutionContext,
+  getSquadLocalSkills,
+  ResolvedSkill,
 } from '../lib/squad-parser.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
@@ -41,6 +43,9 @@ export async function contextShowCommand(
     process.exit(1);
   }
 
+  // Resolve execution context to get full skill and MCP info
+  const execContext = resolveExecutionContext(squad);
+
   if (options.json) {
     console.log(JSON.stringify({
       name: squad.name,
@@ -49,6 +54,7 @@ export async function contextShowCommand(
       stack: squad.stack,
       effort: squad.effort,
       context: squad.context,
+      resolved: execContext.resolved,
     }, null, 2));
     return;
   }
@@ -79,15 +85,32 @@ export async function contextShowCommand(
   writeLine();
   writeLine(`  ${colors.purple}${box.horizontal.repeat(tableWidth)}${RESET}`);
 
-  // MCP Servers
-  if (ctx.mcp && ctx.mcp.length > 0) {
+  // MCP Config (show resolved source)
+  const mcpSource = execContext.resolved.mcpSource;
+  const mcpSourceLabel = mcpSource === 'squad-local' ? `${colors.green}squad-local${RESET}` :
+                         mcpSource === 'generated' ? `${colors.cyan}generated${RESET}` :
+                         mcpSource === 'user-override' ? `${colors.yellow}user-override${RESET}` :
+                         `${colors.dim}fallback${RESET}`;
+
+  if (execContext.resolved.mcpServers.length > 0) {
+    writeLine(`  ${bold}MCP${RESET}       ${colors.cyan}${execContext.resolved.mcpServers.join(', ')}${RESET} ${colors.dim}(${mcpSourceLabel})${RESET}`);
+  } else if (ctx?.mcp && ctx.mcp.length > 0) {
     writeLine(`  ${bold}MCP${RESET}       ${colors.cyan}${ctx.mcp.join(', ')}${RESET}`);
   } else {
     writeLine(`  ${bold}MCP${RESET}       ${colors.dim}none${RESET}`);
   }
 
-  // Skills
-  if (ctx.skills && ctx.skills.length > 0) {
+  // Skills (show resolved with sources)
+  const resolvedSkills = execContext.resolved.skills || [];
+  if (resolvedSkills.length > 0) {
+    const skillLabels = resolvedSkills.map(s => {
+      const sourceColor = s.source === 'squad-local' ? colors.green :
+                          s.source === 'project' ? colors.cyan :
+                          colors.dim;
+      return `${colors.cyan}${s.name}${RESET} ${sourceColor}(${s.source})${RESET}`;
+    });
+    writeLine(`  ${bold}Skills${RESET}    ${skillLabels.join(', ')}`);
+  } else if (ctx?.skills && ctx.skills.length > 0) {
     writeLine(`  ${bold}Skills${RESET}    ${colors.cyan}${ctx.skills.join(', ')}${RESET}`);
   }
 
@@ -254,11 +277,15 @@ export async function contextActivateCommand(
       writeLine(`    Servers: ${execContext.resolved.mcpServers.join(', ')}`);
     }
 
-    if (execContext.resolved.skillPaths.length > 0) {
+    if (execContext.resolved.skills && execContext.resolved.skills.length > 0) {
       writeLine();
       writeLine(`  ${bold}Skills${RESET}`);
-      for (const path of execContext.resolved.skillPaths) {
-        writeLine(`    ${colors.dim}${path}${RESET}`);
+      for (const skill of execContext.resolved.skills) {
+        const sourceColor = skill.source === 'squad-local' ? colors.green :
+                           skill.source === 'project' ? colors.cyan :
+                           colors.dim;
+        writeLine(`    ${colors.cyan}${skill.name}${RESET} ${sourceColor}(${skill.source})${RESET}`);
+        writeLine(`      ${colors.dim}${skill.path}${RESET}`);
       }
     }
 
@@ -282,11 +309,15 @@ export async function contextActivateCommand(
   writeLine();
 
   // Show what was resolved/generated
-  const sourceLabel = execContext.resolved.mcpSource === 'generated'
-    ? `${colors.green}generated${RESET}`
+  const mcpSourceLabel = execContext.resolved.mcpSource === 'squad-local'
+    ? `${colors.green}squad-local${RESET}`
+    : execContext.resolved.mcpSource === 'generated'
+    ? `${colors.cyan}generated${RESET}`
     : execContext.resolved.mcpSource === 'user-override'
-    ? `${colors.cyan}user override${RESET}`
+    ? `${colors.yellow}user override${RESET}`
     : `${colors.dim}fallback${RESET}`;
+
+  const sourceLabel = mcpSourceLabel;
 
   writeLine(`  ${icons.success} MCP config: ${sourceLabel}`);
   writeLine(`    ${colors.dim}${execContext.resolved.mcpConfigPath}${RESET}`);
@@ -295,8 +326,18 @@ export async function contextActivateCommand(
     writeLine(`    ${colors.dim}Servers: ${execContext.resolved.mcpServers.join(', ')}${RESET}`);
   }
 
-  if (execContext.resolved.skillPaths.length > 0) {
-    writeLine(`  ${icons.success} Skills: ${execContext.resolved.skillPaths.length} resolved`);
+  if (execContext.resolved.skills && execContext.resolved.skills.length > 0) {
+    // Group skills by source
+    const bySource = execContext.resolved.skills.reduce((acc, s) => {
+      acc[s.source] = (acc[s.source] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const sourceSummary = Object.entries(bySource)
+      .map(([source, count]) => `${count} ${source}`)
+      .join(', ');
+
+    writeLine(`  ${icons.success} Skills: ${execContext.resolved.skills.length} resolved (${sourceSummary})`);
   }
 
   if (execContext.resolved.memoryPaths.length > 0) {
