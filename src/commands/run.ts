@@ -42,7 +42,9 @@ interface RunOptions {
   execute?: boolean;
   parallel?: boolean; // Run all agents in parallel
   lead?: boolean; // Run as lead session using Task tool for parallelization
-  foreground?: boolean; // Run in foreground (no tmux)
+  foreground?: boolean; // Run in foreground (deprecated, now default)
+  background?: boolean; // Run in background (detached process)
+  watch?: boolean; // Run in background but tail the log
   useApi?: boolean; // Use API credits instead of subscription
   effort?: EffortLevel; // Effort level: high, medium, low
   skills?: string[]; // Skills to load (skill IDs or local paths)
@@ -606,6 +608,52 @@ function updateExecutionStatus(
 }
 
 /**
+ * Auto-commit agent work after execution completes.
+ * Commits any uncommitted changes made by the agent.
+ */
+async function autoCommitAgentWork(
+  squadName: string,
+  agentName: string,
+  executionId: string
+): Promise<{ committed: boolean; message?: string; error?: string }> {
+  const { execSync } = await import('child_process');
+  const projectRoot = getProjectRoot();
+
+  try {
+    // Check for uncommitted changes
+    const status = execSync('git status --porcelain', {
+      encoding: 'utf-8',
+      cwd: projectRoot,
+    }).trim();
+
+    if (!status) {
+      return { committed: false };
+    }
+
+    // Stage all changes (agent work should be committed)
+    execSync('git add -A', { cwd: projectRoot });
+
+    // Build commit message
+    const shortExecId = executionId.slice(0, 12);
+    const message = `feat(${squadName}/${agentName}): execution ${shortExecId}\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+
+    // Commit
+    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: projectRoot });
+
+    // Push to origin
+    try {
+      execSync('git push origin HEAD', { cwd: projectRoot, stdio: 'pipe' });
+    } catch {
+      // Push failed - continue, the commit is still local
+    }
+
+    return { committed: true, message: `Committed changes from ${agentName}` };
+  } catch (error) {
+    return { committed: false, error: String(error) };
+  }
+}
+
+/**
  * Get the timestamp of the last execution from executions.md
  */
 function getLastExecutionTime(squadName: string, agentName: string): Date | null {
@@ -1001,7 +1049,13 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     return;
   }
 
-  writeLine(`  ${gradient('Launching')} lead session${options.foreground ? ' (foreground)' : ''}...`);
+  // Determine execution mode (foreground is default, background is opt-in)
+  const isBackground = options.background === true && !options.watch;
+  const isWatch = options.watch === true;
+  const isForeground = !isBackground && !isWatch;
+
+  const modeText = isBackground ? ' (background)' : isWatch ? ' (watch)' : '';
+  writeLine(`  ${gradient('Launching')} lead session${modeText}...`);
   writeLine();
 
   try {
@@ -1012,6 +1066,8 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       verbose: options.verbose,
       timeoutMinutes: timeoutMins,
       foreground: options.foreground,
+      background: options.background,
+      watch: options.watch,
       useApi: options.useApi,
       effort: options.effort,
       skills: options.skills,
@@ -1021,11 +1077,11 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       model: options.model,
     });
 
-    if (options.foreground) {
+    if (isForeground || isWatch) {
       writeLine();
       writeLine(`  ${icons.success} Lead session completed`);
     } else {
-      writeLine(`  ${icons.success} Lead session launched`);
+      writeLine(`  ${icons.success} Lead session launched in background`);
       writeLine(`  ${colors.dim}${result}${RESET}`);
       writeLine();
       writeLine(`  ${colors.dim}The lead will:${RESET}`);
@@ -1272,9 +1328,16 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
     const cliConfig = getCLIConfig(provider);
     const cliName = cliConfig?.displayName || provider;
 
-    spinner.text = options.foreground
-      ? `Running ${agentName} with ${cliName} in foreground...`
-      : `Launching ${agentName} with ${cliName} as background task...`;
+    // Determine execution mode (foreground is default, background is opt-in)
+    const isBackground = options.background === true && !options.watch;
+    const isWatch = options.watch === true;
+    const isForeground = !isBackground && !isWatch;
+
+    spinner.text = isBackground
+      ? `Launching ${agentName} with ${cliName} in background...`
+      : isWatch
+        ? `Starting ${agentName} with ${cliName} (watch mode)...`
+        : `Running ${agentName} with ${cliName}...`;
 
     try {
       let result: string;
@@ -1285,6 +1348,8 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
           verbose: options.verbose,
           timeoutMinutes: options.timeout || 30,
           foreground: options.foreground,
+          background: options.background,
+          watch: options.watch,
           useApi: options.useApi,
           effort: options.effort,
           skills: options.skills,
@@ -1297,16 +1362,16 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
         // Use simplified provider execution
         result = await executeWithProvider(provider, prompt, {
           verbose: options.verbose,
-          foreground: options.foreground,
+          foreground: !isBackground,
           squadName,
           agentName,
         });
       }
 
-      if (options.foreground) {
+      if (isForeground || isWatch) {
         spinner.succeed(`Agent ${agentName} completed (${cliName})`);
       } else {
-        spinner.succeed(`Agent ${agentName} launched (${cliName})`);
+        spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
         writeLine(`  ${colors.dim}${result}${RESET}`);
         writeLine();
         writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
@@ -1355,7 +1420,9 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
 interface ExecuteWithClaudeOptions {
   verbose?: boolean;
   timeoutMinutes?: number;
-  foreground?: boolean;
+  foreground?: boolean; // Deprecated, now default
+  background?: boolean; // Opt-in background mode
+  watch?: boolean; // Background but tail log
   useApi?: boolean;
   effort?: EffortLevel;
   skills?: string[];
@@ -1373,6 +1440,8 @@ async function executeWithClaude(
     verbose,
     timeoutMinutes: _timeoutMinutes = 30,
     foreground,
+    background,
+    watch,
     useApi,
     effort,
     skills,
@@ -1381,6 +1450,18 @@ async function executeWithClaude(
     agentName,
     model,
   } = options;
+
+  // Determine execution mode:
+  // - Default is foreground (visible output)
+  // - --background (-b) runs detached
+  // - --watch (-w) runs detached but tails log
+  // - --foreground (-f) is deprecated (now default)
+  const runInBackground = background === true && !watch;
+  const runInWatch = watch === true;
+  const runInForeground = !runInBackground && !runInWatch;
+
+  // Track start time for status updates
+  const startMs = Date.now();
 
   // Ensure the project is trusted (prevents workspace trust dialog)
   const projectRoot = getProjectRoot();
@@ -1441,8 +1522,8 @@ async function executeWithClaude(
   // Register context with bridge for telemetry (non-blocking)
   await registerContextWithBridge(execContext);
 
-  // Foreground mode: run Claude directly in the terminal
-  if (foreground) {
+  // Foreground mode: run Claude directly in the terminal (default)
+  if (runInForeground) {
     if (verbose) {
       writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
       writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
@@ -1494,21 +1575,114 @@ async function executeWithClaude(
         },
       });
 
-      claude.on('close', (code) => {
+      claude.on('close', async (code) => {
+        const durationMs = Date.now() - startMs;
+
         if (code === 0) {
+          // Update execution status to completed
+          updateExecutionStatus(squadName, agentName, execContext.executionId, 'completed', {
+            outcome: 'Session completed successfully',
+            durationMs,
+          });
+
+          // Auto-commit any changes made by the agent
+          const commitResult = await autoCommitAgentWork(squadName, agentName, execContext.executionId);
+          if (commitResult.committed) {
+            writeLine();
+            writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
+          }
+
           resolve('Session completed');
         } else {
+          // Update execution status to failed
+          updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
+            error: `Claude exited with code ${code}`,
+            durationMs,
+          });
           reject(new Error(`Claude exited with code ${code}`));
         }
       });
 
       claude.on('error', (err) => {
+        const durationMs = Date.now() - startMs;
+        updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
+          error: String(err),
+          durationMs,
+        });
         reject(err);
       });
     });
   }
 
-  // Background mode: run via nohup with log file (tmux has issues with --print output)
+  // Watch mode: run in background but tail the log
+  if (runInWatch) {
+    const timestamp = Date.now();
+    const logDir = join(projectRoot, '.agents', 'logs', squadName);
+    const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+    const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+
+    // Ensure log directory exists
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+
+    if (verbose) {
+      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
+      writeLine(`  ${colors.dim}Mode: watch (background + tail)${RESET}`);
+      writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
+    }
+
+    // Build environment exports
+    const envExports = [
+      `export SQUADS_SQUAD='${execContext.squad}'`,
+      `export SQUADS_AGENT='${execContext.agent}'`,
+      `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
+      `export SQUADS_TRIGGER='${execContext.trigger}'`,
+      `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
+      `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
+    ].join('; ');
+
+    const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
+    const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+    const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+
+    // Spawn background process
+    const child = spawn('sh', ['-c', wrapperScript], {
+      cwd: projectRoot,
+      detached: true,
+      stdio: 'ignore',
+      env: spawnEnv,
+    });
+    child.unref();
+
+    // Wait a moment for the log file to be created
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Tail the log file
+    writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
+    writeLine();
+
+    const tail = spawn('tail', ['-f', logFile], { stdio: 'inherit' });
+
+    // Handle Ctrl+C gracefully
+    process.on('SIGINT', () => {
+      tail.kill();
+      writeLine();
+      writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
+      writeLine(`  ${colors.dim}Resume: tail -f ${logFile}${RESET}`);
+      process.exit(0);
+    });
+
+    // Wait for tail to exit (which won't happen unless killed)
+    return new Promise((resolve) => {
+      tail.on('close', () => {
+        resolve(`Agent running in background. Log: ${logFile}`);
+      });
+    });
+  }
+
+  // Background mode (--background): run detached with log file
+  // This is now opt-in behavior, not default
   const timestamp = Date.now();
   const logDir = join(projectRoot, '.agents', 'logs', squadName);
   const logFile = join(logDir, `${agentName}-${timestamp}.log`);
