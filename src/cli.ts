@@ -218,7 +218,9 @@ program
   .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
   .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
-  .option('-f, --foreground', 'Run in foreground (no tmux, blocks terminal)')
+  .option('-f, --foreground', 'Run in foreground (default behavior, deprecated flag)')
+  .option('-b, --background', 'Run agent in background (detached process)')
+  .option('-w, --watch', 'Run in background but tail the log for visibility')
   .option('--use-api', 'Use API credits instead of subscription')
   .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
   .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
@@ -234,7 +236,8 @@ Examples:
   $ squads run engineering --execute    Execute via Claude CLI
   $ squads run engineering --parallel   Run all agents in parallel (tmux)
   $ squads run engineering --lead       Single orchestrator with Task tool
-  $ squads run engineering -f           Run in foreground (blocks terminal)
+  $ squads run engineering -b           Run in background (detached)
+  $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
 `)
   .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
