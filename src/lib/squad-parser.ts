@@ -26,6 +26,18 @@ export interface SquadContext {
   cooldown?: number;
 }
 
+/**
+ * Resolved skill with path and source information.
+ */
+export interface ResolvedSkill {
+  /** Skill name (directory or reference name) */
+  name: string;
+  /** Absolute path to the skill directory */
+  path: string;
+  /** Where the skill was found */
+  source: 'squad-local' | 'project' | 'global';
+}
+
 // Multi-LLM provider configuration
 export interface SquadProviders {
   /** Default provider for all agents (default: anthropic) */
@@ -146,11 +158,13 @@ export interface ExecutionContext extends SquadContext {
     /** Path to MCP config file to use */
     mcpConfigPath: string;
     /** Source of MCP config resolution */
-    mcpSource: 'user-override' | 'generated' | 'fallback';
+    mcpSource: 'user-override' | 'generated' | 'fallback' | 'squad-local';
     /** List of MCP servers in the config */
     mcpServers: string[];
-    /** Resolved skill directory paths */
+    /** Resolved skill directory paths (deprecated, use skills instead) */
     skillPaths: string[];
+    /** Resolved skills with source information */
+    skills: ResolvedSkill[];
     /** Resolved memory file paths */
     memoryPaths: string[];
   };
@@ -611,14 +625,66 @@ export function updateGoalInSquad(
 }
 
 /**
- * Find the skills directory (.claude/skills)
+ * Find the project-level skills directory (.claude/skills)
  */
-function findSkillsDir(): string | null {
+function findProjectSkillsDir(): string | null {
   const projectRoot = findProjectRoot();
   if (!projectRoot) return null;
 
   const skillsDir = join(projectRoot, '.claude', 'skills');
   return existsSync(skillsDir) ? skillsDir : null;
+}
+
+/**
+ * Find the global skills directory (~/.claude/skills)
+ */
+function findGlobalSkillsDir(): string | null {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (!home) return null;
+
+  const skillsDir = join(home, '.claude', 'skills');
+  return existsSync(skillsDir) ? skillsDir : null;
+}
+
+/**
+ * Find squad-local skills directory (.agents/squads/<squad>/skills)
+ */
+function findSquadLocalSkillsDir(squadDir: string): string | null {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+
+  const skillsDir = join(squadsDir, squadDir, 'skills');
+  return existsSync(skillsDir) ? skillsDir : null;
+}
+
+/**
+ * List all skills in a directory.
+ * Skills are subdirectories containing SKILL.md or .md files.
+ */
+function listSkillsInDir(skillsDir: string): string[] {
+  if (!existsSync(skillsDir)) return [];
+
+  try {
+    const entries = readdirSync(skillsDir, { withFileTypes: true });
+    const skills: string[] = [];
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // Check if directory contains SKILL.md
+        const skillMdPath = join(skillsDir, entry.name, 'SKILL.md');
+        if (existsSync(skillMdPath)) {
+          skills.push(entry.name);
+        }
+      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'README.md') {
+        // Single-file skill
+        skills.push(entry.name.replace('.md', ''));
+      }
+    }
+
+    return skills;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -633,14 +699,81 @@ function findMemoryDir(): string | null {
 }
 
 /**
- * Resolve a skill name to its directory path.
+ * Resolve a skill name to its path using three-tier resolution:
+ * 1. Squad-local: .agents/squads/<squad>/skills/<skill>
+ * 2. Project: .claude/skills/<skill>
+ * 3. Global: ~/.claude/skills/<skill>
+ *
+ * @param skillName - Name of the skill to resolve
+ * @param squadDir - Squad directory name for squad-local lookup
+ * @returns Resolved skill with path and source, or null if not found
  */
-function resolveSkillPath(skillName: string): string | null {
-  const skillsDir = findSkillsDir();
-  if (!skillsDir) return null;
+function resolveSkill(skillName: string, squadDir?: string): ResolvedSkill | null {
+  // 1. Squad-local skills (highest priority)
+  if (squadDir) {
+    const squadSkillsDir = findSquadLocalSkillsDir(squadDir);
+    if (squadSkillsDir) {
+      // Check for directory-style skill
+      const dirPath = join(squadSkillsDir, skillName);
+      if (existsSync(dirPath) && existsSync(join(dirPath, 'SKILL.md'))) {
+        return { name: skillName, path: dirPath, source: 'squad-local' };
+      }
+      // Check for single-file skill
+      const filePath = join(squadSkillsDir, `${skillName}.md`);
+      if (existsSync(filePath)) {
+        return { name: skillName, path: filePath, source: 'squad-local' };
+      }
+    }
+  }
 
-  const skillPath = join(skillsDir, skillName);
-  return existsSync(skillPath) ? skillPath : null;
+  // 2. Project-level skills
+  const projectSkillsDir = findProjectSkillsDir();
+  if (projectSkillsDir) {
+    const dirPath = join(projectSkillsDir, skillName);
+    if (existsSync(dirPath) && existsSync(join(dirPath, 'SKILL.md'))) {
+      return { name: skillName, path: dirPath, source: 'project' };
+    }
+    const filePath = join(projectSkillsDir, `${skillName}.md`);
+    if (existsSync(filePath)) {
+      return { name: skillName, path: filePath, source: 'project' };
+    }
+  }
+
+  // 3. Global skills
+  const globalSkillsDir = findGlobalSkillsDir();
+  if (globalSkillsDir) {
+    const dirPath = join(globalSkillsDir, skillName);
+    if (existsSync(dirPath) && existsSync(join(dirPath, 'SKILL.md'))) {
+      return { name: skillName, path: dirPath, source: 'global' };
+    }
+    const filePath = join(globalSkillsDir, `${skillName}.md`);
+    if (existsSync(filePath)) {
+      return { name: skillName, path: filePath, source: 'global' };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get all available squad-local skills for a squad.
+ * Scans .agents/squads/<squad>/skills/ directory.
+ */
+export function getSquadLocalSkills(squadDir: string): ResolvedSkill[] {
+  const squadSkillsDir = findSquadLocalSkillsDir(squadDir);
+  if (!squadSkillsDir) return [];
+
+  const skillNames = listSkillsInDir(squadSkillsDir);
+  const skills: ResolvedSkill[] = [];
+
+  for (const name of skillNames) {
+    const resolved = resolveSkill(name, squadDir);
+    if (resolved && resolved.source === 'squad-local') {
+      skills.push(resolved);
+    }
+  }
+
+  return skills;
 }
 
 /**
@@ -683,11 +816,22 @@ function resolveMemoryPaths(patterns: string[]): string[] {
 }
 
 /**
+ * Check for squad-local MCP config (.agents/squads/<squad>/mcp.json)
+ */
+function findSquadLocalMcpConfig(squadDir: string): string | null {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+
+  const mcpConfigPath = join(squadsDir, squadDir, 'mcp.json');
+  return existsSync(mcpConfigPath) ? mcpConfigPath : null;
+}
+
+/**
  * Resolve execution context for a squad.
  *
  * Takes a Squad object and resolves all context references to actual paths:
- * - MCP config path (three-tier resolution)
- * - Skill directory paths
+ * - MCP config path (four-tier resolution: squad-local, user-override, generated, fallback)
+ * - Skill directory paths (three-tier: squad-local, project, global)
  * - Memory file paths
  *
  * @param squad - The squad to resolve context for
@@ -700,20 +844,61 @@ export function resolveExecutionContext(
 ): ExecutionContext {
   const ctx = squad.context || {};
 
-  // Resolve MCP config
-  const mcpResolution: McpResolution = resolveMcpConfig(
-    squad.name,
-    ctx.mcp,
-    forceRegenerate
-  );
+  // Check for squad-local MCP config first (highest priority)
+  const squadLocalMcpConfig = findSquadLocalMcpConfig(squad.dir);
 
-  // Resolve skill paths
-  const skillPaths: string[] = [];
+  let mcpConfigPath: string;
+  let mcpSource: 'squad-local' | 'user-override' | 'generated' | 'fallback';
+  let mcpServers: string[] = [];
+
+  if (squadLocalMcpConfig) {
+    // Use squad-local MCP config
+    mcpConfigPath = squadLocalMcpConfig;
+    mcpSource = 'squad-local';
+
+    // Try to read server names from the config
+    try {
+      const content = readFileSync(squadLocalMcpConfig, 'utf-8');
+      const config = JSON.parse(content);
+      mcpServers = Object.keys(config.mcpServers || {});
+    } catch {
+      // Ignore parse errors
+    }
+  } else {
+    // Fall back to existing resolution (user-override, generated, fallback)
+    const mcpResolution: McpResolution = resolveMcpConfig(
+      squad.name,
+      ctx.mcp,
+      forceRegenerate
+    );
+    mcpConfigPath = mcpResolution.path;
+    mcpSource = mcpResolution.source;
+    mcpServers = mcpResolution.servers || [];
+  }
+
+  // Resolve skills with three-tier resolution
+  const resolvedSkills: ResolvedSkill[] = [];
+  const skillPaths: string[] = []; // For backward compatibility
+
+  // First, add any squad-local skills that exist (auto-discovered)
+  const squadLocalSkills = getSquadLocalSkills(squad.dir);
+  for (const skill of squadLocalSkills) {
+    resolvedSkills.push(skill);
+    skillPaths.push(skill.path);
+  }
+
+  // Then, resolve explicitly listed skills from context
   if (ctx.skills) {
-    for (const skill of ctx.skills) {
-      const path = resolveSkillPath(skill);
-      if (path) {
-        skillPaths.push(path);
+    for (const skillName of ctx.skills) {
+      // Check if already resolved as squad-local
+      if (resolvedSkills.some(s => s.name === skillName)) {
+        continue;
+      }
+
+      const resolved = resolveSkill(skillName, squad.dir);
+      if (resolved) {
+        resolvedSkills.push(resolved);
+        skillPaths.push(resolved.path);
       }
     }
   }
@@ -730,10 +915,11 @@ export function resolveExecutionContext(
     squadName: squad.name,
     // Add resolved paths
     resolved: {
-      mcpConfigPath: mcpResolution.path,
-      mcpSource: mcpResolution.source,
-      mcpServers: mcpResolution.servers || [],
-      skillPaths,
+      mcpConfigPath,
+      mcpSource,
+      mcpServers,
+      skillPaths, // Backward compatible
+      skills: resolvedSkills, // New detailed skill info
       memoryPaths,
     },
   };

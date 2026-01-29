@@ -15,6 +15,9 @@ export {
   // Goal management
   addGoalToSquad,
   updateGoalInSquad,
+  // Context resolution (squad-scoped skills/MCP)
+  resolveExecutionContext,
+  getSquadLocalSkills,
   // Types
   type Squad,
   type Agent,
@@ -23,6 +26,8 @@ export {
   type SquadContext,
   type SquadFrontmatter,
   type EffortLevel,
+  type ExecutionContext,
+  type ResolvedSkill,
 } from './lib/squad-parser.js';
 
 // Context Condenser - for programmatic API usage
