@@ -7,7 +7,7 @@ import {
   updateMemorySync,
   appendToMemorySync,
 } from '../src/lib/memory';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -17,7 +17,7 @@ describe('memory utilities', () => {
   let originalCwd: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'squads-memory-test-'));
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), 'squads-memory-test-')));
     memoryDir = join(tempDir, '.agents', 'memory');
     mkdirSync(memoryDir, { recursive: true });
     originalCwd = process.cwd();
