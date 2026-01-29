@@ -209,14 +209,16 @@ function gatherSquadContext(
   if (existsSync(squadFile)) {
     try {
       const squadContent = readFileSync(squadFile, 'utf-8');
-      // Extract key sections (skip frontmatter YAML, focus on mission/goals)
+      // Extract key sections (skip frontmatter YAML, focus on mission/goals/output)
       const missionMatch = squadContent.match(/## Mission[\s\S]*?(?=\n## |$)/i);
       const goalsMatch = squadContent.match(/## (?:Goals|Objectives)[\s\S]*?(?=\n## |$)/i);
+      const outputMatch = squadContent.match(/## Output[\s\S]*?(?=\n## |$)/i);
       const contextMatch = squadContent.match(/## Context[\s\S]*?(?=\n## |$)/i);
 
       let squadContext = '';
       if (missionMatch) squadContext += missionMatch[0] + '\n';
       if (goalsMatch) squadContext += goalsMatch[0] + '\n';
+      if (outputMatch) squadContext += outputMatch[0] + '\n';
       if (contextMatch) squadContext += contextMatch[0] + '\n';
 
       // If no structured sections found, include first 2000 chars
