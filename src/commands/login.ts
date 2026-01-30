@@ -12,7 +12,7 @@ import {
 } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
-const AUTH_URL = process.env.SQUADS_AUTH_URL || 'https://app.agents-squads.com/auth';
+const AUTH_URL = process.env.SQUADS_AUTH_URL || 'SQUADS_API_URL/auth/cli';
 const CALLBACK_PORT = 54321;
 
 async function isAuthEndpointAvailable(): Promise<boolean> {
