@@ -1,0 +1,71 @@
+name: P1 Issue Aging Alert
+
+on:
+  schedule:
+    - cron: '0 9 * * *' # Daily at 9am UTC
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-p1-age:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check P1 issue age
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'P1',
+              state: 'open'
+            });
+
+            const now = new Date();
+            const warningThreshold = 5; // days
+            const criticalThreshold = 7; // days
+
+            let warnings = [];
+            let critical = [];
+
+            for (const issue of issues) {
+              const created = new Date(issue.created_at);
+              const ageInDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+
+              if (ageInDays >= criticalThreshold) {
+                critical.push({ number: issue.number, title: issue.title, age: ageInDays });
+              } else if (ageInDays >= warningThreshold) {
+                warnings.push({ number: issue.number, title: issue.title, age: ageInDays });
+              }
+            }
+
+            // Generate summary
+            core.summary.addHeading('P1 Issue Aging Report');
+
+            if (critical.length > 0) {
+              core.summary.addHeading('🚨 CRITICAL: Issues >7 days', 3);
+              const criticalTable = critical.map(i =>
+                `| #${i.number} | ${i.title} | ${i.age} days |`
+              ).join('\n');
+              core.summary.addRaw(`| Issue | Title | Age |\n|-------|-------|-----|\n${criticalTable}`);
+            }
+
+            if (warnings.length > 0) {
+              core.summary.addHeading('⚠️  WARNING: Issues 5-6 days', 3);
+              const warningTable = warnings.map(i =>
+                `| #${i.number} | ${i.title} | ${i.age} days |`
+              ).join('\n');
+              core.summary.addRaw(`| Issue | Title | Age |\n|-------|-------|-----|\n${warningTable}`);
+            }
+
+            if (critical.length === 0 && warnings.length === 0) {
+              core.summary.addRaw('✅ All P1 issues are under 5 days old.');
+            }
+
+            await core.summary.write();
+
+            // Fail workflow if critical threshold exceeded
+            if (critical.length > 0) {
+              core.setFailed(`P1 POLICY VIOLATION: ${critical.length} issue(s) open >7 days`);
+            } else if (warnings.length > 0) {
+              core.warning(`${warnings.length} P1 issue(s) approaching 7-day threshold`);
+            }
