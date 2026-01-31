@@ -128,6 +128,15 @@ import {
   kpiInsightsCommand,
   kpiListCommand,
 } from './commands/kpi.js';
+import {
+  configCommand,
+  configInitCommand,
+  configGetCommand,
+  configSetCommand,
+  configUnsetCommand,
+  configEditCommand,
+  configPathCommand,
+} from './commands/config.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -481,6 +490,42 @@ program
   .description('Show available LLM CLI providers (claude, gemini, codex, etc.)')
   .option('-j, --json', 'Output as JSON')
   .action((options) => providersCommand(options));
+
+// Config command - manage CLI configuration
+const config = program
+  .command('config')
+  .description('Manage CLI configuration')
+  .action(configCommand);
+
+config
+  .command('init')
+  .description('Create default configuration file')
+  .action(configInitCommand);
+
+config
+  .command('get <key>')
+  .description('Get a config value (dot notation, e.g., user.name)')
+  .action(configGetCommand);
+
+config
+  .command('set <key> <value>')
+  .description('Set a config value (dot notation)')
+  .action(configSetCommand);
+
+config
+  .command('unset <key>')
+  .description('Remove a config value')
+  .action(configUnsetCommand);
+
+config
+  .command('edit')
+  .description('Open config file in $EDITOR')
+  .action(configEditCommand);
+
+config
+  .command('path')
+  .description('Show config file path')
+  .action(configPathCommand);
 
 // Watch command - live refresh any command
 program
