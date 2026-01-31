@@ -1,4 +1,4 @@
-import { config } from 'dotenv';
+import { config as dotenvConfig } from 'dotenv';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -38,7 +38,7 @@ const envPaths = [
 
 for (const envPath of envPaths) {
   if (existsSync(envPath)) {
-    config({ path: envPath, quiet: true });
+    dotenvConfig({ path: envPath, quiet: true });
     break;
   }
 }
