@@ -42,94 +42,8 @@ for (const envPath of envPaths) {
     break;
   }
 }
-import { initCommand } from './commands/init.js';
-import { setupCommand } from './commands/setup.js';
-import { runCommand } from './commands/run.js';
-import { listCommand } from './commands/list.js';
-import { statusCommand } from './commands/status.js';
-import {
-  memoryQueryCommand,
-  memoryShowCommand,
-  memoryUpdateCommand,
-  memoryListCommand,
-  memorySearchCommand,
-  memoryExtractCommand
-} from './commands/memory.js';
-import { syncCommand } from './commands/sync.js';
-import { autonomyCommand } from './commands/autonomy.js';
-import {
-  goalSetCommand,
-  goalListCommand,
-  goalCompleteCommand,
-  goalProgressCommand
-} from './commands/goal.js';
-import {
-  feedbackAddCommand,
-  feedbackShowCommand,
-  feedbackStatsCommand
-} from './commands/feedback.js';
-import {
-  learnCommand,
-  learnShowCommand,
-  learnSearchCommand
-} from './commands/learn.js';
-import { dashboardCommand } from './commands/dashboard.js';
-import { renderDashboard, showAvailableDashboards, findDashboard } from './lib/dashboard/index.js';
-import { issuesCommand } from './commands/issues.js';
-import { solveIssuesCommand } from './commands/solve-issues.js';
-import { openIssuesCommand } from './commands/open-issues.js';
-import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
-import { updateCommand } from './commands/update.js';
-import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
-import { resultsCommand } from './commands/results.js';
-import { historyCommand } from './commands/history.js';
-import { healthCommand } from './commands/health.js';
-import { baselineCommand } from './commands/baseline.js';
-import { workersCommand } from './commands/workers.js';
-import { contextFeedCommand } from './commands/context-feed.js';
-import { watchCommand } from './commands/watch.js';
-import { liveCommand } from './commands/live.js';
-import { topCommand } from './commands/top.js';
-import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
-import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
-import { registerExitHandler } from './lib/telemetry.js';
-import {
-  stackInitCommand,
-  stackStatusCommand,
-  stackEnvCommand,
-  stackUpCommand,
-  stackDownCommand,
-  stackHealthCommand,
-  stackLogsCommand,
-  applyStackConfig
-} from './commands/stack.js';
-import { registerTriggerCommand } from './commands/trigger.js';
-import { registerCronCommand } from './commands/cron.js';
-import { registerAutonomousCommand } from './commands/autonomous.js';
-import { registerSkillCommand } from './commands/skill.js';
-import { registerApprovalCommand } from './commands/approval.js';
-import { registerPermissionsCommand } from './commands/permissions.js';
-import { registerSlackCommand } from './commands/slack.js';
-import { registerOrchestrateCommand } from './commands/orchestrate.js';
-import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
-import { costCommand, budgetCheckCommand } from './commands/cost.js';
-import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
-import {
-  tonightCommand,
-  tonightStatusCommand,
-  tonightStopCommand,
-  tonightReportCommand
-} from './commands/tonight.js';
-import { providersCommand } from './commands/providers.js';
-import {
-  kpiShowCommand,
-  kpiRecordCommand,
-  kpiTrendCommand,
-  kpiInsightsCommand,
-  kpiListCommand,
-} from './commands/kpi.js';
-
-// Load stack config from ~/.squadsrc (if exists)
+// Load stack config from ~/.squadsrc (if exists) - lightweight operation
+const { applyStackConfig } = await import('./commands/stack.js');
 applyStackConfig();
 
 // Seamless auto-update on startup (like Gemini CLI)
@@ -137,7 +51,8 @@ applyStackConfig();
 // Set SQUADS_NO_AUTO_UPDATE=1 to disable
 await autoUpdateOnStartup();
 
-// Register telemetry exit handler early
+// Register telemetry exit handler early - lightweight operation
+const { registerExitHandler } = await import('./lib/telemetry.js');
 registerExitHandler();
 
 const program = new Command();
@@ -183,6 +98,7 @@ program
     }
 
     // Run status command to show all squads (includes quick commands)
+    const { statusCommand } = await import('./commands/status.js');
     await statusCommand(undefined, {});
   });
 
@@ -196,7 +112,10 @@ program
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
   .option('-q, --quick', 'Quick init - create files only, skip guided setup')
-  .action(initCommand);
+  .action(async (options) => {
+    const { initCommand } = await import('./commands/init.js');
+    await initCommand(options);
+  });
 
 // Setup command - full guided onboarding experience
 program
@@ -206,7 +125,10 @@ program
   .option('--skip-infra', 'Skip infrastructure setup')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
   .option('-r, --resume', 'Resume from last checkpoint')
-  .action(setupCommand);
+  .action(async (options) => {
+    const { setupCommand } = await import('./commands/setup.js');
+    await setupCommand(options);
+  });
 
 // Run command - runs squads or individual agents
 program
@@ -241,7 +163,10 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
 `)
-  .action((target, options) => runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) }));
+  .action(async (target, options) => {
+    const { runCommand } = await import('./commands/run.js');
+    await runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) });
+  });
 
 // List command
 program
@@ -250,14 +175,20 @@ program
   .option('-s, --squads', 'List squads only')
   .option('-a, --agents', 'List agents only')
   .option('-v, --verbose', 'Show additional details')
-  .action(listCommand);
+  .action(async (options) => {
+    const { listCommand } = await import('./commands/list.js');
+    await listCommand(options);
+  });
 
 // Status command
 program
   .command('status [squad]')
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
-  .action(statusCommand);
+  .action(async (squad, options) => {
+    const { statusCommand } = await import('./commands/status.js');
+    await statusCommand(squad, options);
+  });
 
 // Dashboard command
 program
@@ -270,6 +201,9 @@ program
   .option('-l, --list', 'List available declarative dashboards')
   .option('--view <view>', 'Render specific view from dashboard')
   .action(async (name, options) => {
+    const { renderDashboard, showAvailableDashboards, findDashboard } = await import('./lib/dashboard/index.js');
+    const { dashboardCommand } = await import('./commands/dashboard.js');
+
     // List available dashboards
     if (options.list) {
       showAvailableDashboards();
@@ -299,7 +233,10 @@ program
   .option('-s, --squad <squad>', 'Filter by squad')
   .option('-p, --period <period>', 'Time period: today, week, month', 'today')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => autonomyCommand({ squad: options.squad, period: options.period, json: options.json }));
+  .action(async (options) => {
+    const { autonomyCommand } = await import('./commands/autonomy.js');
+    await autonomyCommand({ squad: options.squad, period: options.period, json: options.json });
+  });
 
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
@@ -310,13 +247,13 @@ env
   .command('show <squad>')
   .description('Show execution environment for a squad')
   .option('--json', 'Output as JSON')
-  .action(contextShowCommand);
+  .action(async (squad, options) => { const { contextShowCommand } = await import('./commands/context.js'); await contextShowCommand(squad, options); });
 
 env
   .command('list')
   .description('List execution environment for all squads')
   .option('--json', 'Output as JSON')
-  .action(contextListCommand);
+  .action(async (options) => { const { contextListCommand } = await import('./commands/context.js'); await contextListCommand(options); });
 
 env
   .command('activate <squad>')
@@ -324,7 +261,7 @@ env
   .option('-d, --dry-run', 'Show what would be generated without writing files')
   .option('-f, --force', 'Force regeneration even if config exists')
   .option('--json', 'Output as JSON')
-  .action(contextActivateCommand);
+  .action(async (squad, options) => { const { contextActivateCommand } = await import('./commands/context.js'); await contextActivateCommand(squad, options); });
 
 // Cost command - cost introspection for self-improvement
 program
@@ -332,7 +269,7 @@ program
   .description('Show cost summary (today, week, by squad)')
   .option('-s, --squad <squad>', 'Filter to specific squad')
   .option('--json', 'Output as JSON')
-  .action(costCommand);
+  .action(async (options) => { const { costCommand } = await import('./commands/cost.js'); await costCommand(options); });
 
 // Budget check command - pre-flight budget validation
 program
@@ -340,7 +277,7 @@ program
   .description('Check budget status for a squad')
   .argument('<squad>', 'Squad to check')
   .option('--json', 'Output as JSON')
-  .action(budgetCheckCommand);
+  .action(async (squad, options) => { const { budgetCheckCommand } = await import('./commands/cost.js'); await budgetCheckCommand(squad, options); });
 
 // Exec command group - execution history introspection
 const exec = program
@@ -355,23 +292,23 @@ exec
   .option('--status <status>', 'Filter by status (running, completed, failed)')
   .option('-n, --limit <n>', 'Number of executions to show', '20')
   .option('--json', 'Output as JSON')
-  .action((options) => execListCommand({ ...options, limit: parseInt(options.limit, 10) }));
+  .action(async (options) => { const { execListCommand } = await import('./commands/exec.js'); await execListCommand({ ...options, limit: parseInt(options.limit, 10) }); });
 
 exec
   .command('show <id>')
   .description('Show execution details')
   .option('--json', 'Output as JSON')
-  .action(execShowCommand);
+  .action(async (id, options) => { const { execShowCommand } = await import('./commands/exec.js'); await execShowCommand(id, options); });
 
 exec
   .command('stats')
   .description('Show execution statistics')
   .option('-s, --squad <squad>', 'Filter by squad')
   .option('--json', 'Output as JSON')
-  .action(execStatsCommand);
+  .action(async (options) => { const { execStatsCommand } = await import('./commands/exec.js'); await execStatsCommand(options); });
 
 // Default action: show list
-exec.action((options) => execListCommand(options));
+exec.action(async (options) => { const { execListCommand } = await import('./commands/exec.js'); await execListCommand(options); });
 
 // Issues command
 program
@@ -379,7 +316,7 @@ program
   .description('Show GitHub issues across repos')
   .option('-o, --org <org>', 'GitHub organization', 'agents-squads')
   .option('-r, --repos <repos>', 'Comma-separated repo names')
-  .action(issuesCommand);
+  .action(async (options) => { const { issuesCommand } = await import('./commands/issues.js'); await issuesCommand(options); });
 
 // Solve issues command - close issues by creating PRs
 program
@@ -389,7 +326,7 @@ program
   .option('-i, --issue <number>', 'Specific issue number', parseInt)
   .option('-d, --dry-run', 'Show what would be solved')
   .option('-e, --execute', 'Execute with Claude CLI')
-  .action(solveIssuesCommand);
+  .action(async (options) => { const { solveIssuesCommand } = await import('./commands/solve-issues.js'); await solveIssuesCommand(options); });
 
 // Open issues command - run evaluators to find new issues
 program
@@ -399,25 +336,25 @@ program
   .option('-a, --agent <agent>', 'Specific evaluator agent')
   .option('-d, --dry-run', 'Show what would run')
   .option('-e, --execute', 'Execute with Claude CLI')
-  .action(openIssuesCommand);
+  .action(async (options) => { const { openIssuesCommand } = await import('./commands/open-issues.js'); await openIssuesCommand(options); });
 
 // Progress command - track agent task progress
 const progress = program
   .command('progress')
   .description('Track active and completed agent tasks')
   .option('-v, --verbose', 'Show more activity')
-  .action(progressCommand);
+  .action(async (options) => { const { progressCommand } = await import('./commands/progress.js'); await progressCommand(options); });
 
 progress
   .command('start <squad> <description>')
   .description('Register a new active task')
-  .action(progressStartCommand);
+  .action(async (squad, description, options) => { const { progressStartCommand } = await import('./commands/progress.js'); await progressStartCommand(squad, description, options); });
 
 progress
   .command('complete <taskId>')
   .description('Mark a task as completed')
   .option('-f, --failed', 'Mark as failed instead')
-  .action(progressCompleteCommand);
+  .action(async (taskId, options) => { const { progressCompleteCommand } = await import('./commands/progress.js'); await progressCompleteCommand(taskId, options); });
 
 // Results command - KPI goals vs actuals
 program
@@ -425,7 +362,7 @@ program
   .description('Show squad results: git activity + KPI goals vs actuals')
   .option('-d, --days <days>', 'Days to look back', '7')
   .option('-v, --verbose', 'Show detailed KPIs per goal')
-  .action((squad, options) => resultsCommand({ ...options, squad }));
+  .action(async (squad, options) => { const { resultsCommand } = await import('./commands/results.js'); await resultsCommand({ ...options, squad }); });
 
 // History command - show recent agent executions
 program
@@ -435,7 +372,7 @@ program
   .option('-s, --squad <squad>', 'Filter by squad')
   .option('-v, --verbose', 'Show cost and token details')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => historyCommand(options));
+  .action(async (options) => { const { historyCommand } = await import('./commands/history.js'); await historyCommand(options); });
 
 // Context command - business context for alignment
 program
@@ -447,7 +384,7 @@ program
   .option('-a, --agent', 'Output JSON for agent consumption')
   .option('-j, --json', 'Output as JSON (alias for --agent)')
   .option('-v, --verbose', 'Show additional details')
-  .action((options) => contextFeedCommand(options));
+  .action(async (options) => { const { contextFeedCommand } = await import('./commands/context-feed.js'); await contextFeedCommand(options); });
 
 // Workers command - show running processes and tasks
 program
@@ -457,14 +394,14 @@ program
   .option('-k, --kill <pid>', 'Kill a process by PID or tmux session name')
   .option('-c, --cleanup', 'Kill all zombie sessions (>24h old)')
   .option('-a, --all', 'Kill ALL agent tmux sessions (not interactive terminals)')
-  .action(workersCommand);
+  .action(async (options) => { const { workersCommand } = await import('./commands/workers.js'); await workersCommand(options); });
 
 // Health command - quick infrastructure check
 program
   .command('health')
   .description('Quick health check for all infrastructure services')
   .option('-v, --verbose', 'Show optional services')
-  .action((options) => healthCommand(options));
+  .action(async (options) => { const { healthCommand } = await import('./commands/health.js'); await healthCommand(options); });
 
 // Baseline command - capture and compare ROI baselines
 program
@@ -473,14 +410,14 @@ program
   .option('-n, --name <name>', 'Name for the baseline')
   .option('-c, --compare', 'Compare current metrics to latest baseline')
   .option('-l, --list', 'List all baselines')
-  .action((subcommand, options) => baselineCommand(subcommand, options));
+  .action(async (subcommand, options) => { const { baselineCommand } = await import('./commands/baseline.js'); await baselineCommand(subcommand, options); });
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
   .command('providers')
   .description('Show available LLM CLI providers (claude, gemini, codex, etc.)')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => providersCommand(options));
+  .action(async (options) => { const { providersCommand } = await import('./commands/providers.js'); await providersCommand(options); });
 
 // Watch command - live refresh any command
 program
@@ -488,10 +425,13 @@ program
   .description('Live refresh any squads command (like Unix watch)')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '2')
   .option('--no-clear', 'Don\'t clear screen between refreshes')
-  .action((command, args, options) => watchCommand(command, args, {
-    interval: parseInt(options.interval, 10),
-    clear: options.clear
-  }));
+  .action(async (command, args, options) => {
+    const { watchCommand } = await import('./commands/watch.js');
+    await watchCommand(command, args, {
+      interval: parseInt(options.interval, 10),
+      clear: options.clear
+    });
+  });
 
 // Live command - TUI dashboard
 program
@@ -499,13 +439,13 @@ program
   .description('Live TUI dashboard with real-time metrics (like htop)')
   .option('-m, --minimal', 'Minimal view')
   .option('-f, --focus <panel>', 'Focus on specific panel (agents, cost, activity, memory)')
-  .action((options) => liveCommand(options));
+  .action(async (options) => { const { liveCommand } = await import('./commands/live.js'); await liveCommand(options); });
 
 // Top command - live process table like Unix top
 program
   .command('top')
   .description('Live process table (like Unix top) - numbers update in place')
-  .action(() => topCommand());
+  .action(async () => { const { topCommand } = await import('./commands/top.js'); await topCommand(); });
 
 // Memory command group
 const memory = program
@@ -528,24 +468,24 @@ memory
   .description('Search across all squad memory')
   .option('-s, --squad <squad>', 'Limit search to specific squad')
   .option('-a, --agent <agent>', 'Limit search to specific agent')
-  .action(memoryQueryCommand);
+  .action(async (query, options) => { const { memoryQueryCommand } = await import('./commands/memory.js'); await memoryQueryCommand(query, options); });
 
 memory
   .command('show <squad>')
   .description('Show memory for a squad')
-  .action(memoryShowCommand);
+  .action(async (squad, options) => { const { memoryShowCommand } = await import('./commands/memory.js'); await memoryShowCommand(squad, options); });
 
 memory
   .command('update <squad> <content>')
   .description('Add to squad memory')
   .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
   .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
-  .action(memoryUpdateCommand);
+  .action(async (squad, content, options) => { const { memoryUpdateCommand } = await import('./commands/memory.js'); await memoryUpdateCommand(squad, content, options); });
 
 memory
   .command('list')
   .description('List all memory entries')
-  .action(memoryListCommand);
+  .action(async (options) => { const { memoryListCommand } = await import('./commands/memory.js'); await memoryListCommand(options); });
 
 memory
   .command('sync')
@@ -557,7 +497,10 @@ memory
   .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
   .option('--learnings', 'Sync learnings.md files to Postgres')
   .option('--auto-learn', 'Auto-generate learnings from session commits')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
+  .action(async (options) => {
+    const { syncCommand } = await import('./commands/sync.js');
+    await syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn });
+  });
 
 memory
   .command('search <query>')
@@ -565,11 +508,14 @@ memory
   .option('-l, --limit <limit>', 'Number of results', '10')
   .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
   .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
-  .action((query, opts) => memorySearchCommand(query, {
-    limit: parseInt(opts.limit, 10),
-    role: opts.role,
-    importance: opts.importance
-  }));
+  .action(async (query, opts) => {
+    const { memorySearchCommand } = await import('./commands/memory.js');
+    await memorySearchCommand(query, {
+      limit: parseInt(opts.limit, 10),
+      role: opts.role,
+      importance: opts.importance
+    });
+  });
 
 memory
   .command('extract')
@@ -577,11 +523,14 @@ memory
   .option('-s, --session <session>', 'Extract specific session only')
   .option('-h, --hours <hours>', 'Look back period in hours', '24')
   .option('-d, --dry-run', 'Preview without sending to Engram')
-  .action((opts) => memoryExtractCommand({
-    session: opts.session,
-    hours: parseInt(opts.hours, 10),
-    dryRun: opts.dryRun
-  }));
+  .action(async (opts) => {
+    const { memoryExtractCommand } = await import('./commands/memory.js');
+    await memoryExtractCommand({
+      session: opts.session,
+      hours: parseInt(opts.hours, 10),
+      dryRun: opts.dryRun
+    });
+  });
 
 // Goal command group
 const goal = program
@@ -595,23 +544,23 @@ goal
   .command('set <squad> <description>')
   .description('Set a goal for a squad')
   .option('-m, --metric <metrics...>', 'Metrics to track')
-  .action(goalSetCommand);
+  .action(async (squad, description, options) => { const { goalSetCommand } = await import('./commands/goal.js'); await goalSetCommand(squad, description, options); });
 
 goal
   .command('list [squad]')
   .description('List goals for squad(s)')
   .option('-a, --all', 'Show completed goals too')
-  .action(goalListCommand);
+  .action(async (squad, options) => { const { goalListCommand } = await import('./commands/goal.js'); await goalListCommand(squad, options); });
 
 goal
   .command('complete <squad> <index>')
   .description('Mark a goal as completed')
-  .action(goalCompleteCommand);
+  .action(async (squad, index, options) => { const { goalCompleteCommand } = await import('./commands/goal.js'); await goalCompleteCommand(squad, index, options); });
 
 goal
   .command('progress <squad> <index> <progress>')
   .description('Update goal progress')
-  .action(goalProgressCommand);
+  .action(async (squad, index, progress, options) => { const { goalProgressCommand } = await import('./commands/goal.js'); await goalProgressCommand(squad, index, progress, options); });
 
 // Feedback command group
 const feedback = program
@@ -622,18 +571,18 @@ feedback
   .command('add <squad> <rating> <feedback>')
   .description('Add feedback for last execution (rating 1-5)')
   .option('-l, --learning <learnings...>', 'Learnings to extract')
-  .action(feedbackAddCommand);
+  .action(async (squad, rating, feedback, options) => { const { feedbackAddCommand } = await import('./commands/feedback.js'); await feedbackAddCommand(squad, rating, feedback, options); });
 
 feedback
   .command('show <squad>')
   .description('Show feedback history')
   .option('-n, --limit <n>', 'Number of entries to show', '5')
-  .action(feedbackShowCommand);
+  .action(async (squad, options) => { const { feedbackShowCommand } = await import('./commands/feedback.js'); await feedbackShowCommand(squad, options); });
 
 feedback
   .command('stats')
   .description('Show feedback summary across all squads')
-  .action(feedbackStatsCommand);
+  .action(async (options) => { const { feedbackStatsCommand } = await import('./commands/feedback.js'); await feedbackStatsCommand(options); });
 
 // KPI command group - track squad metrics
 const kpi = program
@@ -652,33 +601,33 @@ kpi
   .command('list')
   .description('List all KPIs across squads')
   .option('-j, --json', 'Output as JSON')
-  .action(kpiListCommand);
+  .action(async (options) => { const { kpiListCommand } = await import('./commands/kpi.js'); await kpiListCommand(options); });
 
 kpi
   .command('show <squad>')
   .description('Show KPI status for a squad')
   .option('-j, --json', 'Output as JSON')
-  .action(kpiShowCommand);
+  .action(async (squad, options) => { const { kpiShowCommand } = await import('./commands/kpi.js'); await kpiShowCommand(squad, options); });
 
 kpi
   .command('record <squad> <kpi> <value>')
   .description('Record a KPI value')
   .option('-n, --note <note>', 'Add a note to the record')
   .option('-j, --json', 'Output as JSON')
-  .action(kpiRecordCommand);
+  .action(async (squad, kpi, value, options) => { const { kpiRecordCommand } = await import('./commands/kpi.js'); await kpiRecordCommand(squad, kpi, value, options); });
 
 kpi
   .command('trend <squad> <kpi>')
   .description('Show KPI trend over time')
   .option('-p, --periods <n>', 'Number of periods to show', '7')
   .option('-j, --json', 'Output as JSON')
-  .action(kpiTrendCommand);
+  .action(async (squad, kpi, options) => { const { kpiTrendCommand } = await import('./commands/kpi.js'); await kpiTrendCommand(squad, kpi, options); });
 
 kpi
   .command('insights [squad]')
   .description('Generate insights from KPI data')
   .option('-j, --json', 'Output as JSON')
-  .action(kpiInsightsCommand);
+  .action(async (squad, options) => { const { kpiInsightsCommand } = await import('./commands/kpi.js'); await kpiInsightsCommand(squad, options); });
 
 // Learn command - capture learnings for autonomous improvement
 program
@@ -688,7 +637,7 @@ program
   .option('-c, --category <category>', 'Category: success, failure, pattern, tip')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('--context <context>', 'Additional context')
-  .action(learnCommand);
+  .action(async (insight, options) => { const { learnCommand } = await import('./commands/learn.js'); await learnCommand(insight, options); });
 
 const learn = program
   .command('learnings')
@@ -700,13 +649,13 @@ learn
   .option('-n, --limit <n>', 'Number to show', '10')
   .option('-c, --category <category>', 'Filter by category')
   .option('--tag <tag>', 'Filter by tag')
-  .action(learnShowCommand);
+  .action(async (squad, options) => { const { learnShowCommand } = await import('./commands/learn.js'); await learnShowCommand(squad, options); });
 
 learn
   .command('search <query>')
   .description('Search learnings across all squads')
   .option('-n, --limit <n>', 'Max results', '10')
-  .action(learnSearchCommand);
+  .action(async (query, options) => { const { learnSearchCommand } = await import('./commands/learn.js'); await learnSearchCommand(query, options); });
 
 // Sessions command group - list active sessions and history
 const sessions = program
@@ -714,7 +663,7 @@ const sessions = program
   .description('Show active Claude Code sessions across squads')
   .option('-v, --verbose', 'Show session details')
   .option('-j, --json', 'Output as JSON')
-  .action(sessionsCommand);
+  .action(async (options) => { const { sessionsCommand } = await import('./commands/sessions.js'); await sessionsCommand(options); });
 
 sessions
   .command('history')
@@ -722,11 +671,14 @@ sessions
   .option('-d, --days <days>', 'Days of history to show', '7')
   .option('-s, --squad <squad>', 'Filter by squad')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => sessionsHistoryCommand({
-    days: parseInt(options.days, 10),
-    squad: options.squad,
-    json: options.json,
-  }));
+  .action(async (options) => {
+    const { sessionsHistoryCommand } = await import('./commands/sessions.js');
+    await sessionsHistoryCommand({
+      days: parseInt(options.days, 10),
+      squad: options.squad,
+      json: options.json,
+    });
+  });
 
 sessions
   .command('summary')
@@ -775,25 +727,25 @@ session
   .description('Register a new session')
   .option('-s, --squad <squad>', 'Override squad detection')
   .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionStartCommand({ squad: options.squad, quiet: options.quiet }));
+  .action(async (options) => { const { sessionStartCommand } = await import('./commands/session.js'); await sessionStartCommand({ squad: options.squad, quiet: options.quiet }); });
 
 session
   .command('stop')
   .description('End current session')
   .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionStopCommand({ quiet: options.quiet }));
+  .action(async (options) => { const { sessionStopCommand } = await import('./commands/session.js'); await sessionStopCommand({ quiet: options.quiet }); });
 
 session
   .command('heartbeat')
   .description('Update session heartbeat')
   .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionHeartbeatCommand({ quiet: options.quiet }));
+  .action(async (options) => { const { sessionHeartbeatCommand } = await import('./commands/session.js'); await sessionHeartbeatCommand({ quiet: options.quiet }); });
 
 // Detect squad command - useful for hooks
 program
   .command('detect-squad')
   .description('Detect current squad based on cwd (for use in hooks)')
-  .action(detectSquadCommand);
+  .action(async (options) => { const { detectSquadCommand } = await import('./commands/session.js'); await detectSquadCommand(options); });
 
 // Stack command group - manage local Docker stack
 const stack = program
@@ -803,63 +755,87 @@ const stack = program
 stack
   .command('init')
   .description('Auto-detect Docker containers and configure CLI connection')
-  .action(stackInitCommand);
+  .action(async (options) => { const { stackInitCommand } = await import('./commands/stack.js'); await stackInitCommand(options); });
 
 stack
   .command('status')
   .description('Show container health and connection status')
-  .action(stackStatusCommand);
+  .action(async (options) => { const { stackStatusCommand } = await import('./commands/stack.js'); await stackStatusCommand(options); });
 
 stack
   .command('env')
   .description('Print environment variables for shell export')
-  .action(stackEnvCommand);
+  .action(async (options) => { const { stackEnvCommand } = await import('./commands/stack.js'); await stackEnvCommand(options); });
 
 stack
   .command('up')
   .description('Start Docker containers via docker-compose')
-  .action(stackUpCommand);
+  .action(async (options) => { const { stackUpCommand } = await import('./commands/stack.js'); await stackUpCommand(options); });
 
 stack
   .command('down')
   .description('Stop Docker containers')
-  .action(stackDownCommand);
+  .action(async (options) => { const { stackDownCommand } = await import('./commands/stack.js'); await stackDownCommand(options); });
 
 stack
   .command('health')
   .description('Comprehensive health check with diagnostics')
   .option('-v, --verbose', 'Show logs for unhealthy services')
-  .action((options) => stackHealthCommand(options.verbose));
+  .action(async (options) => { const { stackHealthCommand } = await import('./commands/stack.js'); await stackHealthCommand(options.verbose); });
 
 stack
   .command('logs <service>')
   .description('Show logs for a service (postgres, redis, neo4j, bridge, langfuse, mem0, engram)')
   .option('-n, --tail <lines>', 'Number of lines to show', '50')
-  .action((service, options) => stackLogsCommand(service, parseInt(options.tail, 10)));
+  .action(async (service, options) => { const { stackLogsCommand } = await import('./commands/stack.js'); await stackLogsCommand(service, parseInt(options.tail, 10)); });
 
-// Trigger command group - smart value-driven triggers
-registerTriggerCommand(program);
+// Trigger command group - smart value-driven triggers (lazy-loaded)
+{
+  const { registerTriggerCommand } = await import('./commands/trigger.js');
+  registerTriggerCommand(program);
+}
 
-// Cron command group - local macOS cron scheduling
-registerCronCommand(program);
+// Cron command group - local macOS cron scheduling (lazy-loaded)
+{
+  const { registerCronCommand } = await import('./commands/cron.js');
+  registerCronCommand(program);
+}
 
-// Approval command group - human-in-the-loop for agents
-registerApprovalCommand(program);
+// Approval command group - human-in-the-loop for agents (lazy-loaded)
+{
+  const { registerApprovalCommand } = await import('./commands/approval.js');
+  registerApprovalCommand(program);
+}
 
-// Autonomous command group - scheduled routines
-registerAutonomousCommand(program);
+// Autonomous command group - scheduled routines (lazy-loaded)
+{
+  const { registerAutonomousCommand } = await import('./commands/autonomous.js');
+  registerAutonomousCommand(program);
+}
 
-// Orchestrate command - lead-coordinated squad execution
-registerOrchestrateCommand(program);
+// Orchestrate command - lead-coordinated squad execution (lazy-loaded)
+{
+  const { registerOrchestrateCommand } = await import('./commands/orchestrate.js');
+  registerOrchestrateCommand(program);
+}
 
-// Skill command group - Agent Skills API
-registerSkillCommand(program);
+// Skill command group - Agent Skills API (lazy-loaded)
+{
+  const { registerSkillCommand } = await import('./commands/skill.js');
+  registerSkillCommand(program);
+}
 
-// Permissions command group - Phase 3 execution contexts
-registerPermissionsCommand(program);
+// Permissions command group - Phase 3 execution contexts (lazy-loaded)
+{
+  const { registerPermissionsCommand } = await import('./commands/permissions.js');
+  registerPermissionsCommand(program);
+}
 
-// Slack command group - channel sync and integration
-registerSlackCommand(program);
+// Slack command group - channel sync and integration (lazy-loaded)
+{
+  const { registerSlackCommand } = await import('./commands/slack.js');
+  registerSlackCommand(program);
+}
 
 // Tonight command group - autonomous overnight execution
 const tonight = program
@@ -875,45 +851,48 @@ tonight
   .option('-n, --notify <method>', 'Notification method: slack | none', 'none')
   .option('-d, --dry-run', 'Show what would run without executing')
   .option('-v, --verbose', 'Verbose output')
-  .action((targets, options) => tonightCommand(targets, {
-    costCap: parseFloat(options.costCap),
-    stopAt: options.stopAt,
-    maxRetries: parseInt(options.maxRetries, 10),
-    notify: options.notify,
-    dryRun: options.dryRun,
-    verbose: options.verbose,
-  }));
+  .action(async (targets, options) => {
+    const { tonightCommand } = await import('./commands/tonight.js');
+    await tonightCommand(targets, {
+      costCap: parseFloat(options.costCap),
+      stopAt: options.stopAt,
+      maxRetries: parseInt(options.maxRetries, 10),
+      notify: options.notify,
+      dryRun: options.dryRun,
+      verbose: options.verbose,
+    });
+  });
 
 tonight
   .command('status')
   .description('Check tonight mode status')
-  .action(tonightStatusCommand);
+  .action(async (options) => { const { tonightStatusCommand } = await import('./commands/tonight.js'); await tonightStatusCommand(options); });
 
 tonight
   .command('stop')
   .description('Stop all tonight agents and generate report')
-  .action(tonightStopCommand);
+  .action(async (options) => { const { tonightStopCommand } = await import('./commands/tonight.js'); await tonightStopCommand(options); });
 
 tonight
   .command('report')
   .description('Show latest tonight report')
-  .action(tonightReportCommand);
+  .action(async (options) => { const { tonightReportCommand } = await import('./commands/tonight.js'); await tonightReportCommand(options); });
 
 // Auth commands
 program
   .command('login')
   .description('Log in to Squads (Pro & Enterprise)')
-  .action(loginCommand);
+  .action(async (options) => { const { loginCommand } = await import('./commands/login.js'); await loginCommand(options); });
 
 program
   .command('logout')
   .description('Log out from Squads')
-  .action(logoutCommand);
+  .action(async (options) => { const { logoutCommand } = await import('./commands/login.js'); await logoutCommand(options); });
 
 program
   .command('whoami')
   .description('Show current logged in user')
-  .action(whoamiCommand);
+  .action(async (options) => { const { whoamiCommand } = await import('./commands/login.js'); await whoamiCommand(options); });
 
 // Update command
 program
@@ -921,7 +900,7 @@ program
   .description('Check for and install updates')
   .option('-y, --yes', 'Auto-confirm update without prompting')
   .option('-c, --check', 'Check for updates without installing')
-  .action((options) => updateCommand(options));
+  .action(async (options) => { const { updateCommand } = await import('./commands/update.js'); await updateCommand(options); });
 
 // Version command (following npm/docker pattern)
 program
