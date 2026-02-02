@@ -173,8 +173,47 @@ gh release create "v$NEW_VERSION" "$TARBALL" \
   --notes "$RELEASE_NOTES"
 echo -e "${GREEN}✓ GitHub release created${NC}"
 
+# Update docs changelog
+echo -e "\n${YELLOW}[8/9] Updating docs changelog...${NC}"
+DOCS_DIR="${DOCS_DIR:-$HOME/agents-squads/docs}"
+
+if [[ -d "$DOCS_DIR" ]]; then
+  cd "$DOCS_DIR"
+  git pull --rebase origin main 2>/dev/null || true
+
+  # Generate release title from commits
+  if [[ -n "$FEAT_COMMITS" ]]; then
+    RELEASE_TITLE=$(echo "$FEAT_COMMITS" | head -1 | sed 's/^- //' | cut -c1-40)
+  else
+    RELEASE_TITLE="Bug Fixes & Improvements"
+  fi
+
+  # Convert commits to JSON arrays for the script
+  FEAT_JSON=$(echo "$FEAT_COMMITS" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
+  FIX_JSON=$(echo "$FIX_COMMITS" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
+
+  # Run the changelog update script
+  DOCS_DIR="$DOCS_DIR" node "$SCRIPT_DIR/update-docs-changelog.cjs" \
+    "$NEW_VERSION" \
+    "$RELEASE_TITLE" \
+    "$FEAT_JSON" \
+    "$FIX_JSON"
+
+  # Commit and push
+  git add changelog.mdx
+  git commit -m "docs(changelog): add v$NEW_VERSION release
+
+Co-Authored-By: Claude <noreply@anthropic.com>" || echo "No changes to commit"
+  git push origin main
+
+  cd "$PROJECT_DIR"
+  echo -e "${GREEN}✓ Docs changelog updated${NC}"
+else
+  echo -e "${YELLOW}⚠ Docs repo not found at $DOCS_DIR - skipping changelog update${NC}"
+fi
+
 # Publish to npm
-echo -e "\n${YELLOW}[8/7] Publishing to npm...${NC}"
+echo -e "\n${YELLOW}[9/9] Publishing to npm...${NC}"
 npm publish --access public
 echo -e "${GREEN}✓ Published to npm${NC}"
 
