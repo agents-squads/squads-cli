@@ -20,6 +20,7 @@ import {
   padEnd,
   icons,
   writeLine,
+  privacyHeader,
 } from '../lib/terminal.js';
 
 interface StatusOptions {
@@ -181,6 +182,15 @@ async function showSquadStatus(
   }
 
   writeLine();
+
+  // Show privacy header for sensitive squads (client, finance, etc.)
+  const sensitiveSquads = ['client-', 'finance', 'customer'];
+  const isSensitive = sensitiveSquads.some(prefix => squadName.startsWith(prefix));
+  if (isSensitive) {
+    writeLine(privacyHeader('internal'));
+    writeLine();
+  }
+
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET} ${colors.cyan}${squad.name}${RESET}`);
   writeLine();
 
