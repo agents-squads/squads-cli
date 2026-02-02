@@ -348,7 +348,7 @@ const progress = program
 progress
   .command('start <squad> <description>')
   .description('Register a new active task')
-  .action(async (squad, description, options) => { const { progressStartCommand } = await import('./commands/progress.js'); await progressStartCommand(squad, description, options); });
+  .action(async (squad, description) => { const { progressStartCommand } = await import('./commands/progress.js'); await progressStartCommand(squad, description); });
 
 progress
   .command('complete <taskId>')
@@ -485,7 +485,7 @@ memory
 memory
   .command('list')
   .description('List all memory entries')
-  .action(async (options) => { const { memoryListCommand } = await import('./commands/memory.js'); await memoryListCommand(options); });
+  .action(async () => { const { memoryListCommand } = await import('./commands/memory.js'); await memoryListCommand(); });
 
 memory
   .command('sync')
@@ -555,12 +555,12 @@ goal
 goal
   .command('complete <squad> <index>')
   .description('Mark a goal as completed')
-  .action(async (squad, index, options) => { const { goalCompleteCommand } = await import('./commands/goal.js'); await goalCompleteCommand(squad, index, options); });
+  .action(async (squad, index) => { const { goalCompleteCommand } = await import('./commands/goal.js'); await goalCompleteCommand(squad, index); });
 
 goal
   .command('progress <squad> <index> <progress>')
   .description('Update goal progress')
-  .action(async (squad, index, progress, options) => { const { goalProgressCommand } = await import('./commands/goal.js'); await goalProgressCommand(squad, index, progress, options); });
+  .action(async (squad, index, progress) => { const { goalProgressCommand } = await import('./commands/goal.js'); await goalProgressCommand(squad, index, progress); });
 
 // Feedback command group
 const feedback = program
@@ -582,7 +582,7 @@ feedback
 feedback
   .command('stats')
   .description('Show feedback summary across all squads')
-  .action(async (options) => { const { feedbackStatsCommand } = await import('./commands/feedback.js'); await feedbackStatsCommand(options); });
+  .action(async () => { const { feedbackStatsCommand } = await import('./commands/feedback.js'); await feedbackStatsCommand(); });
 
 // KPI command group - track squad metrics
 const kpi = program
@@ -687,7 +687,8 @@ sessions
   .option('-f, --file <path>', 'Path to JSON file with summary data')
   .option('-j, --json', 'Output as JSON instead of pretty format')
   .action(async (options) => {
-    const { buildCurrentSessionSummary } = await import('./commands/sessions.js');
+    const { buildCurrentSessionSummary, sessionsSummaryCommand } = await import('./commands/sessions.js');
+    type SessionSummaryData = Awaited<ReturnType<typeof buildCurrentSessionSummary>>;
     let data: SessionSummaryData;
 
     if (options.file) {
@@ -745,7 +746,7 @@ session
 program
   .command('detect-squad')
   .description('Detect current squad based on cwd (for use in hooks)')
-  .action(async (options) => { const { detectSquadCommand } = await import('./commands/session.js'); await detectSquadCommand(options); });
+  .action(async () => { const { detectSquadCommand } = await import('./commands/session.js'); await detectSquadCommand(); });
 
 // Stack command group - manage local Docker stack
 const stack = program
@@ -755,27 +756,27 @@ const stack = program
 stack
   .command('init')
   .description('Auto-detect Docker containers and configure CLI connection')
-  .action(async (options) => { const { stackInitCommand } = await import('./commands/stack.js'); await stackInitCommand(options); });
+  .action(async () => { const { stackInitCommand } = await import('./commands/stack.js'); await stackInitCommand(); });
 
 stack
   .command('status')
   .description('Show container health and connection status')
-  .action(async (options) => { const { stackStatusCommand } = await import('./commands/stack.js'); await stackStatusCommand(options); });
+  .action(async () => { const { stackStatusCommand } = await import('./commands/stack.js'); await stackStatusCommand(); });
 
 stack
   .command('env')
   .description('Print environment variables for shell export')
-  .action(async (options) => { const { stackEnvCommand } = await import('./commands/stack.js'); await stackEnvCommand(options); });
+  .action(async () => { const { stackEnvCommand } = await import('./commands/stack.js'); await stackEnvCommand(); });
 
 stack
   .command('up')
   .description('Start Docker containers via docker-compose')
-  .action(async (options) => { const { stackUpCommand } = await import('./commands/stack.js'); await stackUpCommand(options); });
+  .action(async () => { const { stackUpCommand } = await import('./commands/stack.js'); await stackUpCommand(); });
 
 stack
   .command('down')
   .description('Stop Docker containers')
-  .action(async (options) => { const { stackDownCommand } = await import('./commands/stack.js'); await stackDownCommand(options); });
+  .action(async () => { const { stackDownCommand } = await import('./commands/stack.js'); await stackDownCommand(); });
 
 stack
   .command('health')
@@ -866,33 +867,33 @@ tonight
 tonight
   .command('status')
   .description('Check tonight mode status')
-  .action(async (options) => { const { tonightStatusCommand } = await import('./commands/tonight.js'); await tonightStatusCommand(options); });
+  .action(async () => { const { tonightStatusCommand } = await import('./commands/tonight.js'); await tonightStatusCommand(); });
 
 tonight
   .command('stop')
   .description('Stop all tonight agents and generate report')
-  .action(async (options) => { const { tonightStopCommand } = await import('./commands/tonight.js'); await tonightStopCommand(options); });
+  .action(async () => { const { tonightStopCommand } = await import('./commands/tonight.js'); await tonightStopCommand(); });
 
 tonight
   .command('report')
   .description('Show latest tonight report')
-  .action(async (options) => { const { tonightReportCommand } = await import('./commands/tonight.js'); await tonightReportCommand(options); });
+  .action(async () => { const { tonightReportCommand } = await import('./commands/tonight.js'); await tonightReportCommand(); });
 
 // Auth commands
 program
   .command('login')
   .description('Log in to Squads (Pro & Enterprise)')
-  .action(async (options) => { const { loginCommand } = await import('./commands/login.js'); await loginCommand(options); });
+  .action(async () => { const { loginCommand } = await import('./commands/login.js'); await loginCommand(); });
 
 program
   .command('logout')
   .description('Log out from Squads')
-  .action(async (options) => { const { logoutCommand } = await import('./commands/login.js'); await logoutCommand(options); });
+  .action(async () => { const { logoutCommand } = await import('./commands/login.js'); await logoutCommand(); });
 
 program
   .command('whoami')
   .description('Show current logged in user')
-  .action(async (options) => { const { whoamiCommand } = await import('./commands/login.js'); await whoamiCommand(options); });
+  .action(async () => { const { whoamiCommand } = await import('./commands/login.js'); await whoamiCommand(); });
 
 // Update command
 program
