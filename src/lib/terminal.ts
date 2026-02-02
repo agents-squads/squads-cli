@@ -269,6 +269,10 @@ export const icons = USE_UNICODE ? {
   running: `${colors.yellow}◆${RESET}`,
   progress: `${colors.cyan}◆${RESET}`,
   empty: `${colors.dim}◇${RESET}`,
+  // Privacy indicators
+  internal: `${colors.purple}🔒${RESET}`,
+  publicOk: `${colors.green}🌐${RESET}`,
+  caution: `${colors.yellow}⚠️${RESET}`,
 } : {
   success: `${colors.green}*${RESET}`,
   warning: `${colors.yellow}!${RESET}`,
@@ -278,7 +282,24 @@ export const icons = USE_UNICODE ? {
   running: `${colors.yellow}>${RESET}`,
   progress: `${colors.cyan}>${RESET}`,
   empty: `${colors.dim}.${RESET}`,
+  // Privacy indicators (ASCII)
+  internal: `${colors.purple}[INTERNAL]${RESET}`,
+  publicOk: `${colors.green}[PUBLIC]${RESET}`,
+  caution: `${colors.yellow}[CAUTION]${RESET}`,
 };
+
+// Privacy level type
+export type PrivacyLevel = 'internal' | 'public' | 'caution';
+
+// Privacy header - shows trust indicator at top of output
+export function privacyHeader(level: PrivacyLevel = 'internal'): string {
+  const headers = {
+    internal: `  ${icons.internal} ${colors.purple}INTERNAL ONLY${RESET} ${colors.dim}— not for external sharing${RESET}`,
+    public: `  ${icons.publicOk} ${colors.green}PUBLIC OK${RESET} ${colors.dim}— safe to share externally${RESET}`,
+    caution: `  ${icons.caution} ${colors.yellow}CAUTION${RESET} ${colors.dim}— review before sharing${RESET}`,
+  };
+  return headers[level] + '\n  ' + colors.dim + '─'.repeat(50) + RESET;
+}
 
 // Strip ANSI escape codes from a string
 export function stripAnsi(str: string): string {
