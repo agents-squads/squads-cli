@@ -1558,6 +1558,7 @@ async function executeWithClaude(
     return new Promise((resolve, reject) => {
       const claude = spawn('claude', claudeArgs, {
         stdio: 'inherit',
+        shell: true,  // Required for Node 22+ symlink resolution
         cwd: projectRoot,
         env: {
           ...spawnEnv,
