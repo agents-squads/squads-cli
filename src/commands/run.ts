@@ -1121,6 +1121,12 @@ async function runAgent(
 
   const definition = loadAgentDefinition(agentPath);
 
+  // Fetch learnings from bridge (needed for both dry-run preview and real execution)
+  const learnings = await fetchLearnings(squadName);
+  const learningContext = learnings.length > 0
+    ? `\n## Learnings from Previous Runs\n${learnings.map(l => `- ${l.content}`).join('\n')}\n`
+    : '';
+
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     // Show context that would be injected
@@ -1128,10 +1134,14 @@ async function runAgent(
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
       writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
-      if (dryRunContext) {
+      if (learnings.length > 0) {
+        writeLine(`  ${colors.dim}Learnings: ${learnings.length} from bridge${RESET}`);
+      }
+      if (dryRunContext || learningContext) {
+        const fullContext = `${dryRunContext}${learningContext}`;
         writeLine();
-        writeLine(`  ${colors.cyan}Context to inject (${Math.ceil(dryRunContext.length / 4)} tokens):${RESET}`);
-        writeLine(`  ${colors.dim}${dryRunContext.slice(0, 800)}...${RESET}`);
+        writeLine(`  ${colors.cyan}Context to inject (${Math.ceil(fullContext.length / 4)} tokens):${RESET}`);
+        writeLine(`  ${colors.dim}${fullContext.slice(0, 800)}...${RESET}`);
       }
     }
     return;
@@ -1231,12 +1241,6 @@ async function runAgent(
     trigger: options.trigger || 'manual',
     taskType,
   });
-
-  // Fetch learnings from bridge for prompt injection
-  const learnings = await fetchLearnings(squadName);
-  const learningContext = learnings.length > 0
-    ? `\n## Learnings from Previous Runs\n${learnings.map(l => `- ${l.content}`).join('\n')}\n`
-    : '';
 
   if (options.verbose && learnings.length > 0) {
     writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
