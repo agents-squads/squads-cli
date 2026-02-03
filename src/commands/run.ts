@@ -132,34 +132,6 @@ async function checkPreflightGates(squad: string, agent: string): Promise<Prefli
   }
 }
 
-/**
- * Fetch relevant learnings from bridge for prompt injection.
- * Returns empty array if bridge is unavailable.
- */
-interface Learning {
-  content: string;
-  importance: string;
-  created_at: string;
-}
-
-async function fetchLearnings(squad: string, limit = 5): Promise<Learning[]> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
-
-  try {
-    const response = await fetch(
-      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`
-    );
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json() as { learnings: Learning[] };
-    return data.learnings || [];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * Load approval/escalation instructions from config file.
@@ -303,6 +275,28 @@ function gatherSquadContext(
           } else {
             break;
           }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 5. Agent's learnings (learnings.md) - what the agent learned from past runs
+  if (memoryDir) {
+    const learningsFile = join(memoryDir, squadName, agentName, 'learnings.md');
+    if (existsSync(learningsFile)) {
+      try {
+        const learningsContent = readFileSync(learningsFile, 'utf-8');
+        // Take last ~2000 chars of learnings (most recent are at bottom)
+        const recentLearnings = learningsContent.length > 2000
+          ? learningsContent.slice(-2000)
+          : learningsContent;
+        const tokens = estimateTokens(recentLearnings);
+
+        if (estimatedTokens + tokens < maxTokens && recentLearnings.trim()) {
+          sections.push(`## Learnings from Previous Runs\nApply these lessons - do NOT repeat past mistakes:\n\n${recentLearnings.trim()}`);
+          estimatedTokens += tokens;
         }
       } catch {
         // Ignore read errors
@@ -1232,16 +1226,6 @@ async function runAgent(
     taskType,
   });
 
-  // Fetch learnings from bridge for prompt injection
-  const learnings = await fetchLearnings(squadName);
-  const learningContext = learnings.length > 0
-    ? `\n## Learnings from Previous Runs\n${learnings.map(l => `- ${l.content}`).join('\n')}\n`
-    : '';
-
-  if (options.verbose && learnings.length > 0) {
-    writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
-  }
-
   // Load approval/escalation instructions
   const approvalInstructions = loadApprovalInstructions();
   const approvalContext = approvalInstructions
@@ -1269,7 +1253,7 @@ TOOL PREFERENCE: Always prefer CLI tools over MCP servers when both can accompli
 - Use \`git\` CLI for version control
 - Use Bash for file operations, builds, tests
 - Only use MCP tools when CLI cannot do it or MCP is significantly better
-${squadContext}${learningContext}${approvalContext}
+${squadContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
