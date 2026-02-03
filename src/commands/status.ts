@@ -8,7 +8,21 @@ import {
   resolveExecutionContext,
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
-import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../lib/sessions.js';
+import {
+  getLiveSessionSummaryAsync,
+  cleanupStaleSessions,
+  detectAIProcessesFast,
+  enrichProcessesWithSquad,
+  AIProcess,
+  getRecentSessions,
+} from '../lib/sessions.js';
+import {
+  listExecutions,
+  getExecutionStats,
+  formatDuration,
+  formatRelativeTime,
+  Execution,
+} from '../lib/executions.js';
 import { checkForUpdate } from '../lib/update.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
@@ -85,10 +99,18 @@ async function showOverallStatus(
   }
   writeLine();
 
+  // Execution stats (last 24h)
+  const execStats = getExecutionStats({ since: new Date(Date.now() - 24 * 60 * 60 * 1000) });
+  const execSummary = execStats.total > 0
+    ? `${colors.green}${execStats.completed}${RESET} ${colors.dim}completed${RESET}` +
+      (execStats.failed > 0 ? ` ${colors.red}${execStats.failed}${RESET} ${colors.dim}failed${RESET}` : '') +
+      (execStats.running > 0 ? ` ${colors.yellow}${execStats.running}${RESET} ${colors.dim}running${RESET}` : '')
+    : `${colors.dim}no executions${RESET}`;
+
   // Stats row
   const totalSquads = squads.length;
   const activeCount = squads.length; // All loaded squads are "active"
-  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}`);
+  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}  ${colors.dim}│${RESET}  ${colors.dim}24h:${RESET} ${execSummary}`);
   writeLine();
 
   // Table
@@ -281,6 +303,35 @@ async function showSquadStatus(
     // Model
     if (squad.context?.model?.default) {
       writeLine(`  ${colors.dim}Model:${RESET}  ${colors.white}${squad.context.model.default}${RESET}`);
+    }
+  }
+
+  // Recent executions
+  const recentExecs = listExecutions({ squad: squadName, limit: 5 });
+  if (recentExecs.length > 0) {
+    writeLine();
+    writeLine(`  ${bold}Recent Executions${RESET}`);
+    writeLine();
+
+    for (const exec of recentExecs) {
+      // Use plain symbols - icons already have colors embedded
+      const statusIcon = exec.status === 'completed' ? `${colors.green}●${RESET}` :
+                         exec.status === 'failed' ? `${colors.red}●${RESET}` :
+                         `${colors.yellow}◆${RESET}`;
+      const duration = exec.durationMs ? ` ${colors.dim}(${formatDuration(exec.durationMs)})${RESET}` : '';
+      const relTime = formatRelativeTime(exec.startTime);
+
+      writeLine(`  ${statusIcon} ${colors.white}${exec.agent}${RESET}${duration} ${colors.dim}${relTime}${RESET}`);
+
+      // Show error message for failed executions
+      if (exec.status === 'failed' && exec.error && options.verbose) {
+        writeLine(`    ${colors.red}└ ${exec.error.substring(0, 60)}${exec.error.length > 60 ? '...' : ''}${RESET}`);
+      }
+
+      // Show outcome for completed executions in verbose mode
+      if (exec.status === 'completed' && exec.outcome && options.verbose) {
+        writeLine(`    ${colors.dim}└ ${exec.outcome.substring(0, 60)}${exec.outcome.length > 60 ? '...' : ''}${RESET}`);
+      }
     }
   }
 
