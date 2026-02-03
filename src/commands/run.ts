@@ -763,6 +763,15 @@ export async function runCommand(
     process.exit(1);
   }
 
+  // Deprecation warning for -e flag
+  if (options.execute) {
+    writeLine();
+    writeLine(`  ${colors.yellow}⚠ DEPRECATED: --execute flag will be removed in v1.0${RESET}`);
+    writeLine(`  ${colors.dim}Use Claude Code directly:${RESET}`);
+    writeLine(`  ${colors.dim}$ claude --print "Read and execute .agents/squads/${target}/${options.agent || '<agent>'}.md"${RESET}`);
+    writeLine();
+  }
+
   // Check if target uses squad/agent syntax (e.g., "demo/researcher")
   let squadName = target;
   let agentFromSlash: string | undefined;
@@ -1546,36 +1555,31 @@ async function executeWithClaude(
       }
     }
 
-    // Build args array with optional model flag (Claude Code only accepts aliases)
-    const claudeArgs = [
-      '--dangerously-skip-permissions',
-      '--mcp-config', mcpConfigPath,
-      ...(claudeModelAlias ? ['--model', claudeModelAlias] : []),
-      '--',
-      prompt
-    ];
+    // Build shell command with proper escaping (required for Node 22+ symlink resolution)
+    const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
+    const mcpFlag = `--mcp-config '${mcpConfigPath}'`;
+    const shellCmd = `claude --dangerously-skip-permissions ${mcpFlag} ${modelFlag} -- '${escapedPrompt}'`;
+
+    // Build env exports for shell
+    const envExports = [
+      `export SQUADS_SQUAD='${execContext.squad}'`,
+      `export SQUADS_AGENT='${execContext.agent}'`,
+      `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
+      `export SQUADS_TRIGGER='${execContext.trigger}'`,
+      `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
+      `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
+      `export OTEL_RESOURCE_ATTRIBUTES='squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}'`,
+      ...(effort ? [`export CLAUDE_EFFORT='${effort}'`] : []),
+      ...(skills && skills.length > 0 ? [`export CLAUDE_SKILLS='${skills.join(',')}'`] : []),
+    ].join('; ');
+
+    const fullCmd = `cd '${projectRoot}'; ${envExports}; exec ${shellCmd}`;
 
     return new Promise((resolve, reject) => {
-      const claude = spawn('claude', claudeArgs, {
+      const claude = spawn('sh', ['-c', fullCmd], {
         stdio: 'inherit',
-        shell: true,  // Required for Node 22+ symlink resolution
         cwd: projectRoot,
-        env: {
-          ...spawnEnv,
-          // Telemetry context for per-agent cost tracking
-          SQUADS_SQUAD: execContext.squad,
-          SQUADS_AGENT: execContext.agent,
-          SQUADS_TASK_TYPE: execContext.taskType,
-          SQUADS_TRIGGER: execContext.trigger,
-          SQUADS_EXECUTION_ID: execContext.executionId,
-          // Bridge API for approvals and escalations
-          BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
-          // OTel resource attributes for telemetry pipeline
-          OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-          // Claude-specific options
-          ...(effort && { CLAUDE_EFFORT: effort }),
-          ...(skills && skills.length > 0 && { CLAUDE_SKILLS: skills.join(',') }),
-        },
+        env: spawnEnv,
       });
 
       claude.on('close', async (code) => {

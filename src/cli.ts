@@ -111,7 +111,7 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerPermissionsCommand } from './commands/permissions.js';
 import { registerSlackCommand } from './commands/slack.js';
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
-import { contextShowCommand, contextListCommand, contextActivateCommand } from './commands/context.js';
+import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
 import {
@@ -128,6 +128,14 @@ import {
   kpiInsightsCommand,
   kpiListCommand,
 } from './commands/kpi.js';
+import {
+  tenantShowCommand,
+  tenantSecretsListCommand,
+  tenantSecretsSetCommand,
+  tenantSecretsVerifyCommand,
+  tenantSecretsDeleteCommand,
+  tenantVerifyCommand,
+} from './commands/tenant.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -214,7 +222,7 @@ program
   .description('Run a squad or agent')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
-  .option('-e, --execute', 'Execute agent via Claude CLI (requires claude installed)')
+  .option('-e, --execute', '[DEPRECATED] Use: claude --print "Execute .agents/squads/<squad>/<agent>.md"')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
   .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
@@ -325,6 +333,13 @@ env
   .option('-f, --force', 'Force regeneration even if config exists')
   .option('--json', 'Output as JSON')
   .action(contextActivateCommand);
+
+env
+  .command('prompt <squad>')
+  .description('Output ready-to-use prompt for Claude Code execution')
+  .option('-a, --agent <agent>', 'Agent to execute (required)')
+  .option('--json', 'Output as JSON')
+  .action(contextPromptCommand);
 
 // Cost command - cost introspection for self-improvement
 program
@@ -898,6 +913,72 @@ tonight
   .command('report')
   .description('Show latest tonight report')
   .action(tonightReportCommand);
+
+// Tenant management commands (admin only)
+const tenant = program
+  .command('tenant')
+  .description('Manage tenants (admin only)')
+  .addHelpText('after', `
+Examples:
+  $ squads tenant show innspiral          Show tenant info
+  $ squads tenant secrets list innspiral  List configured secrets
+  $ squads tenant secrets set innspiral bigquery --project my-proj --service-account ./sa.json
+  $ squads tenant verify innspiral        Verify all secrets work
+`)
+  .action(() => {
+    tenant.outputHelp();
+  });
+
+tenant
+  .command('show <slug>')
+  .description('Show tenant information')
+  .action(tenantShowCommand);
+
+tenant
+  .command('verify <slug>')
+  .description('Verify all tenant secrets work')
+  .action(tenantVerifyCommand);
+
+// Tenant secrets subcommand
+const tenantSecrets = tenant
+  .command('secrets')
+  .description('Manage tenant secrets (credentials)')
+  .action(() => {
+    tenantSecrets.outputHelp();
+  });
+
+tenantSecrets
+  .command('list <slug>')
+  .description('List all secrets for a tenant')
+  .action(tenantSecretsListCommand);
+
+tenantSecrets
+  .command('set <slug> <integration>')
+  .description('Set a secret for a tenant')
+  .option('--api-key <key>', 'API key (for anthropic)')
+  .option('--token <token>', 'Token (for github)')
+  .option('--project <project>', 'Project ID (for bigquery)')
+  .option('--property-id <id>', 'Property ID (for ga4)')
+  .option('--service-account <path>', 'Path to service account JSON file')
+  .option('--display-name <name>', 'Display name for the secret')
+  .addHelpText('after', `
+Integration types:
+  anthropic    --api-key sk-...
+  github       --token ghp_...
+  bigquery     --project <id> --service-account ./sa.json
+  ga4          --property-id <id> --service-account ./sa.json
+`)
+  .action(tenantSecretsSetCommand);
+
+tenantSecrets
+  .command('verify <slug> <integration>')
+  .description('Verify a specific secret works')
+  .action(tenantSecretsVerifyCommand);
+
+tenantSecrets
+  .command('delete <slug> <integration>')
+  .description('Delete a secret')
+  .action(tenantSecretsDeleteCommand);
 
 // Auth commands
 program

@@ -352,3 +352,66 @@ export async function contextActivateCommand(
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET}`);
   writeLine();
 }
+
+/**
+ * Output a ready-to-use prompt for Claude Code execution.
+ * Usage: squads context prompt <squad> -a <agent>
+ * Pipe to claude: squads context prompt company -a event-dispatcher | claude --print
+ */
+interface PromptOptions {
+  agent?: string;
+  json?: boolean;
+}
+
+export async function contextPromptCommand(
+  squadName: string,
+  options: PromptOptions = {}
+): Promise<void> {
+  await track(Events.CLI_CONTEXT, { squad: squadName, action: 'prompt' });
+  const squadsDir = findSquadsDir();
+
+  if (!squadsDir) {
+    console.error('No .agents/squads directory found');
+    process.exit(1);
+  }
+
+  const squad = loadSquad(squadName);
+  if (!squad) {
+    console.error(`Squad "${squadName}" not found.`);
+    process.exit(1);
+  }
+
+  if (!options.agent) {
+    console.error('Agent required. Use -a <agent>');
+    process.exit(1);
+  }
+
+  const agentPath = `.agents/squads/${squadName}/${options.agent}.md`;
+
+  // Build the prompt for Claude
+  const prompt = `Execute the ${options.agent} agent from squad ${squadName}.
+
+Read the agent definition at ${agentPath} and follow its instructions exactly.
+
+CRITICAL INSTRUCTIONS:
+- Work autonomously - do NOT ask clarifying questions
+- Use Task tool to spawn sub-agents when needed
+- Output findings to GitHub issues (gh issue create)
+- Output code changes as PRs (gh pr create)
+- Update memory files in .agents/memory/${squadName}/${options.agent}/
+- Type /exit when done
+
+Begin now.`;
+
+  if (options.json) {
+    console.log(JSON.stringify({
+      squad: squadName,
+      agent: options.agent,
+      agentPath,
+      prompt,
+    }, null, 2));
+  } else {
+    // Output raw prompt for piping to claude
+    console.log(prompt);
+  }
+}
