@@ -128,14 +128,6 @@ import {
   kpiInsightsCommand,
   kpiListCommand,
 } from './commands/kpi.js';
-import {
-  tenantShowCommand,
-  tenantSecretsListCommand,
-  tenantSecretsSetCommand,
-  tenantSecretsVerifyCommand,
-  tenantSecretsDeleteCommand,
-  tenantVerifyCommand,
-} from './commands/tenant.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -913,72 +905,6 @@ tonight
   .command('report')
   .description('Show latest tonight report')
   .action(tonightReportCommand);
-
-// Tenant management commands (admin only)
-const tenant = program
-  .command('tenant')
-  .description('Manage tenants (admin only)')
-  .addHelpText('after', `
-Examples:
-  $ squads tenant show innspiral          Show tenant info
-  $ squads tenant secrets list innspiral  List configured secrets
-  $ squads tenant secrets set innspiral bigquery --project my-proj --service-account ./sa.json
-  $ squads tenant verify innspiral        Verify all secrets work
-`)
-  .action(() => {
-    tenant.outputHelp();
-  });
-
-tenant
-  .command('show <slug>')
-  .description('Show tenant information')
-  .action(tenantShowCommand);
-
-tenant
-  .command('verify <slug>')
-  .description('Verify all tenant secrets work')
-  .action(tenantVerifyCommand);
-
-// Tenant secrets subcommand
-const tenantSecrets = tenant
-  .command('secrets')
-  .description('Manage tenant secrets (credentials)')
-  .action(() => {
-    tenantSecrets.outputHelp();
-  });
-
-tenantSecrets
-  .command('list <slug>')
-  .description('List all secrets for a tenant')
-  .action(tenantSecretsListCommand);
-
-tenantSecrets
-  .command('set <slug> <integration>')
-  .description('Set a secret for a tenant')
-  .option('--api-key <key>', 'API key (for anthropic)')
-  .option('--token <token>', 'Token (for github)')
-  .option('--project <project>', 'Project ID (for bigquery)')
-  .option('--property-id <id>', 'Property ID (for ga4)')
-  .option('--service-account <path>', 'Path to service account JSON file')
-  .option('--display-name <name>', 'Display name for the secret')
-  .addHelpText('after', `
-Integration types:
-  anthropic    --api-key sk-...
-  github       --token ghp_...
-  bigquery     --project <id> --service-account ./sa.json
-  ga4          --property-id <id> --service-account ./sa.json
-`)
-  .action(tenantSecretsSetCommand);
-
-tenantSecrets
-  .command('verify <slug> <integration>')
-  .description('Verify a specific secret works')
-  .action(tenantSecretsVerifyCommand);
-
-tenantSecrets
-  .command('delete <slug> <integration>')
-  .description('Delete a secret')
-  .action(tenantSecretsDeleteCommand);
 
 // Auth commands
 program
