@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-agents--squads.com-purple)](https://agents-squads.com/docs)
 
-**Open source CLI for AI agent coordination.** Organize agents into domain-aligned squads with persistent memory, goal tracking, and coordinated execution.
+**Build your AI workforce.** Finance, marketing, engineering, operations — AI agents organized into domain-aligned squads that actually run your business.
 
 📖 **[Documentation](https://agents-squads.com/docs)** · 🚀 **[Getting Started](https://agents-squads.com/onboarding)** · 💡 **[Architecture Guide](https://agents-squads.com/engineering/squads-architecture)**
 
@@ -14,7 +14,7 @@
 npm install -g squads-cli && squads init
 ```
 
-> **Why squads?** AI agents are powerful alone, but real work needs coordination. Squads organizes agents by business domain, gives them persistent memory, tracks goals, and delivers outcomes—not just answers. Works with any AI coding assistant.
+> **Why squads?** A full business team costs $1M+/year. An AI workforce costs API calls. Squads organizes AI agents by business domain — giving them persistent memory, goals, and coordinated execution. Your agents, your data, no lock-in. Works with Claude, GPT-4, Gemini, and more.
 
 ![squads dashboard](./assets/dashboard.png)
 
@@ -38,6 +38,16 @@ $ squads status
   │ website         10      1 entry       5d ago           │
   └────────────────────────────────────────────────────────┘
 ```
+
+## Traditional Hiring vs AI Workforce
+
+| | Traditional Team | AI Workforce (squads-cli) |
+|---|---|---|
+| **Cost** | $1M+/year for a small team | API calls ($50-500/month) |
+| **Availability** | 8 hours/day, 5 days/week | 24/7, including weekends |
+| **Scale** | Hire, train, onboard (months) | Add a markdown file (minutes) |
+| **Ownership** | Vendor contracts, platforms | Your agents, your data, your system |
+| **Memory** | Tribal knowledge, Notion docs | Persistent state across sessions |
 
 ## Why squads-cli?
 
@@ -1274,4 +1284,4 @@ npm run typecheck     # TypeScript check
 
 ---
 
-Built by [Agents Squads](https://agents-squads.com) — AI systems you can learn, understand, and trust.
+Built by [Agents Squads](https://agents-squads.com) — your AI workforce.
