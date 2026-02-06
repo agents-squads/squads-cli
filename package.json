@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
-  "version": "0.5.1",
-  "description": "Build your AI workforce. Organize AI agents into domain-aligned squads with persistent memory, goals, and coordinated execution.",
+  "version": "0.6.0",
+  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
   "type": "module",
   "bin": {
     "squads": "./dist/cli.js"
@@ -16,17 +16,7 @@
   },
   "files": [
     "dist",
-    "templates",
-    "docker/docker-compose.yml",
-    "docker/docker-compose.engram.yml",
-    "docker/.env.example",
-    "docker/init-db.sql",
-    "docker/init-engram-db.sql",
-    "docker/init-langfuse-db.sh",
-    "docker/otel-collector.yaml",
-    "docker/README.md",
-    "docker/squads-bridge/",
-    "docker/telemetry-ping/"
+    "templates"
   ],
   "scripts": {
     "build": "tsup && cp -r templates dist/",
@@ -75,9 +65,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@supabase/supabase-js": "^2.89.0",
-    "@types/blessed": "^0.1.27",
-    "blessed": "^0.1.81",
-    "blessed-contrib": "^4.11.0",
     "chalk": "^5.3.0",
     "chrono-node": "^2.9.0",
     "commander": "^12.1.0",

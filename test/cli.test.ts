@@ -27,7 +27,7 @@ describe('CLI', () => {
       const result = runCli('--help');
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('squads');
-      expect(result.stdout).toContain('A CLI for humans and agents');
+      expect(result.stdout).toContain('Your AI workforce');
     });
 
     it('lists available commands', () => {
@@ -47,12 +47,11 @@ describe('CLI', () => {
     });
   });
 
-  describe('workers', () => {
-    it('shows workers command help', () => {
+  describe('removed commands', () => {
+    it('shows removed message for deprecated commands', () => {
       const result = runCli('workers --help');
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain('workers');
-      expect(result.stdout).toContain('--kill');
+      expect(result.stdout).toContain('[removed]');
     });
   });
 

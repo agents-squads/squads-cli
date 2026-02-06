@@ -763,13 +763,10 @@ export async function runCommand(
     process.exit(1);
   }
 
-  // Deprecation warning for -e flag
-  if (options.execute) {
-    writeLine();
-    writeLine(`  ${colors.yellow}⚠ DEPRECATED: --execute flag will be removed in v1.0${RESET}`);
-    writeLine(`  ${colors.dim}Use Claude Code directly:${RESET}`);
-    writeLine(`  ${colors.dim}$ claude --print "Read and execute .agents/squads/${target}/${options.agent || '<agent>'}.md"${RESET}`);
-    writeLine();
+  // Execution is now the default behavior (no --execute flag needed)
+  // --dry-run disables execution
+  if (!options.dryRun && options.execute === undefined) {
+    options.execute = true;
   }
 
   // Check if target uses squad/agent syntax (e.g., "demo/researcher")
@@ -865,7 +862,7 @@ async function runSquad(
       }
       writeLine();
       writeLine(`  ${colors.dim}Launch all agents in parallel:${RESET}`);
-      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel --execute`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
       writeLine();
       return;
     }
@@ -937,7 +934,7 @@ async function runSquad(
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
         writeLine();
         writeLine(`  ${colors.dim}Run all agents in parallel:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel --execute`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
       }
     }
   }
@@ -987,7 +984,7 @@ async function runLeadMode(
 
   if (!options.execute) {
     writeLine(`  ${colors.dim}Launch lead session:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --lead --execute`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --lead`);
     writeLine();
     return;
   }
@@ -1414,9 +1411,9 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
 
     writeLine();
     writeLine(`  ${colors.dim}To launch as background task:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --execute`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET}`);
     if (provider !== 'anthropic') {
-      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --execute --provider=${provider}`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --provider=${provider}`);
     }
     writeLine();
     writeLine(`  ${colors.dim}Or run interactively:${RESET}`);

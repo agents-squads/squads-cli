@@ -18,6 +18,7 @@ import { track } from '../lib/telemetry.js';
 interface ListOptions {
   squads?: boolean;
   agents?: boolean;
+  json?: boolean;
 }
 
 export async function listCommand(options: ListOptions): Promise<void> {
@@ -32,6 +33,24 @@ export async function listCommand(options: ListOptions): Promise<void> {
 
   const squads = listSquads(squadsDir);
   const allAgents = listAgents(squadsDir);
+
+  // JSON output
+  if (options.json) {
+    const squadData = squads.map(name => {
+      const agents = listAgents(squadsDir, name);
+      return {
+        name,
+        agentCount: agents.length,
+        agents: agents.map(a => ({ name: a.name, role: a.role || null, status: a.status || 'active' })),
+      };
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      command: 'list',
+      data: { squads: squadData, totalSquads: squads.length, totalAgents: allAgents.length },
+    }, null, 2));
+    return;
+  }
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}list${RESET}`);

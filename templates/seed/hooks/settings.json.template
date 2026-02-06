@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "squads status",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "squads memory sync --no-push",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "squads memory sync --push",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

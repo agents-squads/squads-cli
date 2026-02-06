@@ -394,7 +394,7 @@ function renderDashboardFooter(): void {
   writeLine();
 }
 
-export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean } = {}): Promise<void> {
+export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean; json?: boolean } = {}): Promise<void> {
   await track(Events.CLI_DASHBOARD, { verbose: options.verbose, ceo: options.ceo, fast: options.fast });
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
@@ -421,6 +421,35 @@ export async function dashboardCommand(options: { verbose?: boolean; ceo?: boole
 
   // === PHASE 3: Calculate stats and render ===
   const stats = calculateDashboardStats(squadData, cache.ghStats);
+
+  // JSON output
+  if (options.json) {
+    const goalCount = {
+      active: squadData.reduce((sum, s) => sum + s.goals.filter(g => !g.completed).length, 0),
+      completed: squadData.reduce((sum, s) => sum + s.goals.filter(g => g.completed).length, 0),
+    };
+    console.log(JSON.stringify({
+      ok: true,
+      command: 'dash',
+      data: {
+        squads: squadData.map(s => ({
+          name: s.name, mission: s.mission, status: s.status,
+          goalProgress: s.goalProgress, lastActivity: s.lastActivity,
+          goals: s.goals,
+        })),
+        stats,
+        goals: goalCount,
+        sessions: cache.sessionSummary,
+        costs: cache.costs,
+        gitStats: cache.gitStats ? {
+          totalCommits: cache.gitStats.totalCommits,
+          repos: cache.gitStats.repos?.map(r => ({ name: r.name, commits: r.commits })),
+        } : null,
+      },
+    }, null, 2));
+    await closeDatabase();
+    return;
+  }
 
   // Render dashboard sections
   renderDashboardHeader(stats, cache.sessionSummary, cache.gitStats, cache.ghStats);
