@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.5.1",
-  "description": "Open source CLI for AI agent coordination and execution. Domain-aligned squads with persistent memory and goals.",
+  "description": "Build your AI workforce. Organize AI agents into domain-aligned squads with persistent memory, goals, and coordinated execution.",
   "type": "module",
   "bin": {
     "squads": "./dist/cli.js"
@@ -40,6 +40,9 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "ai-workforce",
+    "business-automation",
+    "ai-team",
     "claude",
     "claude-code",
     "anthropic",
