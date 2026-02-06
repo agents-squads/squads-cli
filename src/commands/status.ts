@@ -39,6 +39,7 @@ import {
 
 interface StatusOptions {
   verbose?: boolean;
+  json?: boolean;
 }
 
 export async function statusCommand(
@@ -63,7 +64,7 @@ export async function statusCommand(
 
 async function showOverallStatus(
   squadsDir: string,
-  _options: StatusOptions
+  options: StatusOptions
 ): Promise<void> {
   const squads = listSquads(squadsDir);
   const memoryDir = findMemoryDir();
@@ -71,6 +72,28 @@ async function showOverallStatus(
   // Get active sessions (real-time process detection with parallel lsof)
   cleanupStaleSessions();
   const sessionSummary = await getLiveSessionSummaryAsync();
+
+  // JSON output
+  if (options.json) {
+    const execStats = getExecutionStats({ since: new Date(Date.now() - 24 * 60 * 60 * 1000) });
+    const squadData = squads.map(name => {
+      const agents = listAgents(squadsDir, name);
+      const states = memoryDir ? getSquadState(name) : [];
+      return { name, agentCount: agents.length, memoryEntries: states.length };
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      command: 'status',
+      data: {
+        squads: squadData,
+        totalSquads: squads.length,
+        sessions: sessionSummary,
+        executions24h: execStats,
+        memoryEnabled: !!memoryDir,
+      },
+    }, null, 2));
+    return;
+  }
 
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET}`);
@@ -199,8 +222,41 @@ async function showSquadStatus(
   const squad = loadSquad(squadName);
 
   if (!squad) {
+    if (options.json) {
+      console.log(JSON.stringify({ ok: false, command: 'status', error: `Squad "${squadName}" not found` }, null, 2));
+      process.exit(1);
+    }
     writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
     process.exit(1);
+  }
+
+  // JSON output for specific squad
+  if (options.json) {
+    const agents = listAgents(squadsDir, squadName);
+    const execContext = resolveExecutionContext(squad);
+    const recentExecs = listExecutions({ squad: squadName, limit: 5 });
+    const memDir = findMemoryDir();
+    const states = memDir ? getSquadState(squadName) : [];
+    console.log(JSON.stringify({
+      ok: true,
+      command: 'status',
+      data: {
+        squad: {
+          name: squad.name,
+          mission: squad.mission || null,
+          agents: agents.map(a => ({ name: a.name, role: a.role || null, status: a.status || 'active' })),
+          pipelines: squad.pipelines,
+          context: {
+            skills: execContext.resolved.skills.map(s => s.name),
+            mcpServers: execContext.resolved.mcpServers,
+            model: squad.context?.model?.default || null,
+          },
+          recentExecutions: recentExecs,
+          memoryEntries: states.length,
+        },
+      },
+    }, null, 2));
+    return;
   }
 
   writeLine();

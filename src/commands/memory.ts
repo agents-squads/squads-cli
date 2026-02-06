@@ -16,7 +16,7 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
-import { checkServiceAvailable, showServiceSetupGuide } from './stack.js';
+import { checkServiceAvailable, showServiceSetupGuide } from '../lib/services.js';
 import { track, Events } from '../lib/telemetry.js';
 
 const SQUADS_BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';

@@ -43,7 +43,6 @@ for (const envPath of envPaths) {
   }
 }
 import { initCommand } from './commands/init.js';
-import { setupCommand } from './commands/setup.js';
 import { runCommand } from './commands/run.js';
 import { listCommand } from './commands/list.js';
 import { statusCommand } from './commands/status.js';
@@ -75,51 +74,24 @@ import {
 } from './commands/learn.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { renderDashboard, showAvailableDashboards, findDashboard } from './lib/dashboard/index.js';
-import { issuesCommand } from './commands/issues.js';
-import { solveIssuesCommand } from './commands/solve-issues.js';
-import { openIssuesCommand } from './commands/open-issues.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
 import { healthCommand } from './commands/health.js';
-import { baselineCommand } from './commands/baseline.js';
-import { workersCommand } from './commands/workers.js';
 import { contextFeedCommand } from './commands/context-feed.js';
-import { watchCommand } from './commands/watch.js';
-import { liveCommand } from './commands/live.js';
-import { topCommand } from './commands/top.js';
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
-import {
-  stackInitCommand,
-  stackStatusCommand,
-  stackEnvCommand,
-  stackUpCommand,
-  stackDownCommand,
-  stackHealthCommand,
-  stackLogsCommand,
-  applyStackConfig
-} from './commands/stack.js';
+import { applyStackConfig } from './lib/stack-config.js';
 import { registerTriggerCommand } from './commands/trigger.js';
-import { registerCronCommand } from './commands/cron.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
-import { registerSkillCommand } from './commands/skill.js';
 import { registerApprovalCommand } from './commands/approval.js';
-import { registerPermissionsCommand } from './commands/permissions.js';
-import { registerSlackCommand } from './commands/slack.js';
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
-import {
-  tonightCommand,
-  tonightStatusCommand,
-  tonightStopCommand,
-  tonightReportCommand
-} from './commands/tonight.js';
 import { providersCommand } from './commands/providers.js';
 import {
   kpiShowCommand,
@@ -140,11 +112,31 @@ await autoUpdateOnStartup();
 // Register telemetry exit handler early
 registerExitHandler();
 
+// Helper: output JSON envelope for --json flag
+function jsonOutput(command: string, data: unknown, meta?: Record<string, unknown>): void {
+  console.log(JSON.stringify({
+    ok: true,
+    command,
+    data,
+    error: null,
+    meta: { duration_ms: 0, connected: !!process.env.SQUADS_BRIDGE_URL, ...meta },
+  }));
+}
+
+// Helper: show removed command message
+function removedCommand(name: string, alternative: string): () => void {
+  return () => {
+    console.error(chalk.red(`\n  Command "${name}" has been removed.`));
+    console.error(chalk.dim(`  ${alternative}\n`));
+    process.exit(1);
+  };
+}
+
 const program = new Command();
 
 program
   .name('squads')
-  .description('A CLI for humans and agents')
+  .description('Your AI workforce — business operating system for AI managers')
   .version(version)
   // Enable typo suggestions (Commander.js built-in feature)
   .showSuggestionAfterError(true)
@@ -186,40 +178,29 @@ program
     await statusCommand(undefined, {});
   });
 
-// Init command - by default runs guided setup, use --quick for fast init
+// ─── Execute (daily operations) ──────────────────────────────────────────────
+
+// Init command - plant the seed (manager agent + CLI skill + starter squads)
 program
   .command('init')
-  .description('Initialize a new squad project (runs guided setup by default)')
-  .option('-t, --template <template>', 'Project template', 'default')
+  .description('Plant the seed: create manager agent, CLI skill, and starter squads')
   .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
-  .option('-q, --quick', 'Quick init - create files only, skip guided setup')
+  .option('-q, --quick', 'Quick init - create files only, skip interactive prompts')
   .action(initCommand);
 
-// Setup command - full guided onboarding experience
-program
-  .command('setup')
-  .description('Guided onboarding: set up infrastructure, auth, and first squad')
-  .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
-  .option('--skip-infra', 'Skip infrastructure setup')
-  .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
-  .option('-r, --resume', 'Resume from last checkpoint')
-  .action(setupCommand);
-
-// Run command - runs squads or individual agents
+// Run command - execute squads or individual agents
 program
   .command('run <target>')
   .description('Run a squad or agent')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
-  .option('-e, --execute', '[DEPRECATED] Use: claude --print "Execute .agents/squads/<squad>/<agent>.md"')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
   .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
-  .option('-f, --foreground', 'Run in foreground (default behavior, deprecated flag)')
   .option('-b, --background', 'Run agent in background (detached process)')
   .option('-w, --watch', 'Run in background but tail the log for visibility')
   .option('--use-api', 'Use API credits instead of subscription')
@@ -228,13 +209,13 @@ program
   .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
   .option('--model <model>', 'Model to use: opus, sonnet, haiku (default: sonnet). Route by task difficulty.')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
+  .option('-j, --json', 'Output as JSON')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run whole squad (shows agent list)
   $ squads run engineering/code-review  Run specific agent (slash notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run
-  $ squads run engineering --execute    Execute via Claude CLI
   $ squads run engineering --parallel   Run all agents in parallel (tmux)
   $ squads run engineering --lead       Single orchestrator with Task tool
   $ squads run engineering -b           Run in background (detached)
@@ -250,56 +231,11 @@ program
   .option('-s, --squads', 'List squads only')
   .option('-a, --agents', 'List agents only')
   .option('-v, --verbose', 'Show additional details')
+  .option('-j, --json', 'Output as JSON')
   .action(listCommand);
 
-// Status command
-program
-  .command('status [squad]')
-  .description('Show squad status and state')
-  .option('-v, --verbose', 'Show detailed status')
-  .action(statusCommand);
-
-// Dashboard command
-program
-  .command('dashboard [name]')
-  .alias('dash')
-  .description('Show dashboards. Use "squads dash" for overview, "squads dash <name>" for specific dashboard, "squads dash --list" to see all.')
-  .option('-v, --verbose', 'Show additional details')
-  .option('-c, --ceo', 'Executive summary with priorities and blockers')
-  .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
-  .option('-l, --list', 'List available declarative dashboards')
-  .option('--view <view>', 'Render specific view from dashboard')
-  .action(async (name, options) => {
-    // List available dashboards
-    if (options.list) {
-      showAvailableDashboards();
-      return;
-    }
-
-    // If a name is provided, try declarative dashboard first
-    if (name) {
-      const def = findDashboard(name);
-      if (def) {
-        const views = options.view ? [options.view] : undefined;
-        await renderDashboard(name, { verbose: options.verbose, views });
-        return;
-      }
-      // Fall through to default dashboard with a warning
-      console.log(`  Dashboard "${name}" not found. Showing default dashboard.\n`);
-    }
-
-    // Default: show the comprehensive dashboard
-    dashboardCommand({ ...options, fast: !options.full });
-  });
-
-// Autonomy command - show autonomous operation readiness
-program
-  .command('autonomy')
-  .description('Show autonomy score and confidence metrics')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-p, --period <period>', 'Time period: today, week, month', 'today')
-  .option('-j, --json', 'Output as JSON')
-  .action((options) => autonomyCommand({ squad: options.squad, period: options.period, json: options.json }));
+// Orchestrate command - lead-coordinated squad execution
+registerOrchestrateCommand(program);
 
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
@@ -333,22 +269,6 @@ env
   .option('--json', 'Output as JSON')
   .action(contextPromptCommand);
 
-// Cost command - cost introspection for self-improvement
-program
-  .command('cost')
-  .description('Show cost summary (today, week, by squad)')
-  .option('-s, --squad <squad>', 'Filter to specific squad')
-  .option('--json', 'Output as JSON')
-  .action(costCommand);
-
-// Budget check command - pre-flight budget validation
-program
-  .command('budget')
-  .description('Check budget status for a squad')
-  .argument('<squad>', 'Squad to check')
-  .option('--json', 'Output as JSON')
-  .action(budgetCheckCommand);
-
 // Exec command group - execution history introspection
 const exec = program
   .command('exec')
@@ -380,69 +300,49 @@ exec
 // Default action: show list
 exec.action((options) => execListCommand(options));
 
-// Issues command
+// ─── Understand (situational awareness) ──────────────────────────────────────
+
+// Dashboard command
 program
-  .command('issues')
-  .description('Show GitHub issues across repos')
-  .option('-o, --org <org>', 'GitHub organization', 'agents-squads')
-  .option('-r, --repos <repos>', 'Comma-separated repo names')
-  .action(issuesCommand);
-
-// Solve issues command - close issues by creating PRs
-program
-  .command('solve-issues')
-  .description('Solve ready-to-fix issues by creating PRs')
-  .option('-r, --repo <repo>', 'Target repo (hq, agents-squads-web)')
-  .option('-i, --issue <number>', 'Specific issue number', parseInt)
-  .option('-d, --dry-run', 'Show what would be solved')
-  .option('-e, --execute', 'Execute with Claude CLI')
-  .action(solveIssuesCommand);
-
-// Open issues command - run evaluators to find new issues
-program
-  .command('open-issues')
-  .description('Run evaluators/critics to find and create issues')
-  .option('-s, --squad <squad>', 'Target squad (website, engineering, etc.)')
-  .option('-a, --agent <agent>', 'Specific evaluator agent')
-  .option('-d, --dry-run', 'Show what would run')
-  .option('-e, --execute', 'Execute with Claude CLI')
-  .action(openIssuesCommand);
-
-// Progress command - track agent task progress
-const progress = program
-  .command('progress')
-  .description('Track active and completed agent tasks')
-  .option('-v, --verbose', 'Show more activity')
-  .action(progressCommand);
-
-progress
-  .command('start <squad> <description>')
-  .description('Register a new active task')
-  .action(progressStartCommand);
-
-progress
-  .command('complete <taskId>')
-  .description('Mark a task as completed')
-  .option('-f, --failed', 'Mark as failed instead')
-  .action(progressCompleteCommand);
-
-// Results command - KPI goals vs actuals
-program
-  .command('results [squad]')
-  .description('Show squad results: git activity + KPI goals vs actuals')
-  .option('-d, --days <days>', 'Days to look back', '7')
-  .option('-v, --verbose', 'Show detailed KPIs per goal')
-  .action((squad, options) => resultsCommand({ ...options, squad }));
-
-// History command - show recent agent executions
-program
-  .command('history')
-  .description('Show recent agent execution history')
-  .option('-d, --days <days>', 'Days to look back', '7')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-v, --verbose', 'Show cost and token details')
+  .command('dashboard [name]')
+  .alias('dash')
+  .description('Show dashboards. Use "squads dash" for overview, "squads dash <name>" for specific dashboard, "squads dash --list" to see all.')
+  .option('-v, --verbose', 'Show additional details')
+  .option('-c, --ceo', 'Executive summary with priorities and blockers')
+  .option('-f, --full', 'Include GitHub PR/issue stats (slower, ~30s)')
+  .option('-l, --list', 'List available declarative dashboards')
+  .option('--view <view>', 'Render specific view from dashboard')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => historyCommand(options));
+  .action(async (name, options) => {
+    // List available dashboards
+    if (options.list) {
+      showAvailableDashboards();
+      return;
+    }
+
+    // If a name is provided, try declarative dashboard first
+    if (name) {
+      const def = findDashboard(name);
+      if (def) {
+        const views = options.view ? [options.view] : undefined;
+        await renderDashboard(name, { verbose: options.verbose, views });
+        return;
+      }
+      // Fall through to default dashboard with a warning
+      console.log(`  Dashboard "${name}" not found. Showing default dashboard.\n`);
+    }
+
+    // Default: show the comprehensive dashboard
+    dashboardCommand({ ...options, fast: !options.full });
+  });
+
+// Status command
+program
+  .command('status [squad]')
+  .description('Show squad status and state')
+  .option('-v, --verbose', 'Show detailed status')
+  .option('-j, --json', 'Output as JSON')
+  .action(statusCommand);
 
 // Context command - business context for alignment
 program
@@ -456,15 +356,21 @@ program
   .option('-v, --verbose', 'Show additional details')
   .action((options) => contextFeedCommand(options));
 
-// Workers command - show running processes and tasks
+// Cost command - cost introspection for self-improvement
 program
-  .command('workers')
-  .description('Show active workers: Claude sessions, agent workers, tasks')
-  .option('-v, --verbose', 'Show more details')
-  .option('-k, --kill <pid>', 'Kill a process by PID or tmux session name')
-  .option('-c, --cleanup', 'Kill all zombie sessions (>24h old)')
-  .option('-a, --all', 'Kill ALL agent tmux sessions (not interactive terminals)')
-  .action(workersCommand);
+  .command('cost')
+  .description('Show cost summary (today, week, by squad)')
+  .option('-s, --squad <squad>', 'Filter to specific squad')
+  .option('--json', 'Output as JSON')
+  .action(costCommand);
+
+// Budget check command - pre-flight budget validation
+program
+  .command('budget')
+  .description('Check budget status for a squad')
+  .argument('<squad>', 'Squad to check')
+  .option('--json', 'Output as JSON')
+  .action(budgetCheckCommand);
 
 // Health command - quick infrastructure check
 program
@@ -473,122 +379,25 @@ program
   .option('-v, --verbose', 'Show optional services')
   .action((options) => healthCommand(options));
 
-// Baseline command - capture and compare ROI baselines
+// History command - show recent agent executions
 program
-  .command('baseline [subcommand]')
-  .description('Capture and compare ROI baselines (list, compare)')
-  .option('-n, --name <name>', 'Name for the baseline')
-  .option('-c, --compare', 'Compare current metrics to latest baseline')
-  .option('-l, --list', 'List all baselines')
-  .action((subcommand, options) => baselineCommand(subcommand, options));
-
-// Providers command - show LLM CLI availability for multi-LLM support
-program
-  .command('providers')
-  .description('Show available LLM CLI providers (claude, gemini, codex, etc.)')
+  .command('history')
+  .description('Show recent agent execution history')
+  .option('-d, --days <days>', 'Days to look back', '7')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-v, --verbose', 'Show cost and token details')
   .option('-j, --json', 'Output as JSON')
-  .action((options) => providersCommand(options));
+  .action((options) => historyCommand(options));
 
-// Watch command - live refresh any command
+// Results command - KPI goals vs actuals
 program
-  .command('watch <command> [args...]')
-  .description('Live refresh any squads command (like Unix watch)')
-  .option('-n, --interval <seconds>', 'Refresh interval in seconds', '2')
-  .option('--no-clear', 'Don\'t clear screen between refreshes')
-  .action((command, args, options) => watchCommand(command, args, {
-    interval: parseInt(options.interval, 10),
-    clear: options.clear
-  }));
+  .command('results [squad]')
+  .description('Show squad results: git activity + KPI goals vs actuals')
+  .option('-d, --days <days>', 'Days to look back', '7')
+  .option('-v, --verbose', 'Show detailed KPIs per goal')
+  .action((squad, options) => resultsCommand({ ...options, squad }));
 
-// Live command - TUI dashboard
-program
-  .command('live')
-  .description('Live TUI dashboard with real-time metrics (like htop)')
-  .option('-m, --minimal', 'Minimal view')
-  .option('-f, --focus <panel>', 'Focus on specific panel (agents, cost, activity, memory)')
-  .action((options) => liveCommand(options));
-
-// Top command - live process table like Unix top
-program
-  .command('top')
-  .description('Live process table (like Unix top) - numbers update in place')
-  .action(() => topCommand());
-
-// Memory command group
-const memory = program
-  .command('memory')
-  .description('Query and manage squad memory')
-  .addHelpText('after', `
-Examples:
-  $ squads memory query "pricing"     Search all memory for "pricing"
-  $ squads memory show engineering    View engineering squad's memory
-  $ squads memory update research "Found: MCP adoption at 15%"
-  $ squads memory list                List all memory entries
-  $ squads memory sync --push         Sync and push to git
-`)
-  .action(() => {
-    memory.outputHelp();
-  });
-
-memory
-  .command('query <query>')
-  .description('Search across all squad memory')
-  .option('-s, --squad <squad>', 'Limit search to specific squad')
-  .option('-a, --agent <agent>', 'Limit search to specific agent')
-  .action(memoryQueryCommand);
-
-memory
-  .command('show <squad>')
-  .description('Show memory for a squad')
-  .action(memoryShowCommand);
-
-memory
-  .command('update <squad> <content>')
-  .description('Add to squad memory')
-  .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
-  .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
-  .action(memoryUpdateCommand);
-
-memory
-  .command('list')
-  .description('List all memory entries')
-  .action(memoryListCommand);
-
-memory
-  .command('sync')
-  .description('Sync memory from git: pull remote changes, process commits, optionally push to Postgres')
-  .option('-v, --verbose', 'Show detailed commit info')
-  .option('-p, --push', 'Push local memory changes to remote after sync')
-  .option('--no-pull', 'Skip pulling from remote')
-  .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
-  .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
-  .option('--learnings', 'Sync learnings.md files to Postgres')
-  .option('--auto-learn', 'Auto-generate learnings from session commits')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
-
-memory
-  .command('search <query>')
-  .description('Search conversations stored in postgres (via squads-bridge)')
-  .option('-l, --limit <limit>', 'Number of results', '10')
-  .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
-  .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
-  .action((query, opts) => memorySearchCommand(query, {
-    limit: parseInt(opts.limit, 10),
-    role: opts.role,
-    importance: opts.importance
-  }));
-
-memory
-  .command('extract')
-  .description('Extract memories from recent conversations into Engram')
-  .option('-s, --session <session>', 'Extract specific session only')
-  .option('-h, --hours <hours>', 'Look back period in hours', '24')
-  .option('-d, --dry-run', 'Preview without sending to Engram')
-  .action((opts) => memoryExtractCommand({
-    session: opts.session,
-    hours: parseInt(opts.hours, 10),
-    dryRun: opts.dryRun
-  }));
+// ─── Track (objectives + metrics) ────────────────────────────────────────────
 
 // Goal command group
 const goal = program
@@ -608,6 +417,7 @@ goal
   .command('list [squad]')
   .description('List goals for squad(s)')
   .option('-a, --all', 'Show completed goals too')
+  .option('-j, --json', 'Output as JSON')
   .action(goalListCommand);
 
 goal
@@ -619,28 +429,6 @@ goal
   .command('progress <squad> <index> <progress>')
   .description('Update goal progress')
   .action(goalProgressCommand);
-
-// Feedback command group
-const feedback = program
-  .command('feedback')
-  .description('Record and view execution feedback');
-
-feedback
-  .command('add <squad> <rating> <feedback>')
-  .description('Add feedback for last execution (rating 1-5)')
-  .option('-l, --learning <learnings...>', 'Learnings to extract')
-  .action(feedbackAddCommand);
-
-feedback
-  .command('show <squad>')
-  .description('Show feedback history')
-  .option('-n, --limit <n>', 'Number of entries to show', '5')
-  .action(feedbackShowCommand);
-
-feedback
-  .command('stats')
-  .description('Show feedback summary across all squads')
-  .action(feedbackStatsCommand);
 
 // KPI command group - track squad metrics
 const kpi = program
@@ -687,6 +475,138 @@ kpi
   .option('-j, --json', 'Output as JSON')
   .action(kpiInsightsCommand);
 
+// Progress command - track agent task progress
+const progress = program
+  .command('progress')
+  .description('Track active and completed agent tasks')
+  .option('-v, --verbose', 'Show more activity')
+  .action(progressCommand);
+
+progress
+  .command('start <squad> <description>')
+  .description('Register a new active task')
+  .action(progressStartCommand);
+
+progress
+  .command('complete <taskId>')
+  .description('Mark a task as completed')
+  .option('-f, --failed', 'Mark as failed instead')
+  .action(progressCompleteCommand);
+
+// Feedback command group
+const feedback = program
+  .command('feedback')
+  .description('Record and view execution feedback');
+
+feedback
+  .command('add <squad> <rating> <feedback>')
+  .description('Add feedback for last execution (rating 1-5)')
+  .option('-l, --learning <learnings...>', 'Learnings to extract')
+  .action(feedbackAddCommand);
+
+feedback
+  .command('show <squad>')
+  .description('Show feedback history')
+  .option('-n, --limit <n>', 'Number of entries to show', '5')
+  .action(feedbackShowCommand);
+
+feedback
+  .command('stats')
+  .description('Show feedback summary across all squads')
+  .action(feedbackStatsCommand);
+
+// Autonomy command - show autonomous operation readiness
+program
+  .command('autonomy')
+  .description('Show autonomy score and confidence metrics')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-p, --period <period>', 'Time period: today, week, month', 'today')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => autonomyCommand({ squad: options.squad, period: options.period, json: options.json }));
+
+// ─── Learn (memory + knowledge) ─────────────────────────────────────────────
+
+// Memory command group
+const memory = program
+  .command('memory')
+  .description('Query and manage squad memory')
+  .addHelpText('after', `
+Examples:
+  $ squads memory read engineering      View engineering squad's memory
+  $ squads memory write research "Found: MCP adoption at 15%"
+  $ squads memory search "pricing"      Search all memory
+  $ squads memory list                  List all memory entries
+  $ squads memory sync --push           Sync and push to git
+`)
+  .action(() => {
+    memory.outputHelp();
+  });
+
+memory
+  .command('query <query>')
+  .description('Search across all squad memory')
+  .option('-s, --squad <squad>', 'Limit search to specific squad')
+  .option('-a, --agent <agent>', 'Limit search to specific agent')
+  .action(memoryQueryCommand);
+
+// read (new name) + show (alias)
+memory
+  .command('read <squad>')
+  .alias('show')
+  .description('Show memory for a squad')
+  .action(memoryShowCommand);
+
+// write (new name) + update (alias)
+memory
+  .command('write <squad> <content>')
+  .alias('update')
+  .description('Add to squad memory')
+  .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
+  .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
+  .action(memoryUpdateCommand);
+
+memory
+  .command('list')
+  .description('List all memory entries')
+  .action(memoryListCommand);
+
+memory
+  .command('sync')
+  .description('Sync memory from git: pull remote changes, process commits, optionally push to Postgres')
+  .option('-v, --verbose', 'Show detailed commit info')
+  .option('-p, --push', 'Push local memory changes to remote after sync')
+  .option('--no-pull', 'Skip pulling from remote')
+  .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
+  .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
+  .option('--learnings', 'Sync learnings.md files to Postgres')
+  .option('--auto-learn', 'Auto-generate learnings from session commits')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
+
+// search (new name) — also keep old 'search' subcommand
+memory
+  .command('search <query>')
+  .description('Search conversations stored in postgres (via squads-bridge)')
+  .option('-l, --limit <limit>', 'Number of results', '10')
+  .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
+  .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
+  .action((query, opts) => memorySearchCommand(query, {
+    limit: parseInt(opts.limit, 10),
+    role: opts.role,
+    importance: opts.importance
+  }));
+
+memory
+  .command('extract')
+  .description('Extract memories from recent conversations into Engram')
+  .option('-s, --session <session>', 'Extract specific session only')
+  .option('-h, --hours <hours>', 'Look back period in hours', '24')
+  .option('-d, --dry-run', 'Preview without sending to Engram')
+  .action((opts) => memoryExtractCommand({
+    session: opts.session,
+    hours: parseInt(opts.hours, 10),
+    dryRun: opts.dryRun
+  }));
+
 // Learn command - capture learnings for autonomous improvement
 program
   .command('learn <insight>')
@@ -714,6 +634,29 @@ learn
   .description('Search learnings across all squads')
   .option('-n, --limit <n>', 'Max results', '10')
   .action(learnSearchCommand);
+
+// Sync command (also available as `memory sync`)
+program
+  .command('sync')
+  .description('Git + Postgres memory synchronization')
+  .option('-v, --verbose', 'Show detailed commit info')
+  .option('-p, --push', 'Push local memory changes to remote after sync')
+  .option('--no-pull', 'Skip pulling from remote')
+  .option('--postgres', 'Sync cycle data to Postgres')
+  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres }));
+
+// ─── Schedule (automation) ───────────────────────────────────────────────────
+
+// Trigger command group - smart value-driven triggers
+registerTriggerCommand(program);
+
+// Approval command group - human-in-the-loop for agents
+registerApprovalCommand(program);
+
+// Autonomous command group - scheduled routines
+registerAutonomousCommand(program);
+
+// ─── System ──────────────────────────────────────────────────────────────────
 
 // Sessions command group - list active sessions and history
 const sessions = program
@@ -802,110 +745,6 @@ program
   .description('Detect current squad based on cwd (for use in hooks)')
   .action(detectSquadCommand);
 
-// Stack command group - manage local Docker stack
-const stack = program
-  .command('stack')
-  .description('Manage local Docker stack (postgres, redis, langfuse, bridge)');
-
-stack
-  .command('init')
-  .description('Auto-detect Docker containers and configure CLI connection')
-  .action(stackInitCommand);
-
-stack
-  .command('status')
-  .description('Show container health and connection status')
-  .action(stackStatusCommand);
-
-stack
-  .command('env')
-  .description('Print environment variables for shell export')
-  .action(stackEnvCommand);
-
-stack
-  .command('up')
-  .description('Start Docker containers via docker-compose')
-  .action(stackUpCommand);
-
-stack
-  .command('down')
-  .description('Stop Docker containers')
-  .action(stackDownCommand);
-
-stack
-  .command('health')
-  .description('Comprehensive health check with diagnostics')
-  .option('-v, --verbose', 'Show logs for unhealthy services')
-  .action((options) => stackHealthCommand(options.verbose));
-
-stack
-  .command('logs <service>')
-  .description('Show logs for a service (postgres, redis, neo4j, bridge, langfuse, mem0, engram)')
-  .option('-n, --tail <lines>', 'Number of lines to show', '50')
-  .action((service, options) => stackLogsCommand(service, parseInt(options.tail, 10)));
-
-// Trigger command group - smart value-driven triggers
-registerTriggerCommand(program);
-
-// Cron command group - local macOS cron scheduling
-registerCronCommand(program);
-
-// Approval command group - human-in-the-loop for agents
-registerApprovalCommand(program);
-
-// Autonomous command group - scheduled routines
-registerAutonomousCommand(program);
-
-// Orchestrate command - lead-coordinated squad execution
-registerOrchestrateCommand(program);
-
-// Skill command group - Agent Skills API
-registerSkillCommand(program);
-
-// Permissions command group - Phase 3 execution contexts
-registerPermissionsCommand(program);
-
-// Slack command group - channel sync and integration
-registerSlackCommand(program);
-
-// Tonight command group - autonomous overnight execution
-const tonight = program
-  .command('tonight')
-  .description('Run agents autonomously overnight with safety limits');
-
-tonight
-  .command('run <targets...>')
-  .description('Start tonight mode with specified squads/agents')
-  .option('-c, --cost-cap <usd>', 'Max USD to spend (default: 50)', '50')
-  .option('-s, --stop-at <time>', 'Stop time HH:MM (default: 07:00)', '07:00')
-  .option('-r, --max-retries <n>', 'Max restarts per agent (default: 3)', '3')
-  .option('-n, --notify <method>', 'Notification method: slack | none', 'none')
-  .option('-d, --dry-run', 'Show what would run without executing')
-  .option('-v, --verbose', 'Verbose output')
-  .action((targets, options) => tonightCommand(targets, {
-    costCap: parseFloat(options.costCap),
-    stopAt: options.stopAt,
-    maxRetries: parseInt(options.maxRetries, 10),
-    notify: options.notify,
-    dryRun: options.dryRun,
-    verbose: options.verbose,
-  }));
-
-tonight
-  .command('status')
-  .description('Check tonight mode status')
-  .action(tonightStatusCommand);
-
-tonight
-  .command('stop')
-  .description('Stop all tonight agents and generate report')
-  .action(tonightStopCommand);
-
-tonight
-  .command('report')
-  .description('Show latest tonight report')
-  .action(tonightReportCommand);
-
 // Auth commands
 program
   .command('login')
@@ -921,6 +760,13 @@ program
   .command('whoami')
   .description('Show current logged in user')
   .action(whoamiCommand);
+
+// Providers command - show LLM CLI availability for multi-LLM support
+program
+  .command('providers')
+  .description('Show available LLM CLI providers (claude, gemini, codex, etc.)')
+  .option('-j, --json', 'Output as JSON')
+  .action((options) => providersCommand(options));
 
 // Update command
 program
@@ -938,6 +784,26 @@ program
     console.log(`squads-cli ${version}`);
   });
 
+// ─── Removed commands (show helpful message) ─────────────────────────────────
+
+program.command('stack').description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
+program.command('cron').description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
+program.command('tonight').description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
+program.command('live').description('[removed]').action(removedCommand('live', 'Use: squads dash'));
+program.command('top').description('[removed]').action(removedCommand('top', 'Use: squads sessions'));
+program.command('watch').description('[removed]').action(removedCommand('watch', 'Use: watch -n 2 squads status'));
+program.command('setup').description('[removed]').action(removedCommand('setup', 'Use: squads init'));
+program.command('slack').description('[removed]').action(removedCommand('slack', 'Slack integration runs as a service, not a CLI command'));
+program.command('skill').description('[removed]').action(removedCommand('skill', 'Skills are defined in agent .md files. See: .agents/skills/'));
+program.command('baseline').description('[removed]').action(removedCommand('baseline', 'Use: squads dash --ceo'));
+program.command('permissions').description('[removed]').action(removedCommand('permissions', 'Permissions are defined in SQUAD.md approvals config'));
+program.command('issues').description('[removed]').action(removedCommand('issues', 'Use: gh issue list'));
+program.command('solve-issues').description('[removed]').action(removedCommand('solve-issues', 'Issue solving is agent behavior. Use: squads run engineering/issues-solver'));
+program.command('open-issues').description('[removed]').action(removedCommand('open-issues', 'Evaluators are agents. Use: squads run <squad>/<evaluator>'));
+program.command('workers').description('[removed]').action(removedCommand('workers', 'Use: squads sessions'));
+
+// ─── Error handling ──────────────────────────────────────────────────────────
+
 // Global error handler for uncaught exceptions
 // Provides helpful recovery steps instead of raw stack traces (#31)
 function handleError(error: unknown): void {
@@ -947,8 +813,8 @@ function handleError(error: unknown): void {
   if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
     console.error(chalk.red('\nConnection error:'), err.message);
     console.error(chalk.dim('\nPossible fixes:'));
-    console.error(chalk.dim('  1. Check if Docker containers are running: squads stack status'));
-    console.error(chalk.dim('  2. Start the stack: squads stack up'));
+    console.error(chalk.dim('  1. Check infrastructure: squads health'));
+    console.error(chalk.dim('  2. Start containers: docker compose up -d'));
     console.error(chalk.dim('  3. Check your network connection'));
   } else if (err.message.includes('ENOENT')) {
     console.error(chalk.red('\nFile not found:'), err.message);
@@ -992,4 +858,3 @@ try {
 } catch (error) {
   handleError(error);
 }
-
