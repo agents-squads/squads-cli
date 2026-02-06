@@ -1,7 +1,0 @@
-flask>=3.0.0
-gunicorn>=21.0.0
-psycopg2-binary>=2.9.9
-redis>=5.0.0
-
-# Optional: Langfuse forwarding (enable via LANGFUSE_ENABLED=true)
-langfuse>=2.0.0,<3.0.0
