@@ -36,6 +36,16 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 * End all files with a newline
 * Ensure the CI/CD pipeline passes
 
+### Issue Priority and Escalation
+
+The project follows strict SLA policies for critical issues:
+
+* **P1 issues**: Must be resolved within 7 days
+* **P2 issues**: Target resolution within 30 days
+* **P3 issues**: Best effort
+
+See [docs/ESCALATION.md](docs/ESCALATION.md) for the complete escalation policy and monitoring process.
+
 ## Development Setup
 
 1. **Fork and clone the repository**
