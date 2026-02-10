@@ -1,59 +1,200 @@
 /**
- * squads autonomous - Manage autonomous agent execution
+ * squads autonomous - Local scheduling daemon for autonomous agent execution
  *
  * Commands:
- *   squads autonomous start     Start the scheduler daemon
- *   squads autonomous stop      Stop the scheduler daemon
- *   squads autonomous status    Show scheduler status and next runs
- *   squads autonomous sync      Sync routines from SQUAD.md to database
+ *   squads autonomous start     Start the daemon (detached background process)
+ *   squads autonomous stop      Stop the daemon
+ *   squads autonomous status    Show daemon status, running agents, next runs
+ *
+ * The daemon reads SQUAD.md routines, evaluates cron schedules, and spawns
+ * agents via `squads run --background`. No database. No Redis. Just a process.
+ *
+ * Architecture: Layer 2 in docs/ARCHITECTURE.md
  */
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  readdirSync,
+  mkdirSync,
+  appendFileSync,
+} from "fs";
+import { join, basename } from "path";
+import { homedir } from "os";
+import { spawn, execSync } from "child_process";
 import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
 
-const PID_FILE = join(tmpdir(), "squads-autonomous.pid");
-const LOG_FILE = join(tmpdir(), "squads-autonomous.log");
-const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || "http://localhost:8088";
+// Daemon state directory — persistent across runs
+const DAEMON_DIR = join(homedir(), ".squads");
+const PID_FILE = join(DAEMON_DIR, "autonomous.pid");
+const DAEMON_LOG = join(DAEMON_DIR, "autonomous.log");
+
+// Configuration from env vars (all optional)
+const MAX_CONCURRENT = parseInt(process.env.SQUADS_MAX_CONCURRENT || "5");
+const AGENT_TIMEOUT_MIN = parseInt(process.env.SQUADS_AGENT_TIMEOUT || "30");
+const EVAL_INTERVAL_SEC = parseInt(process.env.SQUADS_EVAL_INTERVAL || "60");
 
 interface RoutineWithSquad extends Routine {
   squad: string;
 }
 
-// Note: SchedulerStatus interface was removed (unused)
+// =============================================================================
+// Cron Evaluator (no external dependencies)
+// =============================================================================
 
 /**
- * Parse cron expression to get next run time (simplified)
+ * Check if a cron expression matches a given date.
+ * Format: minute hour day-of-month month day-of-week
+ * Supports: numbers, *, ranges (1-5), steps (*\/5), lists (1,3,5)
  */
-function getNextCronRun(cron: string): Date {
-  // Simplified: just return next occurrence based on cron
-  // Format: minute hour day month weekday
-  const parts = cron.split(" ");
-  const now = new Date();
-  const next = new Date(now);
+function cronMatches(cron: string, date: Date): boolean {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length < 5) return false;
 
-  // Simple heuristic for common patterns
-  const minute = parts[0] === "*" ? now.getMinutes() : parseInt(parts[0]);
-  const hour = parts[1] === "*" ? now.getHours() : parseInt(parts[1]);
+  const fields = [
+    { value: date.getMinutes(), field: parts[0], min: 0, max: 59 },
+    { value: date.getHours(), field: parts[1], min: 0, max: 23 },
+    { value: date.getDate(), field: parts[2], min: 1, max: 31 },
+    { value: date.getMonth() + 1, field: parts[3], min: 1, max: 12 },
+    { value: date.getDay(), field: parts[4], min: 0, max: 6 },
+  ];
 
-  next.setMinutes(minute);
-  next.setHours(hour);
-  next.setSeconds(0);
+  return fields.every(({ value, field, min, max }) =>
+    fieldMatches(field, value, min, max)
+  );
+}
 
-  // If time has passed today, move to tomorrow
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
+function fieldMatches(
+  field: string,
+  value: number,
+  min: number,
+  max: number
+): boolean {
+  // Handle lists: "1,3,5"
+  if (field.includes(",")) {
+    return field.split(",").some((part) => fieldMatches(part.trim(), value, min, max));
   }
 
-  return next;
+  // Handle step: "*/5" or "1-10/2"
+  if (field.includes("/")) {
+    const [range, stepStr] = field.split("/");
+    const step = parseInt(stepStr);
+    if (isNaN(step) || step <= 0) return false;
+
+    let start = min;
+    let end = max;
+    if (range !== "*") {
+      if (range.includes("-")) {
+        [start, end] = range.split("-").map(Number);
+      } else {
+        start = parseInt(range);
+      }
+    }
+    if (value < start || value > end) return false;
+    return (value - start) % step === 0;
+  }
+
+  // Handle range: "1-5"
+  if (field.includes("-")) {
+    const [start, end] = field.split("-").map(Number);
+    return value >= start && value <= end;
+  }
+
+  // Wildcard
+  if (field === "*") return true;
+
+  // Exact match
+  return parseInt(field) === value;
 }
 
 /**
- * Collect all routines from all SQUAD.md files
+ * Get the next occurrence of a cron expression after `after`.
+ * Brute-forces minute by minute (max 48h lookahead).
  */
+function getNextCronRun(cron: string, after: Date = new Date()): Date {
+  const next = new Date(after);
+  next.setSeconds(0, 0);
+  next.setMinutes(next.getMinutes() + 1); // Start from next minute
+
+  const maxIterations = 60 * 48; // 48 hours
+  for (let i = 0; i < maxIterations; i++) {
+    if (cronMatches(cron, next)) return next;
+    next.setMinutes(next.getMinutes() + 1);
+  }
+
+  // Fallback: 24h from now
+  const fallback = new Date(after);
+  fallback.setDate(fallback.getDate() + 1);
+  return fallback;
+}
+
+// =============================================================================
+// Routine Collection (from SQUAD.md files)
+// =============================================================================
+
+/**
+ * Parse routines from SQUAD.md YAML blocks
+ */
+function parseRoutinesFromFile(filePath: string): Routine[] {
+  if (!existsSync(filePath)) return [];
+
+  const content = readFileSync(filePath, "utf-8");
+  const routines: Routine[] = [];
+
+  const routinesMatch = content.match(
+    /##+ Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
+  );
+  if (!routinesMatch) return [];
+
+  let yamlContent = routinesMatch[1];
+  yamlContent = yamlContent.replace(/^\s*routines:\s*\n?/, "");
+  yamlContent = "\n" + yamlContent.trim();
+
+  const routineBlocks = yamlContent.split(/\n\s*- name:\s*/);
+
+  for (const block of routineBlocks) {
+    if (!block.trim()) continue;
+
+    const lines = block.split("\n");
+    const name = lines[0].trim();
+    if (!name) continue;
+
+    const scheduleMatch = block.match(/schedule:\s*["']?([^"'\n#]+)/);
+    const agentsMatch = block.match(/agents:\s*\[(.*?)\]/);
+    const modelMatch = block.match(/model:\s*(\w+)/);
+    const enabledMatch = block.match(/enabled:\s*(true|false)/);
+    const priorityMatch = block.match(/priority:\s*(\d+)/);
+    const cooldownMatch = block.match(
+      /cooldown:\s*["']?([^"'\n]+)["']?/
+    );
+
+    if (scheduleMatch && agentsMatch) {
+      const agents = agentsMatch[1]
+        .split(",")
+        .map((a) => a.trim().replace(/["']/g, ""))
+        .filter(Boolean);
+
+      routines.push({
+        name,
+        schedule: scheduleMatch[1].trim().replace(/["']/g, ""),
+        agents,
+        model: modelMatch
+          ? (modelMatch[1] as "opus" | "sonnet" | "haiku")
+          : undefined,
+        enabled: enabledMatch ? enabledMatch[1] === "true" : true,
+        priority: priorityMatch ? parseInt(priorityMatch[1]) : undefined,
+        cooldown: cooldownMatch ? cooldownMatch[1].trim() : undefined,
+      });
+    }
+  }
+
+  return routines;
+}
+
 function collectRoutines(): RoutineWithSquad[] {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return [];
@@ -66,316 +207,538 @@ function collectRoutines(): RoutineWithSquad[] {
     const squadRoutines = parseRoutinesFromFile(squadFile);
 
     for (const routine of squadRoutines) {
-      routines.push({
-        ...routine,
-        squad: name,
-      });
+      routines.push({ ...routine, squad: name });
     }
   }
 
   return routines;
 }
 
-/**
- * Parse routines from SQUAD.md YAML blocks
- * This extracts routines from ```yaml blocks under ### Routines
- */
-function parseRoutinesFromFile(filePath: string): Routine[] {
-  if (!existsSync(filePath)) return [];
-
-  const content = readFileSync(filePath, "utf-8");
-  const routines: Routine[] = [];
-
-  // Find ## Routines or ### Routines section and extract yaml block
-  const routinesMatch = content.match(/##+ Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i);
-  if (!routinesMatch) return [];
-
-  // Simple YAML parsing for routines (could use yaml library for full support)
-  let yamlContent = routinesMatch[1];
-
-  // Remove top-level "routines:" wrapper if present
-  yamlContent = yamlContent.replace(/^\s*routines:\s*\n?/, "");
-
-  // Normalize: ensure first entry also starts with newline for consistent splitting
-  yamlContent = "\n" + yamlContent.trim();
-
-  // Split by routine entries (- name:)
-  const routineBlocks = yamlContent.split(/\n\s*- name:\s*/);
-
-  for (const block of routineBlocks) {
-    if (!block.trim()) continue;
-
-    // First line is the name (after splitting on "- name:")
-    const lines = block.split("\n");
-    const name = lines[0].trim();
-    if (!name) continue;
-
-    const scheduleMatch = block.match(/schedule:\s*["']?([^"'\n#]+)/);
-    const agentsMatch = block.match(/agents:\s*\[(.*?)\]/);
-    const modelMatch = block.match(/model:\s*(\w+)/);
-    const enabledMatch = block.match(/enabled:\s*(true|false)/);
-    const priorityMatch = block.match(/priority:\s*(\d+)/);
-    const cooldownMatch = block.match(/cooldown:\s*["']?([^"'\n]+)["']?/);
-
-    if (scheduleMatch && agentsMatch) {
-      const agents = agentsMatch[1]
-        .split(",")
-        .map((a) => a.trim().replace(/["']/g, ""))
-        .filter(Boolean);
-
-      routines.push({
-        name,
-        schedule: scheduleMatch[1].trim().replace(/["']/g, ""),
-        agents,
-        model: modelMatch ? (modelMatch[1] as "opus" | "sonnet" | "haiku") : undefined,
-        enabled: enabledMatch ? enabledMatch[1] === "true" : true,
-        priority: priorityMatch ? parseInt(priorityMatch[1]) : undefined,
-        cooldown: cooldownMatch ? cooldownMatch[1].trim() : undefined,
-      });
-    }
-  }
-
-  return routines;
-}
+// =============================================================================
+// PID File Management
+// =============================================================================
 
 /**
- * Sync routines to the bridge database
+ * Find the .agents/logs directory (relative to project root)
  */
-async function syncRoutines(): Promise<void> {
+function getLogsDir(): string | null {
   const squadsDir = findSquadsDir();
-  if (!squadsDir) {
-    console.error(chalk.red("No .agents/squads directory found"));
-    return;
+  if (!squadsDir) return null;
+  // squadsDir is .agents/squads, logs are at .agents/logs
+  return join(squadsDir, "..", "logs");
+}
+
+/**
+ * Count currently running agents by checking PID files
+ */
+function getRunningAgents(): {
+  squad: string;
+  agent: string;
+  pid: number;
+  startedAt: number;
+  logFile: string;
+}[] {
+  const logsDir = getLogsDir();
+  if (!logsDir || !existsSync(logsDir)) return [];
+
+  const running: {
+    squad: string;
+    agent: string;
+    pid: number;
+    startedAt: number;
+    logFile: string;
+  }[] = [];
+
+  let squadDirs: string[];
+  try {
+    squadDirs = readdirSync(logsDir);
+  } catch {
+    return [];
   }
 
-  console.log(chalk.gray("Syncing routines from SQUAD.md files...\n"));
+  for (const squadDir of squadDirs) {
+    const squadPath = join(logsDir, squadDir);
+    let files: string[];
+    try {
+      files = readdirSync(squadPath);
+    } catch {
+      continue;
+    }
 
-  const squadNames = listSquads(squadsDir);
-  let totalRoutines = 0;
+    for (const file of files) {
+      if (!file.endsWith(".pid")) continue;
 
-  for (const name of squadNames) {
-    const squadFile = join(squadsDir, name, "SQUAD.md");
-    const routines = parseRoutinesFromFile(squadFile);
-
-    if (routines.length > 0) {
-      console.log(`  ${chalk.cyan(name)} ${chalk.gray(`(${routines.length} routines)`)}`);
-
-      for (const routine of routines) {
-        const status = routine.enabled !== false ? chalk.green("●") : chalk.gray("○");
-        console.log(`    ${status} ${routine.name} ${chalk.gray(routine.schedule)}`);
-        totalRoutines++;
-      }
-
-      // Sync to bridge
+      const pidPath = join(squadPath, file);
       try {
-        await fetch(`${BRIDGE_URL}/api/routines/sync`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ squad: name, routines }),
+        const pid = parseInt(readFileSync(pidPath, "utf-8").trim());
+        if (isNaN(pid)) continue;
+
+        // Check if process is alive
+        try {
+          process.kill(pid, 0);
+        } catch {
+          // Process dead — clean up orphan PID file
+          try {
+            unlinkSync(pidPath);
+          } catch {
+            /* ignore */
+          }
+          continue;
+        }
+
+        // Extract agent name and timestamp from filename: agent-timestamp.pid
+        const match = file.match(/^(.+)-(\d+)\.pid$/);
+        if (!match) continue;
+
+        const agentName = match[1];
+        const timestamp = parseInt(match[2]);
+
+        running.push({
+          squad: squadDir,
+          agent: agentName,
+          pid,
+          startedAt: timestamp,
+          logFile: pidPath.replace(".pid", ".log"),
         });
       } catch {
-        // Bridge might not support routines endpoint yet
+        continue;
       }
     }
   }
 
-  console.log();
-  console.log(chalk.green(`✓ Synced ${totalRoutines} routines`));
+  return running;
 }
 
 /**
- * Check if scheduler daemon is running
+ * Kill an agent by PID and clean up its PID file
  */
-function isRunning(): { running: boolean; pid?: number } {
-  if (!existsSync(PID_FILE)) {
-    return { running: false };
-  }
-
-  const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim());
-
+function killAgent(pid: number, pidFile: string, signal: NodeJS.Signals = "SIGTERM"): boolean {
   try {
-    // Check if process is alive (signal 0 doesn't kill, just checks)
-    process.kill(pid, 0);
-    return { running: true, pid };
+    process.kill(pid, signal);
+    // Give it a moment, then check if it's dead
+    if (signal === "SIGTERM") {
+      setTimeout(() => {
+        try {
+          process.kill(pid, 0); // Still alive?
+          process.kill(pid, "SIGKILL"); // Force kill
+        } catch {
+          /* already dead */
+        }
+      }, 5000);
+    }
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      /* ignore */
+    }
+    return true;
   } catch {
-    // Process not running, clean up stale PID file
+    return false;
+  }
+}
+
+// =============================================================================
+// Cooldown Parsing
+// =============================================================================
+
+function parseCooldown(cooldown: string): number {
+  const match = cooldown.match(/^(\d+)\s*(m|min|minutes?|h|hours?|d|days?)$/i);
+  if (!match) return 0;
+
+  const value = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+
+  if (unit.startsWith("m")) return value * 60 * 1000;
+  if (unit.startsWith("h")) return value * 60 * 60 * 1000;
+  if (unit.startsWith("d")) return value * 24 * 60 * 60 * 1000;
+  return 0;
+}
+
+// =============================================================================
+// Daemon Core
+// =============================================================================
+
+/**
+ * Log a message to the daemon log file with timestamp
+ */
+function daemonLog(msg: string): void {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${msg}\n`;
+  try {
+    appendFileSync(DAEMON_LOG, line);
+  } catch {
+    // Can't log — ignore
+  }
+}
+
+/**
+ * The main daemon loop. Runs as a long-lived process.
+ */
+async function daemonLoop(): Promise<void> {
+  daemonLog("Daemon started");
+
+  // Track last spawn time per routine to enforce cooldowns
+  const lastSpawned = new Map<string, number>();
+
+  const tick = async () => {
+    try {
+      const now = new Date();
+      now.setSeconds(0, 0); // Round to minute
+
+      // 1. Collect enabled routines
+      const routines = collectRoutines().filter((r) => r.enabled !== false);
+
+      // 2. Check running agents
+      const running = getRunningAgents();
+      const runningCount = running.length;
+
+      // 3. Timeout enforcement
+      for (const agent of running) {
+        const runtimeMin = (Date.now() - agent.startedAt) / 60000;
+        if (runtimeMin > AGENT_TIMEOUT_MIN) {
+          daemonLog(
+            `TIMEOUT: ${agent.squad}/${agent.agent} (PID ${agent.pid}, ${Math.round(runtimeMin)}min)`
+          );
+          const pidFile = agent.logFile.replace(".log", ".pid");
+          killAgent(agent.pid, pidFile);
+        }
+      }
+
+      // 4. Evaluate cron schedules
+      for (const routine of routines) {
+        if (!cronMatches(routine.schedule, now)) continue;
+
+        for (const agentName of routine.agents) {
+          const key = `${routine.squad}/${agentName}`;
+
+          // Cooldown check
+          if (routine.cooldown) {
+            const last = lastSpawned.get(key);
+            const cooldownMs = parseCooldown(routine.cooldown);
+            if (last && Date.now() - last < cooldownMs) {
+              continue;
+            }
+          }
+
+          // Already running check
+          const alreadyRunning = running.some(
+            (r) => r.squad === routine.squad && r.agent === agentName
+          );
+          if (alreadyRunning) continue;
+
+          // Concurrency check
+          const currentRunning = getRunningAgents().length;
+          if (currentRunning >= MAX_CONCURRENT) {
+            daemonLog(
+              `SKIP: ${key} — concurrency limit (${currentRunning}/${MAX_CONCURRENT})`
+            );
+            continue;
+          }
+
+          // Spawn the agent
+          daemonLog(`SPAWN: ${key} (routine: ${routine.name})`);
+          try {
+            const modelFlag = routine.model ? `--model ${routine.model}` : "";
+            execSync(
+              `squads run ${routine.squad}/${agentName} --background ${modelFlag} --trigger scheduled`,
+              {
+                cwd: process.cwd(),
+                stdio: "ignore",
+                timeout: 10000, // 10s to spawn
+              }
+            );
+            lastSpawned.set(key, Date.now());
+            daemonLog(`SPAWNED: ${key}`);
+          } catch (err) {
+            daemonLog(`ERROR: Failed to spawn ${key}: ${err}`);
+          }
+        }
+      }
+    } catch (err) {
+      daemonLog(`TICK ERROR: ${err}`);
+    }
+  };
+
+  // Run immediately, then on interval
+  await tick();
+  setInterval(tick, EVAL_INTERVAL_SEC * 1000);
+
+  // Keep process alive
+  process.on("SIGTERM", () => {
+    daemonLog("Received SIGTERM, shutting down");
     try {
       unlinkSync(PID_FILE);
     } catch {
-      // Ignore - file may already be deleted
+      /* ignore */
+    }
+    process.exit(0);
+  });
+
+  process.on("SIGINT", () => {
+    daemonLog("Received SIGINT, shutting down");
+    try {
+      unlinkSync(PID_FILE);
+    } catch {
+      /* ignore */
+    }
+    process.exit(0);
+  });
+}
+
+// =============================================================================
+// Daemon Lifecycle (check/start/stop)
+// =============================================================================
+
+function isRunning(): { running: boolean; pid?: number } {
+  if (!existsSync(PID_FILE)) return { running: false };
+
+  const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim());
+  if (isNaN(pid)) return { running: false };
+
+  try {
+    process.kill(pid, 0);
+    return { running: true, pid };
+  } catch {
+    // Stale PID file
+    try {
+      unlinkSync(PID_FILE);
+    } catch {
+      /* ignore */
     }
     return { running: false };
   }
 }
 
-/**
- * Start the scheduler daemon
- */
 async function startScheduler(): Promise<void> {
   const status = isRunning();
   if (status.running) {
-    console.log(chalk.yellow(`Scheduler already running (PID ${status.pid})`));
+    console.log(
+      chalk.yellow(`Daemon already running (PID ${status.pid})`)
+    );
+    console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
     return;
   }
 
-  console.log(chalk.gray("Starting autonomous scheduler...\n"));
+  // Ensure daemon directory exists
+  if (!existsSync(DAEMON_DIR)) {
+    mkdirSync(DAEMON_DIR, { recursive: true });
+  }
 
-  // First sync routines
-  await syncRoutines();
-
-  // NOTE: Full scheduler implementation pending - using bridge-based scheduling instead
-  // For now, just show what would run
   const routines = collectRoutines().filter((r) => r.enabled !== false);
-
   if (routines.length === 0) {
     console.log(chalk.yellow("No enabled routines found."));
-    console.log(chalk.gray("Add routines to SQUAD.md files under ### Routines section."));
+    console.log(
+      chalk.gray("Add routines to SQUAD.md files under ### Routines section.")
+    );
     return;
   }
 
-  console.log(chalk.bold("\nScheduled Routines:\n"));
-
-  for (const routine of routines) {
-    const nextRun = getNextCronRun(routine.schedule);
-    console.log(
-      `  ${chalk.green("●")} ${chalk.cyan(routine.squad)}/${routine.name}`
-    );
-    console.log(
-      `    ${chalk.gray("Schedule:")} ${routine.schedule}`
-    );
-    console.log(
-      `    ${chalk.gray("Agents:")} ${routine.agents.join(", ")}`
-    );
-    console.log(
-      `    ${chalk.gray("Next run:")} ${nextRun.toLocaleString()}`
-    );
-    console.log();
+  // Check if we're being invoked as the daemon itself (--daemon flag)
+  if (process.argv.includes("--daemon")) {
+    // We ARE the daemon — run the loop
+    writeFileSync(PID_FILE, process.pid.toString());
+    await daemonLoop();
+    // daemonLoop never returns (infinite setInterval)
+    // Keep the event loop alive
+    await new Promise(() => {});
+    return;
   }
 
-  // Write PID file (use current process as placeholder)
-  writeFileSync(PID_FILE, process.pid.toString());
+  // Spawn a detached daemon process
+  const child = spawn(
+    process.execPath, // node
+    [process.argv[1], "autonomous", "start", "--daemon"],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+    }
+  );
+  child.unref();
 
-  console.log(chalk.green("✓ Scheduler started"));
-  console.log(chalk.gray(`  PID file: ${PID_FILE}`));
-  console.log(chalk.gray(`  Log file: ${LOG_FILE}`));
-  console.log();
-  console.log(chalk.gray("Note: Full daemon mode requires node-cron. Run in foreground for now."));
-  console.log(chalk.gray("Stop with: squads autonomous stop"));
+  // Wait briefly for PID file to appear
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  const check = isRunning();
+  if (check.running) {
+    console.log(chalk.green(`\n  Daemon started (PID ${check.pid})`));
+  } else {
+    console.log(chalk.green("\n  Daemon starting..."));
+  }
+
+  console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
+  console.log(chalk.gray(`  Config: SQUAD.md routines\n`));
+
+  // Show what's scheduled
+  console.log(chalk.cyan("  Routines"));
+  const bySquad = new Map<string, RoutineWithSquad[]>();
+  for (const r of routines) {
+    if (!bySquad.has(r.squad)) bySquad.set(r.squad, []);
+    bySquad.get(r.squad)!.push(r);
+  }
+
+  for (const [squad, squadRoutines] of bySquad) {
+    for (const r of squadRoutines) {
+      const next = getNextCronRun(r.schedule);
+      const timeStr = next.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      console.log(
+        `  ${chalk.green("●")} ${chalk.cyan(squad)}/${r.name} ${chalk.gray(r.schedule)} ${chalk.gray(`→ ${timeStr}`)}`
+      );
+    }
+  }
+
+  console.log(
+    chalk.gray(`\n  ${routines.length} routines, max ${MAX_CONCURRENT} concurrent`)
+  );
+  console.log(chalk.gray("  Stop: squads autonomous stop"));
+  console.log(chalk.gray(`  Monitor: tail -f ${DAEMON_LOG}\n`));
 }
 
-/**
- * Stop the scheduler daemon
- */
 function stopScheduler(): void {
   const status = isRunning();
 
   if (!status.running) {
-    console.log(chalk.gray("Scheduler not running"));
+    console.log(chalk.gray("Daemon not running"));
     return;
   }
 
   try {
     process.kill(status.pid!, "SIGTERM");
-    unlinkSync(PID_FILE);
-    console.log(chalk.green(`✓ Scheduler stopped (PID ${status.pid})`));
+    try {
+      unlinkSync(PID_FILE);
+    } catch {
+      /* ignore */
+    }
+    console.log(chalk.green(`Daemon stopped (PID ${status.pid})`));
   } catch (error) {
-    console.error(chalk.red(`Failed to stop scheduler: ${error}`));
+    console.error(chalk.red(`Failed to stop daemon: ${error}`));
   }
 }
 
-/**
- * Show scheduler status
- */
 async function showStatus(): Promise<void> {
-  const running = isRunning();
+  const daemon = isRunning();
   const routines = collectRoutines();
   const enabled = routines.filter((r) => r.enabled !== false);
+  const running = getRunningAgents();
 
-  console.log(chalk.bold("\nAutonomous Scheduler Status\n"));
+  console.log(chalk.bold("\n  Autonomous Scheduler\n"));
 
-  // Running status
-  if (running.running) {
-    console.log(`  ${chalk.green("●")} Running ${chalk.gray(`(PID ${running.pid})`)}`);
+  // Daemon status
+  if (daemon.running) {
+    console.log(
+      `  ${chalk.green("●")} Daemon running ${chalk.gray(`(PID ${daemon.pid})`)}`
+    );
   } else {
-    console.log(`  ${chalk.gray("○")} Not running`);
+    console.log(`  ${chalk.red("●")} Daemon not running`);
   }
   console.log();
 
-  // Routine counts
+  // Running agents
+  if (running.length > 0) {
+    console.log(chalk.cyan("  Running Agents"));
+    for (const agent of running) {
+      const runtimeMin = Math.round((Date.now() - agent.startedAt) / 60000);
+      const timeoutWarning =
+        runtimeMin > AGENT_TIMEOUT_MIN * 0.8 ? chalk.yellow(" ⚠") : "";
+      console.log(
+        `  ${chalk.green("●")} ${chalk.cyan(agent.squad)}/${agent.agent} ${chalk.gray(`${runtimeMin}min`)}${timeoutWarning} ${chalk.gray(`PID ${agent.pid}`)}`
+      );
+    }
+    console.log();
+  }
+
+  // Routine summary
   console.log(chalk.cyan("  Routines"));
-  console.log(`    Total:   ${routines.length}`);
-  console.log(`    Enabled: ${chalk.green(enabled.length)}`);
-
-  // Group by squad
-  const bySquad = routines.reduce((acc, r) => {
-    acc[r.squad] = (acc[r.squad] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  for (const [squad, count] of Object.entries(bySquad)) {
-    console.log(`    ${chalk.gray(squad)}: ${count}`);
-  }
+  console.log(
+    `  ${enabled.length} enabled / ${routines.length} total, ${running.length}/${MAX_CONCURRENT} running`
+  );
   console.log();
 
-  // Next runs
+  // Next 10 upcoming runs
   if (enabled.length > 0) {
     console.log(chalk.cyan("  Next Runs"));
 
-    const nextRuns = enabled
-      .map((r) => ({
-        routine: r.name,
-        squad: r.squad,
-        schedule: r.schedule,
-        nextRun: getNextCronRun(r.schedule),
-      }))
-      .sort((a, b) => a.nextRun.getTime() - b.nextRun.getTime())
-      .slice(0, 5);
+    const now = new Date();
+    const nextRuns: {
+      squad: string;
+      routine: string;
+      agent: string;
+      nextRun: Date;
+    }[] = [];
 
-    for (const run of nextRuns) {
-      console.log(
-        `    ${chalk.gray(run.nextRun.toLocaleTimeString())} ${chalk.cyan(run.squad)}/${run.routine}`
-      );
+    for (const r of enabled) {
+      const next = getNextCronRun(r.schedule, now);
+      for (const agent of r.agents) {
+        nextRuns.push({
+          squad: r.squad,
+          routine: r.name,
+          agent,
+          nextRun: next,
+        });
+      }
     }
+
+    nextRuns
+      .sort((a, b) => a.nextRun.getTime() - b.nextRun.getTime())
+      .slice(0, 10)
+      .forEach((run) => {
+        const timeStr = run.nextRun.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const dateStr =
+          run.nextRun.toDateString() === now.toDateString()
+            ? "today"
+            : run.nextRun.toLocaleDateString([], {
+                month: "short",
+                day: "numeric",
+              });
+        console.log(
+          `  ${chalk.gray(timeStr)} ${chalk.gray(dateStr)} ${chalk.cyan(run.squad)}/${run.agent}`
+        );
+      });
   }
 
   console.log();
   console.log(chalk.gray("  Commands:"));
-  console.log(chalk.gray("  $ squads autonomous start   Start scheduler"));
-  console.log(chalk.gray("  $ squads autonomous sync    Sync routines from SQUAD.md"));
+  console.log(chalk.gray("  $ squads autonomous start   Start daemon"));
+  console.log(chalk.gray("  $ squads autonomous stop    Stop daemon"));
+  console.log(chalk.gray(`  $ tail -f ${DAEMON_LOG}`));
   console.log();
 }
+
+// =============================================================================
+// Command Registration
+// =============================================================================
 
 export function registerAutonomousCommand(program: Command): void {
   const autonomous = program
     .command("autonomous")
     .alias("auto")
-    .description("Manage autonomous agent execution");
+    .description("Local scheduling daemon for autonomous agent execution");
 
   autonomous
     .command("start")
-    .description("Start the scheduler daemon")
+    .description("Start the scheduling daemon")
     .action(async () => {
       await startScheduler();
     });
 
   autonomous
     .command("stop")
-    .description("Stop the scheduler daemon")
+    .description("Stop the scheduling daemon")
     .action(() => {
       stopScheduler();
     });
 
   autonomous
     .command("status")
-    .description("Show scheduler status")
+    .description("Show daemon status, running agents, and next runs")
     .action(async () => {
       await showStatus();
-    });
-
-  autonomous
-    .command("sync")
-    .description("Sync routines from SQUAD.md files")
-    .action(async () => {
-      await syncRoutines();
     });
 }
