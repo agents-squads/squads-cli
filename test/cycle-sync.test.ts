@@ -62,15 +62,15 @@ describe('Cycle Sync', () => {
     });
 
     it('SyncStats interface is correct', async () => {
-      const { syncGoals, closeCycleSyncPool } = await import('../src/lib/cycle-sync.js');
+      const { syncAllCycleData, closeCycleSyncPool } = await import('../src/lib/cycle-sync.js');
 
-      // Call with non-existent squad - should return valid stats structure
-      const stats = await syncGoals('definitely-nonexistent-squad-xyz');
+      // syncAllCycleData returns SyncResult containing SyncStats per data type
+      const result = await syncAllCycleData();
 
-      expect(stats).toHaveProperty('synced');
-      expect(stats).toHaveProperty('skipped');
-      expect(stats).toHaveProperty('errors');
-      expect(typeof stats.synced).toBe('number');
+      expect(result.goals).toHaveProperty('synced');
+      expect(result.goals).toHaveProperty('skipped');
+      expect(result.goals).toHaveProperty('errors');
+      expect(typeof result.goals.synced).toBe('number');
 
       await closeCycleSyncPool();
     });
