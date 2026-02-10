@@ -1278,30 +1278,28 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 
 After completion:
 
-## 1. Update Memory (commit directly to main - auto-merged)
-Update your memory files in .agents/memory/${squadName}/${agentName}/:
-- state.md - Your working state
-- learnings.md - What you learned
-- executions.md - Log this execution
-
-Use ISO timestamps (e.g., 2026-01-23T14:30:00Z).
+## 1. Commit ALL work on your branch
+You are running on branch \`agent/${squadName}/${agentName}-{timestamp}\`.
+ALL commits (memory + work products) go to THIS branch. Do NOT switch to main.
 
 \`\`\`bash
+# Commit memory updates
 git add .agents/memory/${squadName}/${agentName}/
-git commit -m "memory(${squadName}): ${agentName} state update
+git commit -m "memory(${squadName}/${agentName}): state update
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
-git push origin main
+
+# Commit work products (reports, code, content)
+git add -A
+git commit -m "feat(${squadName}/${agentName}): {describe what was created}
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
 \`\`\`
 
-## 2. Work Products (PR to correct repo - needs review)
-If you created work products (code, content, reports), commit to the CORRECT repo:
-- Code changes → squads-cli, engineering repos
-- Web content → agents-squads-web
-- Research/reports → intelligence, research repos
-- Outreach drafts → customer repo
-
-Create a PR in that repo for human review. Do NOT put work products in hq.
+## 2. NEVER commit to main
+- Do NOT run \`git checkout main\`
+- Do NOT run \`git push origin main\`
+- Stay on your branch. The system handles merging.
 
 ## 3. Summarize what was accomplished
 
@@ -1740,12 +1738,14 @@ async function executeWithClaude(
 
   // Build shell command:
   // 1. cd to project root
-  // 2. export env vars
-  // 3. exec claude (replaces shell, keeps file descriptors)
-  // The redirect to logfile happens before exec, so it persists
+  // 2. create agent branch (isolates work products from main)
+  // 3. export env vars
+  // 4. run claude (output to logfile)
+  // 5. switch back to main after completion
   // Note: MCP config removed - causes blocking issues in background execution
   const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-  const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
+  const shellScript = `cd '${projectRoot}'; git checkout -b '${branchName}' 2>/dev/null; ${envExports}; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1; git checkout main 2>/dev/null`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
