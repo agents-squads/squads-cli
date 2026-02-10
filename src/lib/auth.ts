@@ -1,8 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import 'open';
 import http from 'http';
 
 // Personal email domains to reject
@@ -69,11 +67,6 @@ export function isLoggedIn(): boolean {
   return session !== null && session.status === 'active';
 }
 
-// Create Supabase client (for edge function use)
-export function createSupabaseClient(url: string, anonKey: string) {
-  return createClient(url, anonKey);
-}
-
 // Local callback server for OAuth flow
 export function startAuthCallbackServer(port: number = 54321): Promise<{ email: string; token: string }> {
   return new Promise((resolve, reject) => {
@@ -91,7 +84,7 @@ export function startAuthCallbackServer(port: number = 54321): Promise<{ email: 
             <html>
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
-                  <h1 style="color: #ef4444;">❌ ${error}</h1>
+                  <h1 style="color: #ef4444;">Authentication failed: ${error}</h1>
                   <p>You can close this window.</p>
                 </div>
               </body>
@@ -108,7 +101,7 @@ export function startAuthCallbackServer(port: number = 54321): Promise<{ email: 
             <html>
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
-                  <h1 style="color: #10b981;">✓ Logged in!</h1>
+                  <h1 style="color: #10b981;">Logged in!</h1>
                   <p>Welcome, ${email}</p>
                   <p style="color: #6b7280;">You can close this window and return to your terminal.</p>
                 </div>
