@@ -27,6 +27,11 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import { spawn, execSync } from "child_process";
 import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
+import {
+  cronMatches,
+  getNextCronRun,
+  parseCooldown,
+} from "../lib/cron.js";
 
 // Daemon state directory — persistent across runs
 const DAEMON_DIR = join(homedir(), ".squads");
@@ -43,94 +48,9 @@ interface RoutineWithSquad extends Routine {
 }
 
 // =============================================================================
-// Cron Evaluator (no external dependencies)
+// Cron Evaluator - now imported from lib/cron.ts
 // =============================================================================
-
-/**
- * Check if a cron expression matches a given date.
- * Format: minute hour day-of-month month day-of-week
- * Supports: numbers, *, ranges (1-5), steps (*\/5), lists (1,3,5)
- */
-function cronMatches(cron: string, date: Date): boolean {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length < 5) return false;
-
-  const fields = [
-    { value: date.getMinutes(), field: parts[0], min: 0, max: 59 },
-    { value: date.getHours(), field: parts[1], min: 0, max: 23 },
-    { value: date.getDate(), field: parts[2], min: 1, max: 31 },
-    { value: date.getMonth() + 1, field: parts[3], min: 1, max: 12 },
-    { value: date.getDay(), field: parts[4], min: 0, max: 6 },
-  ];
-
-  return fields.every(({ value, field, min, max }) =>
-    fieldMatches(field, value, min, max)
-  );
-}
-
-function fieldMatches(
-  field: string,
-  value: number,
-  min: number,
-  max: number
-): boolean {
-  // Handle lists: "1,3,5"
-  if (field.includes(",")) {
-    return field.split(",").some((part) => fieldMatches(part.trim(), value, min, max));
-  }
-
-  // Handle step: "*/5" or "1-10/2"
-  if (field.includes("/")) {
-    const [range, stepStr] = field.split("/");
-    const step = parseInt(stepStr);
-    if (isNaN(step) || step <= 0) return false;
-
-    let start = min;
-    let end = max;
-    if (range !== "*") {
-      if (range.includes("-")) {
-        [start, end] = range.split("-").map(Number);
-      } else {
-        start = parseInt(range);
-      }
-    }
-    if (value < start || value > end) return false;
-    return (value - start) % step === 0;
-  }
-
-  // Handle range: "1-5"
-  if (field.includes("-")) {
-    const [start, end] = field.split("-").map(Number);
-    return value >= start && value <= end;
-  }
-
-  // Wildcard
-  if (field === "*") return true;
-
-  // Exact match
-  return parseInt(field) === value;
-}
-
-/**
- * Get the next occurrence of a cron expression after `after`.
- * Brute-forces minute by minute (max 48h lookahead).
- */
-function getNextCronRun(cron: string, after: Date = new Date()): Date {
-  const next = new Date(after);
-  next.setSeconds(0, 0);
-  next.setMinutes(next.getMinutes() + 1); // Start from next minute
-
-  const maxIterations = 60 * 48; // 48 hours
-  for (let i = 0; i < maxIterations; i++) {
-    if (cronMatches(cron, next)) return next;
-    next.setMinutes(next.getMinutes() + 1);
-  }
-
-  // Fallback: 24h from now
-  const fallback = new Date(after);
-  fallback.setDate(fallback.getDate() + 1);
-  return fallback;
-}
+// Functions: cronMatches, getNextCronRun, parseCooldown are now in lib/cron.ts
 
 // =============================================================================
 // Routine Collection (from SQUAD.md files)
@@ -338,21 +258,9 @@ function killAgent(pid: number, pidFile: string, signal: NodeJS.Signals = "SIGTE
 }
 
 // =============================================================================
-// Cooldown Parsing
+// Cooldown Parsing - now imported from lib/cron.ts
 // =============================================================================
-
-function parseCooldown(cooldown: string): number {
-  const match = cooldown.match(/^(\d+)\s*(m|min|minutes?|h|hours?|d|days?)$/i);
-  if (!match) return 0;
-
-  const value = parseInt(match[1]);
-  const unit = match[2].toLowerCase();
-
-  if (unit.startsWith("m")) return value * 60 * 1000;
-  if (unit.startsWith("h")) return value * 60 * 60 * 1000;
-  if (unit.startsWith("d")) return value * 24 * 60 * 60 * 1000;
-  return 0;
-}
+// Function: parseCooldown is now in lib/cron.ts
 
 // =============================================================================
 // Daemon Core
