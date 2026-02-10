@@ -88,6 +88,7 @@ import { applyStackConfig } from './lib/stack-config.js';
 import { registerTriggerCommand } from './commands/trigger.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerApprovalCommand } from './commands/approval.js';
+import { registerDeployCommand } from './commands/deploy.js';
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
@@ -760,6 +761,9 @@ program
   .command('whoami')
   .description('Show current logged in user')
   .action(whoamiCommand);
+
+// Deploy command group - push agents to platform
+registerDeployCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
