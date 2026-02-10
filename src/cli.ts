@@ -89,6 +89,7 @@ import { registerTriggerCommand } from './commands/trigger.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
+import { registerEvalCommand } from './commands/eval.js';
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
@@ -761,6 +762,9 @@ program
   .command('whoami')
   .description('Show current logged in user')
   .action(whoamiCommand);
+
+// Eval command - agent readiness scoring
+registerEvalCommand(program);
 
 // Deploy command group - push agents to platform
 registerDeployCommand(program);
