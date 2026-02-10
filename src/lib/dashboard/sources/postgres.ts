@@ -1,70 +1,27 @@
 /**
- * PostgreSQL Data Source
- * Executes queries against the squads schema
+ * PostgreSQL Data Source — stub implementation
+ *
+ * Database queries are a platform feature (Layer 3).
+ * The CLI dashboard uses local data sources only.
+ * The pure utility functions (buildQuery, buildWhereClause, parseDateRange) are kept
+ * as they don't depend on pg and may be used by other data sources.
  */
 
-import { createRequire } from 'module';
 import type { DataSource, QueryResult } from '../types.js';
-
-const require = createRequire(import.meta.url);
-const pg = require('pg');
-const { Pool } = pg;
-
-const DATABASE_URL = process.env.SQUADS_DATABASE_URL ||
-  'postgresql://user:password@localhost:5432/squads';
-
-let pool: InstanceType<typeof Pool> | null = null;
-
-function getPool(): InstanceType<typeof Pool> {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    });
-
-    pool.on('error', (err: Error) => {
-      if (process.env.DEBUG) {
-        console.error('Database pool error:', err);
-      }
-    });
-  }
-  return pool;
-}
 
 export const postgresSource: DataSource = {
   name: 'postgres',
 
-  async query(sql: string, params: unknown[] = []): Promise<QueryResult> {
-    const client = await getPool().connect();
-    try {
-      const result = await client.query(sql, params);
-      return {
-        rows: result.rows,
-        columns: result.fields?.map((f: { name: string }) => f.name) || [],
-      };
-    } finally {
-      client.release();
-    }
+  async query(_sql: string, _params: unknown[] = []): Promise<QueryResult> {
+    return { rows: [], columns: [] };
   },
 
   async isAvailable(): Promise<boolean> {
-    try {
-      const client = await getPool().connect();
-      await client.query('SELECT 1');
-      client.release();
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   },
 
   async close(): Promise<void> {
-    if (pool) {
-      await pool.end();
-      pool = null;
-    }
+    // No-op
   },
 };
 
@@ -81,14 +38,12 @@ export function buildQuery(
 ): string {
   const selectParts: string[] = [];
 
-  // Add group by columns first
   if (groupBy && groupBy.length > 0) {
     for (const col of groupBy) {
       selectParts.push(col);
     }
   }
 
-  // Add metrics
   for (const metric of metrics) {
     selectParts.push(`${metric.sql} AS ${metric.name}`);
   }
@@ -189,7 +144,7 @@ export function parseDateRange(preset: string): { start: Date; end: Date } {
     case 'last_month':
       start.setMonth(start.getMonth() - 1);
       start.setDate(1);
-      end.setDate(0); // Last day of previous month
+      end.setDate(0);
       return { start, end };
 
     case 'this_quarter': {
@@ -200,7 +155,6 @@ export function parseDateRange(preset: string): { start: Date; end: Date } {
     }
 
     default:
-      // Default to last 7 days
       start.setDate(start.getDate() - 7);
       return { start, end };
   }
