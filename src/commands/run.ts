@@ -1793,7 +1793,28 @@ async function executeWithProvider(
   }
 
   if (!isProviderCLIAvailable(provider)) {
-    throw new Error(`CLI '${cliConfig.command}' not found. Install: ${cliConfig.install}`);
+    writeLine();
+    writeLine(`  ${colors.red}${icons.error} ${cliConfig.displayName} CLI not found${RESET}`);
+    writeLine();
+    writeLine(`  The '${cliConfig.command}' command is required to run agents with ${cliConfig.displayName}.`);
+    writeLine();
+    writeLine(`  ${colors.cyan}Installation:${RESET}`);
+    writeLine(`  ${colors.dim}${cliConfig.install}${RESET}`);
+    writeLine();
+
+    if (provider === 'anthropic') {
+      writeLine(`  ${colors.cyan}Setup Guide:${RESET}`);
+      writeLine(`  ${colors.dim}1. Install: ${cliConfig.install}${RESET}`);
+      writeLine(`  ${colors.dim}2. Authenticate: claude auth${RESET}`);
+      writeLine(`  ${colors.dim}3. Test: claude --help${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.cyan}More info:${RESET} ${colors.dim}https://docs.anthropic.com/claude/docs/cli${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}After installation, run 'squads providers' to verify.${RESET}`);
+    }
+
+    writeLine();
+    process.exit(1);
   }
 
   const projectRoot = options.cwd || getProjectRoot();
