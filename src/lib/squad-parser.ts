@@ -106,7 +106,7 @@ export interface Routine {
   /** Agents to run in this batch */
   agents: string[];
   /** Model to use (defaults to squad default or sonnet) */
-  model?: 'opus' | 'sonnet' | 'haiku';
+  model?: string;
   /** Whether the routine is enabled */
   enabled?: boolean;
   /** Priority for execution ordering (lower = higher priority) */
