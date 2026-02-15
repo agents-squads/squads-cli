@@ -50,7 +50,7 @@ interface RunOptions {
   skills?: string[]; // Skills to load (skill IDs or local paths)
   trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
   provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
-  model?: 'opus' | 'sonnet' | 'haiku'; // Claude model - route by task difficulty
+  model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
 }
 
 /**
@@ -1278,28 +1278,41 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 
 After completion:
 
-## 1. Commit ALL work on your branch
-You are running on branch \`agent/${squadName}/${agentName}-{timestamp}\`.
-ALL commits (memory + work products) go to THIS branch. Do NOT switch to main.
+## 1. Create a branch for your work
+BEFORE making any changes, create a descriptive branch:
 
 \`\`\`bash
-# Commit memory updates
+# Pick a type based on what you're doing:
+#   feat/  — new deliverables, research, features
+#   fix/   — bug fixes, corrections
+#   docs/  — documentation
+#   solve/issue-{n} — solving a specific GitHub issue
+git checkout -b {type}/{short-description}
+\`\`\`
+
+Examples: \`feat/agent-orchestration-research\`, \`fix/auth-timeout\`, \`solve/issue-42\`
+The branch name should describe the WORK, not you.
+
+## 2. Commit with Conventional Commits
+\`\`\`bash
 git add .agents/memory/${squadName}/${agentName}/
-git commit -m "memory(${squadName}/${agentName}): state update
+git commit -m "memory(${squadName}): ${agentName} state update
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 
-# Commit work products (reports, code, content)
 git add -A
-git commit -m "feat(${squadName}/${agentName}): {describe what was created}
+git commit -m "feat(${squadName}): {describe what was created}
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 \`\`\`
 
-## 2. NEVER commit to main
-- Do NOT run \`git checkout main\`
-- Do NOT run \`git push origin main\`
-- Stay on your branch. The system handles merging.
+Types: \`feat\`, \`fix\`, \`docs\`, \`chore\`, \`memory\`, \`refactor\`, \`test\`
+
+## 3. NEVER commit to main
+- Do NOT commit to \`main\` directly
+- Do NOT push to \`main\`
+- All work goes on your branch
+- If a remote exists, push your branch and open a PR
 
 ## 3. Summarize what was accomplished
 
@@ -1439,7 +1452,7 @@ interface ExecuteWithClaudeOptions {
   trigger?: ExecutionContext['trigger'];
   squadName: string;
   agentName: string;
-  model?: 'opus' | 'sonnet' | 'haiku'; // Route by task difficulty
+  model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
 }
 
 async function executeWithClaude(
@@ -1738,14 +1751,13 @@ async function executeWithClaude(
 
   // Build shell command:
   // 1. cd to project root
-  // 2. create agent branch (isolates work products from main)
-  // 3. export env vars
-  // 4. run claude (output to logfile)
-  // 5. switch back to main after completion
+  // 2. export env vars
+  // 3. run claude (output to logfile)
+  // Agent creates its own branch following gh skill conventions (feat/, fix/, docs/, solve/)
+  // Agent opens PR to sprint branch — system does NOT pre-create branches
   // Note: MCP config removed - causes blocking issues in background execution
   const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-  const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
-  const shellScript = `cd '${projectRoot}'; git checkout -b '${branchName}' 2>/dev/null; ${envExports}; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1; git checkout main 2>/dev/null`;
+  const shellScript = `cd '${projectRoot}'; ${envExports}; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs

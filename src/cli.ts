@@ -209,7 +209,7 @@ program
   .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
   .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
   .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
-  .option('--model <model>', 'Model to use: opus, sonnet, haiku (default: sonnet). Route by task difficulty.')
+  .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
   .option('-j, --json', 'Output as JSON')
   .addHelpText('after', `
