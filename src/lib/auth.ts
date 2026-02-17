@@ -67,6 +67,16 @@ export function isLoggedIn(): boolean {
   return session !== null && session.status === 'active';
 }
 
+// Escape HTML special characters to prevent XSS
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // Local callback server for OAuth flow
 export function startAuthCallbackServer(port: number = 54321): Promise<{ email: string; token: string }> {
   return new Promise((resolve, reject) => {
@@ -84,7 +94,7 @@ export function startAuthCallbackServer(port: number = 54321): Promise<{ email: 
             <html>
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
-                  <h1 style="color: #ef4444;">Authentication failed: ${error}</h1>
+                  <h1 style="color: #ef4444;">Authentication failed: ${escapeHtml(error)}</h1>
                   <p>You can close this window.</p>
                 </div>
               </body>
@@ -102,7 +112,7 @@ export function startAuthCallbackServer(port: number = 54321): Promise<{ email: 
               <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="text-align: center;">
                   <h1 style="color: #10b981;">Logged in!</h1>
-                  <p>Welcome, ${email}</p>
+                  <p>Welcome, ${escapeHtml(email)}</p>
                   <p style="color: #6b7280;">You can close this window and return to your terminal.</p>
                 </div>
               </body>
