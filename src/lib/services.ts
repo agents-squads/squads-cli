@@ -31,23 +31,27 @@ interface ServiceInfo {
 const SERVICES: Record<string, ServiceInfo> = {
   bridge: {
     name: 'Bridge API',
-    description: 'Captures conversations and telemetry',
-    required: true,
+    description: 'Optional: captures conversations and telemetry',
+    required: false,
     healthUrl: 'http://localhost:8088/health',
     envVars: ['SQUADS_BRIDGE_URL'],
     setupGuide: [
-      'Run: squads stack up',
-      'Or manually: docker compose up -d bridge',
+      'Not required for basic usage (init, run, status, eval).',
+      'To enable telemetry:',
+      '  squads stack up',
+      '  Or: docker compose up -d bridge',
     ],
   },
   postgres: {
     name: 'PostgreSQL',
-    description: 'Stores conversations and telemetry data',
-    required: true,
+    description: 'Optional: enables scheduling, telemetry, and persistent storage',
+    required: false,
     envVars: ['SQUADS_DATABASE_URL'],
     setupGuide: [
-      'Run: squads stack up',
-      'Or manually: docker compose up -d postgres',
+      'Not required for basic usage (init, run, status, eval).',
+      'To enable scheduling and telemetry:',
+      '  squads stack up',
+      '  Or: docker compose up -d postgres',
     ],
   },
   mem0: {

@@ -23,20 +23,21 @@ import {
 import { resolveMcpConfigPath } from '../lib/mcp-config.js';
 import { findSquadsDir, loadSquad } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
+import {
+  colors as termColors,
+  RESET,
+  writeLine,
+} from '../lib/terminal.js';
 
-// ANSI colors
+// Local alias to match existing usage (color names + reset)
 const colors = {
-  cyan: '\x1b[36m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  dim: '\x1b[2m',
-  reset: '\x1b[0m',
+  cyan: termColors.cyan,
+  green: termColors.green,
+  yellow: termColors.yellow,
+  red: termColors.red,
+  dim: termColors.dim,
+  reset: RESET,
 };
-
-function writeLine(msg: string) {
-  process.stdout.write(msg + '\n');
-}
 
 /**
  * Gather context for the lead agent (similar to run.ts gatherSquadContext)

@@ -12,8 +12,7 @@ import {
 } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
-// TODO: Fix api.agents-squads.com DNS routing, then switch back
-const AUTH_URL = process.env.SQUADS_AUTH_URL || 'https://api-618230429207.us-central1.run.app/auth/cli';
+const AUTH_URL = process.env.SQUADS_AUTH_URL || 'https://api.agents-squads.com/auth/cli';
 const CALLBACK_PORT = 54321;
 
 async function isAuthEndpointAvailable(): Promise<boolean> {

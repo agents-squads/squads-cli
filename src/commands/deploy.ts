@@ -22,8 +22,8 @@ import matter from 'gray-matter';
 import { loadSession } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
-// Platform API URL (same as auth, will be moved to DNS later)
-const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_SCHEDULER_URL || 'https://api-618230429207.us-central1.run.app';
+// Platform API URL
+const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_SCHEDULER_URL || 'https://api.agents-squads.com';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
 ${chalk.green('✓ Deployment complete.')}
 
 ${chalk.bold('Next steps:')}
-  ${chalk.dim('→')} View in dashboard: ${chalk.cyan(`${PLATFORM_API_URL.replace('api-618230429207.us-central1.run.app', 'agents-squads.com')}/ops`)}
+  ${chalk.dim('→')} View in dashboard: ${chalk.cyan('https://console.agents-squads.com/ops')}
   ${chalk.dim('→')} Check status: ${chalk.cyan('squads deploy status')}
   ${chalk.dim('→')} Pull cloud state: ${chalk.cyan('squads deploy pull')}
 `);

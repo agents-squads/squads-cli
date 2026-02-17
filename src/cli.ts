@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { version } from './version.js';
 import { autoUpdateOnStartup } from './lib/update.js';
+import { colors as termColors, RESET as termReset, bold as termBold } from './lib/terminal.js';
 
 // Disable colors when output is piped (not a TTY)
 // This ensures piped output is clean for parsing
@@ -134,6 +135,88 @@ function removedCommand(name: string, alternative: string): () => void {
   };
 }
 
+// ─── Friendly error messages for missing arguments (#317) ─────────────────────
+// Maps command paths to user-friendly hints when required arguments are missing.
+// Each entry: { message: plain-language explanation, example: usage example }
+const friendlyArgErrors: Record<string, { message: string; example: string }> = {
+  'run': {
+    message: 'Specify which squad or agent to run.',
+    example: 'squads run engineering            # run the whole squad\n  squads run engineering/code-review  # run a specific agent',
+  },
+  'orchestrate': {
+    message: 'Specify which squad to orchestrate.',
+    example: 'squads orchestrate intelligence',
+  },
+  'eval': {
+    message: 'Specify which squad or agent to evaluate.',
+    example: 'squads eval company           # evaluate all agents in squad\n  squads eval company/coo        # evaluate a specific agent',
+  },
+  'budget': {
+    message: 'Specify which squad to check budget for.',
+    example: 'squads budget engineering',
+  },
+  'goal set': {
+    message: 'Provide the squad name and a goal description.',
+    example: 'squads goal set marketing "Increase blog traffic by 20%"',
+  },
+  'goal complete': {
+    message: 'Provide the squad name and the goal index to mark complete.',
+    example: 'squads goal complete marketing 1',
+  },
+  'goal progress': {
+    message: 'Provide the squad, goal index, and progress update.',
+    example: 'squads goal progress marketing 1 "50% — halfway through campaign"',
+  },
+};
+
+/**
+ * Detect which command the user invoked from process.argv.
+ * Returns the command path (e.g. "goal set" or "run").
+ */
+function detectCommandFromArgs(): string | null {
+  // argv: [node, script, ...commands/options]
+  const args = process.argv.slice(2).filter(a => !a.startsWith('-'));
+  if (args.length === 0) return null;
+  // Try two-word command first (e.g. "goal set"), then single word
+  if (args.length >= 2) {
+    const twoWord = `${args[0]} ${args[1]}`;
+    if (friendlyArgErrors[twoWord]) return twoWord;
+  }
+  return args[0] || null;
+}
+
+/**
+ * Handle Commander.js outputError: intercept "missing required argument"
+ * errors and show friendly, colorized messages instead of raw format.
+ */
+function handleOutputError(str: string, write: (s: string) => void): void {
+  const missingArgMatch = str.match(/^error: missing required argument '(.+)'/);
+  if (missingArgMatch) {
+    const argName = missingArgMatch[1];
+    const command = detectCommandFromArgs();
+    const hint = command ? friendlyArgErrors[command] : null;
+
+    // Friendly error header
+    process.stderr.write(`\n  ${termColors.red}Missing argument: ${termReset}${termBold}${argName}${termReset}\n`);
+
+    if (hint) {
+      process.stderr.write(`  ${hint.message}\n\n`);
+      process.stderr.write(`  ${termColors.dim}Usage:${termReset}\n`);
+      for (const line of hint.example.split('\n')) {
+        process.stderr.write(`  ${termColors.cyan}$${termReset} ${line.trim()}\n`);
+      }
+    } else {
+      process.stderr.write(`  Run the command with ${termColors.cyan}--help${termReset} for usage information.\n`);
+    }
+
+    process.stderr.write('\n');
+    return;
+  }
+
+  // For all other errors (unknown option, etc.), pass through
+  write(str);
+}
+
 const program = new Command();
 
 program
@@ -142,11 +225,9 @@ program
   .version(version)
   // Enable typo suggestions (Commander.js built-in feature)
   .showSuggestionAfterError(true)
-  // Show help after missing required arguments
-  .showHelpAfterError('(Run with --help for usage information)')
   // Configure help to exit with code 0 (Unix convention)
   .configureOutput({
-    outputError: (str, write) => write(str),
+    outputError: handleOutputError,
   })
   .exitOverride((err) => {
     // Exit code 0 for help display (Unix convention)
@@ -587,7 +668,7 @@ memory
 // search (new name) — also keep old 'search' subcommand
 memory
   .command('search <query>')
-  .description('Search conversations stored in postgres (via squads-bridge)')
+  .description('Search conversations stored via squads-bridge (requires bridge service)')
   .option('-l, --limit <limit>', 'Number of results', '10')
   .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
   .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
@@ -640,7 +721,7 @@ learn
 // Sync command (also available as `memory sync`)
 program
   .command('sync')
-  .description('Git + Postgres memory synchronization')
+  .description('Git memory synchronization (Postgres sync optional)')
   .option('-v, --verbose', 'Show detailed commit info')
   .option('-p, --push', 'Push local memory changes to remote after sync')
   .option('--no-pull', 'Skip pulling from remote')
@@ -820,7 +901,8 @@ function handleError(error: unknown): void {
   // Check for common error types and provide helpful messages
   if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
     console.error(chalk.red('\nConnection error:'), err.message);
-    console.error(chalk.dim('\nPossible fixes:'));
+    console.error(chalk.dim('\nCore commands (init, run, status, eval) work without infrastructure.'));
+    console.error(chalk.dim('If you need scheduling or telemetry:'));
     console.error(chalk.dim('  1. Check infrastructure: squads health'));
     console.error(chalk.dim('  2. Start containers: docker compose up -d'));
     console.error(chalk.dim('  3. Check your network connection'));

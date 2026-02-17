@@ -8,12 +8,12 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 interface StackConfig {
-  SQUADS_DATABASE_URL: string;
+  SQUADS_DATABASE_URL?: string;
   SQUADS_BRIDGE_URL: string;
   LANGFUSE_HOST: string;
   LANGFUSE_PUBLIC_KEY: string;
   LANGFUSE_SECRET_KEY: string;
-  REDIS_URL: string;
+  REDIS_URL?: string;
 }
 
 const DEFAULT_CONFIG: StackConfig = {

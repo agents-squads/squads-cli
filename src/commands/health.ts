@@ -44,21 +44,25 @@ const SERVICES: ServiceCheck[] = [
   {
     name: 'PostgreSQL',
     url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/stats`,
+    optional: true,
     fix: 'squads stack up postgres',
   },
   {
     name: 'Redis',
     url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/stats`,
+    optional: true,
     fix: 'squads stack up redis',
   },
   {
     name: 'Bridge API',
     url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/health`,
+    optional: true,
     fix: 'squads stack up bridge',
   },
   {
     name: 'Scheduler',
     url: `${process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090'}/health`,
+    optional: true,
     fix: 'squads stack up scheduler',
   },
   {
@@ -275,8 +279,16 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
     writeLine();
   }
 
-  // Quick tips
-  if (!schedulerUp) {
+  // Show mode info
+  const allDown = results.every(r => r.status === 'down');
+  if (allDown) {
+    writeLine(`  ${colors.cyan}${icons.progress}${RESET} Running in local mode ${colors.dim}(no database required)${RESET}`);
+    writeLine(`    Core commands work without infrastructure: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
+    writeLine(`    Memory uses local ${colors.dim}.agents/memory/${RESET} files.`);
+    writeLine();
+    writeLine(`    ${colors.dim}To enable scheduling and telemetry:${RESET} squads stack up`);
+    writeLine();
+  } else if (!schedulerUp) {
     writeLine(`  ${colors.yellow}${icons.warning} Scheduler not running - triggers won't auto-fire${RESET}`);
     writeLine(`    ${colors.dim}Start with:${RESET} squads stack up scheduler`);
     writeLine();
