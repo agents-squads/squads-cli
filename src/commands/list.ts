@@ -1,7 +1,8 @@
 import {
   findSquadsDir,
   listSquads,
-  listAgents
+  listAgents,
+  loadSquad,
 } from '../lib/squad-parser.js';
 import {
   colors,
@@ -78,7 +79,8 @@ export async function listCommand(options: ListOptions): Promise<void> {
 
     for (const squadName of squads) {
       const agents = listAgents(squadsDir, squadName);
-      const lead = agents.find(a => a.name.includes('lead'))?.name || agents[0]?.name || '-';
+      const squad = loadSquad(squadName);
+      const lead = (squad?.frontmatter?.lead as string) || agents.find(a => a.name.includes('lead'))?.name || agents[0]?.name || '-';
 
       const row = `  ${colors.purple}${box.vertical}${RESET} ` +
         `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +

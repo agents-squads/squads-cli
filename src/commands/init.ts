@@ -25,6 +25,11 @@ import {
 import {
   commandExists,
   PROVIDERS,
+  checkGhCli,
+  checkClaudeCli,
+  checkProviderAuth,
+  runAuthChecks,
+  displayCheckResults,
 } from '../lib/setup-checks.js';
 
 export interface InitOptions {
@@ -137,42 +142,93 @@ async function writeFile(filePath: string, content: string): Promise<void> {
 export async function initCommand(options: InitOptions): Promise<void> {
   const cwd = process.cwd();
 
-  // 1. Ask the one question
+  // 1. Welcome
   console.log();
   console.log(chalk.bold('  Plant the seed for your AI workforce'));
+  console.log(chalk.dim('  https://agents-squads.com/docs/getting-started'));
   console.log();
-
-  let businessFocus: string;
-  if (options.yes || options.quick || !isInteractive()) {
-    businessFocus = 'General business operations and research';
-  } else {
-    businessFocus = await prompt(
-      'What do you want your AI workforce to focus on?',
-      'General business operations and research'
-    );
-  }
 
   // 2. Select provider
   const selectedProvider = await promptProvider(options.provider);
   const provider = PROVIDERS[selectedProvider];
 
+  // 3. Prerequisite checks
   console.log();
-  console.log(`  ${chalk.green('✓')} Focus: ${chalk.cyan(businessFocus)}`);
-  console.log(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
+  console.log(chalk.bold('  Checking prerequisites...'));
+  console.log();
 
-  // 3. Check Git
+  const checks = [
+    ...runAuthChecks(selectedProvider),
+    checkGhCli(),
+  ];
+
+  // Check Git
   const gitStatus = checkGitStatus(cwd);
   if (!gitStatus.isGitRepo) {
-    console.log(`  ${chalk.yellow('⚠')} No git repository found`);
-    console.log(chalk.dim('    Git is the coordination layer. Run: git init'));
+    checks.push({
+      name: 'Git Repository',
+      status: 'missing' as const,
+      message: 'Git is the coordination layer',
+      hint: 'Run: git init',
+      fixCommand: 'git init',
+    });
   } else {
-    console.log(`  ${chalk.green('✓')} Git repository`);
+    checks.push({ name: 'Git Repository', status: 'ok' as const });
     if (gitStatus.hasRemote) {
       const repoName = getRepoName(gitStatus.remoteUrl);
-      console.log(`  ${chalk.green('✓')} Remote: ${chalk.cyan(repoName || gitStatus.remoteUrl)}`);
+      checks.push({ name: `Remote: ${repoName || gitStatus.remoteUrl}`, status: 'ok' as const });
     }
   }
 
+  const { hasErrors } = displayCheckResults(checks);
+
+  if (hasErrors && !options.force) {
+    console.log();
+    console.log(chalk.red('  Fix the errors above before continuing.'));
+    console.log(chalk.dim('  Or run with --force to skip checks.'));
+    console.log();
+    process.exit(1);
+  }
+
+  console.log();
+
+  // 4. Ask about the business
+  let businessName: string;
+  let businessDescription: string;
+  let businessFocus: string;
+
+  if (options.yes || options.quick || !isInteractive()) {
+    businessName = path.basename(cwd);
+    businessDescription = 'General business operations';
+    businessFocus = 'Our market, competitors, and growth opportunities';
+  } else {
+    const dirName = path.basename(cwd);
+
+    console.log(chalk.bold('  Tell us about your business:'));
+    console.log();
+
+    businessName = await prompt(
+      'Company or project name?',
+      dirName
+    );
+
+    businessDescription = await prompt(
+      'What does it do? (one sentence)',
+      ''
+    );
+
+    console.log();
+
+    businessFocus = await prompt(
+      'What should your first research squad investigate?',
+      'Our market, competitors, and growth opportunities'
+    );
+  }
+
+  console.log();
+  console.log(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
+  console.log(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
+  console.log(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
   console.log();
 
   // 4. Create the seed
@@ -180,6 +236,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   try {
     const variables: TemplateVariables = {
+      BUSINESS_NAME: businessName,
+      BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
       BUSINESS_FOCUS: businessFocus,
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
@@ -189,6 +247,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const dirs = [
       '.agents/squads/company',
       '.agents/squads/research',
+      '.agents/squads/intelligence',
       '.agents/memory/company/manager',
       '.agents/memory/company/event-dispatcher',
       '.agents/memory/company/goal-tracker',
@@ -198,7 +257,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/memory/research/analyst',
       '.agents/memory/research/research-eval',
       '.agents/memory/research/research-critic',
+      '.agents/memory/intelligence/intel-lead',
+      '.agents/memory/intelligence/intel-eval',
+      '.agents/memory/intelligence/intel-critic',
       '.agents/skills/squads-cli',
+      '.agents/skills/gh',
       '.agents/config',
     ];
 
@@ -231,8 +294,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ['.agents/squads/research/research-critic.md', 'squads/research/research-critic.md'],
     ];
 
+    // Intelligence squad agents
+    const intelligenceFiles: [string, string][] = [
+      ['.agents/squads/intelligence/SQUAD.md', 'squads/intelligence/SQUAD.md'],
+      ['.agents/squads/intelligence/intel-lead.md', 'squads/intelligence/intel-lead.md'],
+      ['.agents/squads/intelligence/intel-eval.md', 'squads/intelligence/intel-eval.md'],
+      ['.agents/squads/intelligence/intel-critic.md', 'squads/intelligence/intel-critic.md'],
+    ];
+
     // Write squad files
-    for (const [dest, template] of [...companyFiles, ...researchFiles]) {
+    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles]) {
       const content = loadSeedTemplate(template, variables);
       await writeFile(path.join(cwd, dest), content);
     }
@@ -243,15 +314,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const memoryFiles: [string, string][] = [
       ['.agents/memory/company/manager/state.md', 'memory/company/manager/state.md'],
       ['.agents/memory/research/researcher/state.md', 'memory/research/researcher/state.md'],
+      ['.agents/memory/intelligence/intel-lead/state.md', 'memory/intelligence/intel-lead/state.md'],
     ];
 
     for (const [dest, template] of memoryFiles) {
       await writeIfNew(path.join(cwd, dest), loadSeedTemplate(template, variables));
     }
 
-    // CLI skill
+    // Skills
     const skillContent = loadSeedTemplate('skills/squads-cli/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/squads-cli/SKILL.md'), skillContent);
+
+    const ghSkillContent = loadSeedTemplate('skills/gh/SKILL.md', variables);
+    await writeFile(path.join(cwd, '.agents/skills/gh/SKILL.md'), ghSkillContent);
 
     // Provider config
     const providerConfig = loadSeedTemplate('config/provider.yaml', variables);
@@ -281,8 +356,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
       hasGit: gitStatus.isGitRepo,
       hasRemote: gitStatus.hasRemote,
       provider: selectedProvider,
-      agentCount: 9,
-      squadCount: 2,
+      agentCount: 12,
+      squadCount: 3,
+      hasBusinessName: businessName !== path.basename(cwd),
+      hasBusinessDescription: businessDescription.length > 0,
     });
 
   } catch (error) {
@@ -293,12 +370,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 5. Success message
   console.log();
-  console.log(chalk.green.bold('  Your AI workforce is ready.'));
+  console.log(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
   console.log();
   console.log(chalk.dim('  Created:'));
-  console.log(chalk.dim('  • .agents/squads/company/  5 agents (manager, dispatcher, tracker, eval, critic)'));
-  console.log(chalk.dim('  • .agents/squads/research/ 4 agents (researcher, analyst, eval, critic)'));
-  console.log(chalk.dim('  • .agents/skills/          CLI operations manual'));
+  console.log(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
+  console.log(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
+  console.log(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
+  console.log(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
   console.log(chalk.dim('  • .agents/memory/          Persistent state'));
   console.log(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
   if (selectedProvider === 'claude') {
@@ -306,12 +384,23 @@ export async function initCommand(options: InitOptions): Promise<void> {
     console.log(chalk.dim('  • .claude/settings.json    Session hooks'));
   }
   console.log();
-  console.log(chalk.bold('  Next steps:'));
+  console.log(chalk.bold('  Getting started:'));
   console.log();
-  console.log(`     ${chalk.cyan('1.')} ${chalk.yellow('squads status')}                  ${chalk.dim('See your workforce')}`);
-  console.log(`     ${chalk.cyan('2.')} ${chalk.yellow('squads run company/manager')}     ${chalk.dim('First run — manager reads context, plans work')}`);
-  console.log(`     ${chalk.cyan('3.')} ${chalk.yellow('git add -A && git commit')}       ${chalk.dim('Git is the coordination layer')}`);
+  console.log(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
+  console.log(chalk.dim('        Git is the coordination layer — commit first'));
   console.log();
-  console.log(chalk.dim('  The manager agent will read your business brief and start operating.'));
+  console.log(`     ${chalk.cyan('2.')} ${chalk.yellow('squads run research/researcher')}`);
+  console.log(chalk.dim('        Your first agent researches the topic you set'));
+  console.log();
+  console.log(`     ${chalk.cyan('3.')} ${chalk.yellow('squads eval research/researcher')}`);
+  console.log(chalk.dim('        Evaluate the output — is it useful?'));
+  console.log();
+  console.log(`     ${chalk.cyan('4.')} ${chalk.yellow('gh issue create --title "Research: [topic]" --body "..."')}`);
+  console.log(chalk.dim('        Create an issue for deeper investigation'));
+  console.log();
+  console.log(`     ${chalk.cyan('5.')} ${chalk.yellow('squads run research/researcher')}`);
+  console.log(chalk.dim('        Agent works on the issue, commits to a branch, opens a PR'));
+  console.log();
+  console.log(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   console.log();
 }
