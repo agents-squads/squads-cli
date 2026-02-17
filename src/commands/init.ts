@@ -2,9 +2,9 @@
  * squads init - Plant the seed
  *
  * Creates:
- * - Manager agent (the AI manager that runs operations)
+ * - Use-case specific squads (Engineering, Marketing, Operations, or all)
  * - CLI skill (teaches agents how to use squads CLI)
- * - Starter squads (company + research with 9 agents total)
+ * - Core squads (company + research + intelligence) for all use cases
  * - CLAUDE.md (operating manual for all Claude instances)
  * - BUSINESS_BRIEF.md (from user input)
  * - Memory directories (persistent state)
@@ -23,11 +23,8 @@ import {
   type TemplateVariables,
 } from '../lib/templates.js';
 import {
-  commandExists,
   PROVIDERS,
   checkGhCli,
-  checkClaudeCli,
-  checkProviderAuth,
   runAuthChecks,
   displayCheckResults,
 } from '../lib/setup-checks.js';
@@ -41,6 +38,130 @@ export interface InitOptions {
 }
 
 type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
+
+type UseCase = 'engineering' | 'marketing' | 'operations' | 'full-company' | 'custom';
+
+/**
+ * Use-case configuration: squads, files, memory dirs, and display info
+ */
+interface UseCaseConfig {
+  label: string;
+  description: string;
+  squads: SquadConfig[];
+}
+
+interface SquadConfig {
+  name: string;
+  agentCount: number;
+  agentSummary: string;
+  dirs: string[];
+  files: [string, string][];       // [destPath, templatePath]
+  memoryFiles: [string, string][]; // [destPath, templatePath]
+}
+
+/**
+ * Define what each use case creates
+ */
+function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
+  const configs: Record<UseCase, UseCaseConfig> = {
+    engineering: {
+      label: 'Engineering',
+      description: 'Ships code',
+      squads: [getEngineeringSquad()],
+    },
+    marketing: {
+      label: 'Marketing',
+      description: 'Grows audience',
+      squads: [getMarketingSquad()],
+    },
+    operations: {
+      label: 'Operations',
+      description: 'Runs the business',
+      squads: [getOperationsSquad()],
+    },
+    'full-company': {
+      label: 'Full Company',
+      description: 'Engineering + Marketing + Operations',
+      squads: [getEngineeringSquad(), getMarketingSquad(), getOperationsSquad()],
+    },
+    custom: {
+      label: 'Custom',
+      description: 'Empty scaffold — you build from scratch',
+      squads: [],
+    },
+  };
+
+  return configs[useCase];
+}
+
+function getEngineeringSquad(): SquadConfig {
+  return {
+    name: 'engineering',
+    agentCount: 3,
+    agentSummary: 'issue-solver, code-reviewer, test-writer',
+    dirs: [
+      '.agents/squads/engineering',
+      '.agents/memory/engineering/issue-solver',
+      '.agents/memory/engineering/code-reviewer',
+      '.agents/memory/engineering/test-writer',
+    ],
+    files: [
+      ['.agents/squads/engineering/SQUAD.md', 'squads/engineering/SQUAD.md'],
+      ['.agents/squads/engineering/issue-solver.md', 'squads/engineering/issue-solver.md'],
+      ['.agents/squads/engineering/code-reviewer.md', 'squads/engineering/code-reviewer.md'],
+      ['.agents/squads/engineering/test-writer.md', 'squads/engineering/test-writer.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/engineering/issue-solver/state.md', 'memory/engineering/issue-solver/state.md'],
+    ],
+  };
+}
+
+function getMarketingSquad(): SquadConfig {
+  return {
+    name: 'marketing',
+    agentCount: 3,
+    agentSummary: 'content-drafter, social-poster, growth-analyst',
+    dirs: [
+      '.agents/squads/marketing',
+      '.agents/memory/marketing/content-drafter',
+      '.agents/memory/marketing/social-poster',
+      '.agents/memory/marketing/growth-analyst',
+    ],
+    files: [
+      ['.agents/squads/marketing/SQUAD.md', 'squads/marketing/SQUAD.md'],
+      ['.agents/squads/marketing/content-drafter.md', 'squads/marketing/content-drafter.md'],
+      ['.agents/squads/marketing/social-poster.md', 'squads/marketing/social-poster.md'],
+      ['.agents/squads/marketing/growth-analyst.md', 'squads/marketing/growth-analyst.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/marketing/content-drafter/state.md', 'memory/marketing/content-drafter/state.md'],
+    ],
+  };
+}
+
+function getOperationsSquad(): SquadConfig {
+  return {
+    name: 'operations',
+    agentCount: 3,
+    agentSummary: 'ops-lead, finance-tracker, goal-tracker',
+    dirs: [
+      '.agents/squads/operations',
+      '.agents/memory/operations/ops-lead',
+      '.agents/memory/operations/finance-tracker',
+      '.agents/memory/operations/goal-tracker',
+    ],
+    files: [
+      ['.agents/squads/operations/SQUAD.md', 'squads/operations/SQUAD.md'],
+      ['.agents/squads/operations/ops-lead.md', 'squads/operations/ops-lead.md'],
+      ['.agents/squads/operations/finance-tracker.md', 'squads/operations/finance-tracker.md'],
+      ['.agents/squads/operations/goal-tracker.md', 'squads/operations/goal-tracker.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/operations/ops-lead/state.md', 'memory/operations/ops-lead/state.md'],
+    ],
+  };
+}
 
 function isInteractive(): boolean {
   return process.stdin.isTTY === true && process.stdout.isTTY === true;
@@ -95,6 +216,40 @@ async function promptProvider(forceProvider?: string): Promise<Provider> {
         case '4': resolve('ollama'); break;
         case '5': resolve('none'); break;
         default: resolve('claude'); break;
+      }
+    });
+  });
+}
+
+async function promptUseCase(): Promise<UseCase> {
+  if (!isInteractive()) return 'full-company';
+
+  console.log();
+  console.log(chalk.bold('  What does your AI workforce need to do?'));
+  console.log();
+  console.log(`  ${chalk.cyan('1)')} Engineering       ${chalk.dim('— ships code (issue-solver, code-reviewer, test-writer)')}`);
+  console.log(`  ${chalk.cyan('2)')} Marketing          ${chalk.dim('— grows audience (content-drafter, social-poster, growth-analyst)')}`);
+  console.log(`  ${chalk.cyan('3)')} Operations         ${chalk.dim('— runs the business (ops-lead, finance-tracker, goal-tracker)')}`);
+  console.log(`  ${chalk.cyan('4)')} Full Company       ${chalk.dim('— all of the above')} ${chalk.green('(recommended)')}`);
+  console.log(`  ${chalk.cyan('5)')} Custom             ${chalk.dim('— empty scaffold, you build from scratch')}`);
+  console.log();
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`  ${chalk.dim('Enter choice [1-5]:')} `, (answer) => {
+      rl.close();
+      const choice = answer.trim() || '4';
+      switch (choice) {
+        case '1': resolve('engineering'); break;
+        case '2': resolve('marketing'); break;
+        case '3': resolve('operations'); break;
+        case '4': resolve('full-company'); break;
+        case '5': resolve('custom'); break;
+        default: resolve('full-company'); break;
       }
     });
   });
@@ -196,11 +351,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
   let businessName: string;
   let businessDescription: string;
   let businessFocus: string;
+  let selectedUseCase: UseCase;
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
     businessDescription = 'General business operations';
     businessFocus = 'Our market, competitors, and growth opportunities';
+    selectedUseCase = 'full-company';
   } else {
     const dirName = path.basename(cwd);
 
@@ -223,15 +380,28 @@ export async function initCommand(options: InitOptions): Promise<void> {
       'What should your first research squad investigate?',
       'Our market, competitors, and growth opportunities'
     );
+
+    // 4b. Use-case selection
+    selectedUseCase = await promptUseCase();
   }
+
+  const useCaseConfig = getUseCaseConfig(selectedUseCase);
+
+  // Calculate totals (core squads + use-case squads)
+  const coreAgentCount = 12; // company(5) + research(4) + intelligence(3)
+  const coreSquadCount = 3;
+  const useCaseAgentCount = useCaseConfig.squads.reduce((sum, s) => sum + s.agentCount, 0);
+  const totalAgentCount = coreAgentCount + useCaseAgentCount;
+  const totalSquadCount = coreSquadCount + useCaseConfig.squads.length;
 
   console.log();
   console.log(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
   console.log(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
   console.log(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
+  console.log(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
   console.log();
 
-  // 4. Create the seed
+  // 5. Create the seed
   const spinner = ora('Planting the seed...').start();
 
   try {
@@ -243,7 +413,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       PROVIDER_NAME: provider?.name || 'Unknown',
     };
 
-    // Create all directories
+    // Core directories (always created)
     const dirs = [
       '.agents/squads/company',
       '.agents/squads/research',
@@ -265,6 +435,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/config',
     ];
 
+    // Add use-case specific directories
+    for (const squad of useCaseConfig.squads) {
+      dirs.push(...squad.dirs);
+    }
+
     if (selectedProvider === 'claude') {
       dirs.push('.claude');
     }
@@ -275,7 +450,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     spinner.text = 'Creating squad definitions...';
 
-    // Company squad agents
+    // Core squad files (always created)
     const companyFiles: [string, string][] = [
       ['.agents/squads/company/SQUAD.md', 'squads/company/SQUAD.md'],
       ['.agents/squads/company/manager.md', 'squads/company/manager.md'],
@@ -285,7 +460,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ['.agents/squads/company/company-critic.md', 'squads/company/company-critic.md'],
     ];
 
-    // Research squad agents
     const researchFiles: [string, string][] = [
       ['.agents/squads/research/SQUAD.md', 'squads/research/SQUAD.md'],
       ['.agents/squads/research/researcher.md', 'squads/research/researcher.md'],
@@ -294,7 +468,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ['.agents/squads/research/research-critic.md', 'squads/research/research-critic.md'],
     ];
 
-    // Intelligence squad agents
     const intelligenceFiles: [string, string][] = [
       ['.agents/squads/intelligence/SQUAD.md', 'squads/intelligence/SQUAD.md'],
       ['.agents/squads/intelligence/intel-lead.md', 'squads/intelligence/intel-lead.md'],
@@ -302,22 +475,34 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ['.agents/squads/intelligence/intel-critic.md', 'squads/intelligence/intel-critic.md'],
     ];
 
-    // Write squad files
-    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles]) {
+    // Collect all use-case squad files
+    const useCaseFiles: [string, string][] = [];
+    for (const squad of useCaseConfig.squads) {
+      useCaseFiles.push(...squad.files);
+    }
+
+    // Write all squad files
+    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles, ...useCaseFiles]) {
       const content = loadSeedTemplate(template, variables);
       await writeFile(path.join(cwd, dest), content);
     }
 
     spinner.text = 'Creating memory and config...';
 
-    // Memory state files
-    const memoryFiles: [string, string][] = [
+    // Core memory state files
+    const coreMemoryFiles: [string, string][] = [
       ['.agents/memory/company/manager/state.md', 'memory/company/manager/state.md'],
       ['.agents/memory/research/researcher/state.md', 'memory/research/researcher/state.md'],
       ['.agents/memory/intelligence/intel-lead/state.md', 'memory/intelligence/intel-lead/state.md'],
     ];
 
-    for (const [dest, template] of memoryFiles) {
+    // Use-case memory state files
+    const useCaseMemoryFiles: [string, string][] = [];
+    for (const squad of useCaseConfig.squads) {
+      useCaseMemoryFiles.push(...squad.memoryFiles);
+    }
+
+    for (const [dest, template] of [...coreMemoryFiles, ...useCaseMemoryFiles]) {
       await writeIfNew(path.join(cwd, dest), loadSeedTemplate(template, variables));
     }
 
@@ -356,8 +541,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       hasGit: gitStatus.isGitRepo,
       hasRemote: gitStatus.hasRemote,
       provider: selectedProvider,
-      agentCount: 12,
-      squadCount: 3,
+      useCase: selectedUseCase,
+      agentCount: totalAgentCount,
+      squadCount: totalSquadCount,
       hasBusinessName: businessName !== path.basename(cwd),
       hasBusinessDescription: businessDescription.length > 0,
     });
@@ -368,20 +554,29 @@ export async function initCommand(options: InitOptions): Promise<void> {
     process.exit(1);
   }
 
-  // 5. Success message
+  // 6. Success message
   console.log();
   console.log(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
   console.log();
   console.log(chalk.dim('  Created:'));
+
+  // Core squads (always present)
+  console.log(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
   console.log(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
   console.log(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
-  console.log(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
+
+  // Use-case specific squads
+  for (const squad of useCaseConfig.squads) {
+    const padding = ' '.repeat(Math.max(0, 22 - squad.name.length));
+    console.log(chalk.dim(`  • .agents/squads/${squad.name}/${padding}${squad.agentCount} agents (${squad.agentSummary})`));
+  }
+
   console.log(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
-  console.log(chalk.dim('  • .agents/memory/          Persistent state'));
+  console.log(chalk.dim('  • .agents/memory/               Persistent state'));
   console.log(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
   if (selectedProvider === 'claude') {
-    console.log(chalk.dim('  • CLAUDE.md                Operating manual'));
-    console.log(chalk.dim('  • .claude/settings.json    Session hooks'));
+    console.log(chalk.dim('  • CLAUDE.md                     Operating manual'));
+    console.log(chalk.dim('  • .claude/settings.json         Session hooks'));
   }
   console.log();
   console.log(chalk.bold('  Getting started:'));
@@ -389,18 +584,49 @@ export async function initCommand(options: InitOptions): Promise<void> {
   console.log(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
   console.log(chalk.dim('        Git is the coordination layer — commit first'));
   console.log();
-  console.log(`     ${chalk.cyan('2.')} ${chalk.yellow('squads run research/researcher')}`);
-  console.log(chalk.dim('        Your first agent researches the topic you set'));
+
+  // Dynamic "first run" suggestion based on use case
+  const firstRunCommand = getFirstRunCommand(selectedUseCase);
+  console.log(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
+  console.log(chalk.dim(`        ${firstRunCommand.description}`));
   console.log();
-  console.log(`     ${chalk.cyan('3.')} ${chalk.yellow('squads eval research/researcher')}`);
-  console.log(chalk.dim('        Evaluate the output — is it useful?'));
-  console.log();
-  console.log(`     ${chalk.cyan('4.')} ${chalk.yellow('gh issue create --title "Research: [topic]" --body "..."')}`);
-  console.log(chalk.dim('        Create an issue for deeper investigation'));
-  console.log();
-  console.log(`     ${chalk.cyan('5.')} ${chalk.yellow('squads run research/researcher')}`);
-  console.log(chalk.dim('        Agent works on the issue, commits to a branch, opens a PR'));
+  console.log(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
+  console.log(chalk.dim('        See all your squads and agents at a glance'));
   console.log();
   console.log(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   console.log();
+}
+
+/**
+ * Get the suggested first command based on use case
+ */
+function getFirstRunCommand(useCase: UseCase): { command: string; description: string } {
+  switch (useCase) {
+    case 'engineering':
+      return {
+        command: 'squads run engineering/issue-solver',
+        description: 'Your first agent finds and solves GitHub issues',
+      };
+    case 'marketing':
+      return {
+        command: 'squads run marketing/content-drafter',
+        description: 'Your first agent drafts content for your business',
+      };
+    case 'operations':
+      return {
+        command: 'squads run operations/ops-lead',
+        description: 'Your first agent starts running daily operations',
+      };
+    case 'full-company':
+      return {
+        command: 'squads run research/researcher',
+        description: 'Your first agent researches the topic you set',
+      };
+    case 'custom':
+    default:
+      return {
+        command: 'squads run research/researcher',
+        description: 'Your first agent researches the topic you set',
+      };
+  }
 }

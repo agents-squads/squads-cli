@@ -293,8 +293,9 @@ export async function memorySearchCommand(
 
     if (!response.ok) {
       if (response.status === 503) {
-        writeLine(`  ${colors.yellow}Database not available${RESET}`);
-        writeLine(`  ${colors.dim}Run: docker compose up -d${RESET}`);
+        writeLine(`  ${colors.yellow}Bridge service not available${RESET}`);
+        writeLine(`  ${colors.dim}Conversation search requires the bridge service.${RESET}`);
+        writeLine(`  ${colors.dim}For local memory search, use: squads memory query "${query}"${RESET}`);
         writeLine();
         return;
       }

@@ -1,12 +1,50 @@
 // Terminal utilities - Bun-style approach
 // Raw ANSI for performance, no heavy deps
 
-// ANSI escape codes
-export const ESC = '\x1b[';
-export const RESET = `${ESC}0m`;
+// Check if we should use colors (TTY detection)
+// Evaluated once at module load — must be before any ANSI constant definitions
+export function isColorEnabled(): boolean {
+  // NO_COLOR environment variable (standard: https://no-color.org/)
+  if (process.env.NO_COLOR !== undefined) return false;
+  // Force color via environment variable
+  if (process.env.FORCE_COLOR !== undefined) return true;
+  // AI coding assistants - enable colors (they support ANSI)
+  if (isAiCli()) return true;
+  // Check if output is a TTY
+  return process.stdout.isTTY ?? false;
+}
+
+// Check if running under an AI coding assistant
+export function isAiCli(): boolean {
+  // Claude Code
+  if (process.env.CLAUDECODE !== undefined) return true;
+  // Gemini CLI
+  if (process.env.GEMINI_API_KEY !== undefined) return true;
+  // Cursor
+  if (process.env.CURSOR_CHANNEL !== undefined) return true;
+  // Sourcegraph Cody
+  if (process.env.CODY_AUTH !== undefined) return true;
+  // Windsurf (Codeium)
+  if (process.env.CODEIUM_API_KEY !== undefined) return true;
+  // Copilot CLI
+  if (process.env.GITHUB_COPILOT_CLI !== undefined) return true;
+  // Aider
+  if (process.env.AIDER_MODEL !== undefined) return true;
+  // Continue.dev
+  if (process.env.CONTINUE_GLOBAL_DIR !== undefined) return true;
+  return false;
+}
+
+// Master color toggle — when false, all ANSI codes become empty strings
+const COLOR_ENABLED = isColorEnabled();
+
+// ANSI escape codes (empty when piped/NO_COLOR)
+export const ESC = COLOR_ENABLED ? '\x1b[' : '';
+export const RESET = COLOR_ENABLED ? '\x1b[0m' : '';
 
 // Detect true color support
 function supportsTrueColor(): boolean {
+  if (!COLOR_ENABLED) return false;
   const colorterm = process.env.COLORTERM;
   if (colorterm === 'truecolor' || colorterm === '24bit') return true;
   const term = process.env.TERM || '';
@@ -21,8 +59,9 @@ function supportsTrueColor(): boolean {
 const USE_TRUE_COLOR = supportsTrueColor();
 
 // Colors - use 24-bit RGB if supported, fallback to basic ANSI
-export const rgb = (r: number, g: number, b: number) => `${ESC}38;2;${r};${g};${b}m`;
-export const bgRgb = (r: number, g: number, b: number) => `${ESC}48;2;${r};${g};${b}m`;
+// Returns empty string when colors are disabled (piped output, NO_COLOR)
+export const rgb = (r: number, g: number, b: number) => COLOR_ENABLED ? `\x1b[38;2;${r};${g};${b}m` : '';
+export const bgRgb = (r: number, g: number, b: number) => COLOR_ENABLED ? `\x1b[48;2;${r};${g};${b}m` : '';
 
 // Detect light terminal background
 // Uses COLORFGBG env var (format: "fg;bg" where bg > 7 = light)
@@ -47,29 +86,35 @@ function isLightBackground(): boolean {
 
 const USE_LIGHT_MODE = isLightBackground();
 
+// Empty palette for when colors are disabled
+const noColors = {
+  purple: '', pink: '', cyan: '', green: '', yellow: '',
+  red: '', gray: '', dim: '', white: '',
+};
+
 // Basic ANSI color codes (work everywhere)
 const ansiDark = {
-  purple: `${ESC}35m`,      // magenta
-  pink: `${ESC}95m`,        // bright magenta
-  cyan: `${ESC}36m`,        // cyan
-  green: `${ESC}32m`,       // green
-  yellow: `${ESC}33m`,      // yellow
-  red: `${ESC}31m`,         // red
-  gray: `${ESC}90m`,        // bright black (gray)
-  dim: `${ESC}90m`,         // bright black (gray)
-  white: `${ESC}97m`,       // bright white
+  purple: '\x1b[35m',      // magenta
+  pink: '\x1b[95m',        // bright magenta
+  cyan: '\x1b[36m',        // cyan
+  green: '\x1b[32m',       // green
+  yellow: '\x1b[33m',      // yellow
+  red: '\x1b[31m',         // red
+  gray: '\x1b[90m',        // bright black (gray)
+  dim: '\x1b[90m',         // bright black (gray)
+  white: '\x1b[97m',       // bright white
 };
 
 const ansiLight = {
-  purple: `${ESC}35m`,      // magenta (same, works on light)
-  pink: `${ESC}35m`,        // magenta (bright is too light)
-  cyan: `${ESC}36m`,        // cyan
-  green: `${ESC}32m`,       // green
-  yellow: `${ESC}33m`,      // yellow
-  red: `${ESC}31m`,         // red
-  gray: `${ESC}90m`,        // bright black (gray)
-  dim: `${ESC}90m`,         // bright black (gray)
-  white: `${ESC}30m`,       // black for light backgrounds
+  purple: '\x1b[35m',      // magenta (same, works on light)
+  pink: '\x1b[35m',        // magenta (bright is too light)
+  cyan: '\x1b[36m',        // cyan
+  green: '\x1b[32m',       // green
+  yellow: '\x1b[33m',      // yellow
+  red: '\x1b[31m',         // red
+  gray: '\x1b[90m',        // bright black (gray)
+  dim: '\x1b[90m',         // bright black (gray)
+  white: '\x1b[30m',       // black for light backgrounds
 };
 
 // Dark mode palette (original - for dark backgrounds)
@@ -99,32 +144,49 @@ const lightPalette = {
 };
 
 // Named colors (our brand palette) - with theme and fallback support
-export const colors = USE_TRUE_COLOR
-  ? (USE_LIGHT_MODE ? lightPalette : darkPalette)
-  : (USE_LIGHT_MODE ? ansiLight : ansiDark);
+// Returns empty strings when colors are disabled (piped output, NO_COLOR)
+export const colors = !COLOR_ENABLED
+  ? noColors
+  : USE_TRUE_COLOR
+    ? (USE_LIGHT_MODE ? lightPalette : darkPalette)
+    : (USE_LIGHT_MODE ? ansiLight : ansiDark);
 
-// Styles
-export const bold = `${ESC}1m`;
-export const dim = `${ESC}2m`;
+// Styles (empty when colors disabled)
+export const bold = COLOR_ENABLED ? '\x1b[1m' : '';
+export const dim = COLOR_ENABLED ? '\x1b[2m' : '';
 
-// Cursor control
-export const cursor = {
-  hide: `${ESC}?25l`,
-  show: `${ESC}?25h`,
-  up: (n = 1) => `${ESC}${n}A`,
-  down: (n = 1) => `${ESC}${n}B`,
-  left: (n = 1) => `${ESC}${n}D`,
-  right: (n = 1) => `${ESC}${n}C`,
-  to: (x: number, y: number) => `${ESC}${y};${x}H`,
-  save: `${ESC}s`,
-  restore: `${ESC}u`,
+// Cursor control (no-op when piped)
+export const cursor = COLOR_ENABLED ? {
+  hide: '\x1b[?25l',
+  show: '\x1b[?25h',
+  up: (n = 1) => `\x1b[${n}A`,
+  down: (n = 1) => `\x1b[${n}B`,
+  left: (n = 1) => `\x1b[${n}D`,
+  right: (n = 1) => `\x1b[${n}C`,
+  to: (x: number, y: number) => `\x1b[${y};${x}H`,
+  save: '\x1b[s',
+  restore: '\x1b[u',
+} : {
+  hide: '',
+  show: '',
+  up: (_n = 1) => '',
+  down: (_n = 1) => '',
+  left: (_n = 1) => '',
+  right: (_n = 1) => '',
+  to: (_x: number, _y: number) => '',
+  save: '',
+  restore: '',
 };
 
-// Clear
-export const clear = {
-  line: `${ESC}2K`,
-  toEnd: `${ESC}0K`,
-  screen: `${ESC}2J${ESC}0;0H`,
+// Clear (no-op when piped)
+export const clear = COLOR_ENABLED ? {
+  line: '\x1b[2K',
+  toEnd: '\x1b[0K',
+  screen: '\x1b[2J\x1b[0;0H',
+} : {
+  line: '',
+  toEnd: '',
+  screen: '',
 };
 
 // Check if terminal supports Unicode
@@ -150,6 +212,8 @@ const USE_UNICODE = supportsUnicode();
 
 // Gradient text (purple → pink → cyan)
 export function gradient(text: string): string {
+  if (!COLOR_ENABLED) return text;
+
   const stops = [
     [168, 85, 247],   // purple
     [192, 132, 252],  // purple-light
@@ -306,49 +370,14 @@ export function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-// Check if running under an AI coding assistant
-export function isAiCli(): boolean {
-  // Claude Code
-  if (process.env.CLAUDECODE !== undefined) return true;
-  // Gemini CLI
-  if (process.env.GEMINI_API_KEY !== undefined) return true;
-  // Cursor
-  if (process.env.CURSOR_CHANNEL !== undefined) return true;
-  // Sourcegraph Cody
-  if (process.env.CODY_AUTH !== undefined) return true;
-  // Windsurf (Codeium)
-  if (process.env.CODEIUM_API_KEY !== undefined) return true;
-  // Copilot CLI
-  if (process.env.GITHUB_COPILOT_CLI !== undefined) return true;
-  // Aider
-  if (process.env.AIDER_MODEL !== undefined) return true;
-  // Continue.dev
-  if (process.env.CONTINUE_GLOBAL_DIR !== undefined) return true;
-  return false;
-}
-
-// Check if we should use colors (TTY detection)
-export function isColorEnabled(): boolean {
-  // NO_COLOR environment variable (standard: https://no-color.org/)
-  if (process.env.NO_COLOR !== undefined) return false;
-  // Force color via environment variable
-  if (process.env.FORCE_COLOR !== undefined) return true;
-  // AI coding assistants - enable colors (they support ANSI)
-  if (isAiCli()) return true;
-  // Check if output is a TTY
-  return process.stdout.isTTY ?? false;
-}
-
-// Write without newline (strips ANSI codes when piped)
+// Write without newline
 export function write(str: string): void {
-  const output = isColorEnabled() ? str : stripAnsi(str);
-  process.stdout.write(output);
+  process.stdout.write(str);
 }
 
-// Write line (strips ANSI codes when piped)
+// Write line
 export function writeLine(str = ''): void {
-  const output = isColorEnabled() ? str : stripAnsi(str);
-  process.stdout.write(output + '\n');
+  process.stdout.write(str + '\n');
 }
 
 // Sparkline characters - Unicode blocks vs ASCII

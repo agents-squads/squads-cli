@@ -33,6 +33,7 @@ import {
   isProviderCLIAvailable,
 } from '../lib/llm-clis.js';
 import { detectProviderFromModel } from '../lib/providers.js';
+import { homedir } from 'os';
 
 interface RunOptions {
   verbose?: boolean;
@@ -785,6 +786,17 @@ export async function runCommand(
   // Check if target is a squad or an agent
   const squad = loadSquad(squadName);
 
+  // Pre-flight executor check: verify CLI and auth before attempting execution
+  // Only runs when we're actually going to execute (not dry-run)
+  if (options.execute && !options.dryRun) {
+    // Resolve the provider early so we check the right CLI
+    const provider = options.provider || squad?.providers?.default || 'anthropic';
+    const checksOk = await preflightExecutorCheck(provider);
+    if (!checksOk) {
+      process.exit(1);
+    }
+  }
+
   if (squad) {
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
     await flushEvents(); // Ensure telemetry is sent before potential exit
@@ -1438,6 +1450,77 @@ async function checkClaudeCliAvailable(): Promise<boolean> {
     check.on('close', (code) => resolve(code === 0));
     check.on('error', () => resolve(false));
   });
+}
+
+/**
+ * Pre-flight check for the executor (Claude Code or other provider CLI).
+ * Runs once at the start of `squads run` before any agent execution.
+ * Checks:
+ *   1. CLI binary is available on PATH
+ *   2. Authentication looks configured (credentials file or API key)
+ * Skippable with SQUADS_SKIP_CHECKS=1 env var (for CI/CD).
+ * Returns true if checks pass (or are skipped), false if execution should abort.
+ */
+async function preflightExecutorCheck(provider: string): Promise<boolean> {
+  // Allow skipping for CI/CD or advanced users
+  if (process.env.SQUADS_SKIP_CHECKS === '1') {
+    return true;
+  }
+
+  const isAnthropic = provider === 'anthropic';
+
+  // --- Check 1: CLI binary on PATH ---
+  let cliFound: boolean;
+
+  if (isAnthropic) {
+    cliFound = await checkClaudeCliAvailable();
+  } else {
+    cliFound = isProviderCLIAvailable(provider);
+  }
+
+  if (!cliFound) {
+    const cliConfig = getCLIConfig(provider);
+    const cliName = cliConfig?.command || provider;
+    const installCmd = cliConfig?.install || `See ${provider} documentation`;
+
+    writeLine();
+    writeLine(`  ${icons.error} ${colors.red}${cliName} CLI not found${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}The ${cliName} command is required to run agents but was not found on your PATH.${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.cyan}Install:${RESET} ${installCmd}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
+    writeLine();
+    return false;
+  }
+
+  // --- Check 2: Authentication (Anthropic only — other providers handle auth internally) ---
+  if (isAnthropic) {
+    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+
+    // Check for OAuth credentials (Max subscription or claude login)
+    const home = homedir();
+    const credentialsPath = join(home, '.claude', '.credentials.json');
+    const hasOAuthCreds = existsSync(credentialsPath);
+
+    if (!hasApiKey && !hasOAuthCreds) {
+      writeLine();
+      writeLine(`  ${icons.warning} ${colors.yellow}Claude Code authentication not detected${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}No ANTHROPIC_API_KEY env var and no OAuth credentials found.${RESET}`);
+      writeLine(`  ${colors.dim}Agents may fail to authenticate with the Anthropic API.${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.cyan}Option 1:${RESET} ${colors.dim}Run${RESET} claude ${colors.dim}and complete the login flow${RESET}`);
+      writeLine(`  ${colors.cyan}Option 2:${RESET} ${colors.dim}Set ANTHROPIC_API_KEY env var to your API key${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
+      writeLine();
+      return false;
+    }
+  }
+
+  return true;
 }
 
 interface ExecuteWithClaudeOptions {

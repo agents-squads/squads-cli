@@ -160,10 +160,9 @@ export function checkDockerPrereqs(): CheckResult {
   // Docker not installed
   return {
     name: 'Docker',
-    status: 'missing',
-    message: 'Required for infrastructure (postgres, redis)',
-    hint: 'Install Docker Desktop or: brew install colima && colima start',
-    fixCommand: 'brew install --cask docker',
+    status: 'warning',
+    message: 'Optional: enables scheduling, telemetry, and persistent storage',
+    hint: 'Core commands (init, run, status, eval) work without Docker. Install for scheduling: brew install --cask docker',
   };
 }
 
