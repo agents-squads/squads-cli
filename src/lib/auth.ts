@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import http from 'http';
@@ -42,9 +42,9 @@ export function getEmailDomain(email: string): string {
 
 export function saveSession(session: AuthSession): void {
   if (!existsSync(AUTH_DIR)) {
-    mkdirSync(AUTH_DIR, { recursive: true });
+    mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
   }
-  writeFileSync(AUTH_PATH, JSON.stringify(session, null, 2));
+  writeFileSync(AUTH_PATH, JSON.stringify(session, null, 2), { mode: 0o600 });
 }
 
 export function loadSession(): AuthSession | null {
@@ -57,8 +57,12 @@ export function loadSession(): AuthSession | null {
 }
 
 export function clearSession(): void {
-  if (existsSync(AUTH_PATH)) {
-    writeFileSync(AUTH_PATH, '');
+  try {
+    if (existsSync(AUTH_PATH)) {
+      unlinkSync(AUTH_PATH);
+    }
+  } catch {
+    // File already removed or inaccessible
   }
 }
 
