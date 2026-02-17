@@ -1655,26 +1655,27 @@ async function executeWithClaude(
     const mcpFlag = `--mcp-config '${mcpConfigPath}'`;
     const shellCmd = `claude --dangerously-skip-permissions ${mcpFlag} ${modelFlag} -- '${escapedPrompt}'`;
 
-    // Build env exports for shell
-    const envExports = [
-      `export SQUADS_SQUAD='${execContext.squad}'`,
-      `export SQUADS_AGENT='${execContext.agent}'`,
-      `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
-      `export SQUADS_TRIGGER='${execContext.trigger}'`,
-      `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
-      `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
-      `export OTEL_RESOURCE_ATTRIBUTES='squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}'`,
-      ...(effort ? [`export CLAUDE_EFFORT='${effort}'`] : []),
-      ...(skills && skills.length > 0 ? [`export CLAUDE_SKILLS='${skills.join(',')}'`] : []),
-    ].join('; ');
+    // Pass env vars via spawn env option to avoid shell injection
+    const agentEnv: Record<string, string> = {
+      ...spawnEnv as Record<string, string>,
+      SQUADS_SQUAD: execContext.squad,
+      SQUADS_AGENT: execContext.agent,
+      SQUADS_TASK_TYPE: execContext.taskType,
+      SQUADS_TRIGGER: execContext.trigger,
+      SQUADS_EXECUTION_ID: execContext.executionId,
+      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
+      ...(effort ? { CLAUDE_EFFORT: effort } : {}),
+      ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
+    };
 
-    const fullCmd = `cd '${projectRoot}'; ${envExports}; exec ${shellCmd}`;
+    const fullCmd = `cd '${projectRoot}'; exec ${shellCmd}`;
 
     return new Promise((resolve, reject) => {
       const claude = spawn('sh', ['-c', fullCmd], {
         stdio: 'inherit',
         cwd: projectRoot,
-        env: spawnEnv,
+        env: agentEnv,
       });
 
       claude.on('close', async (code) => {
@@ -1734,18 +1735,19 @@ async function executeWithClaude(
       writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
     }
 
-    // Build environment exports
-    const envExports = [
-      `export SQUADS_SQUAD='${execContext.squad}'`,
-      `export SQUADS_AGENT='${execContext.agent}'`,
-      `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
-      `export SQUADS_TRIGGER='${execContext.trigger}'`,
-      `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
-      `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
-    ].join('; ');
+    // Pass env vars via spawn env option to avoid shell injection
+    const watchEnv: Record<string, string> = {
+      ...spawnEnv as Record<string, string>,
+      SQUADS_SQUAD: execContext.squad,
+      SQUADS_AGENT: execContext.agent,
+      SQUADS_TASK_TYPE: execContext.taskType,
+      SQUADS_TRIGGER: execContext.trigger,
+      SQUADS_EXECUTION_ID: execContext.executionId,
+      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+    };
 
     const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-    const shellScript = `cd '${projectRoot}'; ${envExports}; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+    const shellScript = `cd '${projectRoot}'; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
     const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
     // Spawn background process
@@ -1753,7 +1755,7 @@ async function executeWithClaude(
       cwd: projectRoot,
       detached: true,
       stdio: 'ignore',
-      env: spawnEnv,
+      env: watchEnv,
     });
     child.unref();
 
@@ -1820,27 +1822,28 @@ async function executeWithClaude(
   // --print ensures non-interactive mode (exits after completion, no REPL)
   // Use shell 'exec' to replace shell with claude while keeping file redirect
   // This ensures output goes to log even after parent exits
-  const envExports = [
-    `export SQUADS_SQUAD='${execContext.squad}'`,
-    `export SQUADS_AGENT='${execContext.agent}'`,
-    `export SQUADS_TASK_TYPE='${execContext.taskType}'`,
-    `export SQUADS_TRIGGER='${execContext.trigger}'`,
-    `export SQUADS_EXECUTION_ID='${execContext.executionId}'`,
-    `export BRIDGE_API='${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}'`,
-    `export OTEL_RESOURCE_ATTRIBUTES='squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}'`,
-    ...(effort ? [`export CLAUDE_EFFORT='${effort}'`] : []),
-    ...(skills && skills.length > 0 ? [`export CLAUDE_SKILLS='${skills.join(',')}'`] : []),
-  ].join('; ');
+  // Pass env vars via spawn env option to avoid shell injection
+  const bgEnv: Record<string, string> = {
+    ...spawnEnv as Record<string, string>,
+    SQUADS_SQUAD: execContext.squad,
+    SQUADS_AGENT: execContext.agent,
+    SQUADS_TASK_TYPE: execContext.taskType,
+    SQUADS_TRIGGER: execContext.trigger,
+    SQUADS_EXECUTION_ID: execContext.executionId,
+    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+    OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
+    ...(effort ? { CLAUDE_EFFORT: effort } : {}),
+    ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
+  };
 
   // Build shell command:
   // 1. cd to project root
-  // 2. export env vars
-  // 3. run claude (output to logfile)
+  // 2. run claude (output to logfile)
   // Agent creates its own branch following gh skill conventions (feat/, fix/, docs/, solve/)
   // Agent opens PR to sprint branch — system does NOT pre-create branches
   // Note: MCP config removed - causes blocking issues in background execution
   const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-  const shellScript = `cd '${projectRoot}'; ${envExports}; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  const shellScript = `cd '${projectRoot}'; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
@@ -1850,7 +1853,7 @@ async function executeWithClaude(
     cwd: projectRoot,
     detached: true,
     stdio: 'ignore',
-    env: spawnEnv,
+    env: bgEnv,
   });
 
   child.unref();
