@@ -17,8 +17,8 @@ import {
   listSquads,
   loadSquad,
   listAgents,
-  loadAgentDefinition,
 } from '../lib/squad-parser.js';
+import matter from 'gray-matter';
 import { loadSession } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
@@ -407,19 +407,31 @@ function buildManifest(squadsDir: string, filterSquad?: string): DeployManifest 
     if (!squad) continue;
 
     const agents: AgentManifest[] = [];
-    const agentNames = listAgents(squadsDir, squadName);
+    const agentList = listAgents(squadsDir, squadName);
 
-    for (const agentName of agentNames) {
-      const def = loadAgentDefinition(squadsDir, squadName, agentName);
-      if (!def) continue;
+    for (const agent of agentList) {
+      // Parse agent frontmatter for model, schedule, status
+      let role = '';
+      let model = 'sonnet';
+      let schedule: string | undefined;
+      let status = 'active';
+
+      if (agent.filePath && existsSync(agent.filePath)) {
+        const raw = readFileSync(agent.filePath, 'utf-8');
+        const { data: fm } = matter(raw);
+        role = (fm.role as string) || '';
+        model = (fm.model as string) || 'sonnet';
+        schedule = fm.schedule as string | undefined;
+        status = (fm.status as string) || 'active';
+      }
 
       agents.push({
-        name: agentName,
+        name: agent.name,
         squad: squadName,
-        role: def.role || '',
-        model: def.model || 'sonnet',
-        schedule: def.schedule,
-        status: def.status || 'active',
+        role,
+        model,
+        schedule,
+        status,
       });
     }
 

@@ -163,13 +163,18 @@ function scoreExecutionReliability(memoryDir: string, squad: string, agent: stri
   if (existsSync(stateFile)) {
     const stat = statSync(stateFile);
     const fileContent = readFileSync(stateFile, 'utf-8');
-    runsDetected += fileContent.length > 50 ? 1 : 0;
 
-    // Check if modified in last 7 days
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    if (stat.mtimeMs > sevenDaysAgo) {
-      hasRecentActivity = true;
-      runsDetected += 2;
+    // Skip template state files that haven't been modified by an actual run
+    const isTemplateState = fileContent.includes('awaiting first execution') || fileContent.includes('None yet.');
+    if (!isTemplateState) {
+      runsDetected += fileContent.length > 50 ? 1 : 0;
+
+      // Check if modified in last 7 days
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      if (stat.mtimeMs > sevenDaysAgo) {
+        hasRecentActivity = true;
+        runsDetected += 2;
+      }
     }
   }
 

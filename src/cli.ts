@@ -792,23 +792,23 @@ program
     console.log(`squads-cli ${version}`);
   });
 
-// ─── Removed commands (show helpful message) ─────────────────────────────────
+// ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
-program.command('stack').description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
-program.command('cron').description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
-program.command('tonight').description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
-program.command('live').description('[removed]').action(removedCommand('live', 'Use: squads dash'));
-program.command('top').description('[removed]').action(removedCommand('top', 'Use: squads sessions'));
-program.command('watch').description('[removed]').action(removedCommand('watch', 'Use: watch -n 2 squads status'));
-program.command('setup').description('[removed]').action(removedCommand('setup', 'Use: squads init'));
-program.command('slack').description('[removed]').action(removedCommand('slack', 'Slack integration runs as a service, not a CLI command'));
-program.command('skill').description('[removed]').action(removedCommand('skill', 'Skills are defined in agent .md files. See: .agents/skills/'));
-program.command('baseline').description('[removed]').action(removedCommand('baseline', 'Use: squads dash --ceo'));
-program.command('permissions').description('[removed]').action(removedCommand('permissions', 'Permissions are defined in SQUAD.md approvals config'));
-program.command('issues').description('[removed]').action(removedCommand('issues', 'Use: gh issue list'));
-program.command('solve-issues').description('[removed]').action(removedCommand('solve-issues', 'Issue solving is agent behavior. Use: squads run engineering/issues-solver'));
-program.command('open-issues').description('[removed]').action(removedCommand('open-issues', 'Evaluators are agents. Use: squads run <squad>/<evaluator>'));
-program.command('workers').description('[removed]').action(removedCommand('workers', 'Use: squads sessions'));
+program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
+program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
+program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
+program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
+program.command('top', { hidden: true }).description('[removed]').action(removedCommand('top', 'Use: squads sessions'));
+program.command('watch', { hidden: true }).description('[removed]').action(removedCommand('watch', 'Use: watch -n 2 squads status'));
+program.command('setup', { hidden: true }).description('[removed]').action(removedCommand('setup', 'Use: squads init'));
+program.command('slack', { hidden: true }).description('[removed]').action(removedCommand('slack', 'Slack integration runs as a service, not a CLI command'));
+program.command('skill', { hidden: true }).description('[removed]').action(removedCommand('skill', 'Skills are defined in agent .md files. See: .agents/skills/'));
+program.command('baseline', { hidden: true }).description('[removed]').action(removedCommand('baseline', 'Use: squads dash --ceo'));
+program.command('permissions', { hidden: true }).description('[removed]').action(removedCommand('permissions', 'Permissions are defined in SQUAD.md approvals config'));
+program.command('issues', { hidden: true }).description('[removed]').action(removedCommand('issues', 'Use: gh issue list'));
+program.command('solve-issues', { hidden: true }).description('[removed]').action(removedCommand('solve-issues', 'Issue solving is agent behavior. Use: squads run engineering/issues-solver'));
+program.command('open-issues', { hidden: true }).description('[removed]').action(removedCommand('open-issues', 'Evaluators are agents. Use: squads run <squad>/<evaluator>'));
+program.command('workers', { hidden: true }).description('[removed]').action(removedCommand('workers', 'Use: squads sessions'));
 
 // ─── Error handling ──────────────────────────────────────────────────────────
 

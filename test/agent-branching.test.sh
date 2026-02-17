@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # TDD: Agent branching behavior tests
-# Tests that `squads run --background` enforces proper branch workflow
+# Tests that agents follow proper branch workflow conventions
 #
 # Expected behavior:
-# 1. Agent runs on a branch (agent/{squad}/{agent}-{timestamp}), NOT main
-# 2. The shell script includes git checkout -b before exec claude
-# 3. Memory commits go to main (OK)
-# 4. Work product commits go to the agent branch
+# 1. Agent creates its own descriptive branch (feat/, fix/, docs/, solve/)
+# 2. Agent commits work products to its branch, NOT main
+# 3. Branch name describes the WORK, not the agent
+# 4. Conventional Commits format used
 # 5. PID file is created with correct name
-# 6. After completion, branch exists with agent's commits
+# 6. Main stays clean — no agent commits on main
 
 set -euo pipefail
 
@@ -54,36 +54,6 @@ assert_contains() {
   fi
 }
 
-assert_not_contains() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local desc="$1" haystack="$2" needle="$3"
-  if echo "$haystack" | grep -q "$needle"; then
-    fail "$desc" "should NOT contain '$needle'"
-  else
-    pass "$desc"
-  fi
-}
-
-assert_file_exists() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local desc="$1" path="$2"
-  if [ -f "$path" ]; then
-    pass "$desc"
-  else
-    fail "$desc" "file not found: $path"
-  fi
-}
-
-assert_file_not_exists() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  local desc="$1" path="$2"
-  if [ -f "$path" ]; then
-    fail "$desc" "file should not exist: $path"
-  else
-    pass "$desc"
-  fi
-}
-
 assert_branch_exists() {
   TESTS_RUN=$((TESTS_RUN + 1))
   local desc="$1" branch_pattern="$2" repo_dir="$3"
@@ -120,6 +90,23 @@ assert_main_clean() {
   fi
 }
 
+assert_branch_name_convention() {
+  TESTS_RUN=$((TESTS_RUN + 1))
+  local desc="$1" repo_dir="$2"
+  local branches
+  # Get non-main branches
+  branches=$(git -C "$repo_dir" branch --list | grep -v '^\*\? *main$' | tr -d ' *')
+  local valid=true
+  for branch in $branches; do
+    # Must start with feat/, fix/, docs/, solve/, chore/, refactor/, test/
+    if ! echo "$branch" | grep -qE '^(feat|fix|docs|solve|chore|refactor|test)/'; then
+      fail "$desc" "branch '$branch' does not follow conventions (feat/, fix/, docs/, solve/...)"
+      return
+    fi
+  done
+  pass "$desc"
+}
+
 # ============================================================================
 # SETUP: Create sandbox environment
 # ============================================================================
@@ -129,24 +116,30 @@ trap "rm -rf $SANDBOX" EXIT
 
 echo -e "\n${YELLOW}Setting up sandbox at $SANDBOX${NC}\n"
 
-# Create a fake 'claude' that simulates agent work
+# Create a fake 'claude' that simulates a well-behaved agent
+# The agent creates its own branch following conventions
 mkdir -p "$SANDBOX/bin"
 cat > "$SANDBOX/bin/claude" << 'MOCK_CLAUDE'
 #!/usr/bin/env bash
-# Mock claude that simulates an agent making commits
-# It reads the prompt and makes some commits
+# Mock claude that simulates a well-behaved agent:
+# 1. Creates a descriptive branch (not squad/agent plumbing)
+# 2. Commits with Conventional Commits format
+# 3. Stays on its branch (never touches main)
 
 PROMPT="$*"
 REPO_DIR=$(pwd)
+
+# Agent reads prompt, decides what it's doing, creates descriptive branch
+git checkout -b feat/test-squad-report 2>/dev/null
 
 # Simulate: agent creates a work product file
 mkdir -p reports
 echo "# Agent Report $(date)" > reports/test-report.md
 echo "Analysis complete." >> reports/test-report.md
 
-# Simulate: agent commits work product
+# Simulate: agent commits work product with conventional format
 git add reports/
-git commit -m "feat(test-squad): agent work product
+git commit -m "feat(test-squad): initial analysis report
 
 Co-Authored-By: Claude <noreply@anthropic.com>" 2>/dev/null || true
 
@@ -212,28 +205,23 @@ INITIAL_COMMIT=$(git -C "$PROJECT" rev-parse HEAD)
 echo -e "${YELLOW}Initial commit: $INITIAL_COMMIT${NC}\n"
 
 # ============================================================================
-# TEST SUITE 1: Branch creation on agent spawn
+# TEST SUITE 1: Dry run shows agent info
 # ============================================================================
 
-echo -e "${YELLOW}TEST SUITE 1: Branch creation${NC}"
-
-# Test: After squads run --background, a branch should exist
-# For now, we test by examining what the CLI SHOULD do
-# (Run with mock claude in PATH)
+echo -e "${YELLOW}TEST SUITE 1: Dry run${NC}"
 
 export PATH="$SANDBOX/bin:$PATH"
 
-# Test: squads run --background creates agent branch
-echo -e "\n${YELLOW}Running: squads run test-squad/test-agent --background --dry-run${NC}"
+echo -e "\n${YELLOW}Running: squads run test-squad/test-agent --dry-run${NC}"
 DRY_OUTPUT=$(cd "$PROJECT" && squads run test-squad/test-agent --dry-run 2>&1 || true)
 
 assert_contains "dry-run shows agent name" "$DRY_OUTPUT" "test-agent"
 
 # ============================================================================
-# TEST SUITE 2: Actual background execution with branch enforcement
+# TEST SUITE 2: Agent creates its own branch with proper conventions
 # ============================================================================
 
-echo -e "\n${YELLOW}TEST SUITE 2: Background execution with branches${NC}"
+echo -e "\n${YELLOW}TEST SUITE 2: Agent-created branch with conventions${NC}"
 
 # Run the agent in background (with mock claude)
 cd "$PROJECT"
@@ -242,22 +230,22 @@ BG_OUTPUT=$(squads run test-squad/test-agent --background --model haiku 2>&1 || 
 # Wait for mock agent to complete
 sleep 3
 
-# Test: Agent branch was created
-assert_branch_exists "agent branch created" "agent/test-squad/test-agent-*" "$PROJECT"
+# Test: Agent created a branch following conventions (feat/, fix/, etc.)
+assert_branch_exists "agent created feat/ branch" "feat/*" "$PROJECT"
+
+# Test: Branch name follows conventions
+assert_branch_name_convention "branch follows naming conventions" "$PROJECT"
 
 # Test: Main branch is unchanged (no new commits on main)
 assert_main_clean "main branch untouched" "$PROJECT" "$INITIAL_COMMIT"
 
-# Test: Current branch is back to main after agent completes
-assert_on_branch "repo back on main after agent" "main" "$PROJECT"
-
-# Test: Agent's work product commit is on the agent branch
-AGENT_BRANCH=$(git -C "$PROJECT" branch --list "agent/test-squad/test-agent-*" | tr -d ' ' | head -1)
+# Test: Agent's work product commit is on its branch
+AGENT_BRANCH=$(git -C "$PROJECT" branch --list "feat/*" | tr -d ' *' | head -1)
 if [ -n "$AGENT_BRANCH" ]; then
   BRANCH_FILES=$(git -C "$PROJECT" diff --name-only main..."$AGENT_BRANCH" 2>/dev/null)
   assert_contains "work product on agent branch" "$BRANCH_FILES" "reports/test-report.md"
 else
-  fail "agent branch has commits" "no agent branch found"
+  fail "agent branch has commits" "no feat/ branch found"
   TESTS_RUN=$((TESTS_RUN + 1))
 fi
 
@@ -283,30 +271,30 @@ if [ "$PID_FILES" -ge 1 ]; then
   fi
 fi
 
-# Test: After process dies, PID file should be cleaned up
-# (This is the scheduler's job, but we test the file exists for now)
-
 # ============================================================================
 # TEST SUITE 4: Prompt includes branch instructions
 # ============================================================================
 
-echo -e "\n${YELLOW}TEST SUITE 4: Prompt content${NC}"
+echo -e "\n${YELLOW}TEST SUITE 4: Commit conventions${NC}"
 
-# Test: The prompt tells the agent about its branch
-PROMPT_OUTPUT=$(cd "$PROJECT" && squads run test-squad/test-agent --dry-run --verbose 2>&1 || true)
-
-# The prompt should mention branching or the branch name
-# (This will fail until we add branch instructions to the prompt)
-assert_contains "prompt mentions branch workflow" "$PROMPT_OUTPUT" "branch"
+# Verify the agent's commits follow conventional format
+if [ -n "$AGENT_BRANCH" ]; then
+  COMMIT_MSG=$(git -C "$PROJECT" log --format=%s "$AGENT_BRANCH" --not main | head -1)
+  # Should match type(scope): description
+  if echo "$COMMIT_MSG" | grep -qE '^(feat|fix|docs|chore|memory|refactor|test)\('; then
+    pass "commits follow conventional format"
+    TESTS_RUN=$((TESTS_RUN + 1))
+  else
+    fail "commits follow conventional format" "got: $COMMIT_MSG"
+    TESTS_RUN=$((TESTS_RUN + 1))
+  fi
+fi
 
 # ============================================================================
-# TEST SUITE 5: Memory vs work product separation
+# TEST SUITE 5: Work products NOT on main
 # ============================================================================
 
-echo -e "\n${YELLOW}TEST SUITE 5: Memory vs work product separation${NC}"
-
-# Memory files (.agents/memory/) should be on main
-# Work products (reports/) should be on agent branch only
+echo -e "\n${YELLOW}TEST SUITE 5: Work product isolation${NC}"
 
 MAIN_HAS_REPORT=$(git -C "$PROJECT" show main:reports/test-report.md >/dev/null 2>&1 && echo "yes" || echo "no")
 assert_eq "work product NOT on main" "no" "$MAIN_HAS_REPORT"

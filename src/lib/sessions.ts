@@ -328,21 +328,25 @@ export function getLiveSessionSummaryFast(): SessionSummary {
  * Get live session summary with full squad detection (async, parallel lsof)
  * Use this when you need accurate squad breakdown
  */
-export async function getLiveSessionSummaryAsync(): Promise<SessionSummary> {
+export async function getLiveSessionSummaryAsync(projectRoot?: string): Promise<SessionSummary> {
   const processes = detectAIProcessesFast();
   const enrichedProcesses = await enrichProcessesWithSquad(processes);
+
+  // Filter to only sessions within the current project root
+  const root = projectRoot ?? process.cwd();
+  const projectProcesses = enrichedProcesses.filter(p => p.cwd && p.cwd.startsWith(root));
 
   const bySquad: Record<string, number> = {};
   const byTool: Record<string, number> = {};
 
-  for (const proc of enrichedProcesses) {
+  for (const proc of projectProcesses) {
     const squad = proc.squad || 'unknown';
     bySquad[squad] = (bySquad[squad] || 0) + 1;
     byTool[proc.tool] = (byTool[proc.tool] || 0) + 1;
   }
 
   return {
-    totalSessions: enrichedProcesses.length,
+    totalSessions: projectProcesses.length,
     bySquad,
     squadCount: Object.keys(bySquad).length,
     byTool,
