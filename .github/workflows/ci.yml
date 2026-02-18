@@ -88,13 +88,29 @@ jobs:
           git init
           node $GITHUB_WORKSPACE/dist/cli.js init --skip-infra --force <<< ""
 
-          # Verify expected files exist
+          # Verify core files created by new seed-based init
           test -f CLAUDE.md || (echo "CLAUDE.md missing" && exit 1)
           test -f .claude/settings.json || (echo ".claude/settings.json missing" && exit 1)
-          test -d .agents/squads/demo || (echo ".agents/squads/demo missing" && exit 1)
           test -f .agents/BUSINESS_BRIEF.md || (echo ".agents/BUSINESS_BRIEF.md missing" && exit 1)
-          test -f .claude/skills/squads-workflow/instruction.md || (echo "squads-workflow skill missing" && exit 1)
-          test -f .agents/memory/getting-started/state.md || (echo "seed memory missing" && exit 1)
+
+          # Core squads (always created)
+          test -f .agents/squads/company/SQUAD.md || (echo "company SQUAD.md missing" && exit 1)
+          test -f .agents/squads/research/SQUAD.md || (echo "research SQUAD.md missing" && exit 1)
+          test -f .agents/squads/intelligence/SQUAD.md || (echo "intelligence SQUAD.md missing" && exit 1)
+
+          # Use-case squads (full-company default in non-interactive mode)
+          test -f .agents/squads/engineering/SQUAD.md || (echo "engineering SQUAD.md missing" && exit 1)
+          test -f .agents/squads/marketing/SQUAD.md || (echo "marketing SQUAD.md missing" && exit 1)
+          test -f .agents/squads/operations/SQUAD.md || (echo "operations SQUAD.md missing" && exit 1)
+
+          # Skills
+          test -f .agents/skills/squads-cli/SKILL.md || (echo "squads-cli skill missing" && exit 1)
+          test -f .agents/skills/gh/SKILL.md || (echo "gh skill missing" && exit 1)
+
+          # Memory state files
+          test -f .agents/memory/company/manager/state.md || (echo "company manager state missing" && exit 1)
+          test -f .agents/memory/research/researcher/state.md || (echo "research state missing" && exit 1)
+          test -f .agents/memory/intelligence/intel-lead/state.md || (echo "intelligence state missing" && exit 1)
 
           echo "✓ squads init smoke test passed"
 
