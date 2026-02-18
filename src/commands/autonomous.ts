@@ -23,7 +23,7 @@ import {
   mkdirSync,
   appendFileSync,
 } from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import { homedir } from "os";
 import { spawn, execSync } from "child_process";
 import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
@@ -298,7 +298,7 @@ async function daemonLoop(): Promise<void> {
 
       // 2. Check running agents
       const running = getRunningAgents();
-      const runningCount = running.length;
+      const _runningCount = running.length;
 
       // 3. Timeout enforcement
       for (const agent of running) {

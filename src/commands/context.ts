@@ -4,8 +4,6 @@ import {
   listSquads,
   SquadContext,
   resolveExecutionContext,
-  getSquadLocalSkills,
-  ResolvedSkill,
 } from '../lib/squad-parser.js';
 import { track, Events } from '../lib/telemetry.js';
 import {

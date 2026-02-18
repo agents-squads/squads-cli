@@ -11,17 +11,12 @@ import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import {
   getLiveSessionSummaryAsync,
   cleanupStaleSessions,
-  detectAIProcessesFast,
-  enrichProcessesWithSquad,
-  AIProcess,
-  getRecentSessions,
 } from '../lib/sessions.js';
 import {
   listExecutions,
   getExecutionStats,
   formatDuration,
   formatRelativeTime,
-  Execution,
 } from '../lib/executions.js';
 import { checkForUpdate } from '../lib/update.js';
 import { track, Events } from '../lib/telemetry.js';
