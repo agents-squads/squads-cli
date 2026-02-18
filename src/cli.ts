@@ -115,17 +115,6 @@ await autoUpdateOnStartup();
 // Register telemetry exit handler early
 registerExitHandler();
 
-// Helper: output JSON envelope for --json flag
-function jsonOutput(command: string, data: unknown, meta?: Record<string, unknown>): void {
-  console.log(JSON.stringify({
-    ok: true,
-    command,
-    data,
-    error: null,
-    meta: { duration_ms: 0, connected: !!process.env.SQUADS_BRIDGE_URL, ...meta },
-  }));
-}
-
 // Helper: show removed command message
 function removedCommand(name: string, alternative: string): () => void {
   return () => {

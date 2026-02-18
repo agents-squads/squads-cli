@@ -10,8 +10,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { join, relative } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import {
   findSquadsDir,
   listSquads,
@@ -396,7 +396,6 @@ function buildManifest(squadsDir: string, filterSquad?: string): DeployManifest 
   // Try to get git SHA
   let gitSha: string | undefined;
   try {
-    const { execSync } = require('child_process');
     gitSha = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
   } catch {
     // Not in a git repo

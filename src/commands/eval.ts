@@ -21,7 +21,6 @@ import {
   findSquadsDir,
   loadSquad,
   listAgents,
-  Agent,
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track } from '../lib/telemetry.js';
