@@ -11,7 +11,10 @@
 import { Command } from "commander";
 import chalk from "chalk";
 
-const SLACK_BOT_URL = process.env.SLACK_BOT_URL || "http://localhost:3001";
+const API_URL =
+  process.env.SQUADS_API_URL ||
+  process.env.SCHEDULER_URL ||
+  "http://localhost:8090";
 
 type ApprovalType = "issue" | "pr" | "content" | "run" | "brief";
 
@@ -105,7 +108,7 @@ async function sendApproval(
   };
 
   try {
-    const response = await fetch(`${SLACK_BOT_URL}/api/approval/send`, {
+    const response = await fetch(`${API_URL}/approvals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(approval),
@@ -119,11 +122,9 @@ async function sendApproval(
     const result = (await response.json()) as {
       success: boolean;
       approval_id: string;
-      channel: string;
     };
 
-    console.log(chalk.green(`\nApproval sent: ${approvalId}`));
-    console.log(chalk.dim(`  Channel: #${result.channel}`));
+    console.log(chalk.green(`\nApproval sent: ${result.approval_id}`));
     console.log(chalk.dim(`  Expires: ${expiresAt.toISOString()}`));
     console.log();
 
@@ -149,7 +150,7 @@ async function listApprovals(options: {
 
   try {
     const response = await fetch(
-      `${SLACK_BOT_URL}/api/approvals?${params.toString()}`
+      `${API_URL}/approvals?${params.toString()}`
     );
     if (!response.ok) throw new Error(await response.text());
 
@@ -203,7 +204,7 @@ async function checkApproval(
   async function check(): Promise<Approval | null> {
     try {
       const response = await fetch(
-        `${SLACK_BOT_URL}/api/approval/${approvalId}`
+        `${API_URL}/approvals/${approvalId}`
       );
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(await response.text());
