@@ -287,7 +287,14 @@ export async function appendToMemory(
     }
 
     const timestamp = new Date().toISOString().split('T')[0];
-    const newContent = existing + `\n\n---\n_Added: ${timestamp}_\n\n${addition}`;
+    // Format: ## YYYY-MM-DD: First line as heading (synthesizer-friendly)
+    const lines = addition.trim().split('\n');
+    const heading = lines[0].replace(/^#+\s*/, '').replace(/^\*\*/, '').replace(/\*\*$/, '');
+    const body = lines.slice(1).join('\n').trim();
+    const entry = body
+      ? `## ${timestamp}: ${heading}\n\n${body}`
+      : `## ${timestamp}: ${heading}`;
+    const newContent = existing + `\n\n${entry}`;
 
     const dir = dirname(filePath);
     if (!existsSync(dir)) {
@@ -320,7 +327,14 @@ export function appendToMemorySync(
   }
 
   const timestamp = new Date().toISOString().split('T')[0];
-  const newContent = existing + `\n\n---\n_Added: ${timestamp}_\n\n${addition}`;
+  // Format: ## YYYY-MM-DD: First line as heading (synthesizer-friendly)
+  const lines = addition.trim().split('\n');
+  const heading = lines[0].replace(/^#+\s*/, '').replace(/^\*\*/, '').replace(/\*\*$/, '');
+  const body = lines.slice(1).join('\n').trim();
+  const entry = body
+    ? `## ${timestamp}: ${heading}\n\n${body}`
+    : `## ${timestamp}: ${heading}`;
+  const newContent = existing + `\n\n${entry}`;
 
   updateMemorySync(squadName, agentName, type, newContent.trim());
 }
