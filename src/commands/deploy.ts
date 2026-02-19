@@ -23,7 +23,7 @@ import { loadSession } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
 // Platform API URL
-const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_SCHEDULER_URL || 'SQUADS_API_URL';
+const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'SQUADS_API_URL';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

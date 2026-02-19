@@ -61,7 +61,7 @@ const SERVICES: ServiceCheck[] = [
   },
   {
     name: 'Scheduler',
-    url: `${process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090'}/health`,
+    url: `${process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090'}/health`,
     optional: true,
     fix: 'squads stack up scheduler',
   },
@@ -133,7 +133,7 @@ async function checkService(service: ServiceCheck): Promise<ServiceResult> {
  */
 async function getTriggerStats(): Promise<TriggerStats | null> {
   try {
-    const schedulerUrl = process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090';
+    const schedulerUrl = process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090';
     const response = await fetchWithTimeout(`${schedulerUrl}/api/triggers/stats`);
 
     if (!response.ok) return null;

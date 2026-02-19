@@ -77,8 +77,9 @@ describe('health command', () => {
     });
 
     it('defaults scheduler URL to localhost:8090', () => {
+      delete process.env.SQUADS_API_URL;
       delete process.env.SQUADS_SCHEDULER_URL;
-      const schedulerUrl = process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090';
+      const schedulerUrl = process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090';
       expect(schedulerUrl).toBe('http://localhost:8090');
     });
 

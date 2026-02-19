@@ -12,9 +12,8 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { existsSync } from "fs";
 
-const SCHEDULER_URL = process.env.SCHEDULER_URL || "http://localhost:8090";
+const API_URL = process.env.SQUADS_API_URL || process.env.SCHEDULER_URL || "http://localhost:8090";
 
 interface Trigger {
   id: string;
@@ -47,7 +46,7 @@ async function fetchScheduler<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${SCHEDULER_URL}${path}`, {
+  const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -121,22 +120,40 @@ async function listTriggers(squad?: string): Promise<void> {
 async function syncTriggers(): Promise<void> {
   console.log(chalk.gray("Syncing triggers from SQUAD.md files...\n"));
 
-  // Call the Python sync script
-  const { execSync } = await import("child_process");
-  const hqPath = process.env.HQ_PATH || `${process.env.HOME}/agents-squads/hq`;
-
   try {
-    // Use venv Python if available, fallback to system python3
-    const venvPython = `${hqPath}/squads-scheduler/.venv/bin/python`;
-    const pythonCmd = existsSync(venvPython) ? venvPython : "python3";
-    const output = execSync(
-      `${pythonCmd} ${hqPath}/squads-scheduler/sync_triggers.py`,
-      { encoding: "utf-8", cwd: hqPath }
+    const result = await fetchScheduler<{ synced: number; triggers: string[]; errors: Array<{ name: string; error: string }> }>(
+      "/triggers/sync",
+      { method: "POST" }
     );
-    console.log(output);
+
+    if (result.errors && result.errors.length > 0) {
+      console.log(chalk.yellow(`Synced with ${result.errors.length} error(s):`));
+      for (const err of result.errors) {
+        console.log(chalk.red(`  - ${err.name}: ${err.error}`));
+      }
+    }
+
+    console.log(chalk.green(`Synced ${result.synced} trigger(s)`));
+    if (result.triggers && result.triggers.length > 0) {
+      for (const name of result.triggers) {
+        console.log(chalk.gray(`  - ${name}`));
+      }
+    }
   } catch (error: unknown) {
-    const execError = error as { stdout?: string; stderr?: string };
-    console.error(chalk.red("Sync failed:"), execError.stderr || execError);
+    const isConnectionError = error instanceof Error &&
+      (error.cause?.toString().includes('ECONNREFUSED') ||
+       error.message.includes('fetch failed'));
+
+    if (isConnectionError) {
+      console.error(chalk.red("\n  API not running\n"));
+      console.log(chalk.gray("  The sync command requires the API to be running.\n"));
+      console.log(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
+      console.log(`  ${chalk.cyan("$ squads health")}        Check service status\n`);
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(chalk.red("Sync failed:"), message);
   }
 }
 
@@ -204,7 +221,7 @@ async function showStatus(): Promise<void> {
     console.log();
   } catch {
     console.error(chalk.red("Scheduler not running or unreachable"));
-    console.log(chalk.gray(`  Expected at: ${SCHEDULER_URL}`));
+    console.log(chalk.gray(`  Expected at: ${API_URL}`));
   }
 }
 
