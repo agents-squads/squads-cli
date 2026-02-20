@@ -993,7 +993,7 @@ async function _renderInfrastructure(): Promise<void> {
     writeLine();
     writeLine(`  ${colors.dim}Start with:${RESET} cd docker && docker-compose up -d`);
     writeLine(`  ${colors.dim}Docs:${RESET} https://agents-squads.com/docs/setup`);
-    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}jorge@agents-squads.com${RESET}`);
+    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}hello@agents-squads.com${RESET}`);
     writeLine();
     return;
   }
