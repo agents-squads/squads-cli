@@ -1945,7 +1945,10 @@ async function executeWithClaude(
     // Build shell command with proper escaping (required for Node 22+ symlink resolution)
     const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
     const mcpFlag = `--mcp-config '${mcpConfigPath}'`;
-    const shellCmd = `claude --dangerously-skip-permissions ${mcpFlag} ${modelFlag} -- '${escapedPrompt}'`;
+    // Use --print when stdin is not a TTY (cron, systemd, pipe) to prevent Claude
+    // from entering interactive mode and hanging. Interactive mode requires a terminal.
+    const printFlag = process.stdin.isTTY ? '' : '--print';
+    const shellCmd = `claude ${printFlag} --dangerously-skip-permissions ${mcpFlag} ${modelFlag} -- '${escapedPrompt}'`;
 
     // Pass env vars via spawn env option to avoid shell injection
     const agentEnv: Record<string, string> = {
