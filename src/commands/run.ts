@@ -1,5 +1,5 @@
 import ora from 'ora';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import {
@@ -1970,6 +1970,15 @@ async function executeWithClaude(
       ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
     };
 
+    // Create isolated branch for this agent execution
+    const fgTimestamp = Date.now();
+    const fgBranchName = `agent/${squadName}/${agentName}-${fgTimestamp}`;
+    try {
+      execSync(`git checkout -b '${fgBranchName}'`, { cwd: projectRoot, stdio: 'pipe' });
+    } catch {
+      // Branch might already exist or we're in detached HEAD
+    }
+
     return new Promise((resolve, reject) => {
       const claude = spawn('claude', claudeArgs, {
         stdio: 'inherit',
@@ -2046,7 +2055,8 @@ async function executeWithClaude(
     };
 
     const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-    const shellScript = `cd '${projectRoot}'; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+    const watchBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
+    const shellScript = `cd '${projectRoot}'; git checkout -b '${watchBranchName}' 2>/dev/null || true; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
     const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
     // Spawn background process
@@ -2137,12 +2147,12 @@ async function executeWithClaude(
 
   // Build shell command:
   // 1. cd to project root
-  // 2. run claude (output to logfile)
-  // Agent creates its own branch following gh skill conventions (feat/, fix/, docs/, solve/)
-  // Agent opens PR to sprint branch — system does NOT pre-create branches
+  // 2. create isolated branch for this agent execution
+  // 3. run claude (output to logfile)
   // Note: MCP config removed - causes blocking issues in background execution
   const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-  const shellScript = `cd '${projectRoot}'; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  const bgBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
+  const shellScript = `cd '${projectRoot}'; git checkout -b '${bgBranchName}' 2>/dev/null || true; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
