@@ -264,7 +264,7 @@ Revenue metrics displayed`);
       const content = readFileSync(filePath, 'utf-8');
 
       expect(content).toContain('First entry');
-      expect(content).toContain('Added:');
+      expect(content).toMatch(/## \d{4}-\d{2}-\d{2}: First entry/);
     });
 
     it('appends to existing content with timestamp', () => {
@@ -277,7 +277,7 @@ Revenue metrics displayed`);
       const content = readFileSync(join(agentPath, 'state.md'), 'utf-8');
       expect(content).toContain('Original content');
       expect(content).toContain('Appended content');
-      expect(content).toContain('---');
+      expect(content).toMatch(/## \d{4}-\d{2}-\d{2}: Appended content/);
     });
 
     it('throws error when no memory directory found', () => {
