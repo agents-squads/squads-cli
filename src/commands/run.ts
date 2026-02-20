@@ -1910,8 +1910,11 @@ async function executeWithClaude(
 
   // Build env: remove ANTHROPIC_API_KEY unless --use-api is set
   // This ensures Claude uses OAuth subscription by default
-  const { ANTHROPIC_API_KEY: _apiKey, ...envWithoutApiKey } = process.env;
-  const spawnEnv = useApi ? process.env : envWithoutApiKey;
+  // Also remove CLAUDECODE to allow spawning from within Claude Code sessions
+  const { ANTHROPIC_API_KEY: _apiKey, CLAUDECODE: _claudeCode, ...envWithoutApiKey } = process.env;
+  const spawnEnv = useApi
+    ? (() => { const { CLAUDECODE: _, ...rest } = process.env; return rest; })()
+    : envWithoutApiKey;
 
   // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
