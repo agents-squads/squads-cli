@@ -52,6 +52,7 @@ interface RunOptions {
   trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
   provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  verify?: boolean; // Post-execution verification (default true, --no-verify to skip)
 }
 
 /**
@@ -192,7 +193,7 @@ function loadApprovalInstructions(): string {
 function gatherSquadContext(
   squadName: string,
   agentName: string,
-  options: { verbose?: boolean; maxTokens?: number } = {}
+  options: { verbose?: boolean; maxTokens?: number; agentPath?: string } = {}
 ): string {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return '';
@@ -307,6 +308,73 @@ function gatherSquadContext(
         }
       } catch {
         // Ignore read errors
+      }
+    }
+  }
+
+  // 5. Daily briefing (cross-squad context)
+  if (memoryDir) {
+    const briefingPath = join(memoryDir, 'daily-briefing.md');
+    if (existsSync(briefingPath)) {
+      try {
+        const briefingContent = readFileSync(briefingPath, 'utf-8');
+        if (briefingContent.trim()) {
+          const tokens = estimateTokens(briefingContent);
+          if (estimatedTokens + tokens < maxTokens) {
+            sections.push(`## Daily Briefing\n${briefingContent.trim()}`);
+            estimatedTokens += tokens;
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 6. Cross-squad learnings (from context_from in agent frontmatter)
+  if (memoryDir && options.agentPath) {
+    const frontmatter = parseAgentFrontmatter(options.agentPath);
+    if (frontmatter.context_from && frontmatter.context_from.length > 0) {
+      for (const relatedSquad of frontmatter.context_from) {
+        // Related squad shared learnings
+        const learningsPath = join(memoryDir, relatedSquad, 'shared', 'learnings.md');
+        if (existsSync(learningsPath)) {
+          try {
+            let learningsContent = readFileSync(learningsPath, 'utf-8');
+            if (learningsContent.trim()) {
+              if (learningsContent.length > 1500) {
+                learningsContent = learningsContent.slice(0, 1500) + '\n...(truncated)';
+              }
+              const tokens = estimateTokens(learningsContent);
+              if (estimatedTokens + tokens < maxTokens) {
+                sections.push(`## ${relatedSquad} Squad Learnings\n${learningsContent.trim()}`);
+                estimatedTokens += tokens;
+              }
+            }
+          } catch {
+            // Ignore read errors
+          }
+        }
+
+        // Related squad lead state
+        const leadStatePath = join(memoryDir, relatedSquad, `${relatedSquad}-lead`, 'state.md');
+        if (existsSync(leadStatePath)) {
+          try {
+            let leadState = readFileSync(leadStatePath, 'utf-8');
+            if (leadState.trim()) {
+              if (leadState.length > 1000) {
+                leadState = leadState.slice(0, 1000) + '\n...(truncated)';
+              }
+              const tokens = estimateTokens(leadState);
+              if (estimatedTokens + tokens < maxTokens) {
+                sections.push(`## ${relatedSquad} Lead State\n${leadState.trim()}`);
+                estimatedTokens += tokens;
+              }
+            }
+          } catch {
+            // Ignore read errors
+          }
+        }
       }
     }
   }
@@ -752,6 +820,196 @@ function extractMcpServersFromDefinition(definition: string): string[] {
   return Array.from(servers);
 }
 
+/**
+ * Parse frontmatter fields from an agent definition file.
+ * Handles non-standard format where frontmatter appears after a heading.
+ */
+interface AgentFrontmatter {
+  context_from?: string[];
+  acceptance_criteria?: string;
+  max_retries?: number;
+}
+
+function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
+  if (!existsSync(agentPath)) return {};
+
+  const content = readFileSync(agentPath, 'utf-8');
+  const lines = content.split('\n');
+  let inFrontmatter = false;
+  const yamlLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.trim() === '---') {
+      if (inFrontmatter) break;
+      inFrontmatter = true;
+      continue;
+    }
+    if (inFrontmatter) {
+      yamlLines.push(line);
+    }
+  }
+
+  if (yamlLines.length === 0) return {};
+
+  const yaml = yamlLines.join('\n');
+  const result: AgentFrontmatter = {};
+
+  // context_from: [operations, finance, product, growth]
+  const contextMatch = yaml.match(/context_from:\s*\[([^\]]+)\]/);
+  if (contextMatch) {
+    result.context_from = contextMatch[1].split(',').map(s => s.trim());
+  }
+
+  // acceptance_criteria: |\n  - criteria1\n  - criteria2
+  const criteriaMatch = yaml.match(/acceptance_criteria:\s*\|\n((?:\s+.+\n?)*)/);
+  if (criteriaMatch) {
+    result.acceptance_criteria = criteriaMatch[1].replace(/^ {2}/gm, '').trim();
+  }
+
+  // max_retries: 2
+  const retriesMatch = yaml.match(/max_retries:\s*(\d+)/);
+  if (retriesMatch) {
+    result.max_retries = parseInt(retriesMatch[1], 10);
+  }
+
+  return result;
+}
+
+/**
+ * Emit an execution event to the API for tracking and routing.
+ * Non-blocking and fail-safe — falls back to file if API unavailable.
+ */
+async function emitExecutionEvent(
+  eventType: 'agent.completed' | 'agent.failed',
+  data: { squad: string; agent: string; executionId: string; error?: string }
+): Promise<void> {
+  const apiUrl = process.env.SQUADS_API_URL;
+
+  if (apiUrl) {
+    try {
+      await fetch(`${apiUrl}/events/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'scheduler',
+          event_type: eventType,
+          data: {
+            squad: data.squad,
+            agent: data.agent,
+            execution_id: data.executionId,
+            ...(data.error ? { error: data.error } : {}),
+          },
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      return;
+    } catch {
+      // API unavailable — fall through to file
+    }
+  }
+
+  // Fallback: write event to memory file
+  try {
+    const memDir = findMemoryDir();
+    if (!memDir) return;
+
+    const eventsDir = join(memDir, data.squad, data.agent);
+    if (!existsSync(eventsDir)) {
+      mkdirSync(eventsDir, { recursive: true });
+    }
+
+    const eventsPath = join(eventsDir, 'events.md');
+    const timestamp = new Date().toISOString();
+    const entry = `\n## ${timestamp}: ${eventType}\n- execution_id: ${data.executionId}\n${data.error ? `- error: ${data.error}\n` : ''}`;
+
+    let existing = '';
+    if (existsSync(eventsPath)) {
+      existing = readFileSync(eventsPath, 'utf-8');
+    }
+    writeFileSync(eventsPath, existing + entry);
+  } catch {
+    // Truly fail-safe — never block execution
+  }
+}
+
+/**
+ * Verify execution against acceptance criteria using a lightweight model.
+ * Returns pass/fail with reason. Used by the Ralph verification loop.
+ */
+async function verifyExecution(
+  squadName: string,
+  agentName: string,
+  criteria: string,
+  options: { verbose?: boolean } = {}
+): Promise<{ passed: boolean; reason: string }> {
+  const { execSync } = await import('child_process');
+  const projectRoot = getProjectRoot();
+
+  // Gather evidence: state file + recent commits
+  let stateContent = '';
+  const memDir = findMemoryDir();
+  if (memDir) {
+    const statePath = join(memDir, squadName, agentName, 'state.md');
+    if (existsSync(statePath)) {
+      stateContent = readFileSync(statePath, 'utf-8').slice(0, 2000);
+    }
+  }
+
+  let recentCommits = '';
+  try {
+    recentCommits = execSync('git log --oneline -5 --no-color', {
+      encoding: 'utf-8',
+      cwd: projectRoot,
+    }).trim();
+  } catch {
+    recentCommits = '(no commits found)';
+  }
+
+  const verifyPrompt = `You are verifying whether an agent completed its task successfully.
+
+Agent: ${squadName}/${agentName}
+
+## Acceptance Criteria
+${criteria}
+
+## Evidence
+
+### Agent State File
+${stateContent || '(empty or not found)'}
+
+### Recent Git Commits
+${recentCommits}
+
+## Instructions
+Evaluate whether the acceptance criteria are met based on the evidence.
+Respond with EXACTLY one line:
+PASS: <brief reason>
+or
+FAIL: <brief reason>`;
+
+  try {
+    const escapedPrompt = verifyPrompt.replace(/'/g, "'\\''");
+    const result = execSync(
+      `claude --print --model haiku -- '${escapedPrompt}'`,
+      { encoding: 'utf-8', cwd: projectRoot, timeout: 30000 }
+    ).trim();
+
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Verification: ${result}${RESET}`);
+    }
+
+    if (result.startsWith('PASS')) {
+      return { passed: true, reason: result.replace(/^PASS:\s*/, '') };
+    }
+    return { passed: false, reason: result.replace(/^FAIL:\s*/, '') };
+  } catch (error) {
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Verification error (defaulting to PASS): ${error}${RESET}`);
+    }
+    return { passed: true, reason: 'Verification unavailable — defaulting to pass' };
+  }
+}
+
 export async function runCommand(
   target: string,
   options: RunOptions
@@ -1139,7 +1397,7 @@ async function runAgent(
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     // Show context that would be injected
-    const dryRunContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose });
+    const dryRunContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
       writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
@@ -1262,7 +1520,7 @@ async function runAgent(
     : '';
 
   // Gather squad context (SQUAD.md, agent state, briefs)
-  const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose });
+  const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
 
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || 30;
@@ -1374,51 +1632,85 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
         ? `Starting ${agentName} with ${cliName} (watch mode)...`
         : `Running ${agentName} with ${cliName}...`;
 
-    try {
-      let result: string;
+    // Parse frontmatter for verification criteria (Ralph loop)
+    const frontmatter = parseAgentFrontmatter(agentPath);
+    const hasCriteria = !!frontmatter.acceptance_criteria && options.verify !== false;
+    const maxRetries = frontmatter.max_retries ?? 2;
+    let currentPrompt = prompt;
 
-      if (isAnthropic) {
-        // Use full Claude execution with MCP, permissions, etc.
-        result = await executeWithClaude(prompt, {
-          verbose: options.verbose,
-          timeoutMinutes: options.timeout || 30,
-          foreground: options.foreground,
-          background: options.background,
-          watch: options.watch,
-          useApi: options.useApi,
-          effort: options.effort,
-          skills: options.skills,
-          trigger: options.trigger || 'manual',
-          squadName,
-          agentName,
-          model: options.model,
-        });
-      } else {
-        // Use simplified provider execution
-        result = await executeWithProvider(provider, prompt, {
-          verbose: options.verbose,
-          foreground: !isBackground,
-          squadName,
-          agentName,
-        });
-      }
+    for (let attempt = 0; attempt <= (hasCriteria ? maxRetries : 0); attempt++) {
+      try {
+        let result: string;
 
-      if (isForeground || isWatch) {
-        spinner.succeed(`Agent ${agentName} completed (${cliName})`);
-      } else {
-        spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
-        writeLine(`  ${colors.dim}${result}${RESET}`);
-        writeLine();
-        writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
-        writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
+        if (isAnthropic) {
+          result = await executeWithClaude(currentPrompt, {
+            verbose: options.verbose,
+            timeoutMinutes: options.timeout || 30,
+            foreground: options.foreground,
+            background: options.background,
+            watch: options.watch,
+            useApi: options.useApi,
+            effort: options.effort,
+            skills: options.skills,
+            trigger: options.trigger || 'manual',
+            squadName,
+            agentName,
+            model: options.model,
+          });
+        } else {
+          result = await executeWithProvider(provider, currentPrompt, {
+            verbose: options.verbose,
+            foreground: !isBackground,
+            squadName,
+            agentName,
+          });
+        }
+
+        // Ralph loop: verify foreground execution against acceptance criteria
+        if (hasCriteria && (isForeground || isWatch)) {
+          const verification = await verifyExecution(
+            squadName, agentName, frontmatter.acceptance_criteria!, { verbose: options.verbose }
+          );
+          if (!verification.passed && attempt < maxRetries) {
+            writeLine(`  ${colors.yellow}Verification: FAIL - ${verification.reason}${RESET}`);
+            writeLine(`  ${colors.dim}Retrying (${attempt + 1}/${maxRetries})...${RESET}`);
+            currentPrompt = `${prompt}\n\n## PREVIOUS ATTEMPT FAILED\nVerification found: ${verification.reason}\nPlease address this issue and try again.`;
+            continue;
+          }
+          if (verification.passed) {
+            writeLine(`  ${colors.green}Verification: PASS - ${verification.reason}${RESET}`);
+          }
+        }
+
+        // Emit completion event (non-blocking)
+        emitExecutionEvent('agent.completed', {
+          squad: squadName, agent: agentName, executionId,
+        }).catch(() => {});
+
+        if (isForeground || isWatch) {
+          spinner.succeed(`Agent ${agentName} completed (${cliName})`);
+        } else {
+          spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
+          writeLine(`  ${colors.dim}${result}${RESET}`);
+          writeLine();
+          writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+          writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
+        }
+        break; // Success — exit retry loop
+      } catch (error) {
+        // Emit failure event (non-blocking)
+        emitExecutionEvent('agent.failed', {
+          squad: squadName, agent: agentName, executionId, error: String(error),
+        }).catch(() => {});
+
+        spinner.fail(`Agent ${agentName} failed to launch`);
+        updateExecutionStatus(squadName, agentName, executionId, 'failed', {
+          error: String(error),
+          durationMs: Date.now() - startMs,
+        });
+        writeLine(`  ${colors.red}${String(error)}${RESET}`);
+        break; // Error — exit retry loop
       }
-    } catch (error) {
-      spinner.fail(`Agent ${agentName} failed to launch`);
-      updateExecutionStatus(squadName, agentName, executionId, 'failed', {
-        error: String(error),
-        durationMs: Date.now() - startMs,
-      });
-      writeLine(`  ${colors.red}${String(error)}${RESET}`);
     }
   } else {
     // Show instructions for manual execution

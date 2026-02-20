@@ -281,6 +281,7 @@ program
   .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
   .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
+  .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
   .addHelpText('after', `
 Examples:
