@@ -1970,19 +1970,23 @@ async function executeWithClaude(
       ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
     };
 
-    // Create isolated branch for this agent execution
+    // Create isolated worktree for this agent execution
     const fgTimestamp = Date.now();
     const fgBranchName = `agent/${squadName}/${agentName}-${fgTimestamp}`;
+    const fgWorktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${fgTimestamp}`);
+    let fgWorkDir = projectRoot;
     try {
-      execSync(`git checkout -b '${fgBranchName}'`, { cwd: projectRoot, stdio: 'pipe' });
+      mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
+      execSync(`git worktree add '${fgWorktreePath}' -b '${fgBranchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+      fgWorkDir = fgWorktreePath;
     } catch {
-      // Branch might already exist or we're in detached HEAD
+      // Worktree creation failed — fall back to project root
     }
 
     return new Promise((resolve, reject) => {
       const claude = spawn('claude', claudeArgs, {
         stdio: 'inherit',
-        cwd: projectRoot,
+        cwd: fgWorkDir,
         env: agentEnv,
       });
 
@@ -2056,7 +2060,8 @@ async function executeWithClaude(
 
     const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
     const watchBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-    const shellScript = `cd '${projectRoot}'; git checkout -b '${watchBranchName}' 2>/dev/null || true; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+    const watchWorktreeDir = `\${PROJECT_ROOT}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
+    const shellScript = `PROJECT_ROOT='${projectRoot}'; mkdir -p "\${PROJECT_ROOT}/../.worktrees"; WORK_DIR="\${PROJECT_ROOT}"; if git -C "\${PROJECT_ROOT}" worktree add '${watchWorktreeDir}' -b '${watchBranchName}' HEAD 2>/dev/null; then WORK_DIR='${watchWorktreeDir}'; fi; cd "\${WORK_DIR}"; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
     const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
     // Spawn background process
@@ -2146,13 +2151,14 @@ async function executeWithClaude(
   };
 
   // Build shell command:
-  // 1. cd to project root
-  // 2. create isolated branch for this agent execution
+  // 1. Create isolated worktree for this agent (prevents branch collisions)
+  // 2. cd to worktree (or project root as fallback)
   // 3. run claude (output to logfile)
   // Note: MCP config removed - causes blocking issues in background execution
   const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
   const bgBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-  const shellScript = `cd '${projectRoot}'; git checkout -b '${bgBranchName}' 2>/dev/null || true; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  const bgWorktreeDir = `${projectRoot}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
+  const shellScript = `mkdir -p '${projectRoot}/../.worktrees'; WORK_DIR='${projectRoot}'; if git -C '${projectRoot}' worktree add '${bgWorktreeDir}' -b '${bgBranchName}' HEAD 2>/dev/null; then WORK_DIR='${bgWorktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
