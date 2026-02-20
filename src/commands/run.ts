@@ -1942,13 +1942,17 @@ async function executeWithClaude(
       }
     }
 
-    // Build shell command with proper escaping (required for Node 22+ symlink resolution)
-    const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-    const mcpFlag = `--mcp-config '${mcpConfigPath}'`;
+    // Build claude args as array to avoid shell escaping issues with large prompts.
+    // Previous approach embedded the prompt in a shell string, which broke when
+    // the prompt contained characters that interfered with shell quoting.
+    const claudeArgs: string[] = [];
     // Use --print when stdin is not a TTY (cron, systemd, pipe) to prevent Claude
-    // from entering interactive mode and hanging. Interactive mode requires a terminal.
-    const printFlag = process.stdin.isTTY ? '' : '--print';
-    const shellCmd = `claude ${printFlag} --dangerously-skip-permissions ${mcpFlag} ${modelFlag} -- '${escapedPrompt}'`;
+    // from entering interactive mode and hanging.
+    if (!process.stdin.isTTY) claudeArgs.push('--print');
+    claudeArgs.push('--dangerously-skip-permissions');
+    claudeArgs.push('--mcp-config', mcpConfigPath);
+    if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
+    claudeArgs.push('--', prompt); // raw prompt, no shell escaping needed
 
     // Pass env vars via spawn env option to avoid shell injection
     const agentEnv: Record<string, string> = {
@@ -1964,10 +1968,8 @@ async function executeWithClaude(
       ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
     };
 
-    const fullCmd = `cd '${projectRoot}'; exec ${shellCmd}`;
-
     return new Promise((resolve, reject) => {
-      const claude = spawn('sh', ['-c', fullCmd], {
+      const claude = spawn('claude', claudeArgs, {
         stdio: 'inherit',
         cwd: projectRoot,
         env: agentEnv,
