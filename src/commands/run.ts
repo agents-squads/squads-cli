@@ -2211,11 +2211,38 @@ async function executeWithProvider(
 
   const projectRoot = options.cwd || getProjectRoot();
   const args = cliConfig.buildArgs(prompt);
+  const squadName = options.squadName || 'unknown';
+  const agentName = options.agentName || 'unknown';
+  const timestamp = Date.now();
+
+  // Build clean env: remove CLAUDECODE to allow nesting, pass squad context
+  const { CLAUDECODE: _claudeCode, ...cleanEnv } = process.env;
+  const providerEnv = {
+    ...cleanEnv,
+    SQUADS_SQUAD: squadName,
+    SQUADS_AGENT: agentName,
+    SQUADS_PROVIDER: provider,
+  };
+
+  // Create isolated worktree for this agent (same pattern as executeWithClaude)
+  const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
+  const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
+  let workDir = projectRoot;
+  try {
+    mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
+    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    workDir = worktreePath;
+  } catch {
+    // Worktree creation failed — fall back to project root
+  }
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
     writeLine(`  ${colors.dim}Command: ${cliConfig.command} ${args.join(' ').slice(0, 50)}...${RESET}`);
-    writeLine(`  ${colors.dim}CWD: ${projectRoot}${RESET}`);
+    writeLine(`  ${colors.dim}CWD: ${workDir}${RESET}`);
+    if (workDir !== projectRoot) {
+      writeLine(`  ${colors.dim}Worktree: ${branchName}${RESET}`);
+    }
   }
 
   // Foreground mode: run directly in terminal
@@ -2223,13 +2250,8 @@ async function executeWithProvider(
     return new Promise((resolve, reject) => {
       const proc = spawn(cliConfig.command, args, {
         stdio: 'inherit',
-        cwd: projectRoot,
-        env: {
-          ...process.env,
-          SQUADS_SQUAD: options.squadName || 'unknown',
-          SQUADS_AGENT: options.agentName || 'unknown',
-          SQUADS_PROVIDER: provider,
-        },
+        cwd: workDir,
+        env: providerEnv,
       });
 
       proc.on('close', (code) => {
@@ -2246,36 +2268,35 @@ async function executeWithProvider(
     });
   }
 
-  // Background mode: run via tmux
-  const sessionName = `squads-${options.squadName || 'run'}-${options.agentName || 'agent'}-${Date.now()}`;
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const shellCmd = `cd '${projectRoot}' && ${cliConfig.command} ${cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ')}; tmux kill-session -t ${sessionName} 2>/dev/null`;
+  // Background mode: run detached with log file (matches executeWithClaude pattern)
+  const logDir = join(projectRoot, '.agents', 'logs', squadName);
+  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
 
-  const tmux = spawn('tmux', [
-    'new-session',
-    '-d',
-    '-s', sessionName,
-    '-x', '200',
-    '-y', '50',
-    '/bin/sh', '-c', shellCmd
-  ], {
-    stdio: 'ignore',
-    detached: true,
-    env: {
-      ...process.env,
-      SQUADS_SQUAD: options.squadName || 'unknown',
-      SQUADS_AGENT: options.agentName || 'unknown',
-      SQUADS_PROVIDER: provider,
-    },
-  });
-
-  tmux.unref();
-
-  if (options.verbose) {
-    writeLine(`  ${colors.dim}Session: ${sessionName}${RESET}`);
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
   }
 
-  return `tmux session: ${sessionName}. Attach: tmux attach -t ${sessionName}`;
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+
+  const child = spawn('sh', ['-c', wrapperScript], {
+    cwd: workDir,
+    detached: true,
+    stdio: 'ignore',
+    env: providerEnv,
+  });
+
+  child.unref();
+
+  if (options.verbose) {
+    writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
+    writeLine(`  ${colors.dim}PID file: ${pidFile}${RESET}`);
+  }
+
+  return `Log: ${logFile}. Monitor: tail -f ${logFile}`;
 }
 
 export async function runSquadCommand(
