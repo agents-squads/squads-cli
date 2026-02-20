@@ -322,7 +322,7 @@ export function formatViolations(result: PermissionResult): string[] {
  *   read: [hq/.agents/**]
  *   mcp:
  *     allow: [chrome-devtools, firecrawl]
- *     deny: [supabase]
+ *     deny: [restricted-server]
  * ```
  */
 export function parsePermissionsYaml(content: string): Partial<SquadContext['permissions']> | null {

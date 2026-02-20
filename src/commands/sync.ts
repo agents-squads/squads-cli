@@ -379,7 +379,7 @@ async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
 
 function extractMcpServersFromDef(definition: string): string[] {
   const servers: Set<string> = new Set();
-  const knownServers = ['chrome-devtools', 'firecrawl', 'supabase', 'grafana', 'context7', 'huggingface', 'img-gen', 'web-fetch'];
+  const knownServers = ['chrome-devtools', 'firecrawl', 'context7', 'huggingface'];
 
   for (const server of knownServers) {
     if (definition.toLowerCase().includes(server)) {

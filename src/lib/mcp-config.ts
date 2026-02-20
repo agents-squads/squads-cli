@@ -37,11 +37,6 @@ export interface McpConfig {
  */
 /**
  * MCP Registry is now empty - we prefer CLI tools over MCP.
- *
- * Replacements:
- * - web-fetch → curl (see curl-master skill)
- * - img-gen → scripts/img-gen CLI
- *
  * If you need to add MCP servers, add them here.
  */
 const SERVER_REGISTRY: Record<string, McpServerDef> = {};

@@ -23,7 +23,7 @@ import { loadSession } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
 
 // Platform API URL
-const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'SQUADS_API_URL';
+const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || '';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
 ${chalk.green('✓ Deployment complete.')}
 
 ${chalk.bold('Next steps:')}
-  ${chalk.dim('→')} View in dashboard: ${chalk.cyan('SQUADS_CONSOLE_URL')}
+  ${chalk.dim('→')} View in dashboard: ${chalk.cyan(process.env.SQUADS_CONSOLE_URL || 'squads deploy status')}
   ${chalk.dim('→')} Check status: ${chalk.cyan('squads deploy status')}
   ${chalk.dim('→')} Pull cloud state: ${chalk.cyan('squads deploy pull')}
 `);

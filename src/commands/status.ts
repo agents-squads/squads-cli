@@ -257,7 +257,7 @@ async function showSquadStatus(
   writeLine();
 
   // Show privacy header for sensitive squads (client, finance, etc.)
-  const sensitiveSquads = ['client-', 'finance', 'customer'];
+  const sensitiveSquads = ['client-'];
   const isSensitive = sensitiveSquads.some(prefix => squadName.startsWith(prefix));
   if (isSensitive) {
     writeLine(privacyHeader('internal'));

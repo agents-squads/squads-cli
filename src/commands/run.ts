@@ -418,11 +418,11 @@ function selectMcpConfig(squadName: string, squad?: Squad | null): string {
   const configsDir = join(home, '.claude', 'mcp-configs');
 
   const squadConfigs: Record<string, string> = {
-    website: 'website.json',      // chrome-devtools, img-gen
-    research: 'research.json',    // web-fetch
-    intelligence: 'research.json', // web-fetch
-    analytics: 'data.json',       // supabase, grafana, analytics
-    engineering: 'data.json',     // supabase, grafana
+    website: 'website.json',
+    research: 'research.json',
+    intelligence: 'research.json',
+    analytics: 'data.json',
+    engineering: 'data.json',
   };
 
   const configFile = squadConfigs[squadName.toLowerCase()];
@@ -793,11 +793,8 @@ function extractMcpServersFromDefinition(definition: string): string[] {
   const knownServers = [
     'chrome-devtools',
     'firecrawl',
-    'supabase',
-    'grafana',
     'context7',
     'huggingface',
-    'img-gen'
   ];
 
   // Check for known servers in the definition
