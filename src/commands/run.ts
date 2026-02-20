@@ -433,8 +433,10 @@ function selectMcpConfig(squadName: string, squad?: Squad | null): string {
     }
   }
 
-  // Tier 4: Fallback to default user config
-  return join(home, '.claude.json');
+  // Tier 4: No MCP config — return empty string to skip --mcp-config flag.
+  // Previously fell back to ~/.claude.json but that's Claude's settings file,
+  // not an MCP config, and causes claude to exit silently with no output.
+  return '';
 }
 
 /**
@@ -1950,7 +1952,7 @@ async function executeWithClaude(
     // from entering interactive mode and hanging.
     if (!process.stdin.isTTY) claudeArgs.push('--print');
     claudeArgs.push('--dangerously-skip-permissions');
-    claudeArgs.push('--mcp-config', mcpConfigPath);
+    if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt); // raw prompt, no shell escaping needed
 
