@@ -56,6 +56,14 @@ const SOFT_DEADLINE_RATIO = 0.7;
 const LOG_FILE_INIT_DELAY_MS = 500;
 const VERBOSE_COMMAND_MAX_CHARS = 50;
 
+/**
+ * Escape a string for safe interpolation inside single-quoted shell arguments.
+ * Replaces every ' with '\'' (end quote, escaped quote, start quote).
+ */
+function shellEscape(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
 interface RunOptions {
   verbose?: boolean;
   dryRun?: boolean;
@@ -2008,7 +2016,7 @@ async function executeWithClaude(
     let fgWorkDir = projectRoot;
     try {
       mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-      execSync(`git worktree add '${fgWorktreePath}' -b '${fgBranchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+      execSync(`git worktree add '${shellEscape(fgWorktreePath)}' -b '${shellEscape(fgBranchName)}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
       fgWorkDir = fgWorktreePath;
     } catch {
       // Worktree creation failed — fall back to project root
@@ -2089,11 +2097,11 @@ async function executeWithClaude(
       BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
     };
 
-    const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
+    const modelFlag = claudeModelAlias ? `--model '${shellEscape(claudeModelAlias)}'` : '';
     const watchBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-    const watchWorktreeDir = `\${PROJECT_ROOT}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
-    const shellScript = `PROJECT_ROOT='${projectRoot}'; mkdir -p "\${PROJECT_ROOT}/../.worktrees"; WORK_DIR="\${PROJECT_ROOT}"; if git -C "\${PROJECT_ROOT}" worktree add '${watchWorktreeDir}' -b '${watchBranchName}' HEAD 2>/dev/null; then WORK_DIR='${watchWorktreeDir}'; fi; cd "\${WORK_DIR}"; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
-    const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+    const escapedWatchWorktreeDir = shellEscape(`\${PROJECT_ROOT}/../.worktrees/${squadName}-${agentName}-${timestamp}`);
+    const shellScript = `PROJECT_ROOT='${shellEscape(projectRoot)}'; mkdir -p "\${PROJECT_ROOT}/../.worktrees"; WORK_DIR="\${PROJECT_ROOT}"; if git -C "\${PROJECT_ROOT}" worktree add '${escapedWatchWorktreeDir}' -b '${shellEscape(watchBranchName)}' HEAD 2>/dev/null; then WORK_DIR='${escapedWatchWorktreeDir}'; fi; cd "\${WORK_DIR}"; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${shellEscape(logFile)}' 2>&1`;
+    const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
 
     // Spawn background process
     const child = spawn('sh', ['-c', wrapperScript], {
@@ -2186,14 +2194,15 @@ async function executeWithClaude(
   // 2. cd to worktree (or project root as fallback)
   // 3. run claude (output to logfile)
   // Note: MCP config removed - causes blocking issues in background execution
-  const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
+  const modelFlag = claudeModelAlias ? `--model '${shellEscape(claudeModelAlias)}'` : '';
   const bgBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-  const bgWorktreeDir = `${projectRoot}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
-  const shellScript = `mkdir -p '${projectRoot}/../.worktrees'; WORK_DIR='${projectRoot}'; if git -C '${projectRoot}' worktree add '${bgWorktreeDir}' -b '${bgBranchName}' HEAD 2>/dev/null; then WORK_DIR='${bgWorktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
+  const escapedBgWorktreeDir = shellEscape(`${projectRoot}/../.worktrees/${squadName}-${agentName}-${timestamp}`);
+  const escapedProjectRoot = shellEscape(projectRoot);
+  const shellScript = `mkdir -p '${escapedProjectRoot}/../.worktrees'; WORK_DIR='${escapedProjectRoot}'; if git -C '${escapedProjectRoot}' worktree add '${escapedBgWorktreeDir}' -b '${shellEscape(bgBranchName)}' HEAD 2>/dev/null; then WORK_DIR='${escapedBgWorktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${shellEscape(logFile)}' 2>&1`;
 
 
   // Get child PID by using a wrapper that writes PID then execs
-  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+  const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: projectRoot,
@@ -2261,7 +2270,7 @@ async function executeWithProvider(
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    execSync(`git worktree add '${shellEscape(worktreePath)}' -b '${shellEscape(branchName)}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch {
     // Worktree creation failed — fall back to project root
@@ -2309,9 +2318,9 @@ async function executeWithProvider(
   }
 
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
-  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${shellEscape(a)}'`).join(' ');
+  const shellScript = `cd '${shellEscape(workDir)}' && ${cliConfig.command} ${providerArgs} > '${shellEscape(logFile)}' 2>&1`;
+  const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,
