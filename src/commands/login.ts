@@ -11,6 +11,7 @@ import {
   AuthSession
 } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
+import { writeLine } from '../lib/terminal.js';
 
 const AUTH_URL = process.env.SQUADS_AUTH_URL || '';
 const CALLBACK_PORT = 54321;
@@ -34,9 +35,9 @@ export async function loginCommand(): Promise<void> {
   const existingSession = loadSession();
 
   if (existingSession && existingSession.status === 'active') {
-    console.log(chalk.green(`✓ Already logged in as ${existingSession.email}`));
-    console.log(chalk.dim(`  Domain: ${existingSession.domain}`));
-    console.log(chalk.dim(`  Run 'squads logout' to sign out.`));
+    writeLine(chalk.green(`✓ Already logged in as ${existingSession.email}`));
+    writeLine(chalk.dim(`  Domain: ${existingSession.domain}`));
+    writeLine(chalk.dim(`  Run 'squads logout' to sign out.`));
     return;
   }
 
@@ -47,7 +48,7 @@ export async function loginCommand(): Promise<void> {
   if (!isAvailable) {
     spinner.stop();
     spinner.clear();
-    console.log(`
+    writeLine(`
 ${chalk.bold.cyan('Pro & Enterprise Login')} ${chalk.yellow('(Coming Soon)')}
 ${chalk.dim('─'.repeat(40))}
 
@@ -67,7 +68,7 @@ ${chalk.dim('Questions?')} ${chalk.cyan('hello@agents-squads.com')}
   spinner.text = 'Opening browser to authenticate...';
   spinner.succeed();
 
-  console.log(`
+  writeLine(`
 ${chalk.bold.magenta('Squads CLI Login')}
 ${chalk.dim('─'.repeat(40))}
 `);
@@ -88,7 +89,7 @@ ${chalk.dim('─'.repeat(40))}
     // Check if personal email
     if (isPersonalEmail(email)) {
       authSpinner.fail('Personal emails not supported');
-      console.log(`
+      writeLine(`
 ${chalk.yellow('⚠ Squads CLI is for Pro & Enterprise teams only.')}
 
 Personal email domains (Gmail, Yahoo, etc.) are not supported.
@@ -116,7 +117,7 @@ ${chalk.dim('Want to stay updated?')}
 
     await track('cli.login.success', { domain: session.domain });
 
-    console.log(`
+    writeLine(`
 ${chalk.green('✓ Thanks for signing up!')}
 
 ${chalk.bold('What happens next:')}
@@ -142,12 +143,12 @@ export async function logoutCommand(): Promise<void> {
   const session = loadSession();
 
   if (!session) {
-    console.log(chalk.yellow('Not logged in.'));
+    writeLine(chalk.yellow('Not logged in.'));
     return;
   }
 
   clearSession();
-  console.log(chalk.green(`✓ Logged out from ${session.email}`));
+  writeLine(chalk.green(`✓ Logged out from ${session.email}`));
   await track('cli.logout');
 }
 
@@ -155,12 +156,12 @@ export async function whoamiCommand(): Promise<void> {
   const session = loadSession();
 
   if (!session) {
-    console.log(chalk.yellow('Not logged in.'));
-    console.log(chalk.dim('Run: squads login'));
+    writeLine(chalk.yellow('Not logged in.'));
+    writeLine(chalk.dim('Run: squads login'));
     return;
   }
 
-  console.log(`
+  writeLine(`
 ${chalk.bold('Current Session')}
 ${chalk.dim('─'.repeat(30))}
 Email:   ${chalk.cyan(session.email)}

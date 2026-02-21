@@ -14,6 +14,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { writeLine } from '../lib/terminal.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
@@ -468,7 +469,7 @@ function renderReadinessLevel(level: EvalResult['readinessLevel']): string {
 }
 
 function renderResult(result: EvalResult): void {
-  console.log(`
+  writeLine(`
 ${chalk.bold(`Agent Readiness: ${result.squad}/${result.agent}`)}
 ${chalk.dim('━'.repeat(50))}
 `);
@@ -477,19 +478,19 @@ ${chalk.dim('━'.repeat(50))}
     const icon = dim.status === 'pass' ? chalk.green('✓')
       : dim.status === 'warn' ? chalk.yellow('⚠')
       : chalk.red('✗');
-    console.log(`  ${icon} ${dim.name.padEnd(22)} ${renderBar(dim.score, dim.maxScore)}`);
+    writeLine(`  ${icon} ${dim.name.padEnd(22)} ${renderBar(dim.score, dim.maxScore)}`);
   }
 
-  console.log(`
+  writeLine(`
   Overall readiness:     ${chalk.bold(String(result.overallScore) + '%')} — ${renderReadinessLevel(result.readinessLevel)}
 `);
 
   if (result.recommendations.length > 0) {
-    console.log(`  ${chalk.bold('Recommendations:')}`);
+    writeLine(`  ${chalk.bold('Recommendations:')}`);
     for (const rec of result.recommendations) {
-      console.log(`  ${chalk.dim('→')} ${rec}`);
+      writeLine(`  ${chalk.dim('→')} ${rec}`);
     }
-    console.log('');
+    writeLine('');
   }
 }
 
@@ -502,7 +503,7 @@ export async function evalCommand(target: string, options: {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     console.error(chalk.red('No .agents/squads/ directory found.'));
-    console.log(chalk.dim('Run: squads init'));
+    writeLine(chalk.dim('Run: squads init'));
     return;
   }
 
@@ -538,7 +539,7 @@ export async function evalCommand(target: string, options: {
   }
 
   if (options.json) {
-    console.log(JSON.stringify(results, null, 2));
+    writeLine(JSON.stringify(results, null, 2));
     return;
   }
 
@@ -555,14 +556,14 @@ export async function evalCommand(target: string, options: {
       return acc;
     }, {} as Record<string, number>);
 
-    console.log(chalk.bold('Squad Summary'));
-    console.log(chalk.dim('━'.repeat(50)));
-    console.log(`  Agents evaluated: ${results.length}`);
-    console.log(`  Average score: ${avgScore}%`);
+    writeLine(chalk.bold('Squad Summary'));
+    writeLine(chalk.dim('━'.repeat(50)));
+    writeLine(`  Agents evaluated: ${results.length}`);
+    writeLine(`  Average score: ${avgScore}%`);
     for (const [level, count] of Object.entries(levels)) {
-      console.log(`  ${renderReadinessLevel(level as EvalResult['readinessLevel'])}: ${count}`);
+      writeLine(`  ${renderReadinessLevel(level as EvalResult['readinessLevel'])}: ${count}`);
     }
-    console.log('');
+    writeLine('');
   }
 
   await track('cli.eval', {

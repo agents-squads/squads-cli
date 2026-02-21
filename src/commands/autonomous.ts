@@ -14,6 +14,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { writeLine } from "../lib/terminal.js";
 import {
   existsSync,
   readFileSync,
@@ -420,10 +421,10 @@ function isRunning(): { running: boolean; pid?: number } {
 async function startScheduler(): Promise<void> {
   const status = isRunning();
   if (status.running) {
-    console.log(
+    writeLine(
       chalk.yellow(`Daemon already running (PID ${status.pid})`)
     );
-    console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
+    writeLine(chalk.gray(`  Log: ${DAEMON_LOG}`));
     return;
   }
 
@@ -434,8 +435,8 @@ async function startScheduler(): Promise<void> {
 
   const routines = collectRoutines().filter((r) => r.enabled !== false);
   if (routines.length === 0) {
-    console.log(chalk.yellow("No enabled routines found."));
-    console.log(
+    writeLine(chalk.yellow("No enabled routines found."));
+    writeLine(
       chalk.gray("Add routines to SQUAD.md files under ### Routines section.")
     );
     return;
@@ -470,16 +471,16 @@ async function startScheduler(): Promise<void> {
 
   const check = isRunning();
   if (check.running) {
-    console.log(chalk.green(`\n  Daemon started (PID ${check.pid})`));
+    writeLine(chalk.green(`\n  Daemon started (PID ${check.pid})`));
   } else {
-    console.log(chalk.green("\n  Daemon starting..."));
+    writeLine(chalk.green("\n  Daemon starting..."));
   }
 
-  console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
-  console.log(chalk.gray(`  Config: SQUAD.md routines\n`));
+  writeLine(chalk.gray(`  Log: ${DAEMON_LOG}`));
+  writeLine(chalk.gray(`  Config: SQUAD.md routines\n`));
 
   // Show what's scheduled
-  console.log(chalk.cyan("  Routines"));
+  writeLine(chalk.cyan("  Routines"));
   const bySquad = new Map<string, RoutineWithSquad[]>();
   for (const r of routines) {
     if (!bySquad.has(r.squad)) bySquad.set(r.squad, []);
@@ -493,24 +494,24 @@ async function startScheduler(): Promise<void> {
         hour: "2-digit",
         minute: "2-digit",
       });
-      console.log(
+      writeLine(
         `  ${chalk.green("●")} ${chalk.cyan(squad)}/${r.name} ${chalk.gray(r.schedule)} ${chalk.gray(`→ ${timeStr}`)}`
       );
     }
   }
 
-  console.log(
+  writeLine(
     chalk.gray(`\n  ${routines.length} routines, max ${MAX_CONCURRENT} concurrent`)
   );
-  console.log(chalk.gray("  Stop: squads autonomous stop"));
-  console.log(chalk.gray(`  Monitor: tail -f ${DAEMON_LOG}\n`));
+  writeLine(chalk.gray("  Stop: squads autonomous stop"));
+  writeLine(chalk.gray(`  Monitor: tail -f ${DAEMON_LOG}\n`));
 }
 
 function stopScheduler(): void {
   const status = isRunning();
 
   if (!status.running) {
-    console.log(chalk.gray("Daemon not running"));
+    writeLine(chalk.gray("Daemon not running"));
     return;
   }
 
@@ -521,7 +522,7 @@ function stopScheduler(): void {
     } catch {
       /* ignore */
     }
-    console.log(chalk.green(`Daemon stopped (PID ${status.pid})`));
+    writeLine(chalk.green(`Daemon stopped (PID ${status.pid})`));
   } catch (error) {
     console.error(chalk.red(`Failed to stop daemon: ${error}`));
   }
@@ -533,42 +534,42 @@ async function showStatus(): Promise<void> {
   const enabled = routines.filter((r) => r.enabled !== false);
   const running = getRunningAgents();
 
-  console.log(chalk.bold("\n  Autonomous Scheduler\n"));
+  writeLine(chalk.bold("\n  Autonomous Scheduler\n"));
 
   // Daemon status
   if (daemon.running) {
-    console.log(
+    writeLine(
       `  ${chalk.green("●")} Daemon running ${chalk.gray(`(PID ${daemon.pid})`)}`
     );
   } else {
-    console.log(`  ${chalk.red("●")} Daemon not running`);
+    writeLine(`  ${chalk.red("●")} Daemon not running`);
   }
-  console.log();
+  writeLine();
 
   // Running agents
   if (running.length > 0) {
-    console.log(chalk.cyan("  Running Agents"));
+    writeLine(chalk.cyan("  Running Agents"));
     for (const agent of running) {
       const runtimeMin = Math.round((Date.now() - agent.startedAt) / 60000);
       const timeoutWarning =
         runtimeMin > AGENT_TIMEOUT_MIN * 0.8 ? chalk.yellow(" ⚠") : "";
-      console.log(
+      writeLine(
         `  ${chalk.green("●")} ${chalk.cyan(agent.squad)}/${agent.agent} ${chalk.gray(`${runtimeMin}min`)}${timeoutWarning} ${chalk.gray(`PID ${agent.pid}`)}`
       );
     }
-    console.log();
+    writeLine();
   }
 
   // Routine summary
-  console.log(chalk.cyan("  Routines"));
-  console.log(
+  writeLine(chalk.cyan("  Routines"));
+  writeLine(
     `  ${enabled.length} enabled / ${routines.length} total, ${running.length}/${MAX_CONCURRENT} running`
   );
-  console.log();
+  writeLine();
 
   // Next 10 upcoming runs
   if (enabled.length > 0) {
-    console.log(chalk.cyan("  Next Runs"));
+    writeLine(chalk.cyan("  Next Runs"));
 
     const now = new Date();
     const nextRuns: {
@@ -605,18 +606,18 @@ async function showStatus(): Promise<void> {
                 month: "short",
                 day: "numeric",
               });
-        console.log(
+        writeLine(
           `  ${chalk.gray(timeStr)} ${chalk.gray(dateStr)} ${chalk.cyan(run.squad)}/${run.agent}`
         );
       });
   }
 
-  console.log();
-  console.log(chalk.gray("  Commands:"));
-  console.log(chalk.gray("  $ squads autonomous start   Start daemon"));
-  console.log(chalk.gray("  $ squads autonomous stop    Stop daemon"));
-  console.log(chalk.gray(`  $ tail -f ${DAEMON_LOG}`));
-  console.log();
+  writeLine();
+  writeLine(chalk.gray("  Commands:"));
+  writeLine(chalk.gray("  $ squads autonomous start   Start daemon"));
+  writeLine(chalk.gray("  $ squads autonomous stop    Stop daemon"));
+  writeLine(chalk.gray(`  $ tail -f ${DAEMON_LOG}`));
+  writeLine();
 }
 
 // =============================================================================
