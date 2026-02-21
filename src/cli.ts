@@ -313,7 +313,8 @@ registerOrchestrateCommand(program);
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
   .command('env')
-  .description('View squad execution environment (MCP, skills, model, budget)');
+  .description('View squad execution environment (MCP, skills, model, budget)')
+  .action(() => { env.outputHelp(); });
 
 env
   .command('show <squad>')
@@ -514,7 +515,8 @@ Examples:
   $ squads kpi record engineering leads_generated 15
   $ squads kpi trend engineering leads_generated
   $ squads kpi insights                   Show insights across all squads
-`);
+`)
+  .action(() => { kpi.outputHelp(); });
 
 kpi
   .command('list')
@@ -569,7 +571,8 @@ progress
 // Feedback command group
 const feedback = program
   .command('feedback')
-  .description('Record and view execution feedback');
+  .description('Record and view execution feedback')
+  .action(() => { feedback.outputHelp(); });
 
 feedback
   .command('add <squad> <rating> <feedback>')
@@ -791,7 +794,8 @@ sessions
 // Session command group - lifecycle management
 const session = program
   .command('session')
-  .description('Manage current session lifecycle');
+  .description('Manage current session lifecycle')
+  .action(() => { session.outputHelp(); });
 
 session
   .command('start')

@@ -627,7 +627,8 @@ export function registerAutonomousCommand(program: Command): void {
   const autonomous = program
     .command("autonomous")
     .alias("auto")
-    .description("Local scheduling daemon for autonomous agent execution");
+    .description("Local scheduling daemon for autonomous agent execution")
+    .action(() => { autonomous.outputHelp(); });
 
   autonomous
     .command("start")
