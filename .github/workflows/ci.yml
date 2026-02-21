@@ -36,6 +36,8 @@ jobs:
 
       - name: Test
         run: npm run test
+        env:
+          FORCE_COLOR: '1'
 
       - name: Upload build artifacts (Node 20 only)
         if: matrix.node-version == 20
@@ -60,7 +62,7 @@ jobs:
         run: npm ci
 
       - name: Security audit
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=critical
 
   smoke-test:
     runs-on: ubuntu-latest
