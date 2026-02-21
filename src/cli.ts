@@ -56,7 +56,7 @@ import {
   memoryExtractCommand
 } from './commands/memory.js';
 import { syncCommand } from './commands/sync.js';
-import { autonomyCommand } from './commands/autonomy.js';
+// autonomy: removed in v0.7.0 (replaced by squads eval)
 import {
   goalSetCommand,
   goalListCommand,
@@ -68,20 +68,16 @@ import {
   feedbackShowCommand,
   feedbackStatsCommand
 } from './commands/feedback.js';
-import {
-  learnCommand,
-  learnShowCommand,
-  learnSearchCommand
-} from './commands/learn.js';
+// learn: removed in v0.7.0 (replaced by squads memory write)
 import { dashboardCommand } from './commands/dashboard.js';
 import { renderDashboard, showAvailableDashboards, findDashboard } from './lib/dashboard/index.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 import { updateCommand } from './commands/update.js';
 import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
-import { resultsCommand } from './commands/results.js';
-import { historyCommand } from './commands/history.js';
+// results: removed in v0.7.0 (replaced by squads dash)
+// history: removed in v0.7.0 (replaced by squads exec list)
 import { healthCommand } from './commands/health.js';
-import { contextFeedCommand } from './commands/context-feed.js';
+// context-feed: removed in v0.7.0 (replaced by squads env show / squads dash)
 import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
 import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
@@ -89,9 +85,9 @@ import { applyStackConfig } from './lib/stack-config.js';
 import { registerTriggerCommand } from './commands/trigger.js';
 import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerApprovalCommand } from './commands/approval.js';
-import { registerDeployCommand } from './commands/deploy.js';
+// deploy: removed in v0.7.0 (cloud deploy not implemented yet)
 import { registerEvalCommand } from './commands/eval.js';
-import { registerOrchestrateCommand } from './commands/orchestrate.js';
+// orchestrate: removed in v0.7.0 (replaced by squads run --lead)
 import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
 import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
@@ -131,10 +127,6 @@ const friendlyArgErrors: Record<string, { message: string; example: string }> = 
   'run': {
     message: 'Specify which squad or agent to run.',
     example: 'squads run engineering            # run the whole squad\n  squads run engineering/code-review  # run a specific agent',
-  },
-  'orchestrate': {
-    message: 'Specify which squad to orchestrate.',
-    example: 'squads orchestrate intelligence',
   },
   'eval': {
     message: 'Specify which squad or agent to evaluate.',
@@ -307,9 +299,6 @@ program
   .option('-j, --json', 'Output as JSON')
   .action(listCommand);
 
-// Orchestrate command - lead-coordinated squad execution
-registerOrchestrateCommand(program);
-
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
   .command('env')
@@ -418,17 +407,7 @@ program
   .option('-j, --json', 'Output as JSON')
   .action(statusCommand);
 
-// Context command - business context for alignment
-program
-  .command('context')
-  .alias('feed')
-  .description('Get business context for alignment: goals, memory, costs, activity')
-  .option('-s, --squad <squad>', 'Focus on specific squad')
-  .option('-t, --topic <topic>', 'Search memory for relevant context')
-  .option('-a, --agent', 'Output JSON for agent consumption')
-  .option('-j, --json', 'Output as JSON (alias for --agent)')
-  .option('-v, --verbose', 'Show additional details')
-  .action((options) => contextFeedCommand(options));
+// context/feed command removed in v0.7.0 — use squads env show or squads dash
 
 // Cost command - cost introspection for self-improvement
 program
@@ -453,23 +432,7 @@ program
   .option('-v, --verbose', 'Show optional services')
   .action((options) => healthCommand(options));
 
-// History command - show recent agent executions
-program
-  .command('history')
-  .description('Show recent agent execution history')
-  .option('-d, --days <days>', 'Days to look back', '7')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-v, --verbose', 'Show cost and token details')
-  .option('-j, --json', 'Output as JSON')
-  .action((options) => historyCommand(options));
-
-// Results command - KPI goals vs actuals
-program
-  .command('results [squad]')
-  .description('Show squad results: git activity + KPI goals vs actuals')
-  .option('-d, --days <days>', 'Days to look back', '7')
-  .option('-v, --verbose', 'Show detailed KPIs per goal')
-  .action((squad, options) => resultsCommand({ ...options, squad }));
+// history + results commands removed in v0.7.0 — use squads exec list / squads dash
 
 // ─── Track (objectives + metrics) ────────────────────────────────────────────
 
@@ -591,14 +554,7 @@ feedback
   .description('Show feedback summary across all squads')
   .action(feedbackStatsCommand);
 
-// Autonomy command - show autonomous operation readiness
-program
-  .command('autonomy')
-  .description('Show autonomy score and confidence metrics')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-p, --period <period>', 'Time period: today, week, month', 'today')
-  .option('-j, --json', 'Output as JSON')
-  .action((options) => autonomyCommand({ squad: options.squad, period: options.period, json: options.json }));
+// autonomy command removed in v0.7.0 — use squads eval
 
 // ─── Learn (memory + knowledge) ─────────────────────────────────────────────
 
@@ -683,33 +639,7 @@ memory
     dryRun: opts.dryRun
   }));
 
-// Learn command - capture learnings for autonomous improvement
-program
-  .command('learn <insight>')
-  .description('Capture a learning for future sessions')
-  .option('-s, --squad <squad>', 'Squad to associate learning with')
-  .option('-c, --category <category>', 'Category: success, failure, pattern, tip')
-  .option('-t, --tags <tags>', 'Comma-separated tags')
-  .option('--context <context>', 'Additional context')
-  .action(learnCommand);
-
-const learn = program
-  .command('learnings')
-  .description('View and search learnings');
-
-learn
-  .command('show <squad>')
-  .description('Show learnings for a squad')
-  .option('-n, --limit <n>', 'Number to show', '10')
-  .option('-c, --category <category>', 'Filter by category')
-  .option('--tag <tag>', 'Filter by tag')
-  .action(learnShowCommand);
-
-learn
-  .command('search <query>')
-  .description('Search learnings across all squads')
-  .option('-n, --limit <n>', 'Max results', '10')
-  .action(learnSearchCommand);
+// learn + learnings commands removed in v0.7.0 — use squads memory write / squads memory read
 
 // Sync command (also available as `memory sync`)
 program
@@ -841,9 +771,6 @@ program
 // Eval command - agent readiness scoring
 registerEvalCommand(program);
 
-// Deploy command group - push agents to platform
-registerDeployCommand(program);
-
 // Providers command - show LLM CLI availability for multi-LLM support
 program
   .command('providers')
@@ -884,6 +811,17 @@ program.command('issues', { hidden: true }).description('[removed]').action(remo
 program.command('solve-issues', { hidden: true }).description('[removed]').action(removedCommand('solve-issues', 'Issue solving is agent behavior. Use: squads run engineering/issues-solver'));
 program.command('open-issues', { hidden: true }).description('[removed]').action(removedCommand('open-issues', 'Evaluators are agents. Use: squads run <squad>/<evaluator>'));
 program.command('workers', { hidden: true }).description('[removed]').action(removedCommand('workers', 'Use: squads sessions'));
+
+// Removed in v0.7.0
+program.command('orchestrate', { hidden: true }).description('[removed]').action(removedCommand('orchestrate', 'Use: squads run <squad> --lead'));
+program.command('results', { hidden: true }).description('[removed]').action(removedCommand('results', 'Use: squads dash'));
+program.command('history', { hidden: true }).description('[removed]').action(removedCommand('history', 'Use: squads exec list'));
+program.command('learn', { hidden: true }).description('[removed]').action(removedCommand('learn', 'Use: squads memory write <squad> "insight"'));
+program.command('learnings', { hidden: true }).description('[removed]').action(removedCommand('learnings', 'Use: squads memory read <squad>'));
+program.command('autonomy', { hidden: true }).description('[removed]').action(removedCommand('autonomy', 'Use: squads eval <squad>'));
+program.command('context', { hidden: true }).description('[removed]').action(removedCommand('context', 'Use: squads env show <squad> or squads dash'));
+program.command('feed', { hidden: true }).description('[removed]').action(removedCommand('feed', 'Use: squads env show <squad> or squads dash'));
+program.command('deploy', { hidden: true }).description('[removed]').action(removedCommand('deploy', 'Cloud deployment not yet available. Coming soon.'));
 
 // ─── Error handling ──────────────────────────────────────────────────────────
 

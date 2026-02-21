@@ -335,7 +335,7 @@ export const Events = {
   CLI_FEEDBACK_SHOW: 'cli.feedback.show',
   CLI_FEEDBACK_STATS: 'cli.feedback.stats',
 
-  // Learnings
+  // Learnings (deprecated in v0.7.0 — use memory write/read instead)
   CLI_LEARN: 'cli.learn',
   CLI_LEARN_SHOW: 'cli.learn.show',
   CLI_LEARN_SEARCH: 'cli.learn.search',
