@@ -4,7 +4,7 @@
   "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
   "type": "module",
   "bin": {
-    "squads": "./dist/cli.js"
+    "squads": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
