@@ -20,6 +20,7 @@ import {
 } from '../lib/permissions.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
+import { parseCooldown } from '../lib/cron.js';
 import {
   colors,
   bold,
@@ -34,6 +35,26 @@ import {
 } from '../lib/llm-clis.js';
 import { detectProviderFromModel } from '../lib/providers.js';
 import { homedir } from 'os';
+
+// ── Operational constants (no magic numbers) ──────────────────────────
+const DEFAULT_BRIDGE_URL = 'http://localhost:8088';
+const DEFAULT_LEARNINGS_LIMIT = 5;
+const DEFAULT_CONTEXT_TOKENS = 8000;
+const DEFAULT_FALLBACK_CHARS = 2000;
+const MAX_AGENT_BRIEFS = 3;
+const MAX_SQUAD_BRIEFS = 2;
+const MAX_LEARNINGS_CHARS = 1500;
+const MAX_LEAD_STATE_CHARS = 1000;
+const EXECUTION_EVENT_TIMEOUT_MS = 5000;
+const VERIFICATION_STATE_MAX_CHARS = 2000;
+const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
+const DRYRUN_DEF_MAX_CHARS = 500;
+const DRYRUN_CONTEXT_MAX_CHARS = 800;
+const DEFAULT_SCHEDULED_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
+const DEFAULT_TIMEOUT_MINUTES = 30;
+const SOFT_DEADLINE_RATIO = 0.7;
+const LOG_FILE_INIT_DELAY_MS = 500;
+const VERBOSE_COMMAND_MAX_CHARS = 50;
 
 interface RunOptions {
   verbose?: boolean;
@@ -72,7 +93,7 @@ interface ExecutionContext {
  * This allows the bridge to tag incoming OTel data with correct squad/agent info
  */
 async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
 
   try {
     const response = await fetch(`${bridgeUrl}/api/context/register`, {
@@ -113,7 +134,7 @@ interface PreflightResult {
 }
 
 async function checkPreflightGates(squad: string, agent: string): Promise<PreflightResult> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
 
   try {
     const response = await fetch(`${bridgeUrl}/api/execution/preflight`, {
@@ -144,8 +165,8 @@ interface Learning {
   created_at: string;
 }
 
-async function fetchLearnings(squad: string, limit = 5): Promise<Learning[]> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): Promise<Learning[]> {
+  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
 
   try {
     const response = await fetch(
@@ -199,7 +220,7 @@ function gatherSquadContext(
   if (!squadsDir) return '';
 
   const memoryDir = findMemoryDir();
-  const maxTokens = options.maxTokens || 8000; // ~8k tokens of context by default
+  const maxTokens = options.maxTokens || DEFAULT_CONTEXT_TOKENS;
   const sections: string[] = [];
   let estimatedTokens = 0;
 
@@ -225,7 +246,7 @@ function gatherSquadContext(
 
       // If no structured sections found, include first 2000 chars
       if (!squadContext && squadContent.length > 0) {
-        squadContext = squadContent.substring(0, 2000);
+        squadContext = squadContent.substring(0, DEFAULT_FALLBACK_CHARS);
       }
 
       if (squadContext) {
@@ -265,7 +286,7 @@ function gatherSquadContext(
       try {
         const briefFiles = readdirSync(briefsDir)
           .filter(f => f.endsWith('.md'))
-          .slice(0, 3); // Max 3 briefs
+          .slice(0, MAX_AGENT_BRIEFS);
 
         for (const briefFile of briefFiles) {
           const briefPath = join(briefsDir, briefFile);
@@ -292,7 +313,7 @@ function gatherSquadContext(
       try {
         const squadBriefs = readdirSync(squadBriefsDir)
           .filter(f => f.endsWith('.md'))
-          .slice(0, 2); // Max 2 squad briefs
+          .slice(0, MAX_SQUAD_BRIEFS);
 
         for (const briefFile of squadBriefs) {
           const briefPath = join(squadBriefsDir, briefFile);
@@ -342,8 +363,8 @@ function gatherSquadContext(
           try {
             let learningsContent = readFileSync(learningsPath, 'utf-8');
             if (learningsContent.trim()) {
-              if (learningsContent.length > 1500) {
-                learningsContent = learningsContent.slice(0, 1500) + '\n...(truncated)';
+              if (learningsContent.length > MAX_LEARNINGS_CHARS) {
+                learningsContent = learningsContent.slice(0, MAX_LEARNINGS_CHARS) + '\n...(truncated)';
               }
               const tokens = estimateTokens(learningsContent);
               if (estimatedTokens + tokens < maxTokens) {
@@ -362,8 +383,8 @@ function gatherSquadContext(
           try {
             let leadState = readFileSync(leadStatePath, 'utf-8');
             if (leadState.trim()) {
-              if (leadState.length > 1000) {
-                leadState = leadState.slice(0, 1000) + '\n...(truncated)';
+              if (leadState.length > MAX_LEAD_STATE_CHARS) {
+                leadState = leadState.slice(0, MAX_LEAD_STATE_CHARS) + '\n...(truncated)';
               }
               const tokens = estimateTokens(leadState);
               if (estimatedTokens + tokens < maxTokens) {
@@ -827,6 +848,7 @@ interface AgentFrontmatter {
   context_from?: string[];
   acceptance_criteria?: string;
   max_retries?: number;
+  cooldown?: string;
 }
 
 function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
@@ -871,6 +893,12 @@ function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
     result.max_retries = parseInt(retriesMatch[1], 10);
   }
 
+  // cooldown: "30m" or "6h" or "2 hours"
+  const cooldownMatch = yaml.match(/cooldown:\s*["']?([^"'\n]+)["']?/);
+  if (cooldownMatch) {
+    result.cooldown = cooldownMatch[1].trim();
+  }
+
   return result;
 }
 
@@ -899,7 +927,7 @@ async function emitExecutionEvent(
             ...(data.error ? { error: data.error } : {}),
           },
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(EXECUTION_EVENT_TIMEOUT_MS),
       });
       return;
     } catch {
@@ -950,7 +978,7 @@ async function verifyExecution(
   if (memDir) {
     const statePath = join(memDir, squadName, agentName, 'state.md');
     if (existsSync(statePath)) {
-      stateContent = readFileSync(statePath, 'utf-8').slice(0, 2000);
+      stateContent = readFileSync(statePath, 'utf-8').slice(0, VERIFICATION_STATE_MAX_CHARS);
     }
   }
 
@@ -990,7 +1018,7 @@ FAIL: <brief reason>`;
     const escapedPrompt = verifyPrompt.replace(/'/g, "'\\''");
     const result = execSync(
       `claude --print --model haiku -- '${escapedPrompt}'`,
-      { encoding: 'utf-8', cwd: projectRoot, timeout: 30000 }
+      { encoding: 'utf-8', cwd: projectRoot, timeout: VERIFICATION_EXEC_TIMEOUT_MS }
     ).trim();
 
     if (options.verbose) {
@@ -1259,7 +1287,7 @@ async function runLeadMode(
   }
 
   // Build the lead prompt
-  const timeoutMins = options.timeout || 30;
+  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
   const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
 
@@ -1399,7 +1427,7 @@ async function runAgent(
     const dryRunContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
-      writeLine(`  ${colors.dim}${definition.slice(0, 500)}...${RESET}`);
+      writeLine(`  ${colors.dim}${definition.slice(0, DRYRUN_DEF_MAX_CHARS)}...${RESET}`);
       if (learnings.length > 0) {
         writeLine(`  ${colors.dim}Learnings: ${learnings.length} from bridge${RESET}`);
       }
@@ -1407,7 +1435,7 @@ async function runAgent(
         const fullContext = `${dryRunContext}${learningContext}`;
         writeLine();
         writeLine(`  ${colors.cyan}Context to inject (${Math.ceil(fullContext.length / 4)} tokens):${RESET}`);
-        writeLine(`  ${colors.dim}${fullContext.slice(0, 800)}...${RESET}`);
+        writeLine(`  ${colors.dim}${fullContext.slice(0, DRYRUN_CONTEXT_MAX_CHARS)}...${RESET}`);
       }
     }
     return;
@@ -1479,9 +1507,12 @@ async function runAgent(
   const isScheduledRun = options.trigger === 'scheduled' || options.trigger === 'smart';
   const bridgeHasNoHistory = preflight.gates.cooldown?.elapsed_sec === null;
   if (isScheduledRun && (!preflight.gates.cooldown || bridgeHasNoHistory)) {
-    // Default cooldown: 6 hours for scheduled runs
-    const defaultCooldownMs = 6 * 60 * 60 * 1000;
-    const localCooldown = checkLocalCooldown(squadName, agentName, defaultCooldownMs);
+    // Read cooldown from agent frontmatter, fall back to default
+    const frontmatterForCooldown = parseAgentFrontmatter(agentPath);
+    const cooldownMs = frontmatterForCooldown.cooldown
+      ? (parseCooldown(frontmatterForCooldown.cooldown) || DEFAULT_SCHEDULED_COOLDOWN_MS)
+      : DEFAULT_SCHEDULED_COOLDOWN_MS;
+    const localCooldown = checkLocalCooldown(squadName, agentName, cooldownMs);
 
     if (!localCooldown.ok) {
       spinner.stop();
@@ -1522,7 +1553,7 @@ async function runAgent(
   const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
 
   // Generate the Claude Code prompt with timeout awareness
-  const timeoutMins = options.timeout || 30;
+  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
 
 Read the agent definition at ${agentPath} and follow its instructions exactly.
@@ -1543,7 +1574,7 @@ ${squadContext}${learningContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
-- Aim to complete within ${Math.floor(timeoutMins * 0.7)} minutes
+- Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes
 
 After completion:
 
@@ -1964,7 +1995,7 @@ async function executeWithClaude(
       SQUADS_TASK_TYPE: execContext.taskType,
       SQUADS_TRIGGER: execContext.trigger,
       SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
       OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
       ...(effort ? { CLAUDE_EFFORT: effort } : {}),
       ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
@@ -2055,7 +2086,7 @@ async function executeWithClaude(
       SQUADS_TASK_TYPE: execContext.taskType,
       SQUADS_TRIGGER: execContext.trigger,
       SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
     };
 
     const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
@@ -2074,7 +2105,7 @@ async function executeWithClaude(
     child.unref();
 
     // Wait a moment for the log file to be created
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
 
     // Tail the log file
     writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
@@ -2144,7 +2175,7 @@ async function executeWithClaude(
     SQUADS_TASK_TYPE: execContext.taskType,
     SQUADS_TRIGGER: execContext.trigger,
     SQUADS_EXECUTION_ID: execContext.executionId,
-    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088',
+    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
     OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
     ...(effort ? { CLAUDE_EFFORT: effort } : {}),
     ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
@@ -2238,7 +2269,7 @@ async function executeWithProvider(
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
-    writeLine(`  ${colors.dim}Command: ${cliConfig.command} ${args.join(' ').slice(0, 50)}...${RESET}`);
+    writeLine(`  ${colors.dim}Command: ${cliConfig.command} ${args.join(' ').slice(0, VERBOSE_COMMAND_MAX_CHARS)}...${RESET}`);
     writeLine(`  ${colors.dim}CWD: ${workDir}${RESET}`);
     if (workDir !== projectRoot) {
       writeLine(`  ${colors.dim}Worktree: ${branchName}${RESET}`);
