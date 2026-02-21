@@ -288,7 +288,8 @@ async function cancelApproval(approvalId: string): Promise<void> {
 export function registerApprovalCommand(program: Command): void {
   const approval = program
     .command("approval")
-    .description("Manage approval requests for agent actions");
+    .description("Manage approval requests for agent actions")
+    .action(() => { approval.outputHelp(); });
 
   approval
     .command("send <type>")

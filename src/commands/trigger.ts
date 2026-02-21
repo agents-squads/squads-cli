@@ -228,7 +228,8 @@ async function showStatus(): Promise<void> {
 export function registerTriggerCommand(program: Command): void {
   const trigger = program
     .command("trigger")
-    .description("Manage smart triggers");
+    .description("Manage smart triggers")
+    .action(() => { trigger.outputHelp(); });
 
   trigger
     .command("list [squad]")
