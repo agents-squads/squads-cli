@@ -70,20 +70,23 @@
     "dotenv": "^17.2.3",
     "gray-matter": "^4.0.3",
     "inquirer": "^9.2.12",
-    "minimatch": "^10.1.1",
+    "minimatch": "^10.2.1",
     "open": "^11.0.0",
     "ora": "^8.0.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.2",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.19.27",
-    "@typescript-eslint/eslint-plugin": "^8.51.0",
-    "@typescript-eslint/parser": "^8.51.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
     "@vitest/coverage-v8": "^4.0.18",
-    "eslint": "^9.39.2",
+    "eslint": "^10.0.1",
     "tsup": "^8.0.1",
     "typescript": "^5.3.0",
-    "typescript-eslint": "^8.51.0",
+    "typescript-eslint": "^8.56.0",
     "vitest": "^4.0.16"
+  },
+  "overrides": {
+    "minimatch": "^10.2.1"
   }
 }

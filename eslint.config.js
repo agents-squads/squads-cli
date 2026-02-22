@@ -15,6 +15,9 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'off',
       'no-console': 'off',
       'no-control-regex': 'off',
+      // Disabled: new rules from eslint 10 upgrade — address in separate PR
+      'no-useless-assignment': 'off',
+      'preserve-caught-error': 'off',
     },
   }
 );
