@@ -634,6 +634,99 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   return stats;
 }
 
+export interface MilestoneInfo {
+  repo: string;
+  title: string;
+  openIssues: number;
+  closedIssues: number;
+  totalIssues: number;
+  percent: number;
+  dueOn: string | null;
+}
+
+export interface OpenPR {
+  repo: string;
+  number: number;
+  title: string;
+  base: string;
+}
+
+export interface OperationalStatus {
+  milestones: MilestoneInfo[];
+  openPRs: OpenPR[];
+  error: string | null;
+}
+
+/**
+ * Fetch operational status: milestones + open PRs across repos.
+ * Repos are discovered from squad definitions (SQUAD.md `repo` field).
+ * Uses gh CLI — gracefully returns empty if gh is unavailable.
+ *
+ * @param repos - Array of "owner/repo" strings (e.g., ["agents-squads/squads-cli"])
+ */
+export function fetchOperationalStatus(repos: string[]): OperationalStatus {
+  const result: OperationalStatus = { milestones: [], openPRs: [], error: null };
+
+  if (repos.length === 0) {
+    return result;
+  }
+
+  try {
+    execSync('gh auth status 2>/dev/null', { stdio: 'pipe', timeout: 3000 });
+  } catch {
+    result.error = 'gh not authenticated';
+    return result;
+  }
+
+  for (const fullRepo of repos) {
+    const repoShort = fullRepo.split('/').pop() || fullRepo;
+
+    // Fetch milestones
+    try {
+      const msOutput = execSync(
+        `gh api "repos/${fullRepo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
+      ).trim();
+
+      for (const line of msOutput.split('\n').filter(l => l.trim())) {
+        const [title, open, closed, dueOn] = line.split('\t');
+        const openIssues = parseInt(open) || 0;
+        const closedIssues = parseInt(closed) || 0;
+        const totalIssues = openIssues + closedIssues;
+        result.milestones.push({
+          repo: repoShort,
+          title,
+          openIssues,
+          closedIssues,
+          totalIssues,
+          percent: totalIssues > 0 ? Math.floor((closedIssues / totalIssues) * 100) : 0,
+          dueOn: dueOn && dueOn !== 'null' ? dueOn : null,
+        });
+      }
+    } catch { /* skip repo */ }
+
+    // Fetch open PRs (try develop first, then main)
+    try {
+      const prOutput = execSync(
+        `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
+      ).trim();
+
+      for (const line of prOutput.split('\n').filter(l => l.trim())) {
+        const [num, base, ...titleParts] = line.split('\t');
+        result.openPRs.push({
+          repo: repoShort,
+          number: parseInt(num) || 0,
+          title: titleParts.join('\t'),
+          base,
+        });
+      }
+    } catch { /* skip repo */ }
+  }
+
+  return result;
+}
+
 // Get recent activity sparkline data (last 7 days)
 export async function getActivitySparkline(basePath: string, days: number = 7): Promise<number[]> {
   const activity: number[] = [];
