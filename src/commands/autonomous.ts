@@ -22,6 +22,7 @@ import {
   readdirSync,
   mkdirSync,
   appendFileSync,
+  openSync,
 } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -441,8 +442,10 @@ async function startScheduler(): Promise<void> {
     return;
   }
 
-  // Check if we're being invoked as the daemon itself (--daemon flag)
-  if (process.argv.includes("--daemon")) {
+  // Check if we're being invoked as the daemon itself (via env var).
+  // Using an env var instead of a --daemon CLI flag avoids Commander.js
+  // rejecting the unknown option and silently killing the child process.
+  if (process.env.SQUADS_DAEMON === "1") {
     // We ARE the daemon — run the loop
     writeFileSync(PID_FILE, process.pid.toString());
     await daemonLoop();
@@ -453,26 +456,33 @@ async function startScheduler(): Promise<void> {
   }
 
   // Spawn a detached daemon process
+  // Redirect child stdout/stderr to daemon log for diagnosability
+  if (!existsSync(DAEMON_LOG)) {
+    writeFileSync(DAEMON_LOG, "");
+  }
+  const logFd = openSync(DAEMON_LOG, "a");
+
   const child = spawn(
     process.execPath, // node
-    [process.argv[1], "autonomous", "start", "--daemon"],
+    [process.argv[1], "autonomous", "start"],
     {
       cwd: process.cwd(),
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env },
+      stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, SQUADS_DAEMON: "1" },
     }
   );
   child.unref();
 
-  // Wait briefly for PID file to appear
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Wait for PID file to appear (2s for slower systems)
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 
   const check = isRunning();
   if (check.running) {
     console.log(chalk.green(`\n  Daemon started (PID ${check.pid})`));
   } else {
-    console.log(chalk.green("\n  Daemon starting..."));
+    console.log(chalk.red("\n  Daemon failed to start. Check log:"));
+    console.log(chalk.gray(`  $ tail -20 ${DAEMON_LOG}`));
   }
 
   console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
