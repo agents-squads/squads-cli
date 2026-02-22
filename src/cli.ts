@@ -6,7 +6,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { version } from './version.js';
 import { autoUpdateOnStartup } from './lib/update.js';
-import { colors as termColors, RESET as termReset, bold as termBold } from './lib/terminal.js';
+import { colors as termColors, RESET as termReset, bold as termBold, writeLine } from './lib/terminal.js';
 
 // Disable colors when output is piped (not a TTY)
 // This ensures piped output is clean for parsing
@@ -234,16 +234,16 @@ program
     const { gradient, colors, RESET } = await import('./lib/terminal.js');
     const { checkForUpdate } = await import('./lib/update.js');
 
-    console.log();
-    console.log(`  ${gradient('squads')} ${colors.dim}v${version}${RESET}`);
-    console.log();
+    writeLine();
+    writeLine(`  ${gradient('squads')} ${colors.dim}v${version}${RESET}`);
+    writeLine();
 
     // Check for updates
     const updateInfo = checkForUpdate();
     if (updateInfo.updateAvailable) {
-      console.log(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET}`);
-      console.log(`  ${colors.dim}Run \`squads update\` to install${RESET}`);
-      console.log();
+      writeLine(`  ${colors.cyan}⬆${RESET} Update available: ${colors.dim}${updateInfo.currentVersion}${RESET} → ${colors.green}${updateInfo.latestVersion}${RESET}`);
+      writeLine(`  ${colors.dim}Run \`squads update\` to install${RESET}`);
+      writeLine();
     }
 
     // Run status command to show all squads (includes quick commands)
@@ -403,7 +403,7 @@ program
         return;
       }
       // Fall through to default dashboard with a warning
-      console.log(`  Dashboard "${name}" not found. Showing default dashboard.\n`);
+      writeLine(`  Dashboard "${name}" not found. Showing default dashboard.\n`);
     }
 
     // Default: show the comprehensive dashboard
@@ -864,7 +864,7 @@ program
   .command('version')
   .description('Show version information')
   .action(() => {
-    console.log(`squads-cli ${version}`);
+    writeLine(`squads-cli ${version}`);
   });
 
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──

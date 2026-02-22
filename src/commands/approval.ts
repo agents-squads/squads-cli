@@ -10,6 +10,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { writeLine } from "../lib/terminal.js";
 
 const API_URL =
   process.env.SQUADS_API_URL ||
@@ -124,13 +125,13 @@ async function sendApproval(
       approval_id: string;
     };
 
-    console.log(chalk.green(`\nApproval sent: ${result.approval_id}`));
-    console.log(chalk.dim(`  Expires: ${expiresAt.toISOString()}`));
-    console.log();
+    writeLine(chalk.green(`\nApproval sent: ${result.approval_id}`));
+    writeLine(chalk.dim(`  Expires: ${expiresAt.toISOString()}`));
+    writeLine();
 
     // Output for agent consumption
     if (process.env.SQUADS_AGENT) {
-      console.log(`APPROVAL_ID=${approvalId}`);
+      writeLine(`APPROVAL_ID=${approvalId}`);
     }
   } catch (error) {
     console.error(chalk.red(`Failed to send approval: ${error}`));
@@ -162,11 +163,11 @@ async function listApprovals(options: {
     }
 
     if (approvals.length === 0) {
-      console.log(chalk.gray("\nNo pending approvals\n"));
+      writeLine(chalk.gray("\nNo pending approvals\n"));
       return;
     }
 
-    console.log(chalk.bold("\nPending Approvals\n"));
+    writeLine(chalk.bold("\nPending Approvals\n"));
 
     for (const a of approvals) {
       const typeColors: Record<ApprovalType, typeof chalk.green> = {
@@ -178,15 +179,15 @@ async function listApprovals(options: {
       };
       const color = typeColors[a.type] || chalk.white;
 
-      console.log(
+      writeLine(
         `  ${color(`[${a.type}]`)} ${chalk.bold(a.title)} ${chalk.dim(`(${a.approval_id})`)}`
       );
-      console.log(
+      writeLine(
         chalk.dim(
           `    Squad: ${a.squad}${a.agent ? "/" + a.agent : ""} | Created: ${new Date(a.created_at).toLocaleString()}`
         )
       );
-      console.log();
+      writeLine();
     }
   } catch (error) {
     console.error(chalk.red(`Failed to list approvals: ${error}`));
@@ -233,13 +234,13 @@ async function checkApproval(
     };
     const color = statusColors[approval.status] || chalk.white;
 
-    console.log(`\nApproval: ${approvalId}`);
-    console.log(`  Status: ${color(approval.status)}`);
+    writeLine(`\nApproval: ${approvalId}`);
+    writeLine(`  Status: ${color(approval.status)}`);
     if (approval.decided_by) {
-      console.log(`  Decided by: ${approval.decided_by}`);
-      console.log(`  Decided at: ${approval.decided_at}`);
+      writeLine(`  Decided by: ${approval.decided_by}`);
+      writeLine(`  Decided at: ${approval.decided_at}`);
     }
-    console.log();
+    writeLine();
 
     // Exit with appropriate code
     if (approval.status === "approved") {
@@ -254,7 +255,7 @@ async function checkApproval(
   }
 
   // Wait mode
-  console.log(chalk.dim(`Waiting for decision on ${approvalId}...`));
+  writeLine(chalk.dim(`Waiting for decision on ${approvalId}...`));
 
   while (Date.now() - startTime < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 5000)); // Poll every 5s
@@ -268,9 +269,9 @@ async function checkApproval(
     if (updated.status !== "pending") {
       const color =
         updated.status === "approved" ? chalk.green : chalk.red;
-      console.log(color(`\nDecision: ${updated.status}`));
+      writeLine(color(`\nDecision: ${updated.status}`));
       if (updated.decided_by) {
-        console.log(chalk.dim(`  By: ${updated.decided_by}`));
+        writeLine(chalk.dim(`  By: ${updated.decided_by}`));
       }
       process.exit(updated.status === "approved" ? 0 : 1);
     }
@@ -281,7 +282,7 @@ async function checkApproval(
 }
 
 async function cancelApproval(approvalId: string): Promise<void> {
-  console.log(chalk.yellow(`Cancel not yet implemented for: ${approvalId}`));
+  writeLine(chalk.yellow(`Cancel not yet implemented for: ${approvalId}`));
   // TODO: Implement cancel endpoint
 }
 

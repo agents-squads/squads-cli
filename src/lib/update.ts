@@ -8,7 +8,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { colors as termColors, RESET as termReset } from './terminal.js';
+import { colors as termColors, RESET as termReset, writeLine } from './terminal.js';
 
 // Get current version from package.json
 function getPackageVersion(): string {
@@ -306,7 +306,7 @@ export async function autoUpdateOnStartup(silent = false): Promise<void> {
         child.on('close', (code) => {
           if (code === 0) {
             // Success - show Gemini-style message
-            console.log(`\n  ${termColors.green}✓${termReset} Update successful! v${info.latestVersion} will be used on your next run.\n`);
+            writeLine(`\n  ${termColors.green}✓${termReset} Update successful! v${info.latestVersion} will be used on your next run.\n`);
             writeAutoUpdateCache({ lastAttempt: now, lastSuccess: now });
             // Clear version cache so next startup detects new version
             try { unlinkSync(CACHE_FILE); } catch { /* ignore */ }

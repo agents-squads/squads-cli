@@ -57,7 +57,6 @@ export async function listSkills(): Promise<Skill[]> {
     // Note: The actual Skills API may have a different endpoint
     // This is a placeholder until we have the exact API spec
     // Real implementation will use: anthropic.beta.skills.list({ betas: [SKILLS_BETA] })
-    console.warn('Skills API: Using placeholder implementation. Actual API may differ.');
     return [];
   } catch (error) {
     if (error instanceof Error && error.message.includes('404')) {
@@ -181,10 +180,6 @@ export async function uploadSkill(skillPath: string): Promise<Skill> {
   try {
     // Note: This is a placeholder for the actual Skills API endpoint
     // The real implementation will use the correct beta endpoint
-    console.log(`Uploading skill: ${displayTitle}`);
-    console.log(`Files: ${files.map(f => f.name).join(', ')}`);
-    console.log(`Total size: ${(totalSize / 1024).toFixed(2)}KB`);
-
     // Placeholder response until we have actual API spec
     const skill: Skill = {
       id: `skill_${Date.now()}`,
@@ -195,7 +190,6 @@ export async function uploadSkill(skillPath: string): Promise<Skill> {
       files
     };
 
-    console.warn('Skills API: Using placeholder implementation. Skill not actually uploaded.');
     return skill;
   } catch (error) {
     throw new Error(`Failed to upload skill: ${error instanceof Error ? error.message : String(error)}`);
@@ -211,8 +205,7 @@ export async function deleteSkill(skillId: string): Promise<void> {
 
   try {
     // Placeholder until we have actual API spec
-    console.log(`Deleting skill: ${skillId}`);
-    console.warn('Skills API: Using placeholder implementation. Skill not actually deleted.');
+    // No-op: Skills API not yet available
   } catch (error) {
     throw new Error(`Failed to delete skill: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -227,8 +220,6 @@ export async function getSkill(skillId: string): Promise<Skill | null> {
 
   try {
     // Placeholder until we have actual API spec
-    console.log(`Getting skill: ${skillId}`);
-    console.warn('Skills API: Using placeholder implementation.');
     return null;
   } catch (error) {
     if (error instanceof Error && error.message.includes('404')) {
