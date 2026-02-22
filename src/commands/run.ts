@@ -1178,6 +1178,7 @@ async function runSquad(
     writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
     writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
     writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
+    writeLine(`  ${colors.dim}Metrics: squads dash${RESET}`);
     writeLine();
     return;
   }
@@ -1385,6 +1386,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     if (isForeground || isWatch) {
       writeLine();
       writeLine(`  ${icons.success} Lead session completed`);
+      writeLine(`  ${colors.dim}View metrics:${RESET} squads dash`);
     } else {
       writeLine(`  ${icons.success} Lead session launched in background`);
       writeLine(`  ${colors.dim}${result}${RESET}`);
@@ -1394,7 +1396,8 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
       writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
       writeLine();
-      writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+      writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+      writeLine(`  ${colors.dim}Metrics:${RESET} squads dash`);
     }
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
@@ -1719,12 +1722,14 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
 
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
+          writeLine(`  ${colors.dim}View metrics:${RESET} squads dash`);
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
           writeLine(`  ${colors.dim}${result}${RESET}`);
           writeLine();
           writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
           writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
+          writeLine(`  ${colors.dim}Metrics:${RESET} squads dash`);
         }
         break; // Success — exit retry loop
       } catch (error) {
