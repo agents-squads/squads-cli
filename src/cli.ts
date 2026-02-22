@@ -47,43 +47,23 @@ import { initCommand } from './commands/init.js';
 import { runCommand } from './commands/run.js';
 import { listCommand } from './commands/list.js';
 import { statusCommand } from './commands/status.js';
-import {
-  memoryQueryCommand,
-  memoryShowCommand,
-  memoryUpdateCommand,
-  memoryListCommand,
-  memorySearchCommand,
-  memoryExtractCommand
-} from './commands/memory.js';
+import { registerMemoryCommand } from './commands/memory.js';
 import { syncCommand } from './commands/sync.js';
 import { autonomyCommand } from './commands/autonomy.js';
-import {
-  goalSetCommand,
-  goalListCommand,
-  goalCompleteCommand,
-  goalProgressCommand
-} from './commands/goal.js';
-import {
-  feedbackAddCommand,
-  feedbackShowCommand,
-  feedbackStatsCommand
-} from './commands/feedback.js';
-import {
-  learnCommand,
-  learnShowCommand,
-  learnSearchCommand
-} from './commands/learn.js';
+import { registerGoalCommand } from './commands/goal.js';
+import { registerFeedbackCommand } from './commands/feedback.js';
+import { learnCommand, registerLearnCommand } from './commands/learn.js';
 import { dashboardCommand } from './commands/dashboard.js';
 import { renderDashboard, showAvailableDashboards, findDashboard } from './lib/dashboard/index.js';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login.js';
 import { updateCommand } from './commands/update.js';
-import { progressCommand, progressStartCommand, progressCompleteCommand } from './commands/progress.js';
+import { registerProgressCommand } from './commands/progress.js';
 import { resultsCommand } from './commands/results.js';
 import { historyCommand } from './commands/history.js';
 import { healthCommand } from './commands/health.js';
 import { contextFeedCommand } from './commands/context-feed.js';
-import { sessionsCommand, sessionsHistoryCommand, sessionsSummaryCommand, SessionSummaryData } from './commands/sessions.js';
-import { sessionStartCommand, sessionStopCommand, sessionHeartbeatCommand, detectSquadCommand } from './commands/session.js';
+import { registerSessionsCommand } from './commands/sessions.js';
+import { detectSquadCommand, registerSessionCommand } from './commands/session.js';
 import { registerExitHandler } from './lib/telemetry.js';
 import { applyStackConfig } from './lib/stack-config.js';
 import { registerTriggerCommand } from './commands/trigger.js';
@@ -92,17 +72,11 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
-import { contextShowCommand, contextListCommand, contextActivateCommand, contextPromptCommand } from './commands/context.js';
+import { registerEnvCommand } from './commands/context.js';
 import { costCommand, budgetCheckCommand } from './commands/cost.js';
-import { execListCommand, execShowCommand, execStatsCommand } from './commands/exec.js';
+import { registerExecCommand } from './commands/exec.js';
 import { providersCommand } from './commands/providers.js';
-import {
-  kpiShowCommand,
-  kpiRecordCommand,
-  kpiTrendCommand,
-  kpiInsightsCommand,
-  kpiListCommand,
-} from './commands/kpi.js';
+import { registerKpiCommand } from './commands/kpi.js';
 
 // Load stack config from ~/.squadsrc (if exists)
 applyStackConfig();
@@ -311,67 +285,10 @@ program
 registerOrchestrateCommand(program);
 
 // Env command - squad execution environment (MCP, skills, budget, model)
-const env = program
-  .command('env')
-  .description('View squad execution environment (MCP, skills, model, budget)');
-
-env
-  .command('show <squad>')
-  .description('Show execution environment for a squad')
-  .option('--json', 'Output as JSON')
-  .action(contextShowCommand);
-
-env
-  .command('list')
-  .description('List execution environment for all squads')
-  .option('--json', 'Output as JSON')
-  .action(contextListCommand);
-
-env
-  .command('activate <squad>')
-  .description('Activate execution context for a squad (generates scoped MCP config)')
-  .option('-d, --dry-run', 'Show what would be generated without writing files')
-  .option('-f, --force', 'Force regeneration even if config exists')
-  .option('--json', 'Output as JSON')
-  .action(contextActivateCommand);
-
-env
-  .command('prompt <squad>')
-  .description('Output ready-to-use prompt for Claude Code execution')
-  .option('-a, --agent <agent>', 'Agent to execute (required)')
-  .option('--json', 'Output as JSON')
-  .action(contextPromptCommand);
+registerEnvCommand(program);
 
 // Exec command group - execution history introspection
-const exec = program
-  .command('exec')
-  .description('View execution history and statistics');
-
-exec
-  .command('list')
-  .description('List recent executions')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-a, --agent <agent>', 'Filter by agent')
-  .option('--status <status>', 'Filter by status (running, completed, failed)')
-  .option('-n, --limit <n>', 'Number of executions to show', '20')
-  .option('--json', 'Output as JSON')
-  .action((options) => execListCommand({ ...options, limit: parseInt(options.limit, 10) }));
-
-exec
-  .command('show <id>')
-  .description('Show execution details')
-  .option('--json', 'Output as JSON')
-  .action(execShowCommand);
-
-exec
-  .command('stats')
-  .description('Show execution statistics')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('--json', 'Output as JSON')
-  .action(execStatsCommand);
-
-// Default action: show list
-exec.action((options) => execListCommand(options));
+registerExecCommand(program);
 
 // ─── Understand (situational awareness) ──────────────────────────────────────
 
@@ -473,120 +390,16 @@ program
 // ─── Track (objectives + metrics) ────────────────────────────────────────────
 
 // Goal command group
-const goal = program
-  .command('goal')
-  .description('Manage squad goals')
-  .action(() => {
-    goal.outputHelp();
-  });
-
-goal
-  .command('set <squad> <description>')
-  .description('Set a goal for a squad')
-  .option('-m, --metric <metrics...>', 'Metrics to track')
-  .action(goalSetCommand);
-
-goal
-  .command('list [squad]')
-  .description('List goals for squad(s)')
-  .option('-a, --all', 'Show completed goals too')
-  .option('-j, --json', 'Output as JSON')
-  .action(goalListCommand);
-
-goal
-  .command('complete <squad> <index>')
-  .description('Mark a goal as completed')
-  .action(goalCompleteCommand);
-
-goal
-  .command('progress <squad> <index> <progress>')
-  .description('Update goal progress')
-  .action(goalProgressCommand);
+registerGoalCommand(program);
 
 // KPI command group - track squad metrics
-const kpi = program
-  .command('kpi')
-  .description('Track and analyze squad KPIs (defined in SQUAD.md frontmatter)')
-  .addHelpText('after', `
-Examples:
-  $ squads kpi list                       List all defined KPIs
-  $ squads kpi show engineering           Show KPI status for a squad
-  $ squads kpi record engineering leads_generated 15
-  $ squads kpi trend engineering leads_generated
-  $ squads kpi insights                   Show insights across all squads
-`);
-
-kpi
-  .command('list')
-  .description('List all KPIs across squads')
-  .option('-j, --json', 'Output as JSON')
-  .action(kpiListCommand);
-
-kpi
-  .command('show <squad>')
-  .description('Show KPI status for a squad')
-  .option('-j, --json', 'Output as JSON')
-  .action(kpiShowCommand);
-
-kpi
-  .command('record <squad> <kpi> <value>')
-  .description('Record a KPI value')
-  .option('-n, --note <note>', 'Add a note to the record')
-  .option('-j, --json', 'Output as JSON')
-  .action(kpiRecordCommand);
-
-kpi
-  .command('trend <squad> <kpi>')
-  .description('Show KPI trend over time')
-  .option('-p, --periods <n>', 'Number of periods to show', '7')
-  .option('-j, --json', 'Output as JSON')
-  .action(kpiTrendCommand);
-
-kpi
-  .command('insights [squad]')
-  .description('Generate insights from KPI data')
-  .option('-j, --json', 'Output as JSON')
-  .action(kpiInsightsCommand);
+registerKpiCommand(program);
 
 // Progress command - track agent task progress
-const progress = program
-  .command('progress')
-  .description('Track active and completed agent tasks')
-  .option('-v, --verbose', 'Show more activity')
-  .action(progressCommand);
-
-progress
-  .command('start <squad> <description>')
-  .description('Register a new active task')
-  .action(progressStartCommand);
-
-progress
-  .command('complete <taskId>')
-  .description('Mark a task as completed')
-  .option('-f, --failed', 'Mark as failed instead')
-  .action(progressCompleteCommand);
+registerProgressCommand(program);
 
 // Feedback command group
-const feedback = program
-  .command('feedback')
-  .description('Record and view execution feedback');
-
-feedback
-  .command('add <squad> <rating> <feedback>')
-  .description('Add feedback for last execution (rating 1-5)')
-  .option('-l, --learning <learnings...>', 'Learnings to extract')
-  .action(feedbackAddCommand);
-
-feedback
-  .command('show <squad>')
-  .description('Show feedback history')
-  .option('-n, --limit <n>', 'Number of entries to show', '5')
-  .action(feedbackShowCommand);
-
-feedback
-  .command('stats')
-  .description('Show feedback summary across all squads')
-  .action(feedbackStatsCommand);
+registerFeedbackCommand(program);
 
 // Autonomy command - show autonomous operation readiness
 program
@@ -600,85 +413,7 @@ program
 // ─── Learn (memory + knowledge) ─────────────────────────────────────────────
 
 // Memory command group
-const memory = program
-  .command('memory')
-  .description('Query and manage squad memory')
-  .addHelpText('after', `
-Examples:
-  $ squads memory read engineering      View engineering squad's memory
-  $ squads memory write research "Found: MCP adoption at 15%"
-  $ squads memory search "pricing"      Search all memory
-  $ squads memory list                  List all memory entries
-  $ squads memory sync --push           Sync and push to git
-`)
-  .action(() => {
-    memory.outputHelp();
-  });
-
-memory
-  .command('query <query>')
-  .description('Search across all squad memory')
-  .option('-s, --squad <squad>', 'Limit search to specific squad')
-  .option('-a, --agent <agent>', 'Limit search to specific agent')
-  .action(memoryQueryCommand);
-
-// read (new name) + show (alias)
-memory
-  .command('read <squad>')
-  .alias('show')
-  .description('Show memory for a squad')
-  .action(memoryShowCommand);
-
-// write (new name) + update (alias)
-memory
-  .command('write <squad> <content>')
-  .alias('update')
-  .description('Add to squad memory')
-  .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
-  .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
-  .action(memoryUpdateCommand);
-
-memory
-  .command('list')
-  .description('List all memory entries')
-  .action(memoryListCommand);
-
-memory
-  .command('sync')
-  .description('Sync memory from git: pull remote changes, process commits, optionally push to Postgres')
-  .option('-v, --verbose', 'Show detailed commit info')
-  .option('-p, --push', 'Push local memory changes to remote after sync')
-  .option('--no-pull', 'Skip pulling from remote')
-  .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
-  .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
-  .option('--learnings', 'Sync learnings.md files to Postgres')
-  .option('--auto-learn', 'Auto-generate learnings from session commits')
-  .action((options) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
-
-// search (new name) — also keep old 'search' subcommand
-memory
-  .command('search <query>')
-  .description('Search conversations stored via squads-bridge (requires bridge service)')
-  .option('-l, --limit <limit>', 'Number of results', '10')
-  .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
-  .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
-  .action((query, opts) => memorySearchCommand(query, {
-    limit: parseInt(opts.limit, 10),
-    role: opts.role,
-    importance: opts.importance
-  }));
-
-memory
-  .command('extract')
-  .description('Extract memories from recent conversations into Engram')
-  .option('-s, --session <session>', 'Extract specific session only')
-  .option('-h, --hours <hours>', 'Look back period in hours', '24')
-  .option('-d, --dry-run', 'Preview without sending to Engram')
-  .action((opts) => memoryExtractCommand({
-    session: opts.session,
-    hours: parseInt(opts.hours, 10),
-    dryRun: opts.dryRun
-  }));
+registerMemoryCommand(program);
 
 // Learn command - capture learnings for autonomous improvement
 program
@@ -690,23 +425,8 @@ program
   .option('--context <context>', 'Additional context')
   .action(learnCommand);
 
-const learn = program
-  .command('learnings')
-  .description('View and search learnings');
-
-learn
-  .command('show <squad>')
-  .description('Show learnings for a squad')
-  .option('-n, --limit <n>', 'Number to show', '10')
-  .option('-c, --category <category>', 'Filter by category')
-  .option('--tag <tag>', 'Filter by tag')
-  .action(learnShowCommand);
-
-learn
-  .command('search <query>')
-  .description('Search learnings across all squads')
-  .option('-n, --limit <n>', 'Max results', '10')
-  .action(learnSearchCommand);
+// Learnings command group
+registerLearnCommand(program);
 
 // Sync command (also available as `memory sync`)
 program
@@ -732,85 +452,10 @@ registerAutonomousCommand(program);
 // ─── System ──────────────────────────────────────────────────────────────────
 
 // Sessions command group - list active sessions and history
-const sessions = program
-  .command('sessions')
-  .description('Show active Claude Code sessions across squads')
-  .option('-v, --verbose', 'Show session details')
-  .option('-j, --json', 'Output as JSON')
-  .action(sessionsCommand);
-
-sessions
-  .command('history')
-  .description('Show session history and statistics')
-  .option('-d, --days <days>', 'Days of history to show', '7')
-  .option('-s, --squad <squad>', 'Filter by squad')
-  .option('-j, --json', 'Output as JSON')
-  .action((options) => sessionsHistoryCommand({
-    days: parseInt(options.days, 10),
-    squad: options.squad,
-    json: options.json,
-  }));
-
-sessions
-  .command('summary')
-  .description('Show pretty session summary (auto-detects current session or pass JSON)')
-  .option('-d, --data <json>', 'JSON data for summary (overrides auto-detection)')
-  .option('-f, --file <path>', 'Path to JSON file with summary data')
-  .option('-j, --json', 'Output as JSON instead of pretty format')
-  .action(async (options) => {
-    const { buildCurrentSessionSummary } = await import('./commands/sessions.js');
-    let data: SessionSummaryData;
-
-    if (options.file) {
-      // Read from file
-      const { readFileSync } = await import('fs');
-      data = JSON.parse(readFileSync(options.file, 'utf-8'));
-    } else if (options.data) {
-      // Parse from --data argument
-      data = JSON.parse(options.data);
-    } else if (!process.stdin.isTTY) {
-      // Read from stdin only if piped
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(chunk);
-      }
-      const input = Buffer.concat(chunks).toString('utf-8').trim();
-      if (input) {
-        data = JSON.parse(input);
-      } else {
-        data = await buildCurrentSessionSummary();
-      }
-    } else {
-      // Auto-detect current session
-      data = await buildCurrentSessionSummary();
-    }
-
-    await sessionsSummaryCommand(data, { json: options.json });
-  });
+registerSessionsCommand(program);
 
 // Session command group - lifecycle management
-const session = program
-  .command('session')
-  .description('Manage current session lifecycle');
-
-session
-  .command('start')
-  .description('Register a new session')
-  .option('-s, --squad <squad>', 'Override squad detection')
-  .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionStartCommand({ squad: options.squad, quiet: options.quiet }));
-
-session
-  .command('stop')
-  .description('End current session')
-  .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionStopCommand({ quiet: options.quiet }));
-
-session
-  .command('heartbeat')
-  .description('Update session heartbeat')
-  .option('-q, --quiet', 'Suppress output')
-  .action((options) => sessionHeartbeatCommand({ quiet: options.quiet }));
+registerSessionCommand(program);
 
 // Detect squad command - useful for hooks
 program

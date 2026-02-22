@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import {
   findMemoryDir,
   searchMemory,
@@ -5,6 +6,7 @@ import {
   appendToMemory,
   listMemoryEntries
 } from '../lib/memory.js';
+import { syncCommand } from './sync.js';
 import {
   colors,
   bold,
@@ -550,4 +552,83 @@ export async function memoryExtractCommand(
       writeLine();
     }
   }
+}
+
+export function registerMemoryCommand(program: Command): void {
+  const memory = program
+    .command('memory')
+    .description('Query and manage squad memory')
+    .addHelpText('after', `
+Examples:
+  $ squads memory read engineering      View engineering squad's memory
+  $ squads memory write research "Found: MCP adoption at 15%"
+  $ squads memory search "pricing"      Search all memory
+  $ squads memory list                  List all memory entries
+  $ squads memory sync --push           Sync and push to git
+`)
+    .action(() => {
+      memory.outputHelp();
+    });
+
+  memory
+    .command('query <query>')
+    .description('Search across all squad memory')
+    .option('-s, --squad <squad>', 'Limit search to specific squad')
+    .option('-a, --agent <agent>', 'Limit search to specific agent')
+    .action(memoryQueryCommand);
+
+  memory
+    .command('read <squad>')
+    .alias('show')
+    .description('Show memory for a squad')
+    .action(memoryShowCommand);
+
+  memory
+    .command('write <squad> <content>')
+    .alias('update')
+    .description('Add to squad memory')
+    .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
+    .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
+    .action(memoryUpdateCommand);
+
+  memory
+    .command('list')
+    .description('List all memory entries')
+    .action(memoryListCommand);
+
+  memory
+    .command('sync')
+    .description('Sync memory from git: pull remote changes, process commits, optionally push to Postgres')
+    .option('-v, --verbose', 'Show detailed commit info')
+    .option('-p, --push', 'Push local memory changes to remote after sync')
+    .option('--no-pull', 'Skip pulling from remote')
+    .option('--postgres', 'Sync cycle data (goals, feedback, KPIs, learnings) to Postgres')
+    .option('--dimensions', 'Sync squad/agent definitions to Postgres dim tables')
+    .option('--learnings', 'Sync learnings.md files to Postgres')
+    .option('--auto-learn', 'Auto-generate learnings from session commits')
+    .action((options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean; autoLearn?: boolean }) => syncCommand({ verbose: options.verbose, push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn }));
+
+  memory
+    .command('search <query>')
+    .description('Search conversations stored via squads-bridge (requires bridge service)')
+    .option('-l, --limit <limit>', 'Number of results', '10')
+    .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
+    .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
+    .action((query: string, opts: { limit: string; role?: string; importance?: string }) => memorySearchCommand(query, {
+      limit: parseInt(opts.limit, 10),
+      role: opts.role,
+      importance: opts.importance
+    }));
+
+  memory
+    .command('extract')
+    .description('Extract memories from recent conversations into Engram')
+    .option('-s, --session <session>', 'Extract specific session only')
+    .option('-h, --hours <hours>', 'Look back period in hours', '24')
+    .option('-d, --dry-run', 'Preview without sending to Engram')
+    .action((opts: { session?: string; hours: string; dryRun?: boolean }) => memoryExtractCommand({
+      session: opts.session,
+      hours: parseInt(opts.hours, 10),
+      dryRun: opts.dryRun
+    }));
 }

@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
@@ -362,4 +363,24 @@ function inferCategory(insight: string): Learning['category'] {
   }
 
   return 'tip';
+}
+
+export function registerLearnCommand(program: Command): void {
+  const learn = program
+    .command('learnings')
+    .description('View and search learnings');
+
+  learn
+    .command('show <squad>')
+    .description('Show learnings for a squad')
+    .option('-n, --limit <n>', 'Number to show', '10')
+    .option('-c, --category <category>', 'Filter by category')
+    .option('--tag <tag>', 'Filter by tag')
+    .action(learnShowCommand);
+
+  learn
+    .command('search <query>')
+    .description('Search learnings across all squads')
+    .option('-n, --limit <n>', 'Max results', '10')
+    .action(learnSearchCommand);
 }

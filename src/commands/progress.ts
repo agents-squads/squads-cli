@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -260,4 +261,23 @@ function getElapsedTime(startTime: string): string {
   if (hours > 0) return `${hours}h`;
   if (minutes > 0) return `${minutes}m`;
   return '<1m';
+}
+
+export function registerProgressCommand(program: Command): void {
+  const progress = program
+    .command('progress')
+    .description('Track active and completed agent tasks')
+    .option('-v, --verbose', 'Show more activity')
+    .action(progressCommand);
+
+  progress
+    .command('start <squad> <description>')
+    .description('Register a new active task')
+    .action(progressStartCommand);
+
+  progress
+    .command('complete <taskId>')
+    .description('Mark a task as completed')
+    .option('-f, --failed', 'Mark as failed instead')
+    .action(progressCompleteCommand);
 }

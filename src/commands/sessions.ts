@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 /**
  * List active Claude Code sessions across squads
  */
@@ -538,4 +539,57 @@ export async function sessionsHistoryCommand(
   writeLine(`  ${colors.dim}$${RESET} squads sessions history --days 30   ${colors.dim}Longer history${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads sessions history -s website  ${colors.dim}Filter by squad${RESET}`);
   writeLine();
+}
+
+export function registerSessionsCommand(program: Command): void {
+  const sessions = program
+    .command('sessions')
+    .description('Show active Claude Code sessions across squads')
+    .option('-v, --verbose', 'Show session details')
+    .option('-j, --json', 'Output as JSON')
+    .action(sessionsCommand);
+
+  sessions
+    .command('history')
+    .description('Show session history and statistics')
+    .option('-d, --days <days>', 'Days of history to show', '7')
+    .option('-s, --squad <squad>', 'Filter by squad')
+    .option('-j, --json', 'Output as JSON')
+    .action((options: { days: string; squad?: string; json?: boolean }) => sessionsHistoryCommand({
+      days: parseInt(options.days, 10),
+      squad: options.squad,
+      json: options.json,
+    }));
+
+  sessions
+    .command('summary')
+    .description('Show pretty session summary (auto-detects current session or pass JSON)')
+    .option('-d, --data <json>', 'JSON data for summary (overrides auto-detection)')
+    .option('-f, --file <path>', 'Path to JSON file with summary data')
+    .option('-j, --json', 'Output as JSON instead of pretty format')
+    .action(async (options: { data?: string; file?: string; json?: boolean }) => {
+      let data: SessionSummaryData;
+
+      if (options.file) {
+        const { readFileSync } = await import('fs');
+        data = JSON.parse(readFileSync(options.file, 'utf-8'));
+      } else if (options.data) {
+        data = JSON.parse(options.data);
+      } else if (!process.stdin.isTTY) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(chunk);
+        }
+        const input = Buffer.concat(chunks).toString('utf-8').trim();
+        if (input) {
+          data = JSON.parse(input);
+        } else {
+          data = await buildCurrentSessionSummary();
+        }
+      } else {
+        data = await buildCurrentSessionSummary();
+      }
+
+      await sessionsSummaryCommand(data, { json: options.json });
+    });
 }

@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import {
   findSquadsDir,
   loadSquad,
@@ -412,4 +413,37 @@ Begin now.`;
     // Output raw prompt for piping to claude
     console.log(prompt);
   }
+}
+
+export function registerEnvCommand(program: Command): void {
+  const env = program
+    .command('env')
+    .description('View squad execution environment (MCP, skills, model, budget)');
+
+  env
+    .command('show <squad>')
+    .description('Show execution environment for a squad')
+    .option('--json', 'Output as JSON')
+    .action(contextShowCommand);
+
+  env
+    .command('list')
+    .description('List execution environment for all squads')
+    .option('--json', 'Output as JSON')
+    .action(contextListCommand);
+
+  env
+    .command('activate <squad>')
+    .description('Activate execution context for a squad (generates scoped MCP config)')
+    .option('-d, --dry-run', 'Show what would be generated without writing files')
+    .option('-f, --force', 'Force regeneration even if config exists')
+    .option('--json', 'Output as JSON')
+    .action(contextActivateCommand);
+
+  env
+    .command('prompt <squad>')
+    .description('Output ready-to-use prompt for Claude Code execution')
+    .option('-a, --agent <agent>', 'Agent to execute (required)')
+    .option('--json', 'Output as JSON')
+    .action(contextPromptCommand);
 }

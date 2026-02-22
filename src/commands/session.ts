@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 /**
  * Session lifecycle commands: start, stop, heartbeat
  * Used by Claude Code hooks for session tracking
@@ -97,4 +98,29 @@ export async function detectSquadCommand(): Promise<void> {
     // Output just the squad name for use in shell scripts
     process.stdout.write(squad);
   }
+}
+
+export function registerSessionCommand(program: Command): void {
+  const session = program
+    .command('session')
+    .description('Manage current session lifecycle');
+
+  session
+    .command('start')
+    .description('Register a new session')
+    .option('-s, --squad <squad>', 'Override squad detection')
+    .option('-q, --quiet', 'Suppress output')
+    .action((options: { squad?: string; quiet?: boolean }) => sessionStartCommand({ squad: options.squad, quiet: options.quiet }));
+
+  session
+    .command('stop')
+    .description('End current session')
+    .option('-q, --quiet', 'Suppress output')
+    .action((options: { quiet?: boolean }) => sessionStopCommand({ quiet: options.quiet }));
+
+  session
+    .command('heartbeat')
+    .description('Update session heartbeat')
+    .option('-q, --quiet', 'Suppress output')
+    .action((options: { quiet?: boolean }) => sessionHeartbeatCommand({ quiet: options.quiet }));
 }

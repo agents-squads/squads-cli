@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 /**
  * squads exec - Execution history commands
  *
@@ -282,4 +283,35 @@ export async function execStatsCommand(options: ListOptions = {}): Promise<void>
     }
     writeLine();
   }
+}
+
+export function registerExecCommand(program: Command): void {
+  const exec = program
+    .command('exec')
+    .description('View execution history and statistics');
+
+  exec
+    .command('list')
+    .description('List recent executions')
+    .option('-s, --squad <squad>', 'Filter by squad')
+    .option('-a, --agent <agent>', 'Filter by agent')
+    .option('--status <status>', 'Filter by status (running, completed, failed)')
+    .option('-n, --limit <n>', 'Number of executions to show', '20')
+    .option('--json', 'Output as JSON')
+    .action((options: { squad?: string; agent?: string; status?: string; limit: string; json?: boolean }) => execListCommand({ ...options, limit: parseInt(options.limit, 10) }));
+
+  exec
+    .command('show <id>')
+    .description('Show execution details')
+    .option('--json', 'Output as JSON')
+    .action(execShowCommand);
+
+  exec
+    .command('stats')
+    .description('Show execution statistics')
+    .option('-s, --squad <squad>', 'Filter by squad')
+    .option('--json', 'Output as JSON')
+    .action(execStatsCommand);
+
+  exec.action((options: Record<string, unknown>) => execListCommand(options as any));
 }

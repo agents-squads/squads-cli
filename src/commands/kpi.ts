@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 /**
  * KPI Command
  *
@@ -378,4 +379,50 @@ export async function kpiListCommand(
   const total = allKpis.reduce((sum, s) => sum + s.kpis.length, 0);
   writeLine(`  ${colors.dim}${total} KPIs across ${allKpis.length} squads${RESET}`);
   writeLine();
+}
+
+export function registerKpiCommand(program: Command): void {
+  const kpi = program
+    .command('kpi')
+    .description('Track and analyze squad KPIs (defined in SQUAD.md frontmatter)')
+    .addHelpText('after', `
+Examples:
+  $ squads kpi list                       List all defined KPIs
+  $ squads kpi show engineering           Show KPI status for a squad
+  $ squads kpi record engineering leads_generated 15
+  $ squads kpi trend engineering leads_generated
+  $ squads kpi insights                   Show insights across all squads
+`);
+
+  kpi
+    .command('list')
+    .description('List all KPIs across squads')
+    .option('-j, --json', 'Output as JSON')
+    .action(kpiListCommand);
+
+  kpi
+    .command('show <squad>')
+    .description('Show KPI status for a squad')
+    .option('-j, --json', 'Output as JSON')
+    .action(kpiShowCommand);
+
+  kpi
+    .command('record <squad> <kpi> <value>')
+    .description('Record a KPI value')
+    .option('-n, --note <note>', 'Add a note to the record')
+    .option('-j, --json', 'Output as JSON')
+    .action(kpiRecordCommand);
+
+  kpi
+    .command('trend <squad> <kpi>')
+    .description('Show KPI trend over time')
+    .option('-p, --periods <n>', 'Number of periods to show', '7')
+    .option('-j, --json', 'Output as JSON')
+    .action(kpiTrendCommand);
+
+  kpi
+    .command('insights [squad]')
+    .description('Generate insights from KPI data')
+    .option('-j, --json', 'Output as JSON')
+    .action(kpiInsightsCommand);
 }

@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import {
   loadSquad,
   findSquadsDir,
@@ -190,4 +191,36 @@ export async function goalProgressCommand(
     writeLine(`  ${colors.red}Failed to update progress${RESET}`);
   }
   writeLine();
+}
+
+export function registerGoalCommand(program: Command): void {
+  const goal = program
+    .command('goal')
+    .description('Manage squad goals')
+    .action(() => {
+      goal.outputHelp();
+    });
+
+  goal
+    .command('set <squad> <description>')
+    .description('Set a goal for a squad')
+    .option('-m, --metric <metrics...>', 'Metrics to track')
+    .action(goalSetCommand);
+
+  goal
+    .command('list [squad]')
+    .description('List goals for squad(s)')
+    .option('-a, --all', 'Show completed goals too')
+    .option('-j, --json', 'Output as JSON')
+    .action(goalListCommand);
+
+  goal
+    .command('complete <squad> <index>')
+    .description('Mark a goal as completed')
+    .action(goalCompleteCommand);
+
+  goal
+    .command('progress <squad> <index> <progress>')
+    .description('Update goal progress')
+    .action(goalProgressCommand);
 }

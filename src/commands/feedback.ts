@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { findMemoryDir, appendToMemory } from '../lib/memory.js';
@@ -297,4 +298,27 @@ export async function feedbackStatsCommand(): Promise<void> {
   writeLine(`  ${colors.dim}$${RESET} squads feedback show ${colors.cyan}<squad>${RESET}   ${colors.dim}View squad feedback${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}<squad>${RESET}    ${colors.dim}Add new feedback${RESET}`);
   writeLine();
+}
+
+export function registerFeedbackCommand(program: Command): void {
+  const feedback = program
+    .command('feedback')
+    .description('Record and view execution feedback');
+
+  feedback
+    .command('add <squad> <rating> <feedback>')
+    .description('Add feedback for last execution (rating 1-5)')
+    .option('-l, --learning <learnings...>', 'Learnings to extract')
+    .action(feedbackAddCommand);
+
+  feedback
+    .command('show <squad>')
+    .description('Show feedback history')
+    .option('-n, --limit <n>', 'Number of entries to show', '5')
+    .action(feedbackShowCommand);
+
+  feedback
+    .command('stats')
+    .description('Show feedback summary across all squads')
+    .action(feedbackStatsCommand);
 }
