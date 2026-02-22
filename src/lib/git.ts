@@ -634,9 +634,6 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   return stats;
 }
 
-// Product repos where milestones and PRs matter
-const PRODUCT_REPOS = ['squads-cli', 'squads-console', 'squads-api'];
-
 export interface MilestoneInfo {
   repo: string;
   title: string;
@@ -661,25 +658,33 @@ export interface OperationalStatus {
 }
 
 /**
- * Fetch operational status: milestones + open PRs across product repos.
+ * Fetch operational status: milestones + open PRs across repos.
+ * Repos are discovered from squad definitions (SQUAD.md `repo` field).
  * Uses gh CLI — gracefully returns empty if gh is unavailable.
+ *
+ * @param repos - Array of "owner/repo" strings (e.g., ["agents-squads/squads-cli"])
  */
-export function fetchOperationalStatus(): OperationalStatus {
+export function fetchOperationalStatus(repos: string[]): OperationalStatus {
   const result: OperationalStatus = { milestones: [], openPRs: [], error: null };
 
+  if (repos.length === 0) {
+    return result;
+  }
+
   try {
-    // Check gh is available
     execSync('gh auth status 2>/dev/null', { stdio: 'pipe', timeout: 3000 });
   } catch {
     result.error = 'gh not authenticated';
     return result;
   }
 
-  for (const repo of PRODUCT_REPOS) {
+  for (const fullRepo of repos) {
+    const repoShort = fullRepo.split('/').pop() || fullRepo;
+
     // Fetch milestones
     try {
       const msOutput = execSync(
-        `gh api "repos/agents-squads/${repo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
+        `gh api "repos/${fullRepo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
       ).trim();
 
@@ -689,7 +694,7 @@ export function fetchOperationalStatus(): OperationalStatus {
         const closedIssues = parseInt(closed) || 0;
         const totalIssues = openIssues + closedIssues;
         result.milestones.push({
-          repo,
+          repo: repoShort,
           title,
           openIssues,
           closedIssues,
@@ -700,20 +705,20 @@ export function fetchOperationalStatus(): OperationalStatus {
       }
     } catch { /* skip repo */ }
 
-    // Fetch open PRs targeting develop
+    // Fetch open PRs (try develop first, then main)
     try {
       const prOutput = execSync(
-        `gh pr list --repo "agents-squads/${repo}" --base develop --state open --json number,title --jq '.[] | [.number, .title] | @tsv' 2>/dev/null`,
+        `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
       ).trim();
 
       for (const line of prOutput.split('\n').filter(l => l.trim())) {
-        const [num, ...titleParts] = line.split('\t');
+        const [num, base, ...titleParts] = line.split('\t');
         result.openPRs.push({
-          repo,
+          repo: repoShort,
           number: parseInt(num) || 0,
           title: titleParts.join('\t'),
-          base: 'develop',
+          base,
         });
       }
     } catch { /* skip repo */ }
