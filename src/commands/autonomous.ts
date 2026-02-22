@@ -22,6 +22,7 @@ import {
   readdirSync,
   mkdirSync,
   appendFileSync,
+  openSync,
 } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -283,6 +284,11 @@ function daemonLog(msg: string): void {
  * The main daemon loop. Runs as a long-lived process.
  */
 async function daemonLoop(): Promise<void> {
+  // Ignore SIGHUP so daemon survives terminal closure
+  process.on("SIGHUP", () => {
+    daemonLog("Received SIGHUP, ignoring (daemon mode)");
+  });
+
   daemonLog("Daemon started");
 
   // Track last spawn time per routine to enforce cooldowns
@@ -452,27 +458,33 @@ async function startScheduler(): Promise<void> {
     return;
   }
 
-  // Spawn a detached daemon process
+  // Spawn a detached daemon process with output redirected to log file
+  const logFd = openSync(DAEMON_LOG, "a");
   const child = spawn(
     process.execPath, // node
     [process.argv[1], "autonomous", "start", "--daemon"],
     {
       cwd: process.cwd(),
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       env: { ...process.env },
     }
   );
   child.unref();
 
-  // Wait briefly for PID file to appear
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Wait for PID file to appear (retry up to 3 seconds)
+  let check = isRunning();
+  for (let i = 0; i < 6 && !check.running; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    check = isRunning();
+  }
 
-  const check = isRunning();
   if (check.running) {
     console.log(chalk.green(`\n  Daemon started (PID ${check.pid})`));
   } else {
-    console.log(chalk.green("\n  Daemon starting..."));
+    console.log(chalk.red("\n  Daemon failed to start. Check log:"));
+    console.log(chalk.gray(`  tail -20 ${DAEMON_LOG}`));
+    return;
   }
 
   console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
@@ -632,6 +644,7 @@ export function registerAutonomousCommand(program: Command): void {
   autonomous
     .command("start")
     .description("Start the scheduling daemon")
+    .option("--daemon", "internal: run as daemon process")
     .action(async () => {
       await startScheduler();
     });
