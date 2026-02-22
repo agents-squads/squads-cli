@@ -12,6 +12,7 @@ import {
   getLiveSessionSummaryAsync,
   cleanupStaleSessions,
 } from '../lib/sessions.js';
+import { fetchOperationalStatus } from '../lib/git.js';
 import {
   listExecutions,
   getExecutionStats,
@@ -201,6 +202,38 @@ async function showOverallStatus(
 
   writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
   writeLine();
+
+  // Operational status: milestones + open PRs from product repos
+  const ops = fetchOperationalStatus();
+
+  if (ops.milestones.length > 0) {
+    writeLine(`  ${bold}Milestones${RESET}`);
+    writeLine();
+    for (const ms of ops.milestones) {
+      const repoShort = ms.repo.replace('squads-', '');
+      const filled = Math.round(ms.percent / 10);
+      const bar = `${colors.green}${'█'.repeat(filled)}${colors.dim}${'░'.repeat(10 - filled)}${RESET}`;
+      const pctColor = ms.percent >= 80 ? colors.green : ms.percent >= 40 ? colors.yellow : colors.red;
+      writeLine(`  ${colors.dim}${padEnd(repoShort, 10)}${RESET}${padEnd(ms.title, 12)}${bar} ${pctColor}${ms.percent}%${RESET} ${colors.dim}(${ms.closedIssues}/${ms.totalIssues})${RESET}`);
+    }
+    writeLine();
+  }
+
+  if (ops.openPRs.length > 0) {
+    writeLine(`  ${bold}Open PRs${RESET} ${colors.dim}(targeting develop)${RESET}`);
+    writeLine();
+    for (const pr of ops.openPRs) {
+      const repoShort = pr.repo.replace('squads-', '');
+      const title = pr.title.length > 50 ? pr.title.substring(0, 47) + '...' : pr.title;
+      writeLine(`  ${colors.dim}${padEnd(repoShort, 10)}${RESET}${colors.cyan}#${pr.number}${RESET} ${title}`);
+    }
+    writeLine();
+  }
+
+  if (ops.error) {
+    writeLine(`  ${colors.dim}GitHub: ${ops.error} (run \`gh auth login\`)${RESET}`);
+    writeLine();
+  }
 
   // Commands
   writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}<squad>${RESET}    ${colors.dim}Squad details${RESET}`);

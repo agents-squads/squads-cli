@@ -634,6 +634,94 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   return stats;
 }
 
+// Product repos where milestones and PRs matter
+const PRODUCT_REPOS = ['squads-cli', 'squads-console', 'squads-api'];
+
+export interface MilestoneInfo {
+  repo: string;
+  title: string;
+  openIssues: number;
+  closedIssues: number;
+  totalIssues: number;
+  percent: number;
+  dueOn: string | null;
+}
+
+export interface OpenPR {
+  repo: string;
+  number: number;
+  title: string;
+  base: string;
+}
+
+export interface OperationalStatus {
+  milestones: MilestoneInfo[];
+  openPRs: OpenPR[];
+  error: string | null;
+}
+
+/**
+ * Fetch operational status: milestones + open PRs across product repos.
+ * Uses gh CLI — gracefully returns empty if gh is unavailable.
+ */
+export function fetchOperationalStatus(): OperationalStatus {
+  const result: OperationalStatus = { milestones: [], openPRs: [], error: null };
+
+  try {
+    // Check gh is available
+    execSync('gh auth status 2>/dev/null', { stdio: 'pipe', timeout: 3000 });
+  } catch {
+    result.error = 'gh not authenticated';
+    return result;
+  }
+
+  for (const repo of PRODUCT_REPOS) {
+    // Fetch milestones
+    try {
+      const msOutput = execSync(
+        `gh api "repos/agents-squads/${repo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
+      ).trim();
+
+      for (const line of msOutput.split('\n').filter(l => l.trim())) {
+        const [title, open, closed, dueOn] = line.split('\t');
+        const openIssues = parseInt(open) || 0;
+        const closedIssues = parseInt(closed) || 0;
+        const totalIssues = openIssues + closedIssues;
+        result.milestones.push({
+          repo,
+          title,
+          openIssues,
+          closedIssues,
+          totalIssues,
+          percent: totalIssues > 0 ? Math.floor((closedIssues / totalIssues) * 100) : 0,
+          dueOn: dueOn && dueOn !== 'null' ? dueOn : null,
+        });
+      }
+    } catch { /* skip repo */ }
+
+    // Fetch open PRs targeting develop
+    try {
+      const prOutput = execSync(
+        `gh pr list --repo "agents-squads/${repo}" --base develop --state open --json number,title --jq '.[] | [.number, .title] | @tsv' 2>/dev/null`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
+      ).trim();
+
+      for (const line of prOutput.split('\n').filter(l => l.trim())) {
+        const [num, ...titleParts] = line.split('\t');
+        result.openPRs.push({
+          repo,
+          number: parseInt(num) || 0,
+          title: titleParts.join('\t'),
+          base: 'develop',
+        });
+      }
+    } catch { /* skip repo */ }
+  }
+
+  return result;
+}
+
 // Get recent activity sparkline data (last 7 days)
 export async function getActivitySparkline(basePath: string, days: number = 7): Promise<number[]> {
   const activity: number[] = [];
