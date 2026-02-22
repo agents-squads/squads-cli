@@ -1,198 +1,138 @@
 # squads-cli
 
-CLI for managing autonomous AI agent squads. Built for Claude Code.
+CLI for managing autonomous AI agent squads. Define AI teams, run them, monitor their work.
 
-## Overview
+## Quick Start
 
-This CLI organizes AI agents into domain-aligned squads with persistent memory, goal tracking, and infrastructure management.
+```bash
+squads init                    # Set up your project
+squads status                  # See your squads, milestones, open PRs
+squads run <squad>             # Run a squad
+squads run <squad> -a <agent>  # Run a specific agent
+```
 
-**Key concepts:**
-- **Squads** = Domain-aligned teams (engineering, research, marketing)
-- **Agents** = Markdown-defined prompts with purpose, model, tools, instructions
-- **Memory** = Persistent state across sessions at `.agents/memory/<squad>/<agent>/<type>.md`
-- **Goals** = Tracked objectives with optional metrics
-- **Sessions** = Real-time detection of running AI assistants
+## Core Concepts
+
+### Squads
+Domain-aligned teams of AI agents. Defined in `.agents/squads/<name>/SQUAD.md`.
+
+Each SQUAD.md has frontmatter:
+```yaml
+---
+name: engineering
+mission: Build and maintain the platform
+repo: your-org/your-repo        # Links to your git repo for milestones/PRs
+stack: TypeScript
+context:
+  model:
+    default: sonnet
+---
+```
+
+### Agents
+Individual AI workers defined as markdown files in a squad directory.
+Each `.agents/squads/<squad>/<agent>.md` contains the agent's instructions, role, and behavior.
+
+### Memory
+Persistent state across sessions at `.agents/memory/<squad>/<agent>/`.
+```bash
+squads memory write <squad> [agent] "insight"   # Save a learning
+squads memory read <squad> [agent]               # Load context
+squads memory search "query"                     # Search across squads
+```
+
+### Milestones & PRs
+`squads status` reads the `repo:` field from your SQUAD.md files and shows:
+- Milestone progress from your git provider
+- Open PRs across your repos
+
+This works with any git hosting that supports the `gh` CLI or equivalent.
+
+## Commands
+
+### Monitoring
+| Command | What It Shows |
+|---------|--------------|
+| `squads status` | Squad overview, milestones, open PRs |
+| `squads status <squad>` | Squad detail: agents, context, recent executions |
+| `squads dash` | Full dashboard: git activity, costs, goals |
+| `squads dash --ceo` | Executive summary with priorities |
+
+### Execution
+| Command | What It Does |
+|---------|-------------|
+| `squads run <squad>` | Run a squad's lead agent |
+| `squads run <squad> -a <agent>` | Run a specific agent |
+| `squads run <squad> --parallel` | Run all agents in parallel |
+| `squads run <squad> --dry-run` | Preview without executing |
+
+### Memory
+| Command | What It Does |
+|---------|-------------|
+| `squads memory write <squad> [agent] "text"` | Persist a learning |
+| `squads memory read <squad> [agent]` | Load agent memory |
+| `squads memory search "query"` | Search all memory |
+| `squads memory list` | List all entries |
+
+### Infrastructure
+| Command | What It Does |
+|---------|-------------|
+| `squads stack init` | Set up local Docker services |
+| `squads stack status` | Check container health |
+| `squads stack up / down` | Start/stop services |
+| `squads health` | Quick infrastructure check |
+
+### Scheduling
+| Command | What It Does |
+|---------|-------------|
+| `squads autonomous start` | Start scheduler daemon |
+| `squads autonomous status` | Check daemon |
+| `squads cron list` | List scheduled agents |
+| `squads cron sync` | Sync schedules from agent definitions |
 
 ## Project Structure
 
+After `squads init`, your project has:
 ```
-src/
-├── cli.ts                    # Main entry point, all command registration
-├── commands/
-│   ├── dashboard.ts          # `squads dash`, `squads status`
-│   ├── run.ts                # `squads run`
-│   ├── memory.ts             # `squads memory *` subcommands
-│   ├── goal.ts               # `squads goal *` subcommands
-│   ├── sessions.ts           # `squads sessions *` subcommands
-│   ├── stack.ts              # `squads stack *` infrastructure
-│   ├── trigger.ts            # `squads trigger *` smart triggers
+.agents/
+├── squads/
+│   ├── <squad>/
+│   │   ├── SQUAD.md          # Squad definition
+│   │   └── <agent>.md        # Agent definitions
 │   └── ...
-├── lib/
-│   ├── memory.ts             # Memory search/load/save
-│   ├── sessions.ts           # Session tracking
-│   ├── squad-parser.ts       # Parse SQUAD.md and agent .md files
-│   ├── terminal.ts           # Colors, box drawing, formatting
-│   └── ...
-└── test/                     # Vitest tests
+├── memory/
+│   └── <squad>/<agent>/      # Persistent state
+├── sessions/
+│   └── history.jsonl         # Execution log
+├── config/
+│   └── provider.yaml         # LLM provider settings
+└── BUSINESS_BRIEF.md         # Your business context
 ```
 
-## CLI Commands Quick Reference
+## Working With Squads
 
-### Core Commands
-```bash
-squads init                   # Initialize project
-squads status [squad]         # Overview of squads/agents
-squads dash                   # Full dashboard with goals
-squads dash --ceo             # Executive summary with priorities
-squads run <target>           # Run squad or agent
-squads list                   # List all squads/agents
+### Define a new squad
+Create `.agents/squads/my-squad/SQUAD.md` with frontmatter (name, mission, repo) and agent table.
+
+### Define a new agent
+Create `.agents/squads/my-squad/my-agent.md` with instructions for what the agent does.
+
+### Connect to your repos
+Set `repo: your-org/your-repo` in SQUAD.md frontmatter. This enables milestone tracking and PR visibility in `squads status`.
+
+### Multi-provider support
+Configure in `.agents/config/provider.yaml` or SQUAD.md frontmatter:
+```yaml
+context:
+  model:
+    default: sonnet      # Default for all tasks
+    expensive: opus      # Heavy reasoning
+    cheap: haiku         # Simple tasks
 ```
 
-### Memory (persistent state)
-```bash
-squads memory query "<term>"  # Semantic search
-squads memory show <squad>    # View squad memory
-squads memory update <squad> "<text>"  # Add to memory
-squads memory list            # List all entries
-squads memory sync            # Sync from git
-squads memory search "<term>" # Search postgres conversations
-squads memory extract         # Extract to Engram
-```
+Supported: Claude, GPT-4, Gemini, Ollama, and custom providers.
 
-### Goals
-```bash
-squads goal set <squad> "<goal>"  # Set goal
-squads goal set <squad> "<goal>" -m "metric1" -m "metric2"  # With metrics
-squads goal list              # View active goals
-squads goal progress <squad> <idx> "<update>"  # Update progress
-squads goal complete <squad> <idx>  # Mark done
-```
-
-### Sessions
-```bash
-squads sessions               # List active sessions
-squads sessions history       # Session history
-squads session start          # Register session (for hooks)
-squads session stop           # End session
-squads session heartbeat      # Update activity
-```
-
-### Stack (Docker infrastructure)
-```bash
-squads stack init             # Setup wizard
-squads stack status           # Container health
-squads stack health           # Full diagnostics
-squads stack up               # Start containers
-squads stack down             # Stop containers
-squads stack logs <service>   # View logs
-```
-
-**Valid services:** postgres, redis, neo4j, bridge, langfuse, mem0, engram, otel
-
-### Triggers (smart execution)
-```bash
-squads trigger list           # View triggers
-squads trigger sync           # Sync SQUAD.md to scheduler
-squads trigger fire <name>    # Manually fire
-squads trigger enable <name>  # Enable trigger
-squads trigger disable <name> # Disable trigger
-squads trigger status         # Scheduler stats
-```
-
-### Run Command Options
-```bash
-squads run engineering              # Run whole squad
-squads run engineering/agent        # Slash notation for specific agent
-squads run engineering -a agent     # Flag notation
-squads run engineering --dry-run    # Preview only
-squads run engineering --execute    # Execute via Claude CLI
-squads run engineering --parallel   # Run all in parallel
-squads run engineering --timeout 60 # Custom timeout (minutes)
-```
-
-### Monitoring & History
-```bash
-squads context                # Business context (goals, decisions, priorities)
-squads context --topic "X"    # Topic-focused context
-squads history                # Recent agent execution history
-squads history --days 7       # Execution history (last N days)
-squads health                 # Quick infrastructure check
-squads workers                # Show active workers
-squads progress               # Track agent task progress
-squads results                # Show squad results (git + KPIs)
-```
-
-### Live Dashboards
-```bash
-squads live                   # Live TUI dashboard
-squads top                    # Live process table
-squads watch <command>        # Live refresh any command
-squads watch status           # Example: watch status
-```
-
-### Environment & Config
-```bash
-squads env show <squad>       # Squad execution context (MCP, model, budget)
-squads env list               # List all squad environments
-squads cost                   # Cost summary (today, week, by squad)
-squads budget <squad>         # Check budget status
-squads providers              # Show available LLM CLI providers
-squads version                # Show version information
-```
-
-### Scheduling & Automation
-```bash
-squads cron sync              # Sync schedules from agent .md files
-squads cron list              # List scheduled agents
-squads cron status            # Show cron status and next runs
-squads cron logs [agent]      # Show execution logs
-squads cron enable <agent>    # Enable schedule
-squads cron disable <agent>   # Disable schedule
-squads tonight run <targets>  # Start overnight execution
-squads tonight status         # Check overnight status
-squads autonomous start       # Start scheduler daemon
-squads autonomous stop        # Stop scheduler daemon
-squads autonomous status      # Check daemon status
-```
-
-### Approvals & Permissions
-```bash
-squads approval send <type>   # Send approval request to Slack
-squads approval list          # List approvals
-squads approval check <id>    # Check approval status
-squads approval cancel <id>   # Cancel pending approval
-squads permissions show <squad>   # Show permission context
-squads permissions check <squad>  # Validate before execution
-```
-
-### Orchestration
-```bash
-squads orchestrate <squad>    # Run squad with lead agent orchestration
-```
-
-### Skills
-```bash
-squads skill list             # List available skills
-squads skill upload <file>    # Upload a skill
-squads skill delete <name>    # Delete a skill
-```
-
-### Slack Integration
-```bash
-squads slack auth             # Authenticate with Slack
-squads slack status           # Check Slack connection
-squads slack test             # Send test message
-```
-
-### Metrics
-```bash
-squads autonomy               # Show autonomy score and confidence
-squads kpi list               # List KPIs defined in squads
-squads kpi show <squad>       # Show KPIs for a squad
-squads kpi update <squad>     # Update KPI values
-```
-
-## Development Workflow
+## Development
 
 ### Building
 ```bash
@@ -209,151 +149,32 @@ npm run test:watch    # Watch mode
 npm run test:coverage # Coverage report
 ```
 
-### Linting
-```bash
-npm run lint          # ESLint
-npm run typecheck     # TypeScript check
-```
+### Code Patterns
 
-## Code Patterns
+**Adding a new command:**
+1. Create `src/commands/<name>.ts`
+2. Register in `src/cli.ts` via Commander.js
 
-### Adding a New Command
-
-1. Create command file in `src/commands/<name>.ts`:
+**Key libraries:**
 ```typescript
-import { colors, bold, RESET, gradient, writeLine } from '../lib/terminal.js';
+// Terminal output
+import { colors, bold, gradient, writeLine } from '../lib/terminal.js';
 
-export async function myCommand(options: { verbose?: boolean }): Promise<void> {
-  writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}my-command${RESET}`);
-  writeLine();
-  // ... implementation
-}
+// Squad/agent parsing
+import { loadSquad, findSquadsDir, listSquads } from '../lib/squad-parser.js';
+
+// Memory operations
+import { searchMemory, appendToMemory, listMemoryEntries } from '../lib/memory.js';
 ```
 
-2. Register in `src/cli.ts`:
-```typescript
-import { myCommand } from './commands/my-command.js';
-
-program
-  .command('my-command')
-  .description('My new command')
-  .option('-v, --verbose', 'Verbose output')
-  .action(async (options) => {
-    await myCommand(options);
-  });
-```
-
-### Terminal Output
-
-Use the terminal library for consistent styling:
-```typescript
-import {
-  colors,          // { purple, cyan, green, red, yellow, dim, white }
-  bold,            // Bold text
-  RESET,           // Reset formatting
-  gradient,        // 'squads' gradient text
-  box,             // Box drawing characters
-  padEnd,          // Right-pad string
-  truncate,        // Truncate with ellipsis
-  icons,           // { success, error, warning, active, empty, progress }
-  writeLine,       // Console output with prefix
-} from '../lib/terminal.js';
-```
-
-### Memory Operations
-
-```typescript
-import {
-  findMemoryDir,
-  searchMemory,
-  getSquadState,
-  appendToMemory,
-  listMemoryEntries
-} from '../lib/memory.js';
-
-// Search memory
-const results = searchMemory(query, memoryDir);
-
-// Get squad state
-const states = getSquadState(squadName);
-
-// Update memory
-appendToMemory(squad, agent, type, content);
-```
-
-### Squad/Agent Parsing
-
-```typescript
-import {
-  loadSquad,
-  findSquadsDir,
-  listSquads,
-  addGoalToSquad,
-  updateGoalInSquad
-} from '../lib/squad-parser.js';
-
-const squad = loadSquad(squadName);
-// squad.name, squad.mission, squad.goals, squad.agents
-```
-
-## File Paths
-
+### File Paths
 - **Squad definitions:** `.agents/squads/<squad>/SQUAD.md`
 - **Agent definitions:** `.agents/squads/<squad>/<agent>.md`
 - **Memory files:** `.agents/memory/<squad>/<agent>/<type>.md`
-  - Types: `state.md`, `learnings.md`, `feedback.md`
 - **Session history:** `.agents/sessions/history.jsonl`
-- **CLI config:** `~/.squadsrc` (stack environment)
-- **Docker files:** `docker/` or `~/.squads/docker/`
+- **CLI config:** `~/.squadsrc`
 
-## Environment Variables
-
-```bash
-# Stack services
-SQUADS_DATABASE_URL    # PostgreSQL connection
-SQUADS_BRIDGE_URL      # Bridge API (default: http://localhost:8088)
-MEM0_API_URL           # Mem0 API (default: http://localhost:8000)
-SCHEDULER_URL          # Trigger scheduler (default: http://localhost:8090)
-
-# Langfuse telemetry
-LANGFUSE_HOST
-LANGFUSE_PUBLIC_KEY
-LANGFUSE_SECRET_KEY
-
-# Other
-HQ_PATH                # Override agents-squads/hq path
-REDIS_URL              # Redis connection
-```
-
-## Common Issues
-
-### Memory not found
-```
-No .agents/memory directory found
-```
-Run `squads init` to create the directory structure.
-
-### Stack services not running
-```
-Scheduler not running or unreachable
-```
-Run `squads stack init` and `squads stack up` to start Docker services.
-
-### Squad not found
-```
-Squad "X" not found
-```
-Check `.agents/squads/` directory exists and contains the squad folder with `SQUAD.md`.
-
-## Git Workflow
-
+### Git Workflow
 - Conventional Commits format (`feat:`, `fix:`, `docs:`, `chore:`)
 - Feature branches for non-trivial changes
-- Direct to main OK for small docs/fixes
-
-## Resources
-
-- [README.md](./README.md) - Full user documentation
-- [CHANGELOG.md](./CHANGELOG.md) - Version history
-- [agents-squads](https://github.com/agents-squads/agents-squads) - Parent project
+- `npm run build` must pass before committing
