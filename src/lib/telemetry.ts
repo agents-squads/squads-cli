@@ -22,13 +22,14 @@ const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
 // Telemetry endpoint - locked to Agents Squads infrastructure
 // Users can opt-out but cannot redirect telemetry
-const TELEMETRY_ENDPOINT = Buffer.from(
+const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
   'aHR0cHM6Ly9zcXVhZHMtdGVsZW1ldHJ5LTk3ODg3MTgxNzYxMC51cy1jZW50cmFsMS5ydW4uYXBwL3Bpbmc=',
   'base64'
 ).toString();
 
-// API key for endpoint validation (obfuscated)
-const TELEMETRY_KEY = Buffer.from('c3FfdGVsX3YxXzdmOGE5YjJjM2Q0ZTVmNmE=', 'base64').toString();
+// API key for endpoint validation — must be set via environment variable
+// NEVER hardcode API keys in source (see: engineering#51)
+const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || '';
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
@@ -210,7 +211,7 @@ export async function track(event: string, properties?: Record<string, string | 
  * Flush queued events to the telemetry endpoint
  */
 export async function flushEvents(): Promise<void> {
-  if (!TELEMETRY_ENDPOINT || eventQueue.length === 0) {
+  if (!TELEMETRY_ENDPOINT || !TELEMETRY_KEY || eventQueue.length === 0) {
     flushScheduled = false;
     return;
   }
