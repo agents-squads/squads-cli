@@ -460,6 +460,7 @@ async function showSquadStatus(
 
   writeLine();
   writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET}           ${colors.dim}Run the squad${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads dash                    ${colors.dim}ROI metrics & cost projections${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads memory show ${colors.cyan}${squadName}${RESET}   ${colors.dim}View full memory${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads status ${colors.cyan}${squadName}${RESET} -v     ${colors.dim}Verbose status${RESET}`);
   writeLine();
