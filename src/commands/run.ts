@@ -56,14 +56,6 @@ const SOFT_DEADLINE_RATIO = 0.7;
 const LOG_FILE_INIT_DELAY_MS = 500;
 const VERBOSE_COMMAND_MAX_CHARS = 50;
 
-/**
- * Escape a string for safe interpolation inside single-quoted shell arguments.
- * Replaces every ' with '\'' (end quote, escaped quote, start quote).
- */
-function shellEscape(s: string): string {
-  return s.replace(/'/g, "'\\''");
-}
-
 interface RunOptions {
   verbose?: boolean;
   dryRun?: boolean;
@@ -1186,7 +1178,6 @@ async function runSquad(
     writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
     writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
     writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
-    writeLine(`  ${colors.dim}Metrics: squads dash${RESET}`);
     writeLine();
     return;
   }
@@ -1394,7 +1385,6 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     if (isForeground || isWatch) {
       writeLine();
       writeLine(`  ${icons.success} Lead session completed`);
-      writeLine(`  ${colors.dim}View metrics:${RESET} squads dash`);
     } else {
       writeLine(`  ${icons.success} Lead session launched in background`);
       writeLine(`  ${colors.dim}${result}${RESET}`);
@@ -1404,8 +1394,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
       writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
       writeLine();
-      writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
-      writeLine(`  ${colors.dim}Metrics:${RESET} squads dash`);
+      writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
     }
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
@@ -1730,14 +1719,12 @@ CRITICAL: When you have completed your tasks OR reached the time limit:
 
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
-          writeLine(`  ${colors.dim}View metrics:${RESET} squads dash`);
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
           writeLine(`  ${colors.dim}${result}${RESET}`);
           writeLine();
           writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
           writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
-          writeLine(`  ${colors.dim}Metrics:${RESET} squads dash`);
         }
         break; // Success — exit retry loop
       } catch (error) {
@@ -1873,6 +1860,202 @@ interface ExecuteWithClaudeOptions {
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
 }
 
+/** Build agent environment variables for Claude execution */
+function buildAgentEnv(
+  baseEnv: Record<string, string>,
+  execContext: ExecutionContext,
+  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean }
+): Record<string, string> {
+  const env: Record<string, string> = {
+    ...baseEnv,
+    SQUADS_SQUAD: execContext.squad,
+    SQUADS_AGENT: execContext.agent,
+    SQUADS_TASK_TYPE: execContext.taskType,
+    SQUADS_TRIGGER: execContext.trigger,
+    SQUADS_EXECUTION_ID: execContext.executionId,
+    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
+  };
+
+  if (options?.includeOtel) {
+    env.OTEL_RESOURCE_ATTRIBUTES = `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`;
+  }
+
+  if (options?.effort) env.CLAUDE_EFFORT = options.effort;
+  if (options?.skills && options.skills.length > 0) env.CLAUDE_SKILLS = options.skills.join(',');
+
+  return env;
+}
+
+/** Log verbose execution config (shared by foreground and background modes) */
+function logVerboseExecution(config: {
+  projectRoot: string;
+  mode: string;
+  useApi?: boolean;
+  execContext: ExecutionContext;
+  effort?: EffortLevel;
+  skills?: string[];
+  resolvedModel?: string;
+  claudeModelAlias?: string;
+  explicitModel?: string;
+  logFile?: string;
+  mcpConfigPath?: string;
+}): void {
+  writeLine(`  ${colors.dim}Project: ${config.projectRoot}${RESET}`);
+  writeLine(`  ${colors.dim}Mode: ${config.mode}${RESET}`);
+  if (config.logFile) writeLine(`  ${colors.dim}Log: ${config.logFile}${RESET}`);
+  if (config.mcpConfigPath) writeLine(`  ${colors.dim}MCP config: ${config.mcpConfigPath}${RESET}`);
+  if (config.useApi !== undefined) writeLine(`  ${colors.dim}Auth: ${config.useApi ? 'API credits' : 'subscription'}${RESET}`);
+  writeLine(`  ${colors.dim}Execution: ${config.execContext.executionId}${RESET}`);
+  writeLine(`  ${colors.dim}Task type: ${config.execContext.taskType}${RESET}`);
+  writeLine(`  ${colors.dim}Trigger: ${config.execContext.trigger}${RESET}`);
+  if (config.effort) writeLine(`  ${colors.dim}Effort: ${config.effort}${RESET}`);
+  if (config.skills && config.skills.length > 0) writeLine(`  ${colors.dim}Skills: ${config.skills.join(', ')}${RESET}`);
+  if (config.resolvedModel || config.claudeModelAlias) {
+    const source = config.explicitModel ? 'explicit' : 'auto-routed';
+    const displayModel = config.resolvedModel || config.claudeModelAlias;
+    writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
+  }
+}
+
+/** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
+function createAgentWorktree(projectRoot: string, squadName: string, agentName: string): string {
+  const timestamp = Date.now();
+  const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
+  const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
+
+  try {
+    mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
+    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    return worktreePath;
+  } catch {
+    return projectRoot; // Fall back to project root
+  }
+}
+
+/** Build shell script for detached execution with worktree isolation */
+function buildDetachedShellScript(config: {
+  projectRoot: string;
+  squadName: string;
+  agentName: string;
+  timestamp: number;
+  claudeModelAlias?: string;
+  escapedPrompt: string;
+  logFile: string;
+  pidFile: string;
+}): string {
+  const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
+  const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
+  const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  return `echo $$ > '${config.pidFile}'; ${script}`;
+}
+
+/** Prepare log directory and file paths for detached execution */
+function prepareLogFiles(projectRoot: string, squadName: string, agentName: string, timestamp: number): { logDir: string; logFile: string; pidFile: string } {
+  const logDir = join(projectRoot, '.agents', 'logs', squadName);
+  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+  }
+
+  return { logDir, logFile, pidFile };
+}
+
+/** Execute Claude in foreground mode (direct stdio, default) */
+function executeForeground(config: {
+  prompt: string;
+  claudeArgs: string[];
+  agentEnv: Record<string, string>;
+  projectRoot: string;
+  squadName: string;
+  agentName: string;
+  execContext: ExecutionContext;
+  startMs: number;
+}): Promise<string> {
+  const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
+
+  return new Promise((resolve, reject) => {
+    const claude = spawn('claude', config.claudeArgs, {
+      stdio: 'inherit',
+      cwd: workDir,
+      env: config.agentEnv,
+    });
+
+    claude.on('close', async (code) => {
+      const durationMs = Date.now() - config.startMs;
+
+      if (code === 0) {
+        updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'completed', {
+          outcome: 'Session completed successfully',
+          durationMs,
+        });
+
+        const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId);
+        if (commitResult.committed) {
+          writeLine();
+          writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
+        }
+
+        resolve('Session completed');
+      } else {
+        updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
+          error: `Claude exited with code ${code}`,
+          durationMs,
+        });
+        reject(new Error(`Claude exited with code ${code}`));
+      }
+    });
+
+    claude.on('error', (err) => {
+      const durationMs = Date.now() - config.startMs;
+      updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
+        error: String(err),
+        durationMs,
+      });
+      reject(err);
+    });
+  });
+}
+
+/** Execute Claude in watch mode (background + tail log) */
+async function executeWatch(config: {
+  projectRoot: string;
+  agentEnv: Record<string, string>;
+  logFile: string;
+  wrapperScript: string;
+}): Promise<string> {
+  const child = spawn('sh', ['-c', config.wrapperScript], {
+    cwd: config.projectRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: config.agentEnv,
+  });
+  child.unref();
+
+  await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
+
+  writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
+  writeLine();
+
+  const tail = spawn('tail', ['-f', config.logFile], { stdio: 'inherit' });
+
+  process.on('SIGINT', () => {
+    tail.kill();
+    writeLine();
+    writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
+    writeLine(`  ${colors.dim}Resume: tail -f ${config.logFile}${RESET}`);
+    process.exit(0);
+  });
+
+  return new Promise((resolve) => {
+    tail.on('close', () => {
+      resolve(`Agent running in background. Log: ${config.logFile}`);
+    });
+  });
+}
+
 async function executeWithClaude(
   prompt: string,
   options: ExecuteWithClaudeOptions
@@ -1892,330 +2075,116 @@ async function executeWithClaude(
     model,
   } = options;
 
-  // Determine execution mode:
-  // - Default is foreground (visible output)
-  // - --background (-b) runs detached
-  // - --watch (-w) runs detached but tails log
-  // - --foreground (-f) is deprecated (now default)
+  // Determine execution mode
   const runInBackground = background === true && !watch;
   const runInWatch = watch === true;
   const runInForeground = !runInBackground && !runInWatch;
 
-  // Track start time for status updates
   const startMs = Date.now();
-
-  // Ensure the project is trusted (prevents workspace trust dialog)
   const projectRoot = getProjectRoot();
   ensureProjectTrusted(projectRoot);
 
-  // Load squad for context-based MCP config resolution
+  // Resolve model and provider
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
-
-  // Select MCP config based on squad context (dynamic) or legacy mapping (fallback)
   const mcpConfigPath = selectMcpConfig(squadName, squad);
-
-  // Detect task type for telemetry and model routing
   const taskType = detectTaskType(agentName);
-
-  // Resolve model: explicit --model > squad context routing > undefined (provider default)
   const resolvedModel = resolveModel(model, squad, taskType);
-
-  // Detect provider from model (defaults to anthropic if no model specified)
   const detectedProvider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
-  // For non-Anthropic providers, delegate to executeWithProvider
+  // Delegate to non-Anthropic providers
   if (detectedProvider !== 'anthropic' && detectedProvider !== 'unknown') {
     if (verbose) {
       const source = model ? 'explicit' : 'auto-routed';
       writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
       writeLine(`  ${colors.dim}Provider: ${detectedProvider}${RESET}`);
     }
-
     return executeWithProvider(detectedProvider, prompt, {
-      verbose,
-      foreground,
-      cwd: getProjectRoot(),
-      squadName,
-      agentName,
+      verbose, foreground, cwd: projectRoot, squadName, agentName,
     });
   }
 
-  // For Anthropic, convert full model name to Claude Code alias
   const claudeModelAlias = resolvedModel ? getClaudeModelAlias(resolvedModel) : undefined;
 
-  // Build execution context for telemetry
   const execContext: ExecutionContext = {
-    squad: squadName,
-    agent: agentName,
-    taskType,
-    trigger,
+    squad: squadName, agent: agentName, taskType, trigger,
     executionId: generateExecutionId(),
   };
 
-  // Build env: remove ANTHROPIC_API_KEY unless --use-api is set
-  // This ensures Claude uses OAuth subscription by default
-  // Also remove CLAUDECODE to allow spawning from within Claude Code sessions
+  // Build base env: remove ANTHROPIC_API_KEY unless --use-api, remove CLAUDECODE
   const { ANTHROPIC_API_KEY: _apiKey, CLAUDECODE: _claudeCode, ...envWithoutApiKey } = process.env;
   const spawnEnv = useApi
     ? (() => { const { CLAUDECODE: _, ...rest } = process.env; return rest; })()
     : envWithoutApiKey;
 
-  // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
-  // Register context with bridge for telemetry (non-blocking)
   await registerContextWithBridge(execContext);
 
-  // Foreground mode: run Claude directly in the terminal (default)
+  // ── Foreground mode ──────────────────────────────────────────────────
   if (runInForeground) {
     if (verbose) {
-      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-      writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
-      writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
-      writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
-      writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
-      writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
-      if (effort) {
-        writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
-      }
-      if (skills && skills.length > 0) {
-        writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
-      }
-      if (resolvedModel || claudeModelAlias) {
-        const source = model ? 'explicit' : 'auto-routed';
-        const displayModel = resolvedModel || claudeModelAlias;
-        writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
-      }
+      logVerboseExecution({
+        projectRoot, mode: 'foreground', useApi, execContext,
+        effort, skills, resolvedModel, claudeModelAlias, explicitModel: model,
+      });
     }
 
-    // Build claude args as array to avoid shell escaping issues with large prompts.
-    // Previous approach embedded the prompt in a shell string, which broke when
-    // the prompt contained characters that interfered with shell quoting.
+    // Build claude args as array to avoid shell escaping issues with large prompts
     const claudeArgs: string[] = [];
-    // Use --print when stdin is not a TTY (cron, systemd, pipe) to prevent Claude
-    // from entering interactive mode and hanging.
     if (!process.stdin.isTTY) claudeArgs.push('--print');
     claudeArgs.push('--dangerously-skip-permissions');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
-    claudeArgs.push('--', prompt); // raw prompt, no shell escaping needed
+    claudeArgs.push('--', prompt);
 
-    // Pass env vars via spawn env option to avoid shell injection
-    const agentEnv: Record<string, string> = {
-      ...spawnEnv as Record<string, string>,
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-      ...(effort ? { CLAUDE_EFFORT: effort } : {}),
-      ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
-    };
+    const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
+      effort, skills, includeOtel: true,
+    });
 
-    // Create isolated worktree for this agent execution
-    const fgTimestamp = Date.now();
-    const fgBranchName = `agent/${squadName}/${agentName}-${fgTimestamp}`;
-    const fgWorktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${fgTimestamp}`);
-    let fgWorkDir = projectRoot;
-    try {
-      mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-      execSync(`git worktree add '${shellEscape(fgWorktreePath)}' -b '${shellEscape(fgBranchName)}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
-      fgWorkDir = fgWorktreePath;
-    } catch {
-      // Worktree creation failed — fall back to project root
-    }
-
-    return new Promise((resolve, reject) => {
-      const claude = spawn('claude', claudeArgs, {
-        stdio: 'inherit',
-        cwd: fgWorkDir,
-        env: agentEnv,
-      });
-
-      claude.on('close', async (code) => {
-        const durationMs = Date.now() - startMs;
-
-        if (code === 0) {
-          // Update execution status to completed
-          updateExecutionStatus(squadName, agentName, execContext.executionId, 'completed', {
-            outcome: 'Session completed successfully',
-            durationMs,
-          });
-
-          // Auto-commit any changes made by the agent
-          const commitResult = await autoCommitAgentWork(squadName, agentName, execContext.executionId);
-          if (commitResult.committed) {
-            writeLine();
-            writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
-          }
-
-          resolve('Session completed');
-        } else {
-          // Update execution status to failed
-          updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
-            error: `Claude exited with code ${code}`,
-            durationMs,
-          });
-          reject(new Error(`Claude exited with code ${code}`));
-        }
-      });
-
-      claude.on('error', (err) => {
-        const durationMs = Date.now() - startMs;
-        updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
-          error: String(err),
-          durationMs,
-        });
-        reject(err);
-      });
+    return executeForeground({
+      prompt, claudeArgs, agentEnv, projectRoot,
+      squadName, agentName, execContext, startMs,
     });
   }
 
-  // Watch mode: run in background but tail the log
-  if (runInWatch) {
-    const timestamp = Date.now();
-    const logDir = join(projectRoot, '.agents', 'logs', squadName);
-    const logFile = join(logDir, `${agentName}-${timestamp}.log`);
-    const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
-
-    // Ensure log directory exists
-    if (!existsSync(logDir)) {
-      mkdirSync(logDir, { recursive: true });
-    }
-
-    if (verbose) {
-      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-      writeLine(`  ${colors.dim}Mode: watch (background + tail)${RESET}`);
-      writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
-    }
-
-    // Pass env vars via spawn env option to avoid shell injection
-    const watchEnv: Record<string, string> = {
-      ...spawnEnv as Record<string, string>,
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-    };
-
-    const modelFlag = claudeModelAlias ? `--model '${shellEscape(claudeModelAlias)}'` : '';
-    const watchBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-    const escapedWatchWorktreeDir = shellEscape(`\${PROJECT_ROOT}/../.worktrees/${squadName}-${agentName}-${timestamp}`);
-    const shellScript = `PROJECT_ROOT='${shellEscape(projectRoot)}'; mkdir -p "\${PROJECT_ROOT}/../.worktrees"; WORK_DIR="\${PROJECT_ROOT}"; if git -C "\${PROJECT_ROOT}" worktree add '${escapedWatchWorktreeDir}' -b '${shellEscape(watchBranchName)}' HEAD 2>/dev/null; then WORK_DIR='${escapedWatchWorktreeDir}'; fi; cd "\${WORK_DIR}"; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${shellEscape(logFile)}' 2>&1`;
-    const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
-
-    // Spawn background process
-    const child = spawn('sh', ['-c', wrapperScript], {
-      cwd: projectRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: watchEnv,
-    });
-    child.unref();
-
-    // Wait a moment for the log file to be created
-    await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
-
-    // Tail the log file
-    writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
-    writeLine();
-
-    const tail = spawn('tail', ['-f', logFile], { stdio: 'inherit' });
-
-    // Handle Ctrl+C gracefully
-    process.on('SIGINT', () => {
-      tail.kill();
-      writeLine();
-      writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
-      writeLine(`  ${colors.dim}Resume: tail -f ${logFile}${RESET}`);
-      process.exit(0);
-    });
-
-    // Wait for tail to exit (which won't happen unless killed)
-    return new Promise((resolve) => {
-      tail.on('close', () => {
-        resolve(`Agent running in background. Log: ${logFile}`);
-      });
-    });
-  }
-
-  // Background mode (--background): run detached with log file
-  // This is now opt-in behavior, not default
+  // ── Detached modes (watch + background) ──────────────────────────────
   const timestamp = Date.now();
-  const logDir = join(projectRoot, '.agents', 'logs', squadName);
-  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
-  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+  const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
+  const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
+    effort, skills, includeOtel: !runInWatch,
+  });
 
-  // Ensure log directory exists
-  if (!existsSync(logDir)) {
-    mkdirSync(logDir, { recursive: true });
+  const wrapperScript = buildDetachedShellScript({
+    projectRoot, squadName, agentName, timestamp,
+    claudeModelAlias, escapedPrompt, logFile, pidFile,
+  });
+
+  if (runInWatch) {
+    if (verbose) {
+      logVerboseExecution({
+        projectRoot, mode: 'watch (background + tail)',
+        execContext, logFile,
+      });
+    }
+
+    return executeWatch({ projectRoot, agentEnv, logFile, wrapperScript });
   }
 
+  // ── Background mode ──────────────────────────────────────────────────
   if (verbose) {
-    writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-    writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
-    writeLine(`  ${colors.dim}MCP config: ${mcpConfigPath}${RESET}`);
-    writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
-    writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
-    writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
-    writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
-    if (effort) {
-      writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
-    }
-    if (skills && skills.length > 0) {
-      writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
-    }
-    if (resolvedModel || claudeModelAlias) {
-      const source = model ? 'explicit' : 'auto-routed';
-      const displayModel = resolvedModel || claudeModelAlias;
-      writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
-    }
+    logVerboseExecution({
+      projectRoot, mode: 'background', useApi, execContext,
+      effort, skills, resolvedModel, claudeModelAlias,
+      explicitModel: model, logFile, mcpConfigPath,
+    });
   }
-
-  // Build Claude command with all permissions bypassed for autonomous execution
-  // --print ensures non-interactive mode (exits after completion, no REPL)
-  // Use shell 'exec' to replace shell with claude while keeping file redirect
-  // This ensures output goes to log even after parent exits
-  // Pass env vars via spawn env option to avoid shell injection
-  const bgEnv: Record<string, string> = {
-    ...spawnEnv as Record<string, string>,
-    SQUADS_SQUAD: execContext.squad,
-    SQUADS_AGENT: execContext.agent,
-    SQUADS_TASK_TYPE: execContext.taskType,
-    SQUADS_TRIGGER: execContext.trigger,
-    SQUADS_EXECUTION_ID: execContext.executionId,
-    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-    OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-    ...(effort ? { CLAUDE_EFFORT: effort } : {}),
-    ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
-  };
-
-  // Build shell command:
-  // 1. Create isolated worktree for this agent (prevents branch collisions)
-  // 2. cd to worktree (or project root as fallback)
-  // 3. run claude (output to logfile)
-  // Note: MCP config removed - causes blocking issues in background execution
-  const modelFlag = claudeModelAlias ? `--model '${shellEscape(claudeModelAlias)}'` : '';
-  const bgBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-  const escapedBgWorktreeDir = shellEscape(`${projectRoot}/../.worktrees/${squadName}-${agentName}-${timestamp}`);
-  const escapedProjectRoot = shellEscape(projectRoot);
-  const shellScript = `mkdir -p '${escapedProjectRoot}/../.worktrees'; WORK_DIR='${escapedProjectRoot}'; if git -C '${escapedProjectRoot}' worktree add '${escapedBgWorktreeDir}' -b '${shellEscape(bgBranchName)}' HEAD 2>/dev/null; then WORK_DIR='${escapedBgWorktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${shellEscape(logFile)}' 2>&1`;
-
-
-  // Get child PID by using a wrapper that writes PID then execs
-  const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: projectRoot,
     detached: true,
     stdio: 'ignore',
-    env: bgEnv,
+    env: agentEnv,
   });
-
   child.unref();
 
   if (verbose) {
@@ -2275,7 +2244,7 @@ async function executeWithProvider(
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${shellEscape(worktreePath)}' -b '${shellEscape(branchName)}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch {
     // Worktree creation failed — fall back to project root
@@ -2323,9 +2292,9 @@ async function executeWithProvider(
   }
 
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${shellEscape(a)}'`).join(' ');
-  const shellScript = `cd '${shellEscape(workDir)}' && ${cliConfig.command} ${providerArgs} > '${shellEscape(logFile)}' 2>&1`;
-  const wrapperScript = `echo $$ > '${shellEscape(pidFile)}'; ${shellScript}`;
+  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,
