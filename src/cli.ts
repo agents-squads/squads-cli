@@ -92,6 +92,10 @@ function removedCommand(name: string, alternative: string): () => void {
 // Maps command paths to user-friendly hints when required arguments are missing.
 // Each entry: { message: plain-language explanation, example: usage example }
 const friendlyArgErrors: Record<string, { message: string; example: string }> = {
+  'create': {
+    message: 'Specify a name for the new squad.',
+    example: 'squads create marketing             # create with interactive prompts\n  squads create marketing -d "Drive growth" -y  # non-interactive',
+  },
   'run': {
     message: 'Specify which squad or agent to run.',
     example: 'squads run engineering            # run the whole squad\n  squads run engineering/code-review  # run a specific agent',
@@ -229,6 +233,26 @@ program
   .action(async (...args) => {
     const { initCommand } = await import('./commands/init.js');
     return initCommand(...args);
+  });
+
+// Create command - add a new squad to your workforce
+program
+  .command('create <name>')
+  .description('Create a new squad with directory structure and starter files')
+  .option('-d, --description <text>', 'Squad mission (one sentence)')
+  .option('-g, --goal <text>', 'First goal for the squad')
+  .option('-m, --model <model>', 'Default model (default: sonnet)')
+  .option('-f, --force', 'Overwrite existing squad')
+  .option('-y, --yes', 'Accept all defaults (non-interactive)')
+  .addHelpText('after', `
+Examples:
+  $ squads create marketing                          Create with interactive prompts
+  $ squads create marketing -d "Drive growth" -y     Create non-interactively
+  $ squads create marketing --force                  Overwrite existing squad
+`)
+  .action(async (...args) => {
+    const { createCommand } = await import('./commands/create.js');
+    return createCommand(...args);
   });
 
 // Run command - execute squads or individual agents
