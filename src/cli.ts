@@ -273,6 +273,7 @@ program
   .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
   .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
+  .option('--cloud', 'Dispatch execution to cloud worker via API (requires squads login)')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
   .addHelpText('after', `
@@ -286,6 +287,7 @@ Examples:
   $ squads run engineering -b           Run in background (detached)
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
+  $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
