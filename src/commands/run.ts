@@ -1,7 +1,7 @@
 import ora from 'ora';
 import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
@@ -2224,7 +2224,6 @@ async function executeWithProvider(
   }
 
   const projectRoot = options.cwd || getProjectRoot();
-  const args = cliConfig.buildArgs(prompt);
   const squadName = options.squadName || 'unknown';
   const agentName = options.agentName || 'unknown';
   const timestamp = Date.now();
@@ -2249,6 +2248,26 @@ async function executeWithProvider(
   } catch {
     // Worktree creation failed — fall back to project root
   }
+
+  // Copy .agents directory into worktree so sandboxed providers can access
+  // agent definitions, memory, and config files. Providers like Gemini restrict
+  // file reads to the workspace directory, so these must be local.
+  let effectivePrompt = prompt;
+  if (workDir !== projectRoot) {
+    const agentsDir = join(projectRoot, '.agents');
+    const targetAgentsDir = join(workDir, '.agents');
+    if (existsSync(agentsDir) && !existsSync(targetAgentsDir)) {
+      try {
+        cpSync(agentsDir, targetAgentsDir, { recursive: true });
+      } catch {
+        // Non-fatal: agent def may still be accessible if tracked in git
+      }
+    }
+    // Rewrite absolute paths in prompt so sandboxed providers can resolve them
+    effectivePrompt = prompt.replaceAll(projectRoot, workDir);
+  }
+
+  const args = cliConfig.buildArgs(effectivePrompt);
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -2291,7 +2310,7 @@ async function executeWithProvider(
     mkdirSync(logDir, { recursive: true });
   }
 
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
   const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
   const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
