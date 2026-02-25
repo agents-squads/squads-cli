@@ -67,7 +67,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     displayName: 'Google',
     command: 'gemini',
     install: 'npm i -g @google/gemini-cli',
-    buildArgs: (prompt) => ['--prompt', prompt],
+    buildArgs: (prompt) => ['--yolo', '--prompt', prompt],
   },
 
   openai: {
