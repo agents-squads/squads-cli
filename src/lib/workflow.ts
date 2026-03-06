@@ -431,9 +431,17 @@ export async function runConversation(
       }
     }
 
-    conv = detectConvergence(transcript, maxTurns, costCeiling);
-    if (conv.converged) {
-      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
+    // If any worker returned an error, skip convergence check so the lead always
+    // gets a chance to review the error and decide how to respond.
+    const workerTurnsWithErrors = workers.length > 0
+      ? transcript.turns.filter(t => t.role === 'worker').slice(-workers.length).some(t => t.content.startsWith('[ERROR]'))
+      : false;
+
+    if (!workerTurnsWithErrors) {
+      conv = detectConvergence(transcript, maxTurns, costCeiling);
+      if (conv.converged) {
+        return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
+      }
     }
 
     // Step 4: Lead reviews worker output
