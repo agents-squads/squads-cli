@@ -72,18 +72,19 @@ export function isLoggedIn(): boolean {
 }
 
 export interface VerifiedUser {
-  id: string;
   email: string;
-  name?: string;
-  plan?: string;
+  tenantId: number;
+  tenantSlug: string;
+  tenantName: string;
+  status: string;
 }
 
 // Verify a token against the API and return user data (null on failure)
-export async function verifyToken(token: string, apiUrl: string): Promise<VerifiedUser | null> {
+export async function verifyToken(apiUrl: string, token: string): Promise<VerifiedUser | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(`${apiUrl}/auth/verify`, {
+    const response = await fetch(`${apiUrl}/auth/cli/verify`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     });
@@ -91,10 +92,11 @@ export async function verifyToken(token: string, apiUrl: string): Promise<Verifi
     if (!response.ok) return null;
     const data = await response.json() as Record<string, unknown>;
     return {
-      id: String(data.id ?? ''),
       email: String(data.email ?? ''),
-      name: data.name != null ? String(data.name) : (data.display_name != null ? String(data.display_name) : undefined),
-      plan: data.plan != null ? String(data.plan) : (data.subscription_plan != null ? String(data.subscription_plan) : undefined),
+      tenantId: Number(data.tenant_id ?? 0),
+      tenantSlug: String(data.tenant_slug ?? ''),
+      tenantName: String(data.tenant_name ?? ''),
+      status: String(data.status ?? ''),
     };
   } catch {
     clearTimeout(timeout);
