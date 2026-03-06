@@ -211,6 +211,31 @@ function loadApprovalInstructions(): string {
 }
 
 /**
+ * Load post-execution instructions from .agents/config/post-execution.md.
+ * Substitutes {{squadName}} and {{agentName}} placeholders.
+ * Falls back to a minimal inline default if file not found.
+ */
+function loadPostExecution(squadName: string, agentName: string): string {
+  const squadsDir = findSquadsDir();
+  if (squadsDir) {
+    const postExecPath = join(dirname(squadsDir), 'config', 'post-execution.md');
+    if (existsSync(postExecPath)) {
+      try {
+        const template = readFileSync(postExecPath, 'utf-8');
+        return template
+          .replace(/\{\{squadName\}\}/g, squadName)
+          .replace(/\{\{agentName\}\}/g, agentName);
+      } catch { /* fall through */ }
+    }
+  }
+  // Minimal fallback if template file missing
+  return `After completion:
+- Create a branch, commit with Conventional Commits, push, and open a PR targeting develop
+- NEVER commit to main directly
+- Type /exit when done`;
+}
+
+/**
  * Gather squad context for prompt injection.
  * Includes SQUAD.md mission/goals, agent's existing state, and relevant briefs.
  * This ensures agents build on existing knowledge rather than starting from scratch.
@@ -1767,51 +1792,7 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - If a task is taking too long, move on and note it for next run
 - Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes
 
-After completion:
-
-## 1. Create a branch for your work
-BEFORE making any changes, create a descriptive branch:
-
-\`\`\`bash
-# Pick a type based on what you're doing:
-#   feat/  — new deliverables, research, features
-#   fix/   — bug fixes, corrections
-#   docs/  — documentation
-#   solve/issue-{n} — solving a specific GitHub issue
-git checkout -b {type}/{short-description}
-\`\`\`
-
-Examples: \`feat/agent-orchestration-research\`, \`fix/auth-timeout\`, \`solve/issue-42\`
-The branch name should describe the WORK, not you.
-
-## 2. Commit with Conventional Commits
-\`\`\`bash
-git add .agents/memory/${squadName}/${agentName}/
-git commit -m "memory(${squadName}): ${agentName} state update
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-
-git add -A
-git commit -m "feat(${squadName}): {describe what was created}
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-\`\`\`
-
-Types: \`feat\`, \`fix\`, \`docs\`, \`chore\`, \`memory\`, \`refactor\`, \`test\`
-
-## 3. NEVER commit to main
-- Do NOT commit to \`main\` directly
-- Do NOT push to \`main\`
-- All work goes on your branch
-- If a remote exists, push your branch and open a PR
-
-## 3. Summarize what was accomplished
-
-CRITICAL: When you have completed your tasks OR reached the time limit:
-- Type /exit immediately to end this session
-- Do NOT wait for user input
-- Do NOT ask follow-up questions
-- Just /exit when done`;
+${loadPostExecution(squadName, agentName)}`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
