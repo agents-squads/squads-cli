@@ -18,8 +18,9 @@ import * as net from 'net';
 const TIMEOUT = 10000;
 
 // Required infrastructure services (included in docker-compose)
+const POSTGRES_PORT = parseInt(process.env.POSTGRES_PORT || '5433', 10);
 const SERVICES = {
-  postgres: { port: 5433, type: 'tcp' },
+  postgres: { port: POSTGRES_PORT, type: 'tcp' },
   redis: { port: 6379, type: 'tcp' },
   bridge: { port: 8088, type: 'http', url: 'http://localhost:8088/health' },
 };
@@ -136,8 +137,8 @@ describeInfra('infra', () => {
   });
 
   describe('service connectivity', () => {
-    it('postgres accepts connections on 5433', async () => {
-      const open = await isPortOpen(5433);
+    it(`postgres accepts connections on ${POSTGRES_PORT}`, async () => {
+      const open = await isPortOpen(POSTGRES_PORT);
       expect(open).toBe(true);
     }, TIMEOUT);
 

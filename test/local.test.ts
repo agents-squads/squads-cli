@@ -71,7 +71,7 @@ describe('local', () => {
       const vars = getLocalEnvVars();
 
       expect(vars.LANGFUSE_HOST).toContain('3100');
-      expect(vars.SQUADS_DATABASE_URL).toContain('5433');
+      expect(vars.SQUADS_DATABASE_URL).toContain('5432');
       expect(vars.REDIS_URL).toContain('6379');
     });
   });
