@@ -276,11 +276,15 @@ program
   .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
   .option('--cloud', 'Dispatch execution to cloud worker via API (requires squads login)')
+  .option('--task <directive>', 'Founder directive for conversation mode (replaces lead briefing)')
+  .option('--max-turns <n>', 'Max conversation turns (default: 20)', '20')
+  .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
   .addHelpText('after', `
 Examples:
-  $ squads run engineering              Run whole squad (shows agent list)
+  $ squads run engineering              Run squad conversation (lead → scan → work → review)
+  $ squads run engineering --task "fix CI"  Conversation with founder directive
   $ squads run engineering/code-review  Run specific agent (slash notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run

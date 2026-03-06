@@ -36,6 +36,7 @@ import {
 import { detectProviderFromModel } from '../lib/providers.js';
 import { loadSession, isLoggedIn } from '../lib/auth.js';
 import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
+import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { homedir } from 'os';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -78,6 +79,10 @@ interface RunOptions {
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
   verify?: boolean; // Post-execution verification (default true, --no-verify to skip)
   cloud?: boolean; // Dispatch to cloud worker via API instead of local execution
+  conversation?: boolean; // Run squad as multi-agent conversation (default for squad runs)
+  task?: string; // Founder directive — replaces lead briefing in conversation mode
+  maxTurns?: number; // Max conversation turns (default: 20)
+  costCeiling?: number; // Cost ceiling in USD (default: 25)
 }
 
 /**
@@ -1426,27 +1431,46 @@ async function runSquad(
         return;
       }
     } else {
-      // Run orchestrator if exists, otherwise list agents
-      const orchestrator = squad.agents.find(a =>
-        a.name.includes('lead') || a.trigger === 'Manual'
-      );
+      // Default: Run squad as multi-agent conversation
+      // Lead briefs → scanners discover → workers execute → lead reviews → converge
+      if (options.execute) {
+        writeLine(`  ${bold}Conversation mode${RESET} ${colors.dim}(lead → scan → work → review → verify)${RESET}`);
+        writeLine();
 
-      if (orchestrator) {
-        const agentPath = join(squadsDir, squad.dir, `${orchestrator.name}.md`);
-        if (existsSync(agentPath)) {
-          await runAgent(orchestrator.name, agentPath, squad.dir, options);
+        const convOptions: ConversationOptions = {
+          task: options.task,
+          maxTurns: options.maxTurns,
+          costCeiling: options.costCeiling,
+          verbose: options.verbose,
+          model: options.model,
+        };
+
+        const result = runConversation(squad, convOptions);
+
+        // Save transcript
+        const transcriptPath = saveTranscript(result.transcript);
+
+        writeLine();
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
+        writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
+        if (transcriptPath) {
+          writeLine(`  ${colors.dim}Transcript: ${transcriptPath}${RESET}`);
         }
+        writeLine();
       } else {
-        writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
+        // Dry-run: show what would happen
+        writeLine(`  ${colors.dim}Default mode: conversation (lead → scan → work → review → verify)${RESET}`);
+        writeLine();
         for (const agent of squad.agents) {
           writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
         }
         writeLine();
-        writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
+        writeLine(`  ${colors.dim}Run conversation:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
         writeLine();
-        writeLine(`  ${colors.dim}Run all agents in parallel:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
+        writeLine(`  ${colors.dim}Run single agent:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} -a ${colors.cyan}<agent>${RESET}`);
       }
     }
   }
