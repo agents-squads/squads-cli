@@ -507,6 +507,16 @@ program
     return healthCommand(options);
   });
 
+// Doctor command - check local environment readiness
+program
+  .command('doctor')
+  .description('Check local tools, auth, and project readiness')
+  .option('-v, --verbose', 'Show install hints and optional tools')
+  .action(async (options) => {
+    const { doctorCommand } = await import('./commands/doctor.js');
+    return doctorCommand(options);
+  });
+
 // History command - show recent agent executions
 program
   .command('history')
