@@ -27,7 +27,6 @@ import {
 import {
   type Squad,
   findSquadsDir,
-  loadAgentDefinition,
 } from './squad-parser.js';
 
 // =============================================================================
@@ -74,7 +73,6 @@ function executeAgentTurn(config: AgentTurnConfig): string {
   const { agentName, agentPath, role, squadName, model, transcript, task } = config;
 
   // Build the prompt: agent definition + transcript context + role instructions
-  const definition = loadAgentDefinition(agentPath);
   const transcriptContext = serializeTranscript(transcript);
 
   let roleInstructions: string;
@@ -411,6 +409,9 @@ export async function runConversation(
         transcript,
         cwd: squadCwd,
       });
+      if (output.startsWith('[ERROR]')) {
+        process.stderr.write(`  [WARN] Worker ${workers[0].name} errored: ${output}\n`);
+      }
       addTurn(transcript, workers[0].name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
     } else if (workers.length > 1) {
       log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + workers.length}: ${workers.map(w => w.name).join(', ')} (workers, parallel)`);
@@ -427,6 +428,9 @@ export async function runConversation(
       );
       const workerResults = await Promise.all(workerPromises);
       for (const { agent, output } of workerResults) {
+        if (output.startsWith('[ERROR]')) {
+          process.stderr.write(`  [WARN] Worker ${agent.name} errored: ${output}\n`);
+        }
         addTurn(transcript, agent.name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
       }
     }

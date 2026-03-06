@@ -127,6 +127,19 @@ const CONVERGENCE_PHRASES = [
   'no open issues', 'no pending tasks', 'no pending issues',
 ];
 
+/** Phrases in a verifier turn that signal approval → converge */
+const VERIFIER_APPROVAL_PHRASES = [
+  'approved', 'lgtm', 'looks good',
+  'all checks pass', 'all tests pass', 'tests pass',
+  'passed', 'quality standards met',
+];
+
+/** Phrases in a verifier turn that signal rejection → continue cycle */
+const VERIFIER_REJECTION_PHRASES = [
+  'failed', 'rejected', 'needs fixes', 'needs changes',
+  'does not pass', 'did not pass', 'failing',
+];
+
 /** Phrases that indicate more work needed */
 const CONTINUATION_PHRASES = [
   'needs review', 'needs feedback', 'needs input', 'need clarification',
@@ -166,9 +179,21 @@ export function detectConvergence(
 
   const lastTurn = transcript.turns[transcript.turns.length - 1];
   const content = lastTurn.content;
+  const lower = content.toLowerCase();
+
+  // Verifier turns: check approval/rejection before generic signals
+  if (lastTurn.role === 'verifier') {
+    const rejected = VERIFIER_REJECTION_PHRASES.some(phrase => lower.includes(phrase));
+    if (rejected) {
+      return { converged: false, reason: 'Verifier rejected — continuing cycle' };
+    }
+    const approved = VERIFIER_APPROVAL_PHRASES.some(phrase => lower.includes(phrase));
+    if (approved) {
+      return { converged: true, reason: 'Verifier approved' };
+    }
+  }
 
   // Continuation signals beat convergence (bias toward completing work)
-  const lower = content.toLowerCase();
   const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
   if (hasContinuation) {
     return { converged: false, reason: 'Continuation signal detected' };
