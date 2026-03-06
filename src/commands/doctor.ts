@@ -134,24 +134,24 @@ function checkTool(tool: Tool): ToolResult {
 function checkAuth(): AuthResult[] {
   const results: AuthResult[] = [];
 
-  // Claude auth
+  // Claude auth — detect method and account
   try {
-    // Check if claude can authenticate (Max subscription or API key)
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-    // Check for OAuth credentials
-    const oauthPath = join(homedir(), '.claude', 'credentials.json');
-    const hasOAuth = existsSync(oauthPath);
-
     if (hasApiKey) {
-      results.push({ name: 'Anthropic', authenticated: true, detail: 'API key' });
-    } else if (hasOAuth) {
-      results.push({ name: 'Anthropic', authenticated: true, detail: 'OAuth' });
+      results.push({ name: 'Claude', authenticated: true, detail: 'API key' });
     } else {
-      // May still work via Max subscription keychain
-      results.push({ name: 'Anthropic', authenticated: true, detail: 'OAuth (Max subscription)' });
+      // Check whoami for account info
+      try {
+        const whoami = execSync('claude whoami 2>&1', { encoding: 'utf-8', timeout: 5000 });
+        const emailMatch = whoami.match(/[\w.+-]+@[\w.-]+/);
+        const email = emailMatch ? emailMatch[0] : 'OAuth';
+        results.push({ name: 'Claude', authenticated: true, detail: email });
+      } catch {
+        results.push({ name: 'Claude', authenticated: true, detail: 'OAuth' });
+      }
     }
   } catch {
-    results.push({ name: 'Anthropic', authenticated: false });
+    results.push({ name: 'Claude', authenticated: false });
   }
 
   // GitHub auth
@@ -167,16 +167,17 @@ function checkAuth(): AuthResult[] {
     }
   }
 
-  // Google Cloud auth
+  // Google Cloud auth — show active account
   try {
-    const output = execSync('gcloud auth list --format="value(account)" 2>&1', {
+    const output = execSync('gcloud config get-value account 2>/dev/null', {
       encoding: 'utf-8',
       timeout: 5000,
     });
-    if (output.trim()) {
-      results.push({ name: 'Google Cloud', authenticated: true, detail: output.trim().split('\n')[0] });
+    const account = output.trim();
+    if (account && account !== '(unset)') {
+      results.push({ name: 'GCP', authenticated: true, detail: account });
     } else {
-      results.push({ name: 'Google Cloud', authenticated: false, detail: 'Run: gcloud auth login' });
+      results.push({ name: 'GCP', authenticated: false, detail: 'gcloud auth login' });
     }
   } catch {
     // gcloud not installed — skip
@@ -370,23 +371,15 @@ export interface DoctorOptions {
 }
 
 export async function doctorCommand(options: DoctorOptions = {}): Promise<void> {
-  const W = 58; // box width
-  const line = (c: string) => `${colors.purple}│${RESET}${c.padEnd(W)}${colors.purple}│${RESET}`;
-  const divider = `  ${colors.purple}├${'─'.repeat(W)}┤${RESET}`;
-  const top = `  ${colors.purple}┌${'─'.repeat(W)}┐${RESET}`;
-  const bottom = `  ${colors.purple}└${'─'.repeat(W)}┘${RESET}`;
-  const section = (title: string) => line(` ${bold}${title}${RESET}`.padEnd(W + 14));
-
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}doctor${RESET}`);
   writeLine();
 
-  // Gather all data first
+  // Gather all data
   const toolResults = TOOLS.map(checkTool);
   const core = toolResults.filter(r => r.tool.category === 'core');
   const recommended = toolResults.filter(r => r.tool.category === 'recommended');
   const optional = toolResults.filter(r => r.tool.category === 'optional');
-  const installedCount = toolResults.filter(r => r.installed).length;
   const coreInstalled = core.filter(r => r.installed).length;
   const authResults = checkAuth();
   const project = checkProject();
@@ -394,104 +387,75 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<void> 
   const daemon = checkDaemon();
   const recentTranscripts = project.hasProject ? getRecentTranscripts(project.squadsDir!) : [];
 
-  // === RENDER ===
-  writeLine(top);
-
-  // --- Tools ---
-  writeLine(line(` ${bold}Tools${RESET} ${colors.dim}${installedCount}/${toolResults.length}${RESET}`.padEnd(W + 22)));
-  writeLine(divider);
-
-  function printTools(items: ToolResult[], label: string) {
-    writeLine(line(`  ${colors.dim}${label}${RESET}`.padEnd(W + 12)));
+  // === TOOLS ===
+  function printTools(label: string, items: ToolResult[]) {
+    const count = items.filter(r => r.installed).length;
+    writeLine(`  ${colors.dim}${label}${RESET} ${colors.dim}(${count}/${items.length})${RESET}`);
     for (const r of items) {
       const icon = r.installed ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
-      const name = r.installed ? `${colors.cyan}${r.tool.name}${RESET}` : `${colors.yellow}${r.tool.name}${RESET}`;
-      const ver = r.installed && r.version ? `${colors.dim}${r.version.slice(0, 20)}${RESET}` : `${colors.dim}not installed${RESET}`;
-      writeLine(line(`  ${icon} ${name}`.padEnd(W + 24) + ''));
-      // Put version/status on same conceptual line using padding
-      const detail = r.installed ? ver : `${colors.dim}→ ${r.tool.unlocks}${RESET}`;
-      writeLine(line(`      ${detail}`.padEnd(W + 12)));
+      const ver = r.installed && r.version ? ` ${colors.dim}${r.version.slice(0, 20)}${RESET}` : '';
+      const hint = !r.installed ? `  ${colors.dim}→ ${r.tool.unlocks}${RESET}` : '';
+      writeLine(`    ${icon} ${colors.cyan}${padEnd(r.tool.name, 10)}${RESET}${r.tool.purpose}${ver}${hint}`);
       if (!r.installed && options.verbose) {
-        writeLine(line(`      ${colors.cyan}$${RESET} ${r.tool.installHint}`.padEnd(W + 12)));
+        writeLine(`      ${colors.dim}$ ${r.tool.installHint}${RESET}`);
       }
     }
   }
 
-  printTools(core, 'Core');
-  printTools(recommended, 'Recommended');
+  printTools('Core', core);
+  printTools('Recommended', recommended);
   if (options.verbose || optional.some(r => r.installed)) {
-    printTools(optional, 'Optional');
+    printTools('Optional', optional);
   }
+  writeLine();
 
-  // --- Auth ---
-  writeLine(divider);
-  writeLine(line(` ${bold}Auth${RESET}`.padEnd(W + 10)));
-  writeLine(divider);
-  for (const auth of authResults) {
-    const icon = auth.authenticated ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
-    const name = auth.authenticated ? `${colors.cyan}${auth.name}${RESET}` : `${colors.yellow}${auth.name}${RESET}`;
-    const detail = auth.detail ? ` ${colors.dim}${auth.detail}${RESET}` : '';
-    writeLine(line(`  ${icon} ${name}${detail}`.padEnd(W + 24)));
-  }
+  // === AUTH ===
+  const authLine = authResults.map(a => {
+    const icon = a.authenticated ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
+    const detail = a.detail ? ` ${colors.dim}(${a.detail})${RESET}` : '';
+    return `${icon} ${a.name}${detail}`;
+  }).join('  ');
+  writeLine(`  ${authLine}`);
+  writeLine();
 
-  // --- Project ---
-  writeLine(divider);
-  writeLine(line(` ${bold}Project${RESET}`.padEnd(W + 10)));
-  writeLine(divider);
+  // === PROJECT ===
   if (project.hasProject) {
-    writeLine(line(`  ${colors.green}✓${RESET} ${colors.cyan}${project.squadCount}${RESET} squads  ${colors.dim}│${RESET}  ${colors.cyan}${project.agentCount}${RESET} agents  ${colors.dim}│${RESET}  ${project.hasMemory ? `${colors.green}✓${RESET} memory` : `${colors.red}✗${RESET} memory`}`.padEnd(W + 46)));
-    writeLine(line(`    ${colors.dim}${project.squadsDir}${RESET}`.padEnd(W + 12)));
+    writeLine(`  ${colors.cyan}${project.squadCount}${RESET} squads  ${colors.dim}│${RESET}  ${colors.cyan}${project.agentCount}${RESET} agents  ${colors.dim}│${RESET}  ${colors.dim}${project.squadsDir}${RESET}`);
   } else {
-    writeLine(line(`  ${colors.yellow}○${RESET} No project ${colors.dim}— run: squads init${RESET}`.padEnd(W + 22)));
+    writeLine(`  ${colors.yellow}○${RESET} No project found ${colors.dim}— squads init${RESET}`);
   }
+  writeLine();
 
-  // --- Live Execution ---
-  writeLine(divider);
-  const runningCount = running.length;
-  const daemonIcon = daemon.running ? `${colors.green}✓${RESET}` : `${colors.dim}○${RESET}`;
-  const daemonText = daemon.running ? `${colors.green}daemon on${RESET}` : `${colors.dim}daemon off${RESET}`;
-  writeLine(line(` ${bold}Live${RESET}  ${daemonIcon} ${daemonText}  ${colors.dim}│${RESET}  ${runningCount > 0 ? `${colors.green}${runningCount}${RESET} running` : `${colors.dim}0 running${RESET}`}`.padEnd(W + 34)));
-  writeLine(divider);
+  // === LIVE ===
+  const daemonStatus = daemon.running
+    ? `${colors.green}✓${RESET} daemon`
+    : `${colors.dim}○ daemon off${RESET}`;
+  const runCount = running.length > 0
+    ? `${colors.green}${running.length}${RESET} running`
+    : `${colors.dim}0 running${RESET}`;
+  writeLine(`  ${daemonStatus}  ${colors.dim}│${RESET}  ${runCount}`);
 
-  if (running.length > 0) {
-    for (const r of running) {
-      const elapsed = r.elapsed && r.elapsed !== '0m' ? ` ${colors.dim}${r.elapsed}${RESET}` : '';
-      const task = r.task ? ` ${colors.dim}${r.task.slice(0, 40)}...${RESET}` : '';
-      writeLine(line(`  ${colors.green}▸${RESET} ${colors.cyan}${r.squad}${RESET}${elapsed}${task}`.padEnd(W + 34)));
-    }
+  for (const r of running) {
+    const task = r.task ? `${colors.dim}${r.task.slice(0, 50)}${RESET}` : '';
+    writeLine(`    ${colors.green}▸${RESET} ${colors.cyan}${r.squad}${RESET} ${task}`);
   }
 
   if (recentTranscripts.length > 0) {
-    if (running.length > 0) writeLine(line(''));
-    writeLine(line(`  ${colors.dim}Recent:${RESET}`.padEnd(W + 12)));
+    writeLine();
     for (const t of recentTranscripts.slice(0, 5)) {
-      const agoColor = t.ago.includes('m ago') || t.ago === 'just now' ? colors.green : colors.dim;
-      writeLine(line(`  ${agoColor}${padEnd(t.ago, 10)}${RESET}${colors.cyan}${padEnd(t.squad, 14)}${RESET}${colors.dim}${t.turns} turns  ~$${t.cost}${RESET}`.padEnd(W + 34)));
+      writeLine(`    ${colors.dim}${padEnd(t.ago, 9)}${RESET} ${colors.cyan}${padEnd(t.squad, 13)}${RESET} ${colors.dim}${t.turns} turns  ~$${t.cost}${RESET}`);
     }
-  } else if (running.length === 0) {
-    writeLine(line(`  ${colors.dim}No recent activity${RESET}`.padEnd(W + 12)));
   }
-
-  writeLine(bottom);
   writeLine();
 
-  // === READINESS (outside box) ===
+  // === READINESS ===
   if (coreInstalled === core.length && project.hasProject) {
-    writeLine(`  ${colors.green}${icons.success} Ready${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}       ${colors.dim}Run a conversation${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads status            ${colors.dim}Overview${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads doctor            ${colors.dim}This screen${RESET}`);
+    writeLine(`  ${colors.green}✓ Ready${RESET}`);
   } else if (coreInstalled === core.length) {
-    writeLine(`  ${colors.yellow}${icons.warning} Tools ready — initialize a project${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} squads init`);
+    writeLine(`  ${colors.yellow}○ Run: squads init${RESET}`);
   } else {
     const missing = core.filter(r => !r.installed).map(r => r.tool.name);
-    writeLine(`  ${colors.red}${icons.error} Missing: ${missing.join(', ')}${RESET}`);
-    for (const r of core.filter(r => !r.installed)) {
-      writeLine(`  ${colors.dim}$${RESET} ${r.tool.installHint}`);
-    }
+    writeLine(`  ${colors.red}✗ Missing: ${missing.join(', ')}${RESET}`);
   }
-
   writeLine();
 }
