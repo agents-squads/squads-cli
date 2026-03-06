@@ -8,6 +8,7 @@
  */
 
 import { join } from 'path';
+import { tmpdir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
@@ -15,9 +16,11 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 import {
   type AgentRole,
+  type ModelConfig,
   type Transcript,
   classifyAgent,
   modelForRole,
+  providerForRole,
   createTranscript,
   serializeTranscript,
   addTurn,
@@ -45,6 +48,8 @@ export interface ConversationOptions {
   verbose?: boolean;
   /** Model override for all agents */
   model?: string;
+  /** Use multi-LLM routing: gemini for scanners/verifiers, claude for leads/workers (default: true) */
+  multiLlm?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -73,20 +78,18 @@ interface AgentTurnConfig {
 function executeAgentTurn(config: AgentTurnConfig): string {
   const { agentName, agentPath, role, squadName, model, transcript, task } = config;
 
-  // Build the prompt: agent definition + transcript context + role instructions
-  const definition = loadAgentDefinition(agentPath);
+  // Build the prompt: transcript context + role instructions
   const transcriptContext = serializeTranscript(transcript);
 
   let roleInstructions: string;
   switch (role) {
     case 'lead':
       if (transcript.turns.length === 0 && task) {
-        // First turn with founder directive — replaces lead briefing
-        roleInstructions = `## Founder Directive\n\n${task}\n\nBrief the team on this directive. Set priorities and assign work.`;
+        roleInstructions = `## Founder Directive\n\n${task}\n\nBrief the team on this directive. Set priorities and assign work.\nKeep your brief under 500 words — list concrete tasks, not context the team already knows.`;
       } else if (transcript.turns.length === 0) {
-        roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do`;
+        roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do\nKeep your brief under 500 words — action items only, skip background.`;
       } else {
-        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs that pass CI using \`gh pr merge --squash --delete-branch\``;
+        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs that pass CI using \`gh pr merge --squash --delete-branch\`\nKeep your review under 300 words.`;
       }
       break;
     case 'scanner':
@@ -145,6 +148,67 @@ IMPORTANT:
     }
     return `[ERROR] Agent ${agentName} failed: ${error.message || 'unknown error'}`;
   }
+}
+
+/**
+ * Execute a turn via Gemini CLI (for scanner/verifier roles — read-only, no tool use).
+ * Falls back to Claude if gemini CLI is not available.
+ */
+function executeGeminiTurn(config: AgentTurnConfig): Promise<string> {
+  const { agentName, agentPath, role, squadName, model, transcript } = config;
+
+  const definition = loadAgentDefinition(agentPath);
+  const transcriptContext = serializeTranscript(transcript);
+
+  const roleInstructions = role === 'scanner'
+    ? 'Scan for issues, gaps, and opportunities. Report findings concisely. Do NOT fix anything — just discover and report.'
+    : 'Verify that work meets quality standards. Check for errors, omissions, and alignment with goals. Report pass/fail with specifics.';
+
+  const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
+
+## Agent Definition
+${definition}
+
+## Instructions
+${roleInstructions}
+
+${transcriptContext}
+
+IMPORTANT:
+- Be concise. Your output becomes part of a shared transcript.
+- Reference specific issue numbers, PR numbers, and file paths.
+- If there's nothing to do, say "Nothing to do" clearly.
+- Summarize findings in 2-3 sentences.`;
+
+  const resolvedModel = model || 'gemini-2.5-flash';
+
+  // Write prompt to temp file to avoid shell escaping issues
+  const tmpFile = join(tmpdir(), `gemini-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`);
+  writeFileSync(tmpFile, prompt);
+
+  return new Promise((resolve) => {
+    exec(
+      `cat '${tmpFile}' | gemini --output-format text -m ${resolvedModel}${config.cwd ? ` --include-directories "${config.cwd}"` : ''}; rm -f '${tmpFile}'`,
+      {
+        cwd: config.cwd || process.cwd(),
+        timeout: 5 * 60 * 1000, // 5 min (gemini is fast)
+        maxBuffer: 10 * 1024 * 1024,
+        encoding: 'utf-8',
+      },
+      (error, stdout) => {
+        // Clean up temp file in case exec failed before rm
+        try { if (existsSync(tmpFile)) execSync(`rm -f '${tmpFile}'`); } catch { /* ignore */ }
+        if (stdout && stdout.trim().length > 0) {
+          resolve(stdout.trim());
+        } else if (error) {
+          // Fallback to Claude if gemini fails
+          resolve(executeAgentTurn(config));
+        } else {
+          resolve('[No output]');
+        }
+      }
+    );
+  });
 }
 
 /**
@@ -264,10 +328,10 @@ export interface ConversationResult {
  *
  * Turn order per cycle:
  * 1. Lead briefs (or founder directive on first turn)
- * 2. Scanners discover (parallel-safe but run sequentially for simplicity)
- * 3. Workers execute
- * 4. Lead reviews
- * 5. Verifiers check (if workers produced output)
+ * 2. Scanners discover (parallel, Gemini when available)
+ * 3. Workers execute (parallel if multiple)
+ * 4. Lead reviews (skipped if workers converged)
+ * 5. Verifiers check (parallel, Gemini when available)
  * 6. Check convergence → loop or exit
  */
 export async function runConversation(
@@ -333,7 +397,8 @@ export async function runConversation(
 
   // === CYCLE LOOP ===
   let cycleCount = 0;
-  const MAX_CYCLES = 5; // Safety: max 5 full cycles (lead→scan→work→review→verify)
+  const MAX_CYCLES = 3; // 3 cycles max — cycle 1 does real work, 2-3 are review/polish
+  const useGemini = options.multiLlm !== false; // default: true
 
   while (cycleCount < MAX_CYCLES) {
     cycleCount++;
@@ -346,10 +411,10 @@ export async function runConversation(
       agentPath: lead.path,
       role: 'lead',
       squadName: squad.name,
+      cwd: squadCwd,
       model: options.model || modelForRole('lead'),
       transcript,
       task: cycleCount === 1 ? options.task : undefined,
-      cwd: squadCwd,
     });
     addTurn(transcript, lead.name, 'lead', leadOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -360,37 +425,27 @@ export async function runConversation(
       return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
-    // Step 2: Scanners (only on first cycle) — run in parallel
+    // Step 2: Scanners (only on first cycle) — parallel, Gemini when available
     if (cycleCount === 1 && scanners.length > 0) {
-      if (scanners.length === 1) {
-        log(`Turn ${transcript.turns.length + 1}: ${scanners[0].name} (scanner)`);
-        const output = executeAgentTurn({
-          agentName: scanners[0].name,
-          agentPath: scanners[0].path,
+      const scannerProvider = useGemini ? 'gemini' : 'claude';
+      log(`Turns ${transcript.turns.length + 1}+: ${scanners.map(s => s.name).join(', ')} (scanners, ${scannerProvider})`);
+
+      const scannerPromises = scanners.map(scanner => {
+        const turnConfig: AgentTurnConfig = {
+          agentName: scanner.name,
+          agentPath: scanner.path,
           role: 'scanner',
           squadName: squad.name,
-          model: options.model || modelForRole('scanner'),
-          transcript,
           cwd: squadCwd,
-        });
-        addTurn(transcript, scanners[0].name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
-      } else {
-        log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + scanners.length}: ${scanners.map(s => s.name).join(', ')} (scanners, parallel)`);
-        const scannerPromises = scanners.map(scanner =>
-          executeAgentTurnAsync({
-            agentName: scanner.name,
-            agentPath: scanner.path,
-            role: 'scanner',
-            squadName: squad.name,
-            model: options.model || modelForRole('scanner'),
-            transcript, // snapshot — all scanners see same context
-            cwd: squadCwd,
-          }).then(output => ({ agent: scanner, output }))
-        );
-        const scannerResults = await Promise.all(scannerPromises);
-        for (const { agent, output } of scannerResults) {
-          addTurn(transcript, agent.name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
-        }
+          model: options.model || (useGemini ? 'gemini-2.5-flash' : modelForRole('scanner')),
+          transcript,
+        };
+        const executor = useGemini ? executeGeminiTurn(turnConfig) : executeAgentTurnAsync(turnConfig);
+        return executor.then(output => ({ agent: scanner, output }));
+      });
+      const scannerResults = await Promise.all(scannerPromises);
+      for (const { agent, output } of scannerResults) {
+        addTurn(transcript, agent.name, 'scanner', output, useGemini ? 0.01 : estimateTurnCost(options.model || 'haiku'));
       }
 
       conv = detectConvergence(transcript, maxTurns, costCeiling);
@@ -407,9 +462,9 @@ export async function runConversation(
         agentPath: workers[0].path,
         role: 'worker',
         squadName: squad.name,
+        cwd: squadCwd,
         model: options.model || modelForRole('worker'),
         transcript,
-        cwd: squadCwd,
       });
       addTurn(transcript, workers[0].name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
     } else if (workers.length > 1) {
@@ -420,9 +475,9 @@ export async function runConversation(
           agentPath: worker.path,
           role: 'worker',
           squadName: squad.name,
-          model: options.model || modelForRole('worker'),
-          transcript, // snapshot — all workers see same context
           cwd: squadCwd,
+          model: options.model || modelForRole('worker'),
+          transcript,
         }).then(output => ({ agent: worker, output }))
       );
       const workerResults = await Promise.all(workerPromises);
@@ -436,61 +491,74 @@ export async function runConversation(
       return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
-    // Step 4: Lead reviews worker output
-    log(`Turn ${transcript.turns.length + 1}: ${lead.name} (lead review)`);
-    const reviewOutput = executeAgentTurn({
-      agentName: lead.name,
-      agentPath: lead.path,
-      role: 'lead',
-      squadName: squad.name,
-      model: options.model || modelForRole('lead'),
-      transcript,
-      cwd: squadCwd,
+    // Step 4: Lead reviews worker output — skip if workers already converged
+    const workerTurns = workers.length > 0
+      ? transcript.turns.filter(t => t.role === 'worker').slice(-workers.length)
+      : [];
+    const workersConverged = workerTurns.length > 0 && workerTurns.every(t => {
+      const lower = t.content.toLowerCase();
+      // [ERROR] results are intentionally excluded: errors must be reviewed by the lead
+      // so the lead can decide how to respond (retry, escalate, or abort).
+      return lower.includes('nothing to do') || lower.includes('pr created') ||
+        lower.includes('issue closed') || lower.includes('all tasks complete') ||
+        lower.includes('no open issues');
     });
-    addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+    // Log worker errors so they are visible even before the lead review runs
+    for (const t of workerTurns) {
+      if (t.content.toLowerCase().startsWith('[error]')) {
+        process.stderr.write(`  [workflow] Worker ${t.agent} returned an error — passing to lead for review: ${t.content.slice(0, 120)}\n`);
+      }
+    }
+
+    if (!workersConverged) {
+      log(`Turn ${transcript.turns.length + 1}: ${lead.name} (lead review)`);
+      const reviewOutput = executeAgentTurn({
+        agentName: lead.name,
+        agentPath: lead.path,
+        role: 'lead',
+        squadName: squad.name,
+        cwd: squadCwd,
+        model: options.model || modelForRole('lead'),
+        transcript,
+      });
+      addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+    } else {
+      log(`Skipping lead review — workers converged`);
+    }
 
     conv = detectConvergence(transcript, maxTurns, costCeiling);
     if (conv.converged) {
       return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
-    // Step 5: Verifiers — run in parallel if multiple
-    if (verifiers.length === 1) {
-      log(`Turn ${transcript.turns.length + 1}: ${verifiers[0].name} (verifier)`);
-      const output = executeAgentTurn({
-        agentName: verifiers[0].name,
-        agentPath: verifiers[0].path,
-        role: 'verifier',
-        squadName: squad.name,
-        model: options.model || modelForRole('verifier'),
-        transcript,
-        cwd: squadCwd,
-      });
-      addTurn(transcript, verifiers[0].name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
-    } else if (verifiers.length > 1) {
-      log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + verifiers.length}: ${verifiers.map(v => v.name).join(', ')} (verifiers, parallel)`);
-      const verifierPromises = verifiers.map(verifier =>
-        executeAgentTurnAsync({
+    // Step 5: Verifiers — parallel, Gemini when available
+    if (verifiers.length > 0) {
+      const verifierProvider = useGemini ? 'gemini' : 'claude';
+      log(`Turns ${transcript.turns.length + 1}+: ${verifiers.map(v => v.name).join(', ')} (verifiers, ${verifierProvider})`);
+
+      const verifierPromises = verifiers.map(verifier => {
+        const turnConfig: AgentTurnConfig = {
           agentName: verifier.name,
           agentPath: verifier.path,
           role: 'verifier',
           squadName: squad.name,
-          model: options.model || modelForRole('verifier'),
-          transcript,
           cwd: squadCwd,
-        }).then(output => ({ agent: verifier, output }))
-      );
+          model: options.model || (useGemini ? 'gemini-2.5-flash' : modelForRole('verifier')),
+          transcript,
+        };
+        const executor = useGemini ? executeGeminiTurn(turnConfig) : executeAgentTurnAsync(turnConfig);
+        return executor.then(output => ({ agent: verifier, output }));
+      });
       const verifierResults = await Promise.all(verifierPromises);
       for (const { agent, output } of verifierResults) {
-        addTurn(transcript, agent.name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
+        addTurn(transcript, agent.name, 'verifier', output, useGemini ? 0.01 : estimateTurnCost(options.model || 'haiku'));
       }
     }
 
-    if (verifiers.length > 0) {
-      conv = detectConvergence(transcript, maxTurns, costCeiling);
-      if (conv.converged) {
-        return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-      }
+    conv = detectConvergence(transcript, maxTurns, costCeiling);
+    if (conv.converged) {
+      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
   }
 
