@@ -16,6 +16,7 @@ import chalk from 'chalk';
 import { findSquadsDir, findProjectRoot, listSquads } from '../lib/squad-parser.js';
 import { loadTemplate, toKebabCase, toTitleCase, type TemplateVariables } from '../lib/templates.js';
 import { track } from '../lib/telemetry.js';
+import { createGitHubRepo, detectGitHubOrg } from '../lib/github.js';
 
 interface CreateOptions {
   description?: string;
@@ -23,6 +24,8 @@ interface CreateOptions {
   model?: string;
   force?: boolean;
   yes?: boolean;
+  repo?: boolean;
+  org?: string;
 }
 
 export async function createCommand(name: string, options: CreateOptions): Promise<void> {
@@ -128,9 +131,25 @@ export async function createCommand(name: string, options: CreateOptions): Promi
     hasDescription: !!options.description,
     hasGoal: !!options.goal,
     force: !!options.force,
+    repo: !!options.repo,
   }).catch(() => {});
 
-  // 5. Show success
+  // 5. Create GitHub repo if --repo flag is set
+  let repoUrl: string | undefined;
+  if (options.repo) {
+    const org = options.org ?? detectGitHubOrg();
+    try {
+      const result = createGitHubRepo(squadId, { org, description });
+      repoUrl = result.url;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`\n  GitHub repo creation failed: ${message}\n`));
+      console.error(chalk.dim('  Local squad was created. Create the repo manually with:'));
+      console.error(chalk.dim(`  gh repo create ${org ? `${org}/` : ''}${squadId} --private\n`));
+    }
+  }
+
+  // 6. Show success
   const existing = listSquads(squadsDir);
   console.log();
   console.log(chalk.green('  ✓ Squad created:'), chalk.cyan(squadId));
@@ -139,6 +158,11 @@ export async function createCommand(name: string, options: CreateOptions): Promi
   console.log(`    .agents/squads/${squadId}/SQUAD.md`);
   console.log(`    .agents/squads/${squadId}/lead.md`);
   console.log(`    .agents/memory/${squadId}/lead/`);
+  if (repoUrl) {
+    console.log();
+    console.log(chalk.dim('  GitHub repo:'));
+    console.log(`    ${chalk.cyan(repoUrl)}`);
+  }
   console.log();
   console.log(chalk.dim('  Next steps:'));
   console.log(`    ${chalk.cyan('$')} squads run ${squadId}              ${chalk.dim('# run the squad')}`);

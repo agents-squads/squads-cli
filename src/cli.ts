@@ -244,11 +244,15 @@ program
   .option('-m, --model <model>', 'Default model (default: sonnet)')
   .option('-f, --force', 'Overwrite existing squad')
   .option('-y, --yes', 'Accept all defaults (non-interactive)')
+  .option('-r, --repo', 'Create a GitHub repository for the squad')
+  .option('-o, --org <org>', 'GitHub organization for --repo (default: detected from git remote)')
   .addHelpText('after', `
 Examples:
   $ squads create marketing                          Create with interactive prompts
   $ squads create marketing -d "Drive growth" -y     Create non-interactively
   $ squads create marketing --force                  Overwrite existing squad
+  $ squads create marketing --repo                   Create with GitHub repo
+  $ squads create marketing --repo --org myorg       Create with GitHub repo in specific org
 `)
   .action(async (...args) => {
     const { createCommand } = await import('./commands/create.js');
