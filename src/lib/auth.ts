@@ -71,6 +71,39 @@ export function isLoggedIn(): boolean {
   return session !== null && session.status === 'active';
 }
 
+export interface VerifiedUser {
+  email: string;
+  tenantId: number;
+  tenantSlug: string;
+  tenantName: string;
+  status: string;
+}
+
+// Verify a token against the API and return user data (null on failure)
+export async function verifyToken(apiUrl: string, token: string): Promise<VerifiedUser | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${apiUrl}/auth/cli/verify`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return null;
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      email: String(data.email ?? ''),
+      tenantId: Number(data.tenant_id ?? 0),
+      tenantSlug: String(data.tenant_slug ?? ''),
+      tenantName: String(data.tenant_name ?? ''),
+      status: String(data.status ?? ''),
+    };
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
 // Escape HTML special characters to prevent XSS
 function escapeHtml(str: string): string {
   return str
