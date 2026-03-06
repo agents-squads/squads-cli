@@ -68,7 +68,7 @@ function parseRoutinesFromFile(filePath: string): Routine[] {
   const routines: Routine[] = [];
 
   const routinesMatch = content.match(
-    /##+ Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
+    /##+ \w*\s*Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
   );
   if (!routinesMatch) return [];
 
