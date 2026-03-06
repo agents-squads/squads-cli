@@ -366,7 +366,7 @@ export function parseSquadFile(filePath: string): Squad {
       }
 
       if (inTable && line.includes('|') && !line.includes('---')) {
-        const cells = line.split('|').map(c => c.trim().replace(/`/g, ''));
+        const cells = line.split('|').map(c => c.trim().replace(/`/g, '').replace(/\*\*/g, ''));
         const agentIdx = tableHeaders.findIndex(h => h === 'agent');
         const roleIdx = tableHeaders.findIndex(h => h === 'role');
         const triggerIdx = tableHeaders.findIndex(h => h === 'trigger');

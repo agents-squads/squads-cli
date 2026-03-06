@@ -2022,8 +2022,8 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     const hasOAuthCreds = existsSync(credentialsPath);
 
     if (!hasApiKey && !hasOAuthCreds) {
-      // Auth may still work via keychain (Max subscription) — warn but don't block
-      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming keychain auth${RESET}`);
+      // Auth may still work via OAuth (Max subscription) — warn but don't block
+      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming OAuth${RESET}`);
     }
   }
 

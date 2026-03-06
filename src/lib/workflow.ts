@@ -160,7 +160,7 @@ function buildTurnPlan(squad: Squad, squadsDir: string): ClassifiedAgent[] {
   const agents: ClassifiedAgent[] = [];
 
   for (const agent of squad.agents) {
-    const role = classifyAgent(agent.name);
+    const role = classifyAgent(agent.name, agent.role);
     if (!role) continue; // Unclassified agents are excluded
 
     const agentPath = join(squadsDir, squad.dir, `${agent.name}.md`);

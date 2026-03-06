@@ -12,18 +12,29 @@
 
 export type AgentRole = 'lead' | 'scanner' | 'worker' | 'verifier';
 
-const ROLE_PATTERNS: Record<AgentRole, RegExp> = {
-  scanner: /scanner|scout|monitor/i,
-  worker: /worker|researcher|poster|solver|writer|analyst|builder/i,
-  lead: /lead|orchestrator/i,
-  verifier: /verifier|critic|eval|reviewer/i,
-};
-
-/** Classify an agent name into a conversation role */
-export function classifyAgent(agentName: string): AgentRole | null {
-  for (const [role, pattern] of Object.entries(ROLE_PATTERNS)) {
-    if (pattern.test(agentName)) return role as AgentRole;
+/**
+ * Classify an agent into a conversation role.
+ * Primary: uses the role field from SQUAD.md agents table.
+ * Fallback: matches against agent name (for squads without role descriptions).
+ */
+export function classifyAgent(agentName: string, roleDescription?: string): AgentRole | null {
+  // Primary: parse the role description from SQUAD.md
+  if (roleDescription) {
+    const lower = roleDescription.toLowerCase();
+    if (lower.includes('orchestrat') || lower.includes('triage') || lower.includes('coordinat')) return 'lead';
+    if (lower.includes('scan') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
+    if (lower.includes('verif') || lower.includes('review') || lower.includes('check') || lower.includes('critic')) return 'verifier';
+    // Any role description that doesn't match above = worker (the default doer)
+    return 'worker';
   }
+
+  // Fallback: match against agent name (lead checked first to avoid substring collisions)
+  const name = agentName.toLowerCase();
+  if (name.includes('lead') || name.includes('orchestrator')) return 'lead';
+  if (name.includes('scanner') || name.includes('scout') || name.includes('monitor')) return 'scanner';
+  if (name.includes('verifier') || name.includes('critic') || name.includes('reviewer')) return 'verifier';
+  if (name.includes('worker') || name.includes('solver') || name.includes('builder')) return 'worker';
+
   return null; // Unclassified — excluded from conversation
 }
 
@@ -105,25 +116,25 @@ export function addTurn(
 // Convergence Detection
 // =============================================================================
 
-/** Signals that indicate work is done */
-const CONVERGENCE_SIGNALS = [
-  /PR\s*#?\d+\s*created/i,
-  /issue\s*#?\d+\s*(closed|resolved)/i,
-  /all\s*(tasks?|items?|issues?)\s*(complete|done|resolved)/i,
-  /nothing\s*(left|remaining|more)\s*to\s*(do|process)/i,
-  /session\s*complete/i,
-  /queue\s*empty/i,
-  /no\s*(open|pending)\s*(issues?|tasks?|items?)/i,
+/** Phrases that indicate work is done (matched case-insensitively via includes) */
+const CONVERGENCE_PHRASES = [
+  'pr created', 'pr merged',
+  'issue closed', 'issue resolved',
+  'all tasks complete', 'all items complete', 'all issues resolved',
+  'nothing left to do', 'nothing remaining',
+  'session complete',
+  'queue empty',
+  'no open issues', 'no pending tasks', 'no pending issues',
 ];
 
-/** Signals that indicate more work needed */
-const CONTINUATION_SIGNALS = [
-  /needs?\s*(review|feedback|input|clarification)/i,
-  /TODO|FIXME|BLOCKED/,
-  /waiting\s*(for|on)/i,
-  /will\s*(continue|proceed|work\s*on)/i,
-  /next\s*step/i,
-  /in\s*progress/i,
+/** Phrases that indicate more work needed */
+const CONTINUATION_PHRASES = [
+  'needs review', 'needs feedback', 'needs input', 'need clarification',
+  'todo', 'fixme', 'blocked',
+  'waiting for', 'waiting on',
+  'will continue', 'will proceed', 'will work on',
+  'next step',
+  'in progress',
 ];
 
 export interface ConvergenceResult {
@@ -157,12 +168,13 @@ export function detectConvergence(
   const content = lastTurn.content;
 
   // Continuation signals beat convergence (bias toward completing work)
-  const hasContinuation = CONTINUATION_SIGNALS.some(p => p.test(content));
+  const lower = content.toLowerCase();
+  const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
   if (hasContinuation) {
     return { converged: false, reason: 'Continuation signal detected' };
   }
 
-  const hasConvergence = CONVERGENCE_SIGNALS.some(p => p.test(content));
+  const hasConvergence = CONVERGENCE_PHRASES.some(phrase => lower.includes(phrase));
   if (hasConvergence) {
     return { converged: true, reason: 'Convergence signal detected' };
   }
