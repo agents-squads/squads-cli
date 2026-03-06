@@ -82,12 +82,41 @@ export function createTranscript(squad: string): Transcript {
   };
 }
 
-/** Serialize transcript for prompt injection */
+/** Serialize transcript for prompt injection.
+ * Compacts after 5 turns: keeps first brief + last lead review (natural summary)
+ * + turns since that review. The lead review already summarizes prior work,
+ * so it acts as a compaction point — no information lost, just compressed.
+ */
 export function serializeTranscript(transcript: Transcript): string {
   if (transcript.turns.length === 0) return '';
 
+  let turns = transcript.turns;
+  if (turns.length > 5) {
+    const firstBrief = turns[0];
+
+    // Find last lead review (any lead turn after the first brief)
+    let lastReviewIdx = -1;
+    for (let i = turns.length - 1; i > 0; i--) {
+      if (turns[i].role === 'lead') {
+        lastReviewIdx = i;
+        break;
+      }
+    }
+
+    if (lastReviewIdx > 0) {
+      // First brief + last lead review + everything after it
+      turns = [firstBrief, ...turns.slice(lastReviewIdx)];
+    } else {
+      // No lead review yet — keep first brief + last 3
+      turns = [firstBrief, ...turns.slice(-3)];
+    }
+  }
+
   const lines = ['## Conversation So Far\n'];
-  for (const turn of transcript.turns) {
+  if (turns.length < transcript.turns.length) {
+    lines.push(`*(${transcript.turns.length - turns.length} earlier turns compacted — lead review below summarizes prior work)*\n`);
+  }
+  for (const turn of turns) {
     lines.push(`### ${turn.agent} (${turn.role}) — ${turn.timestamp}`);
     lines.push(turn.content);
     lines.push('');
