@@ -9,7 +9,10 @@
 
 import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 import {
   type AgentRole,
   type Transcript,
@@ -142,6 +145,80 @@ IMPORTANT:
   }
 }
 
+/**
+ * Async version of executeAgentTurn for parallel execution.
+ * Same logic, but returns a Promise instead of blocking.
+ */
+function executeAgentTurnAsync(config: AgentTurnConfig): Promise<string> {
+  const { agentName, agentPath, role, squadName, model, transcript, task } = config;
+
+  let roleInstructions = '';
+  switch (role) {
+    case 'lead':
+      roleInstructions = task
+        ? `FOUNDER DIRECTIVE: ${task}\n\nBrief the team on this directive. Assign specific tasks to scanners and workers.`
+        : 'Review the conversation so far. Assess worker output. Direct next actions or declare convergence.';
+      break;
+    case 'scanner':
+      roleInstructions = 'Scan for issues, data, or signals relevant to the lead\'s brief. Report findings concisely.';
+      break;
+    case 'worker':
+      roleInstructions = 'Execute the specific task assigned by the lead. Produce concrete output (PRs, issues, content, analysis).';
+      break;
+    case 'verifier':
+      roleInstructions = 'Verify the worker\'s output meets quality standards. Check for errors, omissions, and alignment with goals.';
+      break;
+  }
+
+  const transcriptContext = transcript.turns.length > 0
+    ? `\n== CONVERSATION SO FAR ==\n${serializeTranscript(transcript)}\n== END CONVERSATION ==`
+    : '';
+
+  const resolvedModel = config.model || modelForRole(role);
+  const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
+
+Read your full agent definition at ${agentPath} and follow its instructions.
+
+${roleInstructions}
+
+${transcriptContext}
+
+IMPORTANT:
+- Be concise. Your output becomes part of a shared transcript.
+- Reference specific issue numbers, PR numbers, and file paths.
+- If you create a PR, include the PR number in your output.
+- If there's nothing to do, say "Nothing to do" clearly.
+- When done, summarize what you did in 2-3 sentences.`;
+
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+
+  return new Promise((resolve) => {
+    exec(
+      `claude --print --dangerously-skip-permissions --model ${resolvedModel} -- '${escapedPrompt}'`,
+      {
+        cwd: process.cwd(),
+        timeout: 15 * 60 * 1000,
+        maxBuffer: 10 * 1024 * 1024,
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          CLAUDECODE: '',
+          ANTHROPIC_API_KEY: undefined as unknown as string,
+        },
+      },
+      (error, stdout, stderr) => {
+        if (stdout && stdout.trim().length > 0) {
+          resolve(stdout.trim());
+        } else if (error) {
+          resolve(`[ERROR] Agent ${agentName} failed: ${error.message || 'unknown error'}`);
+        } else {
+          resolve('[No output]');
+        }
+      }
+    );
+  });
+}
+
 // =============================================================================
 // Conversation Orchestrator
 // =============================================================================
@@ -191,10 +268,10 @@ export interface ConversationResult {
  * 5. Verifiers check (if workers produced output)
  * 6. Check convergence → loop or exit
  */
-export function runConversation(
+export async function runConversation(
   squad: Squad,
   options: ConversationOptions = {},
-): ConversationResult {
+): Promise<ConversationResult> {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     return {
@@ -266,44 +343,76 @@ export function runConversation(
       return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
-    // Step 2: Scanners (only on first cycle)
+    // Step 2: Scanners (only on first cycle) — run in parallel
     if (cycleCount === 1 && scanners.length > 0) {
-      for (const scanner of scanners) {
-        log(`Turn ${transcript.turns.length + 1}: ${scanner.name} (scanner)`);
+      if (scanners.length === 1) {
+        log(`Turn ${transcript.turns.length + 1}: ${scanners[0].name} (scanner)`);
         const output = executeAgentTurn({
-          agentName: scanner.name,
-          agentPath: scanner.path,
+          agentName: scanners[0].name,
+          agentPath: scanners[0].path,
           role: 'scanner',
           squadName: squad.name,
           model: options.model || modelForRole('scanner'),
           transcript,
         });
-        addTurn(transcript, scanner.name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
-
-        conv = detectConvergence(transcript, maxTurns, costCeiling);
-        if (conv.converged) {
-          return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
+        addTurn(transcript, scanners[0].name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
+      } else {
+        log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + scanners.length}: ${scanners.map(s => s.name).join(', ')} (scanners, parallel)`);
+        const scannerPromises = scanners.map(scanner =>
+          executeAgentTurnAsync({
+            agentName: scanner.name,
+            agentPath: scanner.path,
+            role: 'scanner',
+            squadName: squad.name,
+            model: options.model || modelForRole('scanner'),
+            transcript, // snapshot — all scanners see same context
+          }).then(output => ({ agent: scanner, output }))
+        );
+        const scannerResults = await Promise.all(scannerPromises);
+        for (const { agent, output } of scannerResults) {
+          addTurn(transcript, agent.name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
         }
       }
-    }
-
-    // Step 3: Workers execute
-    for (const worker of workers) {
-      log(`Turn ${transcript.turns.length + 1}: ${worker.name} (worker)`);
-      const output = executeAgentTurn({
-        agentName: worker.name,
-        agentPath: worker.path,
-        role: 'worker',
-        squadName: squad.name,
-        model: options.model || modelForRole('worker'),
-        transcript,
-      });
-      addTurn(transcript, worker.name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
 
       conv = detectConvergence(transcript, maxTurns, costCeiling);
       if (conv.converged) {
         return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
       }
+    }
+
+    // Step 3: Workers execute — run in parallel if multiple
+    if (workers.length === 1) {
+      log(`Turn ${transcript.turns.length + 1}: ${workers[0].name} (worker)`);
+      const output = executeAgentTurn({
+        agentName: workers[0].name,
+        agentPath: workers[0].path,
+        role: 'worker',
+        squadName: squad.name,
+        model: options.model || modelForRole('worker'),
+        transcript,
+      });
+      addTurn(transcript, workers[0].name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
+    } else if (workers.length > 1) {
+      log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + workers.length}: ${workers.map(w => w.name).join(', ')} (workers, parallel)`);
+      const workerPromises = workers.map(worker =>
+        executeAgentTurnAsync({
+          agentName: worker.name,
+          agentPath: worker.path,
+          role: 'worker',
+          squadName: squad.name,
+          model: options.model || modelForRole('worker'),
+          transcript, // snapshot — all workers see same context
+        }).then(output => ({ agent: worker, output }))
+      );
+      const workerResults = await Promise.all(workerPromises);
+      for (const { agent, output } of workerResults) {
+        addTurn(transcript, agent.name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
+      }
+    }
+
+    conv = detectConvergence(transcript, maxTurns, costCeiling);
+    if (conv.converged) {
+      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
     // Step 4: Lead reviews worker output
@@ -323,24 +432,40 @@ export function runConversation(
       return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
     }
 
-    // Step 5: Verifiers (if we have them)
-    if (verifiers.length > 0) {
-      for (const verifier of verifiers) {
-        log(`Turn ${transcript.turns.length + 1}: ${verifier.name} (verifier)`);
-        const output = executeAgentTurn({
+    // Step 5: Verifiers — run in parallel if multiple
+    if (verifiers.length === 1) {
+      log(`Turn ${transcript.turns.length + 1}: ${verifiers[0].name} (verifier)`);
+      const output = executeAgentTurn({
+        agentName: verifiers[0].name,
+        agentPath: verifiers[0].path,
+        role: 'verifier',
+        squadName: squad.name,
+        model: options.model || modelForRole('verifier'),
+        transcript,
+      });
+      addTurn(transcript, verifiers[0].name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
+    } else if (verifiers.length > 1) {
+      log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + verifiers.length}: ${verifiers.map(v => v.name).join(', ')} (verifiers, parallel)`);
+      const verifierPromises = verifiers.map(verifier =>
+        executeAgentTurnAsync({
           agentName: verifier.name,
           agentPath: verifier.path,
           role: 'verifier',
           squadName: squad.name,
           model: options.model || modelForRole('verifier'),
           transcript,
-        });
-        addTurn(transcript, verifier.name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
+        }).then(output => ({ agent: verifier, output }))
+      );
+      const verifierResults = await Promise.all(verifierPromises);
+      for (const { agent, output } of verifierResults) {
+        addTurn(transcript, agent.name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
+      }
+    }
 
-        conv = detectConvergence(transcript, maxTurns, costCeiling);
-        if (conv.converged) {
-          return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-        }
+    if (verifiers.length > 0) {
+      conv = detectConvergence(transcript, maxTurns, costCeiling);
+      if (conv.converged) {
+        return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
       }
     }
   }

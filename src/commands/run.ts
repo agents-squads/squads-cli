@@ -1445,7 +1445,7 @@ async function runSquad(
           model: options.model,
         };
 
-        const result = runConversation(squad, convOptions);
+        const result = await runConversation(squad, convOptions);
 
         // Save transcript
         const transcriptPath = saveTranscript(result.transcript);
