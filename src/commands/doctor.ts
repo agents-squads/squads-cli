@@ -370,139 +370,127 @@ export interface DoctorOptions {
 }
 
 export async function doctorCommand(options: DoctorOptions = {}): Promise<void> {
+  const W = 58; // box width
+  const line = (c: string) => `${colors.purple}│${RESET}${c.padEnd(W)}${colors.purple}│${RESET}`;
+  const divider = `  ${colors.purple}├${'─'.repeat(W)}┤${RESET}`;
+  const top = `  ${colors.purple}┌${'─'.repeat(W)}┐${RESET}`;
+  const bottom = `  ${colors.purple}└${'─'.repeat(W)}┘${RESET}`;
+  const section = (title: string) => line(` ${bold}${title}${RESET}`.padEnd(W + 14));
+
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}doctor${RESET}`);
   writeLine();
 
-  // === TOOLS ===
-  const results = TOOLS.map(checkTool);
-  const core = results.filter(r => r.tool.category === 'core');
-  const recommended = results.filter(r => r.tool.category === 'recommended');
-  const optional = results.filter(r => r.tool.category === 'optional');
-
-  const installedCount = results.filter(r => r.installed).length;
+  // Gather all data first
+  const toolResults = TOOLS.map(checkTool);
+  const core = toolResults.filter(r => r.tool.category === 'core');
+  const recommended = toolResults.filter(r => r.tool.category === 'recommended');
+  const optional = toolResults.filter(r => r.tool.category === 'optional');
+  const installedCount = toolResults.filter(r => r.installed).length;
   const coreInstalled = core.filter(r => r.installed).length;
-
-  writeLine(`  ${bold}Tools${RESET} ${colors.dim}(${installedCount}/${results.length} installed)${RESET}`);
-  writeLine();
-
-  function printToolSection(label: string, items: ToolResult[]) {
-    writeLine(`  ${colors.dim}${label}${RESET}`);
-    for (const r of items) {
-      const icon = r.installed ? `${colors.green}${icons.success}${RESET}` : `${colors.red}${icons.error}${RESET}`;
-      const ver = r.installed && r.version ? ` ${colors.dim}${r.version}${RESET}` : '';
-      const unlock = !r.installed ? `  ${colors.dim}→ unlocks: ${r.tool.unlocks}${RESET}` : '';
-      writeLine(`    ${icon} ${padEnd(r.tool.name, 12)}${r.tool.purpose}${ver}${unlock}`);
-      if (!r.installed && options.verbose) {
-        writeLine(`      ${colors.cyan}Install:${RESET} ${r.tool.installHint}`);
-      }
-    }
-    writeLine();
-  }
-
-  printToolSection('Core (required)', core);
-  printToolSection('Recommended', recommended);
-  if (options.verbose || optional.some(r => r.installed)) {
-    printToolSection('Optional', optional);
-  }
-
-  // === AUTH ===
   const authResults = checkAuth();
-  if (authResults.length > 0) {
-    writeLine(`  ${bold}Authentication${RESET}`);
-    writeLine();
-    for (const auth of authResults) {
-      const icon = auth.authenticated
-        ? `${colors.green}${icons.success}${RESET}`
-        : `${colors.red}${icons.error}${RESET}`;
-      const detail = auth.detail ? ` ${colors.dim}(${auth.detail})${RESET}` : '';
-      writeLine(`    ${icon} ${auth.name}${detail}`);
-    }
-    writeLine();
-  }
-
-  // === PROJECT ===
   const project = checkProject();
-  writeLine(`  ${bold}Project${RESET}`);
-  writeLine();
-  if (project.hasProject) {
-    writeLine(`    ${colors.green}${icons.success}${RESET} Squads project found`);
-    writeLine(`      ${colors.dim}Root:${RESET} ${project.squadsDir}`);
-    writeLine(`      ${colors.dim}Squads:${RESET} ${project.squadCount} ${colors.dim}|${RESET} ${colors.dim}Agents:${RESET} ${project.agentCount}`);
-    if (project.hasMemory) writeLine(`      ${colors.green}${icons.success}${RESET} Memory directory exists`);
-    if (project.hasConversations) writeLine(`      ${colors.green}${icons.success}${RESET} Conversation transcripts enabled`);
-  } else {
-    writeLine(`    ${colors.yellow}${icons.warning}${RESET} No squads project found in current directory`);
-    writeLine(`      ${colors.cyan}Run:${RESET} squads init`);
-  }
-  writeLine();
-
-  // === LIVE EXECUTION ===
   const running = checkRunningSquads();
   const daemon = checkDaemon();
   const recentTranscripts = project.hasProject ? getRecentTranscripts(project.squadsDir!) : [];
 
-  writeLine(`  ${bold}Live Execution${RESET}`);
-  writeLine();
+  // === RENDER ===
+  writeLine(top);
 
-  // Daemon status
-  if (daemon.running) {
-    writeLine(`    ${colors.green}${icons.success}${RESET} Daemon running ${colors.dim}(PID ${daemon.pid}, ${daemon.routines} routines)${RESET}`);
-  } else {
-    writeLine(`    ${colors.dim}○${RESET} Daemon not running ${colors.dim}(squads autonomous start)${RESET}`);
+  // --- Tools ---
+  writeLine(line(` ${bold}Tools${RESET} ${colors.dim}${installedCount}/${toolResults.length}${RESET}`.padEnd(W + 22)));
+  writeLine(divider);
+
+  function printTools(items: ToolResult[], label: string) {
+    writeLine(line(`  ${colors.dim}${label}${RESET}`.padEnd(W + 12)));
+    for (const r of items) {
+      const icon = r.installed ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
+      const name = r.installed ? `${colors.cyan}${r.tool.name}${RESET}` : `${colors.yellow}${r.tool.name}${RESET}`;
+      const ver = r.installed && r.version ? `${colors.dim}${r.version.slice(0, 20)}${RESET}` : `${colors.dim}not installed${RESET}`;
+      writeLine(line(`  ${icon} ${name}`.padEnd(W + 24) + ''));
+      // Put version/status on same conceptual line using padding
+      const detail = r.installed ? ver : `${colors.dim}→ ${r.tool.unlocks}${RESET}`;
+      writeLine(line(`      ${detail}`.padEnd(W + 12)));
+      if (!r.installed && options.verbose) {
+        writeLine(line(`      ${colors.cyan}$${RESET} ${r.tool.installHint}`.padEnd(W + 12)));
+      }
+    }
   }
 
-  // Running squads
+  printTools(core, 'Core');
+  printTools(recommended, 'Recommended');
+  if (options.verbose || optional.some(r => r.installed)) {
+    printTools(optional, 'Optional');
+  }
+
+  // --- Auth ---
+  writeLine(divider);
+  writeLine(line(` ${bold}Auth${RESET}`.padEnd(W + 10)));
+  writeLine(divider);
+  for (const auth of authResults) {
+    const icon = auth.authenticated ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
+    const name = auth.authenticated ? `${colors.cyan}${auth.name}${RESET}` : `${colors.yellow}${auth.name}${RESET}`;
+    const detail = auth.detail ? ` ${colors.dim}${auth.detail}${RESET}` : '';
+    writeLine(line(`  ${icon} ${name}${detail}`.padEnd(W + 24)));
+  }
+
+  // --- Project ---
+  writeLine(divider);
+  writeLine(line(` ${bold}Project${RESET}`.padEnd(W + 10)));
+  writeLine(divider);
+  if (project.hasProject) {
+    writeLine(line(`  ${colors.green}✓${RESET} ${colors.cyan}${project.squadCount}${RESET} squads  ${colors.dim}│${RESET}  ${colors.cyan}${project.agentCount}${RESET} agents  ${colors.dim}│${RESET}  ${project.hasMemory ? `${colors.green}✓${RESET} memory` : `${colors.red}✗${RESET} memory`}`.padEnd(W + 46)));
+    writeLine(line(`    ${colors.dim}${project.squadsDir}${RESET}`.padEnd(W + 12)));
+  } else {
+    writeLine(line(`  ${colors.yellow}○${RESET} No project ${colors.dim}— run: squads init${RESET}`.padEnd(W + 22)));
+  }
+
+  // --- Live Execution ---
+  writeLine(divider);
+  const runningCount = running.length;
+  const daemonIcon = daemon.running ? `${colors.green}✓${RESET}` : `${colors.dim}○${RESET}`;
+  const daemonText = daemon.running ? `${colors.green}daemon on${RESET}` : `${colors.dim}daemon off${RESET}`;
+  writeLine(line(` ${bold}Live${RESET}  ${daemonIcon} ${daemonText}  ${colors.dim}│${RESET}  ${runningCount > 0 ? `${colors.green}${runningCount}${RESET} running` : `${colors.dim}0 running${RESET}`}`.padEnd(W + 34)));
+  writeLine(divider);
+
   if (running.length > 0) {
-    writeLine(`    ${colors.cyan}${running.length}${RESET} squad(s) executing now:`);
     for (const r of running) {
-      const elapsed = r.elapsed ? ` ${colors.dim}(${r.elapsed})${RESET}` : '';
-      writeLine(`      ${colors.green}▸${RESET} ${r.squad}${elapsed}${r.task ? ` ${colors.dim}${r.task.slice(0, 60)}${RESET}` : ''}`);
+      const elapsed = r.elapsed && r.elapsed !== '0m' ? ` ${colors.dim}${r.elapsed}${RESET}` : '';
+      const task = r.task ? ` ${colors.dim}${r.task.slice(0, 40)}...${RESET}` : '';
+      writeLine(line(`  ${colors.green}▸${RESET} ${colors.cyan}${r.squad}${RESET}${elapsed}${task}`.padEnd(W + 34)));
     }
-  } else {
-    writeLine(`    ${colors.dim}○${RESET} No squads running`);
   }
 
-  // Recent transcripts
   if (recentTranscripts.length > 0) {
-    writeLine();
-    writeLine(`    ${colors.dim}Recent conversations:${RESET}`);
+    if (running.length > 0) writeLine(line(''));
+    writeLine(line(`  ${colors.dim}Recent:${RESET}`.padEnd(W + 12)));
     for (const t of recentTranscripts.slice(0, 5)) {
-      writeLine(`      ${colors.dim}${t.ago}${RESET} ${t.squad} ${colors.dim}(${t.turns} turns, ~$${t.cost})${RESET}`);
+      const agoColor = t.ago.includes('m ago') || t.ago === 'just now' ? colors.green : colors.dim;
+      writeLine(line(`  ${agoColor}${padEnd(t.ago, 10)}${RESET}${colors.cyan}${padEnd(t.squad, 14)}${RESET}${colors.dim}${t.turns} turns  ~$${t.cost}${RESET}`.padEnd(W + 34)));
     }
-    writeLine(`    ${colors.dim}$ cat .agents/conversations/<squad>/<id>.md${RESET}`);
+  } else if (running.length === 0) {
+    writeLine(line(`  ${colors.dim}No recent activity${RESET}`.padEnd(W + 12)));
   }
+
+  writeLine(bottom);
   writeLine();
 
-  // === READINESS ===
-  writeLine(`  ${bold}Readiness${RESET}`);
-  writeLine();
-
+  // === READINESS (outside box) ===
   if (coreInstalled === core.length && project.hasProject) {
-    writeLine(`    ${colors.green}${icons.success} Ready to run squads${RESET}`);
+    writeLine(`  ${colors.green}${icons.success} Ready${RESET}`);
     writeLine();
-    writeLine(`    ${colors.dim}$${RESET} squads run <squad>       ${colors.dim}Run a squad conversation${RESET}`);
-    writeLine(`    ${colors.dim}$${RESET} squads status            ${colors.dim}See all squads${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}       ${colors.dim}Run a conversation${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads status            ${colors.dim}Overview${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads doctor            ${colors.dim}This screen${RESET}`);
   } else if (coreInstalled === core.length) {
-    writeLine(`    ${colors.yellow}${icons.warning} Tools ready, project needed${RESET}`);
-    writeLine();
-    writeLine(`    ${colors.dim}$${RESET} squads init              ${colors.dim}Initialize a squads project${RESET}`);
+    writeLine(`  ${colors.yellow}${icons.warning} Tools ready — initialize a project${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads init`);
   } else {
     const missing = core.filter(r => !r.installed).map(r => r.tool.name);
-    writeLine(`    ${colors.red}${icons.error} Missing core tools: ${missing.join(', ')}${RESET}`);
-    writeLine();
+    writeLine(`  ${colors.red}${icons.error} Missing: ${missing.join(', ')}${RESET}`);
     for (const r of core.filter(r => !r.installed)) {
-      writeLine(`    ${colors.cyan}$${RESET} ${r.tool.installHint}`);
+      writeLine(`  ${colors.dim}$${RESET} ${r.tool.installHint}`);
     }
-  }
-
-  // Suggest next capability to unlock
-  const firstMissingRecommended = recommended.find(r => !r.installed);
-  if (firstMissingRecommended && coreInstalled === core.length) {
-    writeLine();
-    writeLine(`  ${bold}Next unlock${RESET}`);
-    writeLine(`    Install ${colors.cyan}${firstMissingRecommended.tool.name}${RESET} → ${firstMissingRecommended.tool.unlocks}`);
-    writeLine(`    ${colors.dim}$${RESET} ${firstMissingRecommended.tool.installHint}`);
   }
 
   writeLine();
