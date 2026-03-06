@@ -445,30 +445,76 @@ describe('Baseline Operations (ROI Tracking)', () => {
     });
   });
 
-  // Note: saveBaseline, getLatestBaseline, getBaselineByName, listBaselines
-  // functions are not yet implemented in db.ts. These tests are skipped until
-  // the baseline tracking feature is implemented. See issue tracking for ROI dashboard.
-  describe.skip('saveBaseline (not yet implemented)', () => {
+  describe('saveBaseline', () => {
     it('returns null when database is not configured', async () => {
-      // Placeholder for future implementation
+      delete process.env.SQUADS_DATABASE_URL;
+      const { saveBaseline } = await import('../src/lib/db.js');
+
+      const baseline: import('../src/lib/db.js').BaselineSnapshot = {
+        name: 'test-baseline',
+        capturedAt: new Date().toISOString(),
+        costUsd: 100,
+        goalsCompleted: 5,
+        goalsActive: 2,
+        commits: 50,
+        prsMerged: 10,
+        issuesClosed: 8,
+        inputTokens: 100000,
+        outputTokens: 20000,
+        squadMetrics: [],
+      };
+
+      const result = await saveBaseline(baseline);
+      expect(result).toBeNull();
     });
   });
 
-  describe.skip('getLatestBaseline (not yet implemented)', () => {
+  describe('getLatestBaseline', () => {
     it('returns null when database is not configured', async () => {
-      // Placeholder for future implementation
+      delete process.env.SQUADS_DATABASE_URL;
+      const { getLatestBaseline } = await import('../src/lib/db.js');
+
+      const result = await getLatestBaseline();
+      expect(result).toBeNull();
     });
   });
 
-  describe.skip('getBaselineByName (not yet implemented)', () => {
+  describe('getBaselineByName', () => {
     it('returns null when database is not configured', async () => {
-      // Placeholder for future implementation
+      delete process.env.SQUADS_DATABASE_URL;
+      const { getBaselineByName } = await import('../src/lib/db.js');
+
+      const result = await getBaselineByName('any-name');
+      expect(result).toBeNull();
+    });
+
+    it('accepts any string name without error', async () => {
+      delete process.env.SQUADS_DATABASE_URL;
+      const { getBaselineByName } = await import('../src/lib/db.js');
+
+      await expect(getBaselineByName('special-chars-!@#$')).resolves.toBeNull();
+      await expect(getBaselineByName('')).resolves.toBeNull();
     });
   });
 
-  describe.skip('listBaselines (not yet implemented)', () => {
+  describe('listBaselines', () => {
     it('returns empty array when database is not configured', async () => {
-      // Placeholder for future implementation
+      delete process.env.SQUADS_DATABASE_URL;
+      const { listBaselines } = await import('../src/lib/db.js');
+
+      const result = await listBaselines();
+      expect(result).toEqual([]);
+    });
+
+    it('accepts limit parameter without error', async () => {
+      delete process.env.SQUADS_DATABASE_URL;
+      const { listBaselines } = await import('../src/lib/db.js');
+
+      const result5 = await listBaselines(5);
+      const result100 = await listBaselines(100);
+
+      expect(Array.isArray(result5)).toBe(true);
+      expect(Array.isArray(result100)).toBe(true);
     });
   });
 });
