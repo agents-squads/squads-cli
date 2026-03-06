@@ -35,10 +35,10 @@ import {
 } from '../lib/llm-clis.js';
 import { detectProviderFromModel } from '../lib/providers.js';
 import { loadSession, isLoggedIn } from '../lib/auth.js';
+import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { homedir } from 'os';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
-const DEFAULT_BRIDGE_URL = 'http://localhost:8088';
 const CLOUD_POLL_INTERVAL_MS = 3000;
 const CLOUD_POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max poll
 const DEFAULT_LEARNINGS_LIMIT = 5;
@@ -97,7 +97,7 @@ interface ExecutionContext {
  * This allows the bridge to tag incoming OTel data with correct squad/agent info
  */
 async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(`${bridgeUrl}/api/context/register`, {
@@ -138,7 +138,7 @@ interface PreflightResult {
 }
 
 async function checkPreflightGates(squad: string, agent: string): Promise<PreflightResult> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(`${bridgeUrl}/api/execution/preflight`, {
@@ -170,7 +170,7 @@ interface Learning {
 }
 
 async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): Promise<Learning[]> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(
@@ -914,7 +914,7 @@ async function emitExecutionEvent(
   eventType: 'agent.completed' | 'agent.failed',
   data: { squad: string; agent: string; executionId: string; error?: string }
 ): Promise<void> {
-  const apiUrl = process.env.SQUADS_API_URL;
+  const apiUrl = getApiUrl();
 
   if (apiUrl) {
     try {
@@ -1052,12 +1052,11 @@ async function runCloudDispatch(
   agentName: string,
   options: RunOptions
 ): Promise<void> {
-  const apiUrl = process.env.SQUADS_API_URL || process.env.SQUADS_PLATFORM_URL || '';
+  const apiUrl = getApiUrl();
 
   if (!apiUrl) {
-    writeLine(`  ${colors.red}${icons.error} SQUADS_API_URL not configured${RESET}`);
-    writeLine(`  ${colors.dim}Set SQUADS_API_URL to your platform API endpoint${RESET}`);
-    writeLine(`  ${colors.dim}Example: export SQUADS_API_URL=https://api.agents-squads.com${RESET}`);
+    writeLine(`  ${colors.red}${icons.error} API URL not configured${RESET}`);
+    writeLine(`  ${colors.dim}Run: squads config use staging  (or set SQUADS_API_URL)${RESET}`);
     process.exit(1);
   }
 
@@ -1799,13 +1798,26 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 Types: \`feat\`, \`fix\`, \`docs\`, \`chore\`, \`memory\`, \`refactor\`, \`test\`
 
-## 3. NEVER commit to main
-- Do NOT commit to \`main\` directly
-- Do NOT push to \`main\`
-- All work goes on your branch
-- If a remote exists, push your branch and open a PR
+## 3. Push and open a PR
+- NEVER commit to \`main\` directly
+- NEVER push to \`main\`
+- Push your branch and open a PR targeting \`develop\`:
+\`\`\`bash
+git push -u origin {your-branch}
+gh pr create --base develop --title "{type}({scope}): {description}" --body "## Summary
+- {what was done}
 
-## 3. Summarize what was accomplished
+## Issues
+- Closes #{issue_number} (if applicable)
+
+---
+Agent: ${squadName}/${agentName}
+"
+\`\`\`
+- If \`develop\` branch doesn't exist on the repo, target \`main\` instead
+- Your squad lead will review and merge
+
+## 4. Summarize what was accomplished
 
 CRITICAL: When you have completed your tasks OR reached the time limit:
 - Type /exit immediately to end this session
@@ -2018,18 +2030,8 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     const hasOAuthCreds = existsSync(credentialsPath);
 
     if (!hasApiKey && !hasOAuthCreds) {
-      writeLine();
-      writeLine(`  ${icons.warning} ${colors.yellow}Claude Code authentication not detected${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.dim}No ANTHROPIC_API_KEY env var and no OAuth credentials found.${RESET}`);
-      writeLine(`  ${colors.dim}Agents may fail to authenticate with the Anthropic API.${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.cyan}Option 1:${RESET} ${colors.dim}Run${RESET} claude ${colors.dim}and complete the login flow${RESET}`);
-      writeLine(`  ${colors.cyan}Option 2:${RESET} ${colors.dim}Set ANTHROPIC_API_KEY env var to your API key${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
-      writeLine();
-      return false;
+      // Auth may still work via keychain (Max subscription) — warn but don't block
+      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming keychain auth${RESET}`);
     }
   }
 
@@ -2064,7 +2066,7 @@ function buildAgentEnv(
     SQUADS_TASK_TYPE: execContext.taskType,
     SQUADS_TRIGGER: execContext.trigger,
     SQUADS_EXECUTION_ID: execContext.executionId,
-    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
+    BRIDGE_API: getBridgeUrl(),
   };
 
   if (options?.includeOtel) {
