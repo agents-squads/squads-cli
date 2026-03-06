@@ -233,6 +233,138 @@ function checkProject(): ProjectResult {
   };
 }
 
+interface RunningSquad {
+  squad: string;
+  pid: string;
+  elapsed?: string;
+  task?: string;
+}
+
+function checkRunningSquads(): RunningSquad[] {
+  try {
+    const output = execSync('ps aux 2>/dev/null', { encoding: 'utf-8', timeout: 3000 });
+    const results: RunningSquad[] = [];
+
+    for (const line of output.split('\n')) {
+      if (!line.includes('squads run') || line.includes('grep')) continue;
+
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[1];
+      const fullCmd = parts.slice(10).join(' ');
+
+      // Extract squad name from "squads run <squad>"
+      const squadMatch = fullCmd.match(/squads\s+run\s+(\S+)/);
+      if (!squadMatch) continue;
+
+      const squad = squadMatch[1];
+
+      // Extract task if present
+      const taskMatch = fullCmd.match(/--task\s+(.+?)(?:\s+--|$)/);
+      const task = taskMatch ? taskMatch[1].replace(/^["']|["']$/g, '') : undefined;
+
+      // Calculate elapsed from CPU time column (more reliable than START)
+      const timeCol = parts[9]; // TIME column (mm:ss or h:mm:ss)
+      let elapsed: string | undefined;
+      if (timeCol && timeCol.includes(':')) {
+        const timeParts = timeCol.split(':').map(Number);
+        if (timeParts.length === 2 && timeParts.every(n => !isNaN(n))) {
+          const totalMins = timeParts[0];
+          elapsed = totalMins < 60 ? `${totalMins}m` : `${Math.floor(totalMins / 60)}h${totalMins % 60}m`;
+        }
+      }
+
+      results.push({ squad, pid, elapsed, task });
+    }
+
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+function checkDaemon(): { running: boolean; pid?: string; routines?: number } {
+  try {
+    const output = execSync('ps aux 2>/dev/null', { encoding: 'utf-8', timeout: 3000 });
+    for (const line of output.split('\n')) {
+      if (line.includes('squads autonomous') && !line.includes('grep')) {
+        const pid = line.trim().split(/\s+/)[1];
+        // Try to count routines
+        let routines = 0;
+        try {
+          const root = findProjectRoot();
+          if (root) {
+            const count = execSync(
+              `grep -r "schedule:" ${join(root, '.agents', 'squads')}/*/SQUAD.md 2>/dev/null | wc -l`,
+              { encoding: 'utf-8', timeout: 3000 }
+            );
+            routines = parseInt(count.trim()) || 0;
+          }
+        } catch { /* ignore */ }
+        return { running: true, pid, routines };
+      }
+    }
+    return { running: false };
+  } catch {
+    return { running: false };
+  }
+}
+
+interface RecentTranscript {
+  squad: string;
+  file: string;
+  ago: string;
+  turns: string;
+  cost: string;
+}
+
+function getRecentTranscripts(projectRoot: string): RecentTranscript[] {
+  try {
+    const convDir = join(projectRoot, '.agents', 'conversations');
+    if (!existsSync(convDir)) return [];
+
+    const output = execSync(
+      `find ${convDir} -name "*.md" -mmin -1440 -exec stat -f "%m %N" {} + 2>/dev/null | sort -rn | head -10`,
+      { encoding: 'utf-8', timeout: 5000 }
+    );
+
+    const results: RecentTranscript[] = [];
+    for (const line of output.trim().split('\n')) {
+      if (!line.trim()) continue;
+      const [timestamp, filePath] = line.trim().split(' ', 2);
+      if (!filePath) continue;
+
+      const pathParts = filePath.split('/');
+      const squad = pathParts[pathParts.length - 2];
+      const file = pathParts[pathParts.length - 1];
+
+      // Read first few lines for metadata
+      let turns = '?';
+      let cost = '?';
+      try {
+        const head = execSync(`head -5 "${filePath}" 2>/dev/null`, { encoding: 'utf-8', timeout: 2000 });
+        const turnsMatch = head.match(/Turns:\s*(\d+)/);
+        const costMatch = head.match(/cost:\s*\$?([\d.]+)/);
+        if (turnsMatch) turns = turnsMatch[1];
+        if (costMatch) cost = costMatch[1];
+      } catch { /* ignore */ }
+
+      // Time ago
+      const secs = Math.floor(Date.now() / 1000 - parseInt(timestamp));
+      let ago: string;
+      if (secs < 60) ago = 'just now';
+      else if (secs < 3600) ago = `${Math.floor(secs / 60)}m ago`;
+      else if (secs < 86400) ago = `${Math.floor(secs / 3600)}h ago`;
+      else ago = `${Math.floor(secs / 86400)}d ago`;
+
+      results.push({ squad, file, ago, turns, cost });
+    }
+
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 export interface DoctorOptions {
   verbose?: boolean;
 }
@@ -302,6 +434,43 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<void> 
   } else {
     writeLine(`    ${colors.yellow}${icons.warning}${RESET} No squads project found in current directory`);
     writeLine(`      ${colors.cyan}Run:${RESET} squads init`);
+  }
+  writeLine();
+
+  // === LIVE EXECUTION ===
+  const running = checkRunningSquads();
+  const daemon = checkDaemon();
+  const recentTranscripts = project.hasProject ? getRecentTranscripts(project.squadsDir!) : [];
+
+  writeLine(`  ${bold}Live Execution${RESET}`);
+  writeLine();
+
+  // Daemon status
+  if (daemon.running) {
+    writeLine(`    ${colors.green}${icons.success}${RESET} Daemon running ${colors.dim}(PID ${daemon.pid}, ${daemon.routines} routines)${RESET}`);
+  } else {
+    writeLine(`    ${colors.dim}○${RESET} Daemon not running ${colors.dim}(squads autonomous start)${RESET}`);
+  }
+
+  // Running squads
+  if (running.length > 0) {
+    writeLine(`    ${colors.cyan}${running.length}${RESET} squad(s) executing now:`);
+    for (const r of running) {
+      const elapsed = r.elapsed ? ` ${colors.dim}(${r.elapsed})${RESET}` : '';
+      writeLine(`      ${colors.green}▸${RESET} ${r.squad}${elapsed}${r.task ? ` ${colors.dim}${r.task.slice(0, 60)}${RESET}` : ''}`);
+    }
+  } else {
+    writeLine(`    ${colors.dim}○${RESET} No squads running`);
+  }
+
+  // Recent transcripts
+  if (recentTranscripts.length > 0) {
+    writeLine();
+    writeLine(`    ${colors.dim}Recent conversations:${RESET}`);
+    for (const t of recentTranscripts.slice(0, 5)) {
+      writeLine(`      ${colors.dim}${t.ago}${RESET} ${t.squad} ${colors.dim}(${t.turns} turns, ~$${t.cost})${RESET}`);
+    }
+    writeLine(`    ${colors.dim}$ cat .agents/conversations/<squad>/<id>.md${RESET}`);
   }
   writeLine();
 
