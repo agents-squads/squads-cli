@@ -62,6 +62,8 @@ interface AgentTurnConfig {
   model: string;
   transcript: Transcript;
   task?: string;
+  /** Working directory for the agent process (defaults to process.cwd()) */
+  cwd?: string;
 }
 
 /**
@@ -123,7 +125,7 @@ IMPORTANT:
     const output = execSync(
       `claude --print --dangerously-skip-permissions --model ${resolvedModel} -- '${escapedPrompt}'`,
       {
-        cwd: process.cwd(),
+        cwd: config.cwd || process.cwd(),
         timeout: 15 * 60 * 1000, // 15 min per turn
         maxBuffer: 10 * 1024 * 1024, // 10MB
         encoding: 'utf-8',
@@ -196,7 +198,7 @@ IMPORTANT:
     exec(
       `claude --print --dangerously-skip-permissions --model ${resolvedModel} -- '${escapedPrompt}'`,
       {
-        cwd: process.cwd(),
+        cwd: config.cwd || process.cwd(),
         timeout: 15 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf-8',
@@ -287,6 +289,20 @@ export async function runConversation(
   const costCeiling = options.costCeiling || DEFAULT_COST_CEILING;
   const transcript = createTranscript(squad.name);
 
+  // Resolve squad's working directory from repo field (e.g. "org/squads-cli" → sibling repo dir)
+  // squadsDir = /path/to/hq/.agents/squads → go up 3 levels to get parent of project root
+  let squadCwd = process.cwd();
+  if (squad.repo) {
+    const repoName = squad.repo.split('/').pop();
+    if (repoName) {
+      const reposRoot = join(squadsDir, '..', '..', '..');
+      const candidatePath = join(reposRoot, repoName);
+      if (existsSync(candidatePath)) {
+        squadCwd = candidatePath;
+      }
+    }
+  }
+
   // Classify all agents
   const allAgents = buildTurnPlan(squad, squadsDir);
   const leads = allAgents.filter(a => a.role === 'lead');
@@ -333,6 +349,7 @@ export async function runConversation(
       model: options.model || modelForRole('lead'),
       transcript,
       task: cycleCount === 1 ? options.task : undefined,
+      cwd: squadCwd,
     });
     addTurn(transcript, lead.name, 'lead', leadOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -354,6 +371,7 @@ export async function runConversation(
           squadName: squad.name,
           model: options.model || modelForRole('scanner'),
           transcript,
+          cwd: squadCwd,
         });
         addTurn(transcript, scanners[0].name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
       } else {
@@ -366,6 +384,7 @@ export async function runConversation(
             squadName: squad.name,
             model: options.model || modelForRole('scanner'),
             transcript, // snapshot — all scanners see same context
+            cwd: squadCwd,
           }).then(output => ({ agent: scanner, output }))
         );
         const scannerResults = await Promise.all(scannerPromises);
@@ -390,6 +409,7 @@ export async function runConversation(
         squadName: squad.name,
         model: options.model || modelForRole('worker'),
         transcript,
+        cwd: squadCwd,
       });
       addTurn(transcript, workers[0].name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
     } else if (workers.length > 1) {
@@ -402,6 +422,7 @@ export async function runConversation(
           squadName: squad.name,
           model: options.model || modelForRole('worker'),
           transcript, // snapshot — all workers see same context
+          cwd: squadCwd,
         }).then(output => ({ agent: worker, output }))
       );
       const workerResults = await Promise.all(workerPromises);
@@ -424,6 +445,7 @@ export async function runConversation(
       squadName: squad.name,
       model: options.model || modelForRole('lead'),
       transcript,
+      cwd: squadCwd,
     });
     addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -442,6 +464,7 @@ export async function runConversation(
         squadName: squad.name,
         model: options.model || modelForRole('verifier'),
         transcript,
+        cwd: squadCwd,
       });
       addTurn(transcript, verifiers[0].name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
     } else if (verifiers.length > 1) {
@@ -454,6 +477,7 @@ export async function runConversation(
           squadName: squad.name,
           model: options.model || modelForRole('verifier'),
           transcript,
+          cwd: squadCwd,
         }).then(output => ({ agent: verifier, output }))
       );
       const verifierResults = await Promise.all(verifierPromises);
