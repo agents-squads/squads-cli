@@ -91,51 +91,15 @@ const TOOLS: Tool[] = [
     unlocks: 'API response parsing, data extraction',
   },
 
-  // Optional — specific capabilities
+  // Optional — enhance specific agent capabilities
   {
-    name: 'gcloud',
-    command: 'gcloud',
+    name: 'curl',
+    command: 'curl',
     versionFlag: '--version',
     category: 'optional',
-    purpose: 'Google Cloud CLI for deployments',
-    installHint: 'https://cloud.google.com/sdk/docs/install',
-    unlocks: 'Cloud Run deployments, GCP infrastructure',
-  },
-  {
-    name: 'gws',
-    command: 'gws',
-    versionFlag: '--version',
-    category: 'optional',
-    purpose: 'Google Workspace CLI (Gmail, Drive, Calendar)',
-    installHint: 'pip install gws-cli',
-    unlocks: 'Email automation, calendar management, Drive sync',
-  },
-  {
-    name: 'docker',
-    command: 'docker',
-    versionFlag: '--version',
-    category: 'optional',
-    purpose: 'Container runtime for local infrastructure',
-    installHint: 'https://docs.docker.com/get-docker/',
-    unlocks: 'Local Postgres, Redis, full stack development',
-  },
-  {
-    name: 'duckdb',
-    command: 'duckdb',
-    versionFlag: '--version',
-    category: 'optional',
-    purpose: 'Analytical database for data processing',
-    installHint: 'brew install duckdb or pip install duckdb',
-    unlocks: 'Local analytics, data exploration, intelligence queries',
-  },
-  {
-    name: 'psql',
-    command: 'psql',
-    versionFlag: '--version',
-    category: 'optional',
-    purpose: 'PostgreSQL client',
-    installHint: 'brew install postgresql or apt install postgresql-client',
-    unlocks: 'Direct database access, migrations',
+    purpose: 'HTTP requests for API integrations',
+    installHint: 'Usually pre-installed on macOS/Linux',
+    unlocks: 'Slack notifications, webhook integrations, API calls',
   },
 ];
 
