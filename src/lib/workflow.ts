@@ -27,7 +27,6 @@ import {
 import {
   type Squad,
   findSquadsDir,
-  loadAgentDefinition,
 } from './squad-parser.js';
 
 // =============================================================================
@@ -73,8 +72,7 @@ interface AgentTurnConfig {
 function executeAgentTurn(config: AgentTurnConfig): string {
   const { agentName, agentPath, role, squadName, model, transcript, task } = config;
 
-  // Build the prompt: agent definition + transcript context + role instructions
-  const definition = loadAgentDefinition(agentPath);
+  // Build the prompt: transcript context + role instructions
   const transcriptContext = serializeTranscript(transcript);
 
   let roleInstructions: string;
