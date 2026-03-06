@@ -161,18 +161,21 @@ All systems operational.
       const memSpy = vi.spyOn(memoryModule, 'findMemoryDir').mockReturnValue(join(tmpDir, '..', 'memory'));
 
       const output: string[] = [];
-      const originalLog = console.log;
-      console.log = (...args: unknown[]) => output.push(args.join(' '));
+      const originalWrite = process.stdout.write;
+      process.stdout.write = ((chunk: any) => {
+        output.push(String(chunk));
+        return true;
+      }) as any;
 
       await evalCommand('company/test-agent', { json: true });
 
-      console.log = originalLog;
+      process.stdout.write = originalWrite;
       dirSpy.mockRestore();
       loadSpy.mockRestore();
       listSpy.mockRestore();
       memSpy.mockRestore();
 
-      const jsonOutput = output.join('\n');
+      const jsonOutput = output.join('').trim();
       const results = JSON.parse(jsonOutput);
       expect(Array.isArray(results)).toBe(true);
       expect(results.length).toBe(1);

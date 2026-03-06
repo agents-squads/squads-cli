@@ -175,15 +175,15 @@ describe('setup-checks', () => {
       expect(result.name).toBe('Docker (Colima)');
     });
 
-    it('returns missing when Docker is not installed', () => {
+    it('returns warning when Docker is not installed', () => {
       // isDockerRunning -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
       // commandExists('docker') -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkDockerPrereqs();
-      expect(result.status).toBe('missing');
-      expect(result.fixCommand).toBe('brew install --cask docker');
+      expect(result.status).toBe('warning');
+      expect(result.message).toContain('Optional');
     });
   });
 
