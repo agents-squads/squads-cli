@@ -18,6 +18,10 @@ describe('git utilities', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'squads-git-test-'));
+    // Clear GIT_DIR/GIT_WORK_TREE so git commands in temp dirs don't
+    // accidentally operate on the squads-cli repo (hook recursion bug)
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
   });
 
   afterEach(() => {
