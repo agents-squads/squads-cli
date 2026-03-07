@@ -2375,7 +2375,7 @@ async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot,
-      squadName, agentName, execContext, startMs, provider,
+      squadName, agentName, execContext, startMs, provider: detectedProvider,
     });
   }
 
