@@ -1,4 +1,0 @@
-# Squads Provider Configuration
-# Selected during: squads init
-
-provider: {{PROVIDER}}
