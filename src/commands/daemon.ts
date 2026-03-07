@@ -350,6 +350,107 @@ function checkNewPRs(repo: string, sinceMins: number = 30): Array<{ number: numb
   }
 }
 
+interface ReviewComment {
+  author: string;
+  body: string;
+  path?: string;
+  createdAt: string;
+}
+
+interface PRWithReviews {
+  number: number;
+  title: string;
+  branch: string;
+  repo: string;
+  comments: ReviewComment[];
+}
+
+/**
+ * Get open PRs with unaddressed review comments (from Gemini, humans, etc).
+ * Skips comments from our own bot to avoid feedback loops.
+ */
+function getPRsWithReviewFeedback(repo: string): PRWithReviews[] {
+  try {
+    // Get open PRs authored by the bot
+    const prsRaw = execSync(
+      `gh pr list -R ${repo} --state open --author "agents-squads[bot]" --json number,title,headRefName --limit 10`,
+      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
+    );
+    const prs = JSON.parse(prsRaw) as Array<{ number: number; title: string; headRefName: string }>;
+
+    const results: PRWithReviews[] = [];
+
+    for (const pr of prs) {
+      try {
+        // Get review comments (inline code review comments)
+        const reviewsRaw = execSync(
+          `gh api repos/${repo}/pulls/${pr.number}/comments --jq '.[] | {author: .user.login, body: .body, path: .path, createdAt: .created_at}'`,
+          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
+        );
+
+        // Get issue comments (top-level PR comments like Gemini summaries)
+        const issueCommentsRaw = execSync(
+          `gh api repos/${repo}/issues/${pr.number}/comments --jq '.[] | {author: .user.login, body: .body, createdAt: .created_at}'`,
+          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
+        );
+
+        const comments: ReviewComment[] = [];
+
+        // Parse JSONL output (one JSON object per line)
+        for (const line of [...reviewsRaw.split('\n'), ...issueCommentsRaw.split('\n')]) {
+          if (!line.trim()) continue;
+          try {
+            const comment = JSON.parse(line) as ReviewComment;
+            // Skip our own bot's comments to avoid loops
+            if (comment.author === 'agents-squads[bot]') continue;
+            comments.push(comment);
+          } catch {
+            continue;
+          }
+        }
+
+        if (comments.length > 0) {
+          results.push({
+            number: pr.number,
+            title: pr.title,
+            branch: pr.headRefName,
+            repo,
+            comments,
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build a task directive from review feedback for an agent to address.
+ */
+function buildReviewTask(pr: PRWithReviews): string {
+  const commentSummary = pr.comments
+    .map(c => {
+      const location = c.path ? ` (${c.path})` : '';
+      return `- ${c.author}${location}: ${c.body.slice(0, 300)}`;
+    })
+    .join('\n');
+
+  return [
+    `Address review feedback on PR #${pr.number}: ${pr.title}`,
+    `Branch: ${pr.branch}`,
+    ``,
+    `Review comments to address:`,
+    commentSummary,
+    ``,
+    `Checkout the branch, fix the issues, commit, and push.`,
+  ].join('\n');
+}
+
 function slackNotify(message: string): void {
   try {
     const envPath = join(homedir(), 'agents-squads', 'hq', '.env');
@@ -520,6 +621,53 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       }
     }
   }
+
+  // React: check for review feedback on bot PRs (Gemini, humans, etc.)
+  if (!options.dryRun) {
+    const reviewJobs: RunningJob[] = [];
+
+    for (const repo of Object.values(SQUAD_REPOS)) {
+      const prsWithFeedback = getPRsWithReviewFeedback(repo);
+      for (const pr of prsWithFeedback) {
+        // Find which squad owns this repo
+        const squad = Object.entries(SQUAD_REPOS).find(([, r]) => r === repo)?.[0];
+        if (!squad) continue;
+
+        // Check budget
+        if (state.dailyCost >= options.budget) break;
+
+        const task = buildReviewTask(pr);
+        writeLine(`  ${icons.running} Addressing ${pr.comments.length} review comment(s) on ${colors.cyan}${squad}${RESET} PR #${pr.number}`);
+
+        const job = dispatchAgent(squad, 'issue-solver', task);
+        reviewJobs.push(job);
+        result.dispatched.push(`${squad}/issue-solver (review #${pr.number})`);
+      }
+    }
+
+    // Wait for review-fix jobs
+    if (reviewJobs.length > 0) {
+      writeLine(`  ${colors.dim}${reviewJobs.length} review-fix agent(s) running...${RESET}`);
+      for (const job of reviewJobs) {
+        const outcome = await waitForJob(job);
+        const durationMs = Date.now() - job.startedAt;
+        const durationMin = Math.floor(durationMs / 60000);
+
+        if (outcome === 'completed') {
+          result.completed.push(`${job.squad}/review-fix`);
+          writeLine(`  ${icons.success} ${colors.green}${job.squad}/review-fix${RESET} completed (${durationMin}m)`);
+        } else {
+          result.failed.push(`${job.squad}/review-fix`);
+          writeLine(`  ${icons.error} ${colors.red}${job.squad}/review-fix${RESET} ${outcome} (${durationMin}m)`);
+        }
+
+        state.dailyCost += 0.50;
+        result.costEstimate += 0.50;
+      }
+    }
+  }
+
+  saveState(state);
 
   // Slack summary
   if (result.completed.length > 0 || result.failed.length > 0) {
