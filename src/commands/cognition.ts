@@ -16,6 +16,15 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 
+interface Belief {
+  belief_key: string;
+  domain: string;
+  statement: string;
+  confidence: number;
+  temperature: string;
+  revision: number;
+}
+
 async function apiFetch(path: string, options?: RequestInit): Promise<any> {
   const { loadSession } = await import('../lib/auth.js');
   const { getApiUrl } = await import('../lib/env-config.js');
@@ -40,8 +49,11 @@ async function apiFetch(path: string, options?: RequestInit): Promise<any> {
       return null;
     }
     return await res.json();
-  } catch {
-    writeLine(`  ${colors.yellow}API unavailable.${RESET} Showing local data only.`);
+  } catch (error) {
+    const msg = error instanceof Error && error.name === 'TimeoutError'
+      ? 'Request timed out.'
+      : 'API unavailable.';
+    writeLine(`  ${colors.yellow}${msg}${RESET}`);
     return null;
   }
 }
@@ -94,7 +106,7 @@ async function briefCommand(): Promise<void> {
     writeLine();
   }
 
-  if (!data.hot_beliefs?.length && !data.recent_signals?.length && !data.pending_decisions?.length) {
+  if (!data.hot_beliefs?.length && !data.recent_signals?.length && !data.pending_decisions?.length && !data.latest_reflection) {
     writeLine(`  ${colors.dim}No cognition data yet. Seed beliefs with:${RESET}`);
     writeLine(`  ${colors.cyan}$ squads cognition beliefs${RESET}`);
     writeLine();
@@ -118,7 +130,7 @@ async function beliefsCommand(options: { domain?: string; json?: boolean }): Pro
   writeLine();
 
   // Group by domain
-  const byDomain: Record<string, any[]> = {};
+  const byDomain: Record<string, Belief[]> = {};
   for (const b of data) {
     const d = b.domain || 'other';
     if (!byDomain[d]) byDomain[d] = [];

@@ -1861,7 +1861,8 @@ async function runAgent(
     const { getApiUrl } = await import('../lib/env-config.js');
     const session = loadSession();
     if (session?.accessToken && session.status === 'active') {
-      const res = await fetch(`${getApiUrl()}/cognition/context/squad:${squadName}`, {
+      const safeSquadName = encodeURIComponent(squadName);
+      const res = await fetch(`${getApiUrl()}/cognition/context/squad:${safeSquadName}`, {
         headers: { Authorization: `Bearer ${session.accessToken}` },
         signal: AbortSignal.timeout(3000),
       });
