@@ -247,6 +247,7 @@ program
   .option('-y, --yes', 'Accept all defaults (non-interactive)')
   .option('-r, --repo', 'Create a GitHub repository for the squad')
   .option('-o, --org <org>', 'GitHub organization for --repo (default: detected from git remote)')
+  .option('-s, --slack', 'Create a Slack channel for the squad (requires SLACK_BOT_TOKEN)')
   .addHelpText('after', `
 Examples:
   $ squads create marketing                          Create with interactive prompts
@@ -254,6 +255,7 @@ Examples:
   $ squads create marketing --force                  Overwrite existing squad
   $ squads create marketing --repo                   Create with GitHub repo
   $ squads create marketing --repo --org myorg       Create with GitHub repo in specific org
+  $ squads create marketing --slack                  Create with Slack channel
 `)
   .action(async (...args: any[]) => {
     const { createCommand } = await import('./commands/create.js');
