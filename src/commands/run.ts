@@ -1,7 +1,7 @@
 import ora from 'ora';
 import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync, unlinkSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
@@ -37,6 +37,8 @@ import { detectProviderFromModel } from '../lib/providers.js';
 import { loadSession, isLoggedIn } from '../lib/auth.js';
 import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
+import { reportExecutionStart, reportConversationResult } from '../lib/api-client.js';
+import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer } from '../lib/github.js';
 import { homedir } from 'os';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -737,14 +739,17 @@ function updateExecutionStatus(
 
 /**
  * Auto-commit agent work after execution completes.
- * Commits any uncommitted changes made by the agent.
+ * Commits as the Agents Squads bot (if configured), pushes with bot token.
+ * Falls back to user's git identity if bot not configured.
  */
 async function autoCommitAgentWork(
   squadName: string,
   agentName: string,
-  executionId: string
+  executionId: string,
+  provider?: string,
 ): Promise<{ committed: boolean; message?: string; error?: string }> {
   const { execSync } = await import('child_process');
+  const { detectGitHubRepo } = await import('../lib/github.js');
   const projectRoot = getProjectRoot();
 
   try {
@@ -758,19 +763,46 @@ async function autoCommitAgentWork(
       return { committed: false };
     }
 
+    // Get bot identity for commits
+    const botEnv = await getBotGitEnv();
+    const execOpts = {
+      cwd: projectRoot,
+      env: { ...process.env, ...botEnv },
+    };
+
     // Stage all changes (agent work should be committed)
-    execSync('git add -A', { cwd: projectRoot });
+    execSync('git add -A', execOpts);
 
-    // Build commit message
+    // Build commit message with provider-specific co-author
+    // Write to temp file to avoid shell injection via squad/agent names
     const shortExecId = executionId.slice(0, 12);
-    const message = `feat(${squadName}/${agentName}): execution ${shortExecId}\n\nCo-Authored-By: Claude <noreply@anthropic.com>`;
+    const coAuthor = getCoAuthorTrailer(provider || 'claude');
+    const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
+    writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit
-    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: projectRoot });
-
-    // Push to origin
+    // Commit using --file to avoid shell interpolation
     try {
-      execSync('git push origin HEAD', { cwd: projectRoot, stdio: 'pipe' });
+      execSync(`git commit --file "${msgFile}"`, execOpts);
+    } finally {
+      try { unlinkSync(msgFile); } catch { /* ignore */ }
+    }
+
+    // Push to origin using bot token
+    try {
+      const { spawnSync } = await import('child_process');
+      const repo = detectGitHubRepo(projectRoot);
+      // Validate repo format (org/name) to prevent injection
+      if (repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        const pushUrl = await getBotPushUrl(repo);
+        if (pushUrl) {
+          // Use spawnSync with args array to avoid shell injection
+          spawnSync('git', ['push', pushUrl, 'HEAD'], { ...execOpts, stdio: 'pipe' });
+        } else {
+          spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+        }
+      } else {
+        spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+      }
     } catch {
       // Push failed - continue, the commit is still local
     }
@@ -1445,10 +1477,24 @@ async function runSquad(
           model: options.model,
         };
 
+        // Report execution start to API (fire-and-forget on failure)
+        const apiExecId = await reportExecutionStart(squad.name, 'conversation', `conv-${Date.now()}`);
+
         const result = await runConversation(squad, convOptions);
 
         // Save transcript
         const transcriptPath = saveTranscript(result.transcript);
+
+        // Report conversation result to API (fire-and-forget)
+        if (apiExecId) {
+          reportConversationResult(apiExecId, {
+            turnCount: result.turnCount,
+            totalCost: result.totalCost,
+            converged: result.converged,
+            reason: result.reason,
+            agentsInvolved: [...new Set(result.transcript.turns.map(t => t.agent))],
+          });
+        }
 
         writeLine();
         writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
@@ -2158,6 +2204,7 @@ function executeForeground(config: {
   agentName: string;
   execContext: ExecutionContext;
   startMs: number;
+  provider?: string;
 }): Promise<string> {
   const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
 
@@ -2177,7 +2224,7 @@ function executeForeground(config: {
           durationMs,
         });
 
-        const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId);
+        const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId, config.provider);
         if (commitResult.committed) {
           writeLine();
           writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
@@ -2328,7 +2375,7 @@ async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot,
-      squadName, agentName, execContext, startMs,
+      squadName, agentName, execContext, startMs, provider: detectedProvider,
     });
   }
 

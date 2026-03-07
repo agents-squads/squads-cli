@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [20, 22]
 
     steps:
       - uses: actions/checkout@v4
@@ -35,12 +35,19 @@ jobs:
         run: npm run build
 
       - name: Test
-        run: npm run test
+        run: npm run test -- --coverage
         env:
           FORCE_COLOR: '1'
 
-      - name: Upload build artifacts (Node 20 only)
-        if: matrix.node-version == 20
+      - name: Upload coverage (Node 22 only)
+        if: matrix.node-version == 22
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload build artifacts (Node 22 only)
+        if: matrix.node-version == 22
         uses: actions/upload-artifact@v4
         with:
           name: dist

@@ -1,0 +1,46 @@
+# Auto-label PRs based on file paths
+# Used by actions/labeler
+
+core:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/lib/**'
+      - 'src/cli.ts'
+
+commands:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/commands/**'
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/**'
+      - '.changeset/**'
+
+docs:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '*.md'
+      - 'docs/**'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'test/**'
+      - '**/*.test.ts'
+
+templates:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'templates/**'
+
+skills:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'skills/**'
+
+agents:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.agents/**'
