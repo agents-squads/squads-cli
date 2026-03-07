@@ -18,6 +18,13 @@ import {
 import { findMemoryDir } from '../lib/memory.js';
 import { getBotGhEnv } from '../lib/github.js';
 import {
+  recordArtifacts,
+  pollOutcomes,
+  computeAllScorecards,
+  getOutcomeScoreModifier,
+} from '../lib/outcomes.js';
+import { pushCognitionSignal } from '../lib/api-client.js';
+import {
   colors,
   bold,
   RESET,
@@ -282,6 +289,13 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
         score -= 10 * failures;
       }
 
+      // Outcome-based modifier (needs 3+ executions for data)
+      const outcomeModifier = getOutcomeScoreModifier(squadName, targetAgent);
+      if (outcomeModifier !== 0) {
+        score += outcomeModifier;
+        reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
+      }
+
       // Only include squads with positive scores and actual work
       if (score > 0 && issues.length > 0) {
         signals.push({ squad: squadName, score, reason, agent: targetAgent, issues });
@@ -523,6 +537,15 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     return result;
   }
 
+  // Poll outcomes for unsettled records
+  const pollResult = pollOutcomes(botGhEnv);
+  if (pollResult.polled > 0) {
+    writeLine(`  ${colors.dim}Polled ${pollResult.polled} artifact(s), ${pollResult.settled} newly settled${RESET}`);
+  }
+
+  // Recompute scorecards
+  computeAllScorecards('7d');
+
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
   const squadRepos = getSquadRepos();
@@ -616,6 +639,33 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       const estimatedCost = 0.50;
       state.dailyCost += estimatedCost;
       result.costEstimate += estimatedCost;
+
+      // Record artifacts for outcome tracking
+      if (outcome === 'completed') {
+        const repo = squadRepos[job.squad];
+        if (repo) {
+          recordArtifacts({
+            executionId: `daemon_${job.squad}_${job.agent}_${job.startedAt}`,
+            squad: job.squad,
+            agent: job.agent,
+            completedAt: new Date().toISOString(),
+            costUsd: estimatedCost,
+            repo,
+          }, botGhEnv);
+        }
+      }
+
+      // Push execution signal to cognition engine (fire-and-forget)
+      pushCognitionSignal({
+        source: 'execution',
+        signal_type: outcome === 'completed' ? 'agent_completed' : 'agent_failed',
+        value: outcome === 'completed' ? 1 : 0,
+        unit: 'completion',
+        data: { outcome, durationMs, cost_usd: estimatedCost },
+        entity_type: 'agent',
+        entity_id: `${job.squad}/${job.agent}`,
+        confidence: 0.95,
+      });
 
       return { job, outcome, durationMs };
     }),

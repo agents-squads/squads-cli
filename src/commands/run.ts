@@ -37,7 +37,7 @@ import { detectProviderFromModel } from '../lib/providers.js';
 import { loadSession, isLoggedIn } from '../lib/auth.js';
 import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
-import { reportExecutionStart, reportConversationResult } from '../lib/api-client.js';
+import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer } from '../lib/github.js';
 import { homedir } from 'os';
 
@@ -1496,6 +1496,23 @@ async function runSquad(
           });
         }
 
+        // Push conversation signal to cognition engine (fire-and-forget)
+        pushCognitionSignal({
+          source: 'execution',
+          signal_type: result.converged ? 'conversation_converged' : 'conversation_stopped',
+          value: result.totalCost,
+          unit: 'usd',
+          data: {
+            turn_count: result.turnCount,
+            converged: result.converged,
+            reason: result.reason,
+            agents_involved: [...new Set(result.transcript.turns.map(t => t.agent))],
+          },
+          entity_type: 'squad',
+          entity_id: squad.name,
+          confidence: 0.9,
+        });
+
         writeLine();
         writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
         writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
@@ -1837,6 +1854,31 @@ async function runAgent(
   // Gather squad context (SQUAD.md, agent state, briefs)
   const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
 
+  // Fetch cognition beliefs for prompt injection (Reflexion pattern)
+  let cognitionContext = '';
+  try {
+    const { loadSession } = await import('../lib/auth.js');
+    const { getApiUrl } = await import('../lib/env-config.js');
+    const session = loadSession();
+    if (session?.accessToken && session.status === 'active') {
+      const res = await fetch(`${getApiUrl()}/cognition/context/squad:${squadName}`, {
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = await res.json() as { markdown: string };
+        if (data.markdown && !data.markdown.includes('No cognition data')) {
+          cognitionContext = `\n${data.markdown}\n`;
+          if (options.verbose) {
+            writeLine(`  ${colors.dim}Injecting cognition beliefs${RESET}`);
+          }
+        }
+      }
+    }
+  } catch {
+    // Silent — cognition injection is best-effort
+  }
+
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
@@ -1855,7 +1897,7 @@ TOOL PREFERENCE: Always prefer CLI tools over MCP servers when both can accompli
 - Use \`git\` CLI for version control
 - Use Bash for file operations, builds, tests
 - Only use MCP tools when CLI cannot do it or MCP is significantly better
-${squadContext}${learningContext}${approvalContext}
+${squadContext}${cognitionContext}${learningContext}${approvalContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
@@ -2375,7 +2417,7 @@ async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot,
-      squadName, agentName, execContext, startMs, provider: detectedProvider,
+      squadName, agentName, execContext, startMs, provider,
     });
   }
 

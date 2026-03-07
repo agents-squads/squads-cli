@@ -136,3 +136,20 @@ export async function reportConversationResult(
     },
   });
 }
+
+/**
+ * Push a cognition signal to the API.
+ * Fire-and-forget — returns true on success, false on failure.
+ */
+export async function pushCognitionSignal(signal: {
+  source: string;
+  signal_type: string;
+  value?: number;
+  unit?: string;
+  data?: Record<string, unknown>;
+  entity_type?: string;
+  entity_id?: string;
+  confidence?: number;
+}): Promise<boolean> {
+  return apiRequest('/cognition/signals', 'POST', signal);
+}
