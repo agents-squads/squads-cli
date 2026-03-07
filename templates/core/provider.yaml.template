@@ -1,5 +1,0 @@
-# Squads Provider Configuration
-# Selected during: squads init
-# Change with: squads init --provider <name>
-
-provider: {{PROVIDER}}
