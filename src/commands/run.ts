@@ -1,7 +1,7 @@
 import ora from 'ora';
 import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync, unlinkSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
@@ -774,24 +774,34 @@ async function autoCommitAgentWork(
     execSync('git add -A', execOpts);
 
     // Build commit message with provider-specific co-author
+    // Write to temp file to avoid shell injection via squad/agent names
     const shortExecId = executionId.slice(0, 12);
     const coAuthor = getCoAuthorTrailer(provider || 'claude');
-    const message = `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}`;
+    const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
+    writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit (as bot if configured, otherwise user's git config)
-    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, execOpts);
+    // Commit using --file to avoid shell interpolation
+    try {
+      execSync(`git commit --file "${msgFile}"`, execOpts);
+    } finally {
+      try { unlinkSync(msgFile); } catch { /* ignore */ }
+    }
 
     // Push to origin using bot token
     try {
+      const { spawnSync } = await import('child_process');
       const repo = detectGitHubRepo(projectRoot);
-      const pushUrl = repo ? await getBotPushUrl(repo) : null;
-
-      if (pushUrl) {
-        // Push via bot token URL (doesn't modify remote config)
-        execSync(`git push ${pushUrl} HEAD`, { ...execOpts, stdio: 'pipe' });
+      // Validate repo format (org/name) to prevent injection
+      if (repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        const pushUrl = await getBotPushUrl(repo);
+        if (pushUrl) {
+          // Use spawnSync with args array to avoid shell injection
+          spawnSync('git', ['push', pushUrl, 'HEAD'], { ...execOpts, stdio: 'pipe' });
+        } else {
+          spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+        }
       } else {
-        // Fallback to user's credential helper
-        execSync('git push origin HEAD', { ...execOpts, stdio: 'pipe' });
+        spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
       }
     } catch {
       // Push failed - continue, the commit is still local

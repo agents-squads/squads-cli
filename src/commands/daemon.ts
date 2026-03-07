@@ -89,27 +89,23 @@ interface DaemonState {
   failCounts: Record<string, number>; // squad:agent → consecutive failures
 }
 
+function defaultState(): DaemonState {
+  return {
+    lastCycle: '',
+    dailyCost: 0,
+    dailyCostDate: new Date().toISOString().slice(0, 10),
+    recentRuns: [],
+    failCounts: {},
+  };
+}
+
 function loadState(): DaemonState {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  if (!existsSync(STATE_FILE)) {
-    return {
-      lastCycle: '',
-      dailyCost: 0,
-      dailyCostDate: new Date().toISOString().slice(0, 10),
-      recentRuns: [],
-      failCounts: {},
-    };
-  }
+  if (!existsSync(STATE_FILE)) return defaultState();
   try {
     return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
   } catch {
-    return {
-      lastCycle: '',
-      dailyCost: 0,
-      dailyCostDate: new Date().toISOString().slice(0, 10),
-      recentRuns: [],
-      failCounts: {},
-    };
+    return defaultState();
   }
 }
 
@@ -188,14 +184,35 @@ function getLastRunAge(squad: string, agent: string): number | null {
 
 // ── Intelligence: Score squads ───────────────────────────────────────
 
-const SQUAD_REPOS: Record<string, string> = {
-  cli: 'agents-squads/squads-cli',
-  website: 'agents-squads/agents-squads-web',
-  console: 'agents-squads/squads-console',
-  product: 'agents-squads/hq',
-};
+/**
+ * Build squad→repo mapping dynamically from SQUAD.md `repo:` fields.
+ * Falls back to detecting org from git remote + squad name conventions.
+ */
+function getSquadRepos(): Record<string, string> {
+  const repos: Record<string, string> = {};
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return repos;
 
-function scoreSquads(state: DaemonState): SquadSignal[] {
+  try {
+    const squads = listSquads(squadsDir);
+    for (const squad of squads) {
+      const squadMd = join(squadsDir, squad, 'SQUAD.md');
+      if (!existsSync(squadMd)) continue;
+
+      const content = readFileSync(squadMd, 'utf-8');
+      const repoMatch = content.match(/^repo:\s*(.+)/m);
+      if (repoMatch) {
+        repos[squad] = repoMatch[1].trim();
+      }
+    }
+  } catch {
+    // Fall back to empty — scoring will skip squads without repos
+  }
+
+  return repos;
+}
+
+function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): SquadSignal[] {
   const signals: SquadSignal[] = [];
   const squadsDir = findSquadsDir();
   if (!squadsDir) return signals;
@@ -209,7 +226,7 @@ function scoreSquads(state: DaemonState): SquadSignal[] {
 
   for (const squadName of squads) {
     try {
-      const repo = SQUAD_REPOS[squadName];
+      const repo = squadRepos[squadName];
       if (!repo) continue; // Only score squads with repos we can check
 
       const issues = getOpenIssues(repo);
@@ -451,7 +468,7 @@ function buildReviewTask(pr: PRWithReviews): string {
   ].join('\n');
 }
 
-function slackNotify(message: string): void {
+async function slackNotify(message: string): Promise<void> {
   try {
     const envPath = join(homedir(), 'agents-squads', 'hq', '.env');
     if (!existsSync(envPath)) return;
@@ -461,16 +478,17 @@ function slackNotify(message: string): void {
     if (!tokenMatch) return;
 
     const token = tokenMatch[1].trim();
-    // Founder's DM channel
     const founderId = 'U0A6NQ3U0JG';
 
-    execSync(
-      `curl -s -X POST https://slack.com/api/chat.postMessage \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        -d '${JSON.stringify({ channel: founderId, text: message }).replace(/'/g, "'\\''")}'`,
-      { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ channel: founderId, text: message }),
+      signal: AbortSignal.timeout(10000),
+    });
   } catch {
     // Silent — Slack is best-effort
   }
@@ -507,7 +525,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
 
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
-  const signals = scoreSquads(state);
+  const squadRepos = getSquadRepos();
+  const signals = scoreSquads(state, squadRepos);
 
   if (signals.length === 0) {
     writeLine(`  ${colors.dim}No squads need attention${RESET}`);
@@ -611,7 +630,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   writeLine();
   for (const { job, outcome } of outcomes) {
     if (outcome !== 'completed') continue;
-    const repo = SQUAD_REPOS[job.squad];
+    const repo = squadRepos[job.squad];
     if (!repo) continue;
     const newPRs = checkNewPRs(repo, 30);
     if (newPRs.length > 0) {
@@ -626,11 +645,11 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   if (!options.dryRun) {
     const reviewJobs: RunningJob[] = [];
 
-    for (const repo of Object.values(SQUAD_REPOS)) {
+    for (const repo of Object.values(squadRepos)) {
       const prsWithFeedback = getPRsWithReviewFeedback(repo);
       for (const pr of prsWithFeedback) {
         // Find which squad owns this repo
-        const squad = Object.entries(SQUAD_REPOS).find(([, r]) => r === repo)?.[0];
+        const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
         if (!squad) continue;
 
         // Check budget
