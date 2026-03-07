@@ -18,6 +18,7 @@ import {
   loadSquad,
   listAgents,
 } from '../lib/squad-parser.js';
+import { writeLine } from '../lib/terminal.js';
 import matter from 'gray-matter';
 import { loadSession } from '../lib/auth.js';
 import { track } from '../lib/telemetry.js';
@@ -80,7 +81,7 @@ export async function deployCommand(options: {
   const session = loadSession();
 
   if (!session || session.status !== 'active') {
-    console.log(`
+    writeLine(`
 ${chalk.yellow('Not logged in or account not active.')}
 
 ${chalk.bold('To deploy agents to the platform:')}
@@ -98,7 +99,7 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     console.error(chalk.red('No .agents/squads/ directory found.'));
-    console.log(chalk.dim('Run: squads init'));
+    writeLine(chalk.dim('Run: squads init'));
     return;
   }
 
@@ -116,46 +117,46 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
     spinner.succeed(`Found ${manifest.squads.length} squad(s), ${manifest.triggers.length} trigger(s)`);
 
     // Show what will be deployed
-    console.log('');
-    console.log(chalk.bold('Deployment Manifest'));
-    console.log(chalk.dim('─'.repeat(50)));
+    writeLine('');
+    writeLine(chalk.bold('Deployment Manifest'));
+    writeLine(chalk.dim('─'.repeat(50)));
 
     for (const squad of manifest.squads) {
-      console.log(`  ${chalk.cyan(squad.name)} — ${squad.agentCount} agent(s), ${squad.routineCount} routine(s)`);
+      writeLine(`  ${chalk.cyan(squad.name)} — ${squad.agentCount} agent(s), ${squad.routineCount} routine(s)`);
       if (options.verbose) {
         for (const agent of squad.agents) {
           const status = agent.status === 'active' ? chalk.green('active') : chalk.yellow(agent.status);
-          console.log(`    ${chalk.dim('→')} ${agent.name} (${agent.model}) [${status}]`);
+          writeLine(`    ${chalk.dim('→')} ${agent.name} (${agent.model}) [${status}]`);
           if (agent.schedule) {
-            console.log(`      ${chalk.dim('schedule:')} ${agent.schedule}`);
+            writeLine(`      ${chalk.dim('schedule:')} ${agent.schedule}`);
           }
         }
       }
     }
 
     if (manifest.triggers.length > 0) {
-      console.log('');
-      console.log(chalk.bold('Triggers to sync'));
-      console.log(chalk.dim('─'.repeat(50)));
+      writeLine('');
+      writeLine(chalk.bold('Triggers to sync'));
+      writeLine(chalk.dim('─'.repeat(50)));
       for (const trigger of manifest.triggers) {
-        console.log(`  ${chalk.magenta(trigger.name)} — ${trigger.squad}${trigger.agent ? '/' + trigger.agent : ''}`);
+        writeLine(`  ${chalk.magenta(trigger.name)} — ${trigger.squad}${trigger.agent ? '/' + trigger.agent : ''}`);
         if (options.verbose) {
-          console.log(`    ${chalk.dim('schedule:')} ${trigger.condition}`);
-          console.log(`    ${chalk.dim('cooldown:')} ${trigger.cooldown}`);
+          writeLine(`    ${chalk.dim('schedule:')} ${trigger.condition}`);
+          writeLine(`    ${chalk.dim('cooldown:')} ${trigger.cooldown}`);
         }
       }
     }
 
     if (manifest.gitSha) {
-      console.log('');
-      console.log(chalk.dim(`Git SHA: ${manifest.gitSha}`));
+      writeLine('');
+      writeLine(chalk.dim(`Git SHA: ${manifest.gitSha}`));
     }
 
     // Dry run stops here
     if (options.dryRun) {
-      console.log('');
-      console.log(chalk.yellow('Dry run — no changes pushed to platform.'));
-      console.log(chalk.dim('Remove --dry-run to deploy.'));
+      writeLine('');
+      writeLine(chalk.yellow('Dry run — no changes pushed to platform.'));
+      writeLine(chalk.dim('Remove --dry-run to deploy.'));
       await track('cli.deploy.dry_run', {
         squads: manifest.squads.length,
         triggers: manifest.triggers.length,
@@ -164,7 +165,7 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
     }
 
     // Push to platform
-    console.log('');
+    writeLine('');
     const pushSpinner = ora('Pushing to platform...').start();
 
     const result = await pushToplatform(manifest, session.accessToken || '');
@@ -172,21 +173,21 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
     if (result.errors.length > 0) {
       pushSpinner.warn(`Deployed with ${result.errors.length} error(s)`);
       for (const err of result.errors) {
-        console.log(`  ${chalk.red('✗')} ${err.name}: ${err.error}`);
+        writeLine(`  ${chalk.red('✗')} ${err.name}: ${err.error}`);
       }
     } else {
       pushSpinner.succeed(`Deployed ${result.triggersCreated} trigger(s) to platform`);
     }
 
     if (result.triggersSynced.length > 0 && options.verbose) {
-      console.log('');
-      console.log(chalk.dim('Synced triggers:'));
+      writeLine('');
+      writeLine(chalk.dim('Synced triggers:'));
       for (const name of result.triggersSynced) {
-        console.log(`  ${chalk.green('✓')} ${name}`);
+        writeLine(`  ${chalk.green('✓')} ${name}`);
       }
     }
 
-    console.log(`
+    writeLine(`
 ${chalk.green('✓ Deployment complete.')}
 
 ${chalk.bold('Next steps:')}
@@ -207,7 +208,7 @@ ${chalk.bold('Next steps:')}
     console.error(chalk.red(message));
 
     if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
-      console.log(chalk.dim('\nPlatform may be unreachable. Check your connection.'));
+      writeLine(chalk.dim('\nPlatform may be unreachable. Check your connection.'));
     }
 
     await track('cli.deploy.error', { error: message });
@@ -217,7 +218,7 @@ ${chalk.bold('Next steps:')}
 export async function deployStatusCommand(): Promise<void> {
   const session = loadSession();
   if (!session?.accessToken) {
-    console.log(chalk.yellow('Not logged in. Run: squads login'));
+    writeLine(chalk.yellow('Not logged in. Run: squads login'));
     return;
   }
 
@@ -247,13 +248,13 @@ export async function deployStatusCommand(): Promise<void> {
     spinner.succeed(`${data.length} trigger(s) on platform`);
 
     if (data.length === 0) {
-      console.log(chalk.dim('\nNo triggers deployed. Run: squads deploy'));
+      writeLine(chalk.dim('\nNo triggers deployed. Run: squads deploy'));
       return;
     }
 
-    console.log('');
-    console.log(chalk.bold('Platform Triggers'));
-    console.log(chalk.dim('─'.repeat(60)));
+    writeLine('');
+    writeLine(chalk.bold('Platform Triggers'));
+    writeLine(chalk.dim('─'.repeat(60)));
 
     for (const trigger of data) {
       const status = trigger.enabled ? chalk.green('enabled') : chalk.red('disabled');
@@ -261,8 +262,8 @@ export async function deployStatusCommand(): Promise<void> {
         ? chalk.dim(new Date(trigger.last_fired_at).toLocaleString())
         : chalk.dim('never');
 
-      console.log(`  ${status} ${chalk.cyan(trigger.name)} — ${trigger.squad}${trigger.agent ? '/' + trigger.agent : ''}`);
-      console.log(`    ${chalk.dim('type:')} ${trigger.trigger_type}  ${chalk.dim('last fired:')} ${lastFired}`);
+      writeLine(`  ${status} ${chalk.cyan(trigger.name)} — ${trigger.squad}${trigger.agent ? '/' + trigger.agent : ''}`);
+      writeLine(`    ${chalk.dim('type:')} ${trigger.trigger_type}  ${chalk.dim('last fired:')} ${lastFired}`);
     }
 
     // Show execution stats
@@ -274,17 +275,17 @@ export async function deployStatusCommand(): Promise<void> {
 
     if (execResponse.ok) {
       const stats = await execResponse.json() as Record<string, unknown>;
-      console.log('');
-      console.log(chalk.bold('Platform Stats'));
-      console.log(chalk.dim('─'.repeat(60)));
+      writeLine('');
+      writeLine(chalk.bold('Platform Stats'));
+      writeLine(chalk.dim('─'.repeat(60)));
       if (stats.running_agents !== undefined) {
-        console.log(`  Running agents: ${chalk.cyan(String(stats.running_agents))}`);
+        writeLine(`  Running agents: ${chalk.cyan(String(stats.running_agents))}`);
       }
       if (stats.executions_today !== undefined) {
-        console.log(`  Executions today: ${chalk.cyan(String(stats.executions_today))}`);
+        writeLine(`  Executions today: ${chalk.cyan(String(stats.executions_today))}`);
       }
       if (stats.total_cost_today !== undefined) {
-        console.log(`  Cost today: ${chalk.cyan('$' + String(stats.total_cost_today))}`);
+        writeLine(`  Cost today: ${chalk.cyan('$' + String(stats.total_cost_today))}`);
       }
     }
 
@@ -297,7 +298,7 @@ export async function deployStatusCommand(): Promise<void> {
 export async function deployPullCommand(options: { verbose?: boolean }): Promise<void> {
   const session = loadSession();
   if (!session?.accessToken) {
-    console.log(chalk.yellow('Not logged in. Run: squads login'));
+    writeLine(chalk.yellow('Not logged in. Run: squads login'));
     return;
   }
 
@@ -330,13 +331,13 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
     spinner.succeed(`Pulled ${executions.length} recent execution(s)`);
 
     if (executions.length === 0) {
-      console.log(chalk.dim('\nNo executions found on platform.'));
+      writeLine(chalk.dim('\nNo executions found on platform.'));
       return;
     }
 
-    console.log('');
-    console.log(chalk.bold('Recent Platform Executions'));
-    console.log(chalk.dim('─'.repeat(70)));
+    writeLine('');
+    writeLine(chalk.bold('Recent Platform Executions'));
+    writeLine(chalk.dim('─'.repeat(70)));
 
     for (const exec of executions) {
       const statusColor = exec.status === 'completed' ? chalk.green
@@ -347,11 +348,11 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
       const cost = exec.cost_usd !== null ? chalk.dim(`$${exec.cost_usd.toFixed(2)}`) : '';
       const time = new Date(exec.started_at).toLocaleString();
 
-      console.log(`  ${statusColor(exec.status.padEnd(10))} ${chalk.cyan(exec.trigger_name)} ${chalk.dim(time)} ${cost}`);
+      writeLine(`  ${statusColor(exec.status.padEnd(10))} ${chalk.cyan(exec.trigger_name)} ${chalk.dim(time)} ${cost}`);
 
       if (options.verbose && exec.completed_at) {
         const duration = (new Date(exec.completed_at).getTime() - new Date(exec.started_at).getTime()) / 1000;
-        console.log(`    ${chalk.dim(`duration: ${duration.toFixed(0)}s`)}`);
+        writeLine(`    ${chalk.dim(`duration: ${duration.toFixed(0)}s`)}`);
       }
     }
 
@@ -371,11 +372,11 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
       }>;
 
       if (learnings.length > 0) {
-        console.log('');
-        console.log(chalk.bold('Recent Learnings'));
-        console.log(chalk.dim('─'.repeat(70)));
+        writeLine('');
+        writeLine(chalk.bold('Recent Learnings'));
+        writeLine(chalk.dim('─'.repeat(70)));
         for (const l of learnings) {
-          console.log(`  ${chalk.cyan(l.squad)}/${l.agent}: ${l.insight.substring(0, 80)}${l.insight.length > 80 ? '...' : ''}`);
+          writeLine(`  ${chalk.cyan(l.squad)}/${l.agent}: ${l.insight.substring(0, 80)}${l.insight.length > 80 ? '...' : ''}`);
         }
       }
     }

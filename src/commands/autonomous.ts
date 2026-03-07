@@ -14,6 +14,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { writeLine } from "../lib/terminal.js";
 import {
   existsSync,
   readFileSync,
@@ -22,6 +23,7 @@ import {
   readdirSync,
   mkdirSync,
   appendFileSync,
+  openSync,
 } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -37,6 +39,8 @@ import {
 const DAEMON_DIR = join(homedir(), ".squads");
 const PID_FILE = join(DAEMON_DIR, "autonomous.pid");
 const DAEMON_LOG = join(DAEMON_DIR, "autonomous.log");
+const PAUSE_FILE = join(DAEMON_DIR, "autonomous.paused");
+const COOLDOWN_FILE = join(DAEMON_DIR, "autonomous.cooldowns.json");
 
 // Configuration from env vars (all optional)
 const MAX_CONCURRENT = parseInt(process.env.SQUADS_MAX_CONCURRENT || "5");
@@ -66,7 +70,7 @@ function parseRoutinesFromFile(filePath: string): Routine[] {
   const routines: Routine[] = [];
 
   const routinesMatch = content.match(
-    /##+ Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
+    /##+ \w*\s*Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
   );
   if (!routinesMatch) return [];
 
@@ -279,17 +283,115 @@ function daemonLog(msg: string): void {
   }
 }
 
+// =============================================================================
+// Pause / Resume — quota awareness
+// =============================================================================
+
+/**
+ * Check if the daemon is paused (e.g., quota exhausted).
+ * The daemon stays running but stops spawning new agents.
+ */
+function isPaused(): { paused: boolean; reason?: string; since?: string } {
+  if (!existsSync(PAUSE_FILE)) return { paused: false };
+  try {
+    const data = JSON.parse(readFileSync(PAUSE_FILE, "utf-8"));
+    return { paused: true, reason: data.reason, since: data.since };
+  } catch {
+    return { paused: true, reason: "unknown" };
+  }
+}
+
+/**
+ * Pause the daemon. It stays running but won't spawn new agents.
+ * Use for quota limits, maintenance, or manual override.
+ */
+function pauseDaemon(reason: string): void {
+  if (!existsSync(DAEMON_DIR)) {
+    mkdirSync(DAEMON_DIR, { recursive: true });
+  }
+  writeFileSync(PAUSE_FILE, JSON.stringify({
+    reason,
+    since: new Date().toISOString(),
+  }));
+  daemonLog(`PAUSED: ${reason}`);
+}
+
+/**
+ * Resume the daemon after a pause.
+ */
+function resumeDaemon(): void {
+  try {
+    unlinkSync(PAUSE_FILE);
+  } catch {
+    /* not paused */
+  }
+  daemonLog("RESUMED");
+}
+
+// =============================================================================
+// Persistent Cooldown State — survives daemon restarts
+// =============================================================================
+
+function loadCooldowns(): Map<string, number> {
+  const map = new Map<string, number>();
+  if (!existsSync(COOLDOWN_FILE)) return map;
+  try {
+    const data = JSON.parse(readFileSync(COOLDOWN_FILE, "utf-8"));
+    for (const [key, ts] of Object.entries(data)) {
+      if (typeof ts === "number") map.set(key, ts);
+    }
+  } catch {
+    /* corrupt file — start fresh */
+  }
+  return map;
+}
+
+function saveCooldowns(map: Map<string, number>): void {
+  try {
+    const obj: Record<string, number> = {};
+    for (const [key, ts] of map) {
+      obj[key] = ts;
+    }
+    writeFileSync(COOLDOWN_FILE, JSON.stringify(obj));
+  } catch {
+    /* best effort */
+  }
+}
+
 /**
  * The main daemon loop. Runs as a long-lived process.
+ * This is the COO's operating system — always on, managing the workforce.
  */
 async function daemonLoop(): Promise<void> {
   daemonLog("Daemon started");
 
-  // Track last spawn time per routine to enforce cooldowns
-  const lastSpawned = new Map<string, number>();
+  // Load persistent cooldown state (survives restarts)
+  const lastSpawned = loadCooldowns();
+
+  // Track consecutive spawn failures for auto-pause (quota detection)
+  let consecutiveFailures = 0;
+  const AUTO_PAUSE_THRESHOLD = 5;
 
   const tick = async () => {
     try {
+      // Check if paused (quota, maintenance, manual)
+      const pauseStatus = isPaused();
+      if (pauseStatus.paused) {
+        // Still enforce timeouts on running agents even when paused
+        const running = getRunningAgents();
+        for (const agent of running) {
+          const runtimeMin = (Date.now() - agent.startedAt) / 60000;
+          if (runtimeMin > AGENT_TIMEOUT_MIN) {
+            daemonLog(
+              `TIMEOUT: ${agent.squad}/${agent.agent} (PID ${agent.pid}, ${Math.round(runtimeMin)}min)`
+            );
+            const pidFile = agent.logFile.replace(".log", ".pid");
+            killAgent(agent.pid, pidFile);
+          }
+        }
+        return; // Don't spawn new agents while paused
+      }
+
       const now = new Date();
       now.setSeconds(0, 0); // Round to minute
 
@@ -298,7 +400,6 @@ async function daemonLoop(): Promise<void> {
 
       // 2. Check running agents
       const running = getRunningAgents();
-      const _runningCount = running.length;
 
       // 3. Timeout enforcement
       for (const agent of running) {
@@ -319,7 +420,7 @@ async function daemonLoop(): Promise<void> {
         for (const agentName of routine.agents) {
           const key = `${routine.squad}/${agentName}`;
 
-          // Cooldown check
+          // Cooldown check (persistent across restarts)
           if (routine.cooldown) {
             const last = lastSpawned.get(key);
             const cooldownMs = parseCooldown(routine.cooldown);
@@ -353,12 +454,25 @@ async function daemonLoop(): Promise<void> {
                 cwd: process.cwd(),
                 stdio: "ignore",
                 timeout: 10000, // 10s to spawn
+                env: {
+                  ...process.env,
+                  CLAUDECODE: "",             // Allow nested claude sessions
+                },
               }
             );
             lastSpawned.set(key, Date.now());
+            saveCooldowns(lastSpawned); // Persist to disk
+            consecutiveFailures = 0; // Reset failure counter
             daemonLog(`SPAWNED: ${key}`);
           } catch (err) {
-            daemonLog(`ERROR: Failed to spawn ${key}: ${err}`);
+            consecutiveFailures++;
+            daemonLog(`ERROR: Failed to spawn ${key} (${consecutiveFailures}/${AUTO_PAUSE_THRESHOLD}): ${err}`);
+
+            // Auto-pause after repeated failures (likely quota exhausted)
+            if (consecutiveFailures >= AUTO_PAUSE_THRESHOLD) {
+              pauseDaemon(`Auto-paused: ${consecutiveFailures} consecutive spawn failures (likely quota exhausted)`);
+              daemonLog(`AUTO-PAUSED: ${consecutiveFailures} consecutive failures. Run 'squads autonomous resume' when quota resets.`);
+            }
           }
         }
       }
@@ -371,26 +485,20 @@ async function daemonLoop(): Promise<void> {
   await tick();
   setInterval(tick, EVAL_INTERVAL_SEC * 1000);
 
-  // Keep process alive
-  process.on("SIGTERM", () => {
-    daemonLog("Received SIGTERM, shutting down");
+  // Clean shutdown
+  const cleanup = (signal: string) => {
+    daemonLog(`Received ${signal}, shutting down`);
+    saveCooldowns(lastSpawned); // Persist cooldowns before exit
     try {
       unlinkSync(PID_FILE);
     } catch {
       /* ignore */
     }
     process.exit(0);
-  });
+  };
 
-  process.on("SIGINT", () => {
-    daemonLog("Received SIGINT, shutting down");
-    try {
-      unlinkSync(PID_FILE);
-    } catch {
-      /* ignore */
-    }
-    process.exit(0);
-  });
+  process.on("SIGTERM", () => cleanup("SIGTERM"));
+  process.on("SIGINT", () => cleanup("SIGINT"));
 }
 
 // =============================================================================
@@ -420,10 +528,10 @@ function isRunning(): { running: boolean; pid?: number } {
 async function startScheduler(): Promise<void> {
   const status = isRunning();
   if (status.running) {
-    console.log(
+    writeLine(
       chalk.yellow(`Daemon already running (PID ${status.pid})`)
     );
-    console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
+    writeLine(chalk.gray(`  Log: ${DAEMON_LOG}`));
     return;
   }
 
@@ -434,15 +542,15 @@ async function startScheduler(): Promise<void> {
 
   const routines = collectRoutines().filter((r) => r.enabled !== false);
   if (routines.length === 0) {
-    console.log(chalk.yellow("No enabled routines found."));
-    console.log(
+    writeLine(chalk.yellow("No enabled routines found."));
+    writeLine(
       chalk.gray("Add routines to SQUAD.md files under ### Routines section.")
     );
     return;
   }
 
-  // Check if we're being invoked as the daemon itself (--daemon flag)
-  if (process.argv.includes("--daemon")) {
+  // Check if we're being invoked as the daemon itself (via env var)
+  if (process.env.SQUADS_DAEMON === "1") {
     // We ARE the daemon — run the loop
     writeFileSync(PID_FILE, process.pid.toString());
     await daemonLoop();
@@ -453,33 +561,43 @@ async function startScheduler(): Promise<void> {
   }
 
   // Spawn a detached daemon process
+  // Use SQUADS_DAEMON env var instead of --daemon CLI flag to avoid
+  // Commander.js rejecting the unknown option and silently exiting
+
+  // Redirect child stdout/stderr to daemon log for diagnosability
+  if (!existsSync(DAEMON_LOG)) {
+    writeFileSync(DAEMON_LOG, "");
+  }
+  const logFd = openSync(DAEMON_LOG, "a");
+
   const child = spawn(
     process.execPath, // node
-    [process.argv[1], "autonomous", "start", "--daemon"],
+    [process.argv[1], "autonomous", "start"],
     {
       cwd: process.cwd(),
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env },
+      stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, SQUADS_DAEMON: "1" },
     }
   );
   child.unref();
 
-  // Wait briefly for PID file to appear
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Wait for PID file to appear (2s for slower systems)
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 
   const check = isRunning();
   if (check.running) {
-    console.log(chalk.green(`\n  Daemon started (PID ${check.pid})`));
+    writeLine(chalk.green(`\n  Daemon started (PID ${check.pid})`));
   } else {
-    console.log(chalk.green("\n  Daemon starting..."));
+    writeLine(chalk.red("\n  Daemon failed to start. Check log:"));
+    writeLine(chalk.gray(`  $ tail -20 ${DAEMON_LOG}`));
   }
 
-  console.log(chalk.gray(`  Log: ${DAEMON_LOG}`));
-  console.log(chalk.gray(`  Config: SQUAD.md routines\n`));
+  writeLine(chalk.gray(`  Log: ${DAEMON_LOG}`));
+  writeLine(chalk.gray(`  Config: SQUAD.md routines\n`));
 
   // Show what's scheduled
-  console.log(chalk.cyan("  Routines"));
+  writeLine(chalk.cyan("  Routines"));
   const bySquad = new Map<string, RoutineWithSquad[]>();
   for (const r of routines) {
     if (!bySquad.has(r.squad)) bySquad.set(r.squad, []);
@@ -493,24 +611,24 @@ async function startScheduler(): Promise<void> {
         hour: "2-digit",
         minute: "2-digit",
       });
-      console.log(
+      writeLine(
         `  ${chalk.green("●")} ${chalk.cyan(squad)}/${r.name} ${chalk.gray(r.schedule)} ${chalk.gray(`→ ${timeStr}`)}`
       );
     }
   }
 
-  console.log(
+  writeLine(
     chalk.gray(`\n  ${routines.length} routines, max ${MAX_CONCURRENT} concurrent`)
   );
-  console.log(chalk.gray("  Stop: squads autonomous stop"));
-  console.log(chalk.gray(`  Monitor: tail -f ${DAEMON_LOG}\n`));
+  writeLine(chalk.gray("  Stop: squads autonomous stop"));
+  writeLine(chalk.gray(`  Monitor: tail -f ${DAEMON_LOG}\n`));
 }
 
 function stopScheduler(): void {
   const status = isRunning();
 
   if (!status.running) {
-    console.log(chalk.gray("Daemon not running"));
+    writeLine(chalk.gray("Daemon not running"));
     return;
   }
 
@@ -521,7 +639,7 @@ function stopScheduler(): void {
     } catch {
       /* ignore */
     }
-    console.log(chalk.green(`Daemon stopped (PID ${status.pid})`));
+    writeLine(chalk.green(`Daemon stopped (PID ${status.pid})`));
   } catch (error) {
     console.error(chalk.red(`Failed to stop daemon: ${error}`));
   }
@@ -533,42 +651,50 @@ async function showStatus(): Promise<void> {
   const enabled = routines.filter((r) => r.enabled !== false);
   const running = getRunningAgents();
 
-  console.log(chalk.bold("\n  Autonomous Scheduler\n"));
+  writeLine(chalk.bold("\n  Autonomous Scheduler\n"));
 
   // Daemon status
+  const pauseStatus = isPaused();
   if (daemon.running) {
-    console.log(
-      `  ${chalk.green("●")} Daemon running ${chalk.gray(`(PID ${daemon.pid})`)}`
-    );
+    if (pauseStatus.paused) {
+      writeLine(
+        `  ${chalk.yellow("●")} Daemon paused ${chalk.gray(`(PID ${daemon.pid})`)}`
+      );
+      writeLine(`    ${chalk.yellow(pauseStatus.reason || "No reason given")} ${chalk.gray(`since ${pauseStatus.since || "unknown"}`)}`);
+    } else {
+      writeLine(
+        `  ${chalk.green("●")} Daemon running ${chalk.gray(`(PID ${daemon.pid})`)}`
+      );
+    }
   } else {
-    console.log(`  ${chalk.red("●")} Daemon not running`);
+    writeLine(`  ${chalk.red("●")} Daemon not running`);
   }
-  console.log();
+  writeLine();
 
   // Running agents
   if (running.length > 0) {
-    console.log(chalk.cyan("  Running Agents"));
+    writeLine(chalk.cyan("  Running Agents"));
     for (const agent of running) {
       const runtimeMin = Math.round((Date.now() - agent.startedAt) / 60000);
       const timeoutWarning =
         runtimeMin > AGENT_TIMEOUT_MIN * 0.8 ? chalk.yellow(" ⚠") : "";
-      console.log(
+      writeLine(
         `  ${chalk.green("●")} ${chalk.cyan(agent.squad)}/${agent.agent} ${chalk.gray(`${runtimeMin}min`)}${timeoutWarning} ${chalk.gray(`PID ${agent.pid}`)}`
       );
     }
-    console.log();
+    writeLine();
   }
 
   // Routine summary
-  console.log(chalk.cyan("  Routines"));
-  console.log(
+  writeLine(chalk.cyan("  Routines"));
+  writeLine(
     `  ${enabled.length} enabled / ${routines.length} total, ${running.length}/${MAX_CONCURRENT} running`
   );
-  console.log();
+  writeLine();
 
   // Next 10 upcoming runs
   if (enabled.length > 0) {
-    console.log(chalk.cyan("  Next Runs"));
+    writeLine(chalk.cyan("  Next Runs"));
 
     const now = new Date();
     const nextRuns: {
@@ -605,18 +731,20 @@ async function showStatus(): Promise<void> {
                 month: "short",
                 day: "numeric",
               });
-        console.log(
+        writeLine(
           `  ${chalk.gray(timeStr)} ${chalk.gray(dateStr)} ${chalk.cyan(run.squad)}/${run.agent}`
         );
       });
   }
 
-  console.log();
-  console.log(chalk.gray("  Commands:"));
-  console.log(chalk.gray("  $ squads autonomous start   Start daemon"));
-  console.log(chalk.gray("  $ squads autonomous stop    Stop daemon"));
-  console.log(chalk.gray(`  $ tail -f ${DAEMON_LOG}`));
-  console.log();
+  writeLine();
+  writeLine(chalk.gray("  Commands:"));
+  writeLine(chalk.gray("  $ squads autonomous start    Start daemon"));
+  writeLine(chalk.gray("  $ squads autonomous stop     Stop daemon"));
+  writeLine(chalk.gray("  $ squads autonomous pause    Pause (quota/manual)"));
+  writeLine(chalk.gray("  $ squads autonomous resume   Resume after pause"));
+  writeLine(chalk.gray(`  $ tail -f ${DAEMON_LOG}`));
+  writeLine();
 }
 
 // =============================================================================
@@ -627,7 +755,8 @@ export function registerAutonomousCommand(program: Command): void {
   const autonomous = program
     .command("autonomous")
     .alias("auto")
-    .description("Local scheduling daemon for autonomous agent execution");
+    .description("Local scheduling daemon for autonomous agent execution")
+    .action(() => { autonomous.outputHelp(); });
 
   autonomous
     .command("start")
@@ -648,5 +777,20 @@ export function registerAutonomousCommand(program: Command): void {
     .description("Show daemon status, running agents, and next runs")
     .action(async () => {
       await showStatus();
+    });
+
+  autonomous
+    .command("pause")
+    .description("Pause the daemon (e.g. quota exhausted)")
+    .argument("[reason]", "Reason for pausing", "Manual pause")
+    .action((reason: string) => {
+      pauseDaemon(reason);
+    });
+
+  autonomous
+    .command("resume")
+    .description("Resume a paused daemon")
+    .action(() => {
+      resumeDaemon();
     });
 }

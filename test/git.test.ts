@@ -1,15 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { checkGitStatus, checkGitStatusAsync, initGitRepo, getRepoName } from '../src/lib/git';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
 
+// Clear git env vars set by pre-commit hook so that git commands
+// in temp directories do not write to the hook's repository branch.
+beforeAll(() => {
+  delete process.env.GIT_DIR;
+  delete process.env.GIT_WORK_TREE;
+  delete process.env.GIT_INDEX_FILE;
+});
+
 describe('git utilities', () => {
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'squads-git-test-'));
+    // Clear GIT_DIR/GIT_WORK_TREE so git commands in temp dirs don't
+    // accidentally operate on the squads-cli repo (hook recursion bug)
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
   });
 
   afterEach(() => {

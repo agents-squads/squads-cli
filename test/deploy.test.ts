@@ -56,16 +56,19 @@ describe('deploy', () => {
       const authModule = await import('../src/lib/auth.js');
       const spy = vi.spyOn(authModule, 'loadSession').mockReturnValue(null);
 
-      const logs: string[] = [];
-      const originalLog = console.log;
-      console.log = (...args: unknown[]) => logs.push(args.join(' '));
+      const chunks: string[] = [];
+      const originalWrite = process.stdout.write;
+      process.stdout.write = ((chunk: any) => {
+        chunks.push(String(chunk));
+        return true;
+      }) as any;
 
       await deployCommand({ dryRun: true });
 
-      console.log = originalLog;
+      process.stdout.write = originalWrite;
       spy.mockRestore();
 
-      const output = logs.join('\n');
+      const output = chunks.join('');
       expect(output).toContain('Not logged in');
     });
 

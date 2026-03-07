@@ -1,0 +1,89 @@
+#!/bin/sh
+# Pre-commit hook: block PII and internal references on public repo
+# squads-cli is PUBLIC — never commit client names, personal emails, internal strategy
+
+# Patterns that must NEVER appear in staged files
+# Add patterns as needed — this is a safety net, not a replacement for review
+BLOCKED_PATTERNS=(
+  # Client names (real companies we work with)
+  "innspiral"
+  "sg2030"
+  "parque.arauco"
+  "sodimac"
+  "enaex"
+  "hortifrut"
+  "aguas.andinas"
+  "cmpc"
+  "Andes.Moves"
+  "Andes.Movements"
+  # Internal references
+  "squads-hq"
+  "daily-briefing"
+  "directives\.md"
+  "goals\.md"
+  "state\.md"
+  # Personal emails (add more as needed)
+  "kokevidaurre@"
+  "jorgevidaurre@"
+  # Strategy/financial
+  "burn.rate"
+  "runway"
+  "consulting.revenue"
+  "pricing-strategy"
+)
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+
+FOUND=0
+for pattern in "${BLOCKED_PATTERNS[@]}"; do
+  # Search staged content (not just filenames)
+  MATCHES=$(git diff --cached -U0 | grep -iE "^\+" | grep -iE "$pattern" | head -3)
+  if [ -n "$MATCHES" ]; then
+    if [ "$FOUND" -eq 0 ]; then
+      echo ""
+      echo "BLOCKED: PII or internal reference detected in staged changes"
+      echo "This is a PUBLIC repo. The following patterns are not allowed:"
+      echo ""
+    fi
+    echo "  Pattern: $pattern"
+    echo "  $MATCHES"
+    echo ""
+    FOUND=1
+  fi
+done
+
+if [ "$FOUND" -eq 1 ]; then
+  echo "Fix: Remove the flagged content, then commit again."
+  echo "Override: git commit --no-verify (use ONLY if you're sure it's a false positive)"
+  echo ""
+  exit 1
+fi
+
+# Quality gate: if source or test files changed, run build + tests
+SRC_CHANGED=$(echo "$STAGED_FILES" | grep -E '\.(ts|tsx|js)$' | head -1)
+if [ -n "$SRC_CHANGED" ]; then
+  echo "Quality gate: source files changed — running build + tests..."
+
+  npm run build 2>&1
+  if [ $? -ne 0 ]; then
+    echo ""
+    echo "BLOCKED: build failed. Fix build errors before committing."
+    exit 1
+  fi
+
+  npm run test 2>&1
+  if [ $? -ne 0 ]; then
+    echo ""
+    echo "BLOCKED: tests failed. Fix failing tests before committing."
+    echo "Run 'npm run test' to see details."
+    exit 1
+  fi
+
+  echo "Quality gate passed: build + tests OK"
+fi
+
+exit 0

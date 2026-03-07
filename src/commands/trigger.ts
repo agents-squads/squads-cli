@@ -12,6 +12,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { writeLine } from "../lib/terminal.js";
 
 const API_URL = process.env.SQUADS_API_URL || process.env.SCHEDULER_URL || "http://localhost:8090";
 
@@ -76,9 +77,9 @@ async function listTriggers(squad?: string): Promise<void> {
 
     if (isConnectionError) {
       console.error(chalk.red("\n  Scheduler not running\n"));
-      console.log(chalk.gray("  The trigger system requires the local stack to be running.\n"));
-      console.log(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
-      console.log(`  ${chalk.cyan("$ squads stack status")}   Check stack status\n`);
+      writeLine(chalk.gray("  The trigger system requires the local stack to be running.\n"));
+      writeLine(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
+      writeLine(`  ${chalk.cyan("$ squads stack status")}   Check stack status\n`);
       return;
     }
 
@@ -87,11 +88,11 @@ async function listTriggers(squad?: string): Promise<void> {
   }
 
   if (triggers.length === 0) {
-    console.log(chalk.gray("No triggers found"));
+    writeLine(chalk.gray("No triggers found"));
     return;
   }
 
-  console.log(chalk.bold("\nSmart Triggers\n"));
+  writeLine(chalk.bold("\nSmart Triggers\n"));
 
   const grouped = triggers.reduce(
     (acc, t) => {
@@ -102,23 +103,23 @@ async function listTriggers(squad?: string): Promise<void> {
   );
 
   for (const [squadName, squadTriggers] of Object.entries(grouped)) {
-    console.log(chalk.cyan(`  ${squadName}`));
+    writeLine(chalk.cyan(`  ${squadName}`));
 
     for (const t of squadTriggers) {
       const status = t.enabled ? chalk.green("●") : chalk.gray("○");
       const agent = t.agent ? `/${t.agent}` : "";
       const fires = t.fire_count > 0 ? chalk.gray(` (${t.fire_count}x)`) : "";
 
-      console.log(
+      writeLine(
         `    ${status} ${t.name}${chalk.gray(agent)} P${t.priority}${fires}`
       );
     }
-    console.log();
+    writeLine();
   }
 }
 
 async function syncTriggers(): Promise<void> {
-  console.log(chalk.gray("Syncing triggers from SQUAD.md files...\n"));
+  writeLine(chalk.gray("Syncing triggers from SQUAD.md files...\n"));
 
   try {
     const result = await fetchScheduler<{ synced: number; triggers: string[]; errors: Array<{ name: string; error: string }> }>(
@@ -127,16 +128,16 @@ async function syncTriggers(): Promise<void> {
     );
 
     if (result.errors && result.errors.length > 0) {
-      console.log(chalk.yellow(`Synced with ${result.errors.length} error(s):`));
+      writeLine(chalk.yellow(`Synced with ${result.errors.length} error(s):`));
       for (const err of result.errors) {
-        console.log(chalk.red(`  - ${err.name}: ${err.error}`));
+        writeLine(chalk.red(`  - ${err.name}: ${err.error}`));
       }
     }
 
-    console.log(chalk.green(`Synced ${result.synced} trigger(s)`));
+    writeLine(chalk.green(`Synced ${result.synced} trigger(s)`));
     if (result.triggers && result.triggers.length > 0) {
       for (const name of result.triggers) {
-        console.log(chalk.gray(`  - ${name}`));
+        writeLine(chalk.gray(`  - ${name}`));
       }
     }
   } catch (error: unknown) {
@@ -146,9 +147,9 @@ async function syncTriggers(): Promise<void> {
 
     if (isConnectionError) {
       console.error(chalk.red("\n  API not running\n"));
-      console.log(chalk.gray("  The sync command requires the API to be running.\n"));
-      console.log(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
-      console.log(`  ${chalk.cyan("$ squads health")}        Check service status\n`);
+      writeLine(chalk.gray("  The sync command requires the API to be running.\n"));
+      writeLine(`  ${chalk.cyan("$ squads stack start")}    Start the local stack`);
+      writeLine(`  ${chalk.cyan("$ squads health")}        Check service status\n`);
       return;
     }
 
@@ -167,7 +168,7 @@ async function fireTrigger(name: string): Promise<void> {
     return;
   }
 
-  console.log(
+  writeLine(
     chalk.gray(`Firing ${trigger.squad}/${trigger.agent || "*"}...`)
   );
 
@@ -181,7 +182,7 @@ async function fireTrigger(name: string): Promise<void> {
     { method: "POST" }
   );
 
-  console.log(chalk.green(`✓ Queued execution ${execution.id.slice(0, 8)}`));
+  writeLine(chalk.green(`✓ Queued execution ${execution.id.slice(0, 8)}`));
 }
 
 async function toggleTrigger(name: string, enable: boolean): Promise<void> {
@@ -199,36 +200,37 @@ async function toggleTrigger(name: string, enable: boolean): Promise<void> {
   });
 
   const status = enable ? chalk.green("enabled") : chalk.gray("disabled");
-  console.log(`${trigger.name} ${status}`);
+  writeLine(`${trigger.name} ${status}`);
 }
 
 async function showStatus(): Promise<void> {
   try {
     const stats = await fetchScheduler<SchedulerStats>("/stats");
 
-    console.log(chalk.bold("\nScheduler Status\n"));
+    writeLine(chalk.bold("\nScheduler Status\n"));
 
-    console.log(chalk.cyan("  Triggers"));
-    console.log(`    Total:     ${stats.triggers.total}`);
-    console.log(`    Enabled:   ${chalk.green(stats.triggers.enabled)}`);
-    console.log(`    Fired 24h: ${stats.triggers.fired_24h}`);
+    writeLine(chalk.cyan("  Triggers"));
+    writeLine(`    Total:     ${stats.triggers.total}`);
+    writeLine(`    Enabled:   ${chalk.green(stats.triggers.enabled)}`);
+    writeLine(`    Fired 24h: ${stats.triggers.fired_24h}`);
 
-    console.log(chalk.cyan("\n  Executions (24h)"));
-    console.log(`    Completed: ${chalk.green(stats.executions_24h.completed)}`);
-    console.log(`    Failed:    ${chalk.red(stats.executions_24h.failed)}`);
-    console.log(`    Running:   ${chalk.yellow(stats.executions_24h.running)}`);
-    console.log(`    Queued:    ${stats.executions_24h.queued}`);
-    console.log();
+    writeLine(chalk.cyan("\n  Executions (24h)"));
+    writeLine(`    Completed: ${chalk.green(stats.executions_24h.completed)}`);
+    writeLine(`    Failed:    ${chalk.red(stats.executions_24h.failed)}`);
+    writeLine(`    Running:   ${chalk.yellow(stats.executions_24h.running)}`);
+    writeLine(`    Queued:    ${stats.executions_24h.queued}`);
+    writeLine();
   } catch {
     console.error(chalk.red("Scheduler not running or unreachable"));
-    console.log(chalk.gray(`  Expected at: ${API_URL}`));
+    writeLine(chalk.gray(`  Expected at: ${API_URL}`));
   }
 }
 
 export function registerTriggerCommand(program: Command): void {
   const trigger = program
     .command("trigger")
-    .description("Manage smart triggers");
+    .description("Manage smart triggers")
+    .action(() => { trigger.outputHelp(); });
 
   trigger
     .command("list [squad]")

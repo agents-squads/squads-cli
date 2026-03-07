@@ -1,7 +1,7 @@
 import ora from 'ora';
 import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync } from 'fs';
 import {
   findSquadsDir,
   loadSquad,
@@ -34,10 +34,14 @@ import {
   isProviderCLIAvailable,
 } from '../lib/llm-clis.js';
 import { detectProviderFromModel } from '../lib/providers.js';
+import { loadSession, isLoggedIn } from '../lib/auth.js';
+import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
+import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { homedir } from 'os';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
-const DEFAULT_BRIDGE_URL = 'http://localhost:8088';
+const CLOUD_POLL_INTERVAL_MS = 3000;
+const CLOUD_POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max poll
 const DEFAULT_LEARNINGS_LIMIT = 5;
 const DEFAULT_CONTEXT_TOKENS = 8000;
 const DEFAULT_FALLBACK_CHARS = 2000;
@@ -74,6 +78,11 @@ interface RunOptions {
   provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
   verify?: boolean; // Post-execution verification (default true, --no-verify to skip)
+  cloud?: boolean; // Dispatch to cloud worker via API instead of local execution
+  conversation?: boolean; // Run squad as multi-agent conversation (default for squad runs)
+  task?: string; // Founder directive — replaces lead briefing in conversation mode
+  maxTurns?: number; // Max conversation turns (default: 20)
+  costCeiling?: number; // Cost ceiling in USD (default: 25)
 }
 
 /**
@@ -93,7 +102,7 @@ interface ExecutionContext {
  * This allows the bridge to tag incoming OTel data with correct squad/agent info
  */
 async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(`${bridgeUrl}/api/context/register`, {
@@ -134,7 +143,7 @@ interface PreflightResult {
 }
 
 async function checkPreflightGates(squad: string, agent: string): Promise<PreflightResult> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(`${bridgeUrl}/api/execution/preflight`, {
@@ -166,7 +175,7 @@ interface Learning {
 }
 
 async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): Promise<Learning[]> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL;
+  const bridgeUrl = getBridgeUrl();
 
   try {
     const response = await fetch(
@@ -204,6 +213,31 @@ function loadApprovalInstructions(): string {
   }
 
   return '';
+}
+
+/**
+ * Load post-execution instructions from .agents/config/post-execution.md.
+ * Substitutes {{squadName}} and {{agentName}} placeholders.
+ * Falls back to a minimal inline default if file not found.
+ */
+function loadPostExecution(squadName: string, agentName: string): string {
+  const squadsDir = findSquadsDir();
+  if (squadsDir) {
+    const postExecPath = join(dirname(squadsDir), 'config', 'post-execution.md');
+    if (existsSync(postExecPath)) {
+      try {
+        const template = readFileSync(postExecPath, 'utf-8');
+        return template
+          .replace(/\{\{squadName\}\}/g, squadName)
+          .replace(/\{\{agentName\}\}/g, agentName);
+      } catch { /* fall through */ }
+    }
+  }
+  // Minimal fallback if template file missing
+  return `After completion:
+- Create a branch, commit with Conventional Commits, push, and open a PR targeting develop
+- NEVER commit to main directly
+- Type /exit when done`;
 }
 
 /**
@@ -910,7 +944,7 @@ async function emitExecutionEvent(
   eventType: 'agent.completed' | 'agent.failed',
   data: { squad: string; agent: string; executionId: string; error?: string }
 ): Promise<void> {
-  const apiUrl = process.env.SQUADS_API_URL;
+  const apiUrl = getApiUrl();
 
   if (apiUrl) {
     try {
@@ -1037,6 +1071,177 @@ FAIL: <brief reason>`;
   }
 }
 
+// ── Cloud Dispatch ─────────────────────────────────────────────────────
+
+/**
+ * Dispatch agent execution to cloud worker via API.
+ * Posts to /agent-dispatch, then polls /agent-executions for status.
+ */
+async function runCloudDispatch(
+  squadName: string,
+  agentName: string,
+  options: RunOptions
+): Promise<void> {
+  const apiUrl = getApiUrl();
+
+  if (!apiUrl) {
+    writeLine(`  ${colors.red}${icons.error} API URL not configured${RESET}`);
+    writeLine(`  ${colors.dim}Run: squads config use staging  (or set SQUADS_API_URL)${RESET}`);
+    process.exit(1);
+  }
+
+  // Require auth session
+  if (!isLoggedIn()) {
+    writeLine(`  ${colors.red}${icons.error} Not logged in${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads login\` to authenticate before using --cloud${RESET}`);
+    process.exit(1);
+  }
+
+  const session = loadSession();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  // Use access token if available, otherwise use API key
+  if (session?.accessToken) {
+    headers['Authorization'] = `Bearer ${session.accessToken}`;
+  }
+
+  const apiKey = process.env.SQUADS_PLATFORM_API_TOKEN || process.env.SCHEDULER_API_KEY;
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+
+  const spinner = ora(`Dispatching ${squadName}/${agentName} to cloud...`).start();
+
+  try {
+    // 1. Create dispatch request
+    const dispatchRes = await fetch(`${apiUrl}/agent-dispatch`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        squad: squadName,
+        agent: agentName,
+        trigger_type: 'manual',
+        trigger_data: {
+          source: 'cli',
+          cloud: true,
+          model: options.model,
+          provider: options.provider,
+          effort: options.effort,
+        },
+      }),
+    });
+
+    if (!dispatchRes.ok) {
+      const error = await dispatchRes.text();
+      spinner.fail(`Dispatch failed: ${dispatchRes.status}`);
+      writeLine(`  ${colors.dim}${error}${RESET}`);
+      process.exit(1);
+    }
+
+    const dispatch = await dispatchRes.json() as { dispatch_id: number; status: string };
+    spinner.succeed(`Dispatched to cloud`);
+
+    writeLine();
+    writeLine(`  ${colors.cyan}Dispatch ID${RESET}  ${dispatch.dispatch_id}`);
+    writeLine(`  ${colors.cyan}Squad${RESET}        ${squadName}`);
+    writeLine(`  ${colors.cyan}Agent${RESET}        ${agentName}`);
+    writeLine();
+
+    // 2. Poll for execution status
+    const pollSpinner = ora('Waiting for execution to start...').start();
+    const pollStart = Date.now();
+    let executionId: string | null = null;
+    let lastStatus = '';
+
+    while (Date.now() - pollStart < CLOUD_POLL_TIMEOUT_MS) {
+      try {
+        const execRes = await fetch(
+          `${apiUrl}/agent-executions?squad=${encodeURIComponent(squadName)}&agent=${encodeURIComponent(agentName)}&limit=1`,
+          { headers },
+        );
+
+        if (execRes.ok) {
+          const executions = await execRes.json() as Array<{
+            execution_id: string;
+            status: string;
+            summary?: string;
+            error?: string;
+            duration_seconds?: number;
+            cost_usd?: number;
+          }>;
+
+          if (executions.length > 0) {
+            const exec = executions[0];
+
+            // Only track executions started after our dispatch
+            if (!executionId && exec.status === 'running') {
+              executionId = exec.execution_id;
+              pollSpinner.text = `Running (${exec.execution_id})`;
+            }
+
+            if (executionId && exec.execution_id === executionId) {
+              if (exec.status !== lastStatus) {
+                lastStatus = exec.status;
+                pollSpinner.text = `Status: ${exec.status}`;
+              }
+
+              if (exec.status === 'completed') {
+                pollSpinner.succeed('Execution completed');
+                writeLine();
+                writeLine(`  ${colors.cyan}Execution${RESET}    ${exec.execution_id}`);
+                if (exec.summary) {
+                  writeLine(`  ${colors.cyan}Summary${RESET}      ${exec.summary}`);
+                }
+                if (exec.duration_seconds) {
+                  writeLine(`  ${colors.cyan}Duration${RESET}     ${Math.round(exec.duration_seconds)}s`);
+                }
+                if (exec.cost_usd) {
+                  writeLine(`  ${colors.cyan}Cost${RESET}         $${exec.cost_usd.toFixed(4)}`);
+                }
+                writeLine();
+                return;
+              }
+
+              if (exec.status === 'failed') {
+                pollSpinner.fail('Execution failed');
+                writeLine();
+                if (exec.error) {
+                  writeLine(`  ${colors.red}Error: ${exec.error}${RESET}`);
+                }
+                writeLine();
+                process.exit(1);
+              }
+
+              if (exec.status === 'cancelled') {
+                pollSpinner.warn('Execution cancelled');
+                return;
+              }
+            }
+          }
+        }
+      } catch {
+        // Poll failures are non-fatal — retry on next interval
+      }
+
+      await new Promise(resolve => setTimeout(resolve, CLOUD_POLL_INTERVAL_MS));
+    }
+
+    pollSpinner.warn('Poll timeout — execution may still be running');
+    writeLine(`  ${colors.dim}Check status: squads trigger status${RESET}`);
+    if (executionId) {
+      writeLine(`  ${colors.dim}Execution ID: ${executionId}${RESET}`);
+    }
+  } catch (error) {
+    spinner.fail('Cloud dispatch failed');
+    writeLine(`  ${colors.red}${error instanceof Error ? error.message : String(error)}${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Check your network and SQUADS_API_URL setting${RESET}`);
+    process.exit(1);
+  }
+}
+
 export async function runCommand(
   target: string,
   options: RunOptions
@@ -1066,6 +1271,21 @@ export async function runCommand(
     if (!options.agent) {
       options.agent = agentFromSlash;
     }
+  }
+
+  // Cloud dispatch: skip local execution entirely
+  if (options.cloud) {
+    const agentName = options.agent || agentFromSlash;
+    if (!agentName) {
+      writeLine(`  ${colors.red}${icons.error} --cloud requires a specific agent${RESET}`);
+      writeLine(`  ${colors.dim}Usage: squads run ${squadName} --cloud -a <agent>${RESET}`);
+      writeLine(`  ${colors.dim}   or: squads run ${squadName}/<agent> --cloud${RESET}`);
+      process.exit(1);
+    }
+    await track(Events.CLI_RUN, { type: 'cloud', target: `${squadName}/${agentName}` });
+    await flushEvents();
+    await runCloudDispatch(squadName, agentName, options);
+    return;
   }
 
   // Check if target is a squad or an agent
@@ -1211,27 +1431,46 @@ async function runSquad(
         return;
       }
     } else {
-      // Run orchestrator if exists, otherwise list agents
-      const orchestrator = squad.agents.find(a =>
-        a.name.includes('lead') || a.trigger === 'Manual'
-      );
+      // Default: Run squad as multi-agent conversation
+      // Lead briefs → scanners discover → workers execute → lead reviews → converge
+      if (options.execute) {
+        writeLine(`  ${bold}Conversation mode${RESET} ${colors.dim}(lead → scan → work → review → verify)${RESET}`);
+        writeLine();
 
-      if (orchestrator) {
-        const agentPath = join(squadsDir, squad.dir, `${orchestrator.name}.md`);
-        if (existsSync(agentPath)) {
-          await runAgent(orchestrator.name, agentPath, squad.dir, options);
+        const convOptions: ConversationOptions = {
+          task: options.task,
+          maxTurns: options.maxTurns,
+          costCeiling: options.costCeiling,
+          verbose: options.verbose,
+          model: options.model,
+        };
+
+        const result = await runConversation(squad, convOptions);
+
+        // Save transcript
+        const transcriptPath = saveTranscript(result.transcript);
+
+        writeLine();
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
+        writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
+        if (transcriptPath) {
+          writeLine(`  ${colors.dim}Transcript: ${transcriptPath}${RESET}`);
         }
+        writeLine();
       } else {
-        writeLine(`  ${colors.dim}No pipeline defined. Available agents:${RESET}`);
+        // Dry-run: show what would happen
+        writeLine(`  ${colors.dim}Default mode: conversation (lead → scan → work → review → verify)${RESET}`);
+        writeLine();
         for (const agent of squad.agents) {
           writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
         }
         writeLine();
-        writeLine(`  ${colors.dim}Run a specific agent:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --agent ${colors.cyan}<name>${RESET}`);
+        writeLine(`  ${colors.dim}Run conversation:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
         writeLine();
-        writeLine(`  ${colors.dim}Run all agents in parallel:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
+        writeLine(`  ${colors.dim}Run single agent:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} -a ${colors.cyan}<agent>${RESET}`);
       }
     }
   }
@@ -1576,51 +1815,7 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - If a task is taking too long, move on and note it for next run
 - Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes
 
-After completion:
-
-## 1. Create a branch for your work
-BEFORE making any changes, create a descriptive branch:
-
-\`\`\`bash
-# Pick a type based on what you're doing:
-#   feat/  — new deliverables, research, features
-#   fix/   — bug fixes, corrections
-#   docs/  — documentation
-#   solve/issue-{n} — solving a specific GitHub issue
-git checkout -b {type}/{short-description}
-\`\`\`
-
-Examples: \`feat/agent-orchestration-research\`, \`fix/auth-timeout\`, \`solve/issue-42\`
-The branch name should describe the WORK, not you.
-
-## 2. Commit with Conventional Commits
-\`\`\`bash
-git add .agents/memory/${squadName}/${agentName}/
-git commit -m "memory(${squadName}): ${agentName} state update
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-
-git add -A
-git commit -m "feat(${squadName}): {describe what was created}
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-\`\`\`
-
-Types: \`feat\`, \`fix\`, \`docs\`, \`chore\`, \`memory\`, \`refactor\`, \`test\`
-
-## 3. NEVER commit to main
-- Do NOT commit to \`main\` directly
-- Do NOT push to \`main\`
-- All work goes on your branch
-- If a remote exists, push your branch and open a PR
-
-## 3. Summarize what was accomplished
-
-CRITICAL: When you have completed your tasks OR reached the time limit:
-- Type /exit immediately to end this session
-- Do NOT wait for user input
-- Do NOT ask follow-up questions
-- Just /exit when done`;
+${loadPostExecution(squadName, agentName)}`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
@@ -1827,18 +2022,8 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     const hasOAuthCreds = existsSync(credentialsPath);
 
     if (!hasApiKey && !hasOAuthCreds) {
-      writeLine();
-      writeLine(`  ${icons.warning} ${colors.yellow}Claude Code authentication not detected${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.dim}No ANTHROPIC_API_KEY env var and no OAuth credentials found.${RESET}`);
-      writeLine(`  ${colors.dim}Agents may fail to authenticate with the Anthropic API.${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.cyan}Option 1:${RESET} ${colors.dim}Run${RESET} claude ${colors.dim}and complete the login flow${RESET}`);
-      writeLine(`  ${colors.cyan}Option 2:${RESET} ${colors.dim}Set ANTHROPIC_API_KEY env var to your API key${RESET}`);
-      writeLine();
-      writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
-      writeLine();
-      return false;
+      // Auth may still work via OAuth (Max subscription) — warn but don't block
+      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming OAuth${RESET}`);
     }
   }
 
@@ -1860,6 +2045,202 @@ interface ExecuteWithClaudeOptions {
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
 }
 
+/** Build agent environment variables for Claude execution */
+function buildAgentEnv(
+  baseEnv: Record<string, string>,
+  execContext: ExecutionContext,
+  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean }
+): Record<string, string> {
+  const env: Record<string, string> = {
+    ...baseEnv,
+    SQUADS_SQUAD: execContext.squad,
+    SQUADS_AGENT: execContext.agent,
+    SQUADS_TASK_TYPE: execContext.taskType,
+    SQUADS_TRIGGER: execContext.trigger,
+    SQUADS_EXECUTION_ID: execContext.executionId,
+    BRIDGE_API: getBridgeUrl(),
+  };
+
+  if (options?.includeOtel) {
+    env.OTEL_RESOURCE_ATTRIBUTES = `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`;
+  }
+
+  if (options?.effort) env.CLAUDE_EFFORT = options.effort;
+  if (options?.skills && options.skills.length > 0) env.CLAUDE_SKILLS = options.skills.join(',');
+
+  return env;
+}
+
+/** Log verbose execution config (shared by foreground and background modes) */
+function logVerboseExecution(config: {
+  projectRoot: string;
+  mode: string;
+  useApi?: boolean;
+  execContext: ExecutionContext;
+  effort?: EffortLevel;
+  skills?: string[];
+  resolvedModel?: string;
+  claudeModelAlias?: string;
+  explicitModel?: string;
+  logFile?: string;
+  mcpConfigPath?: string;
+}): void {
+  writeLine(`  ${colors.dim}Project: ${config.projectRoot}${RESET}`);
+  writeLine(`  ${colors.dim}Mode: ${config.mode}${RESET}`);
+  if (config.logFile) writeLine(`  ${colors.dim}Log: ${config.logFile}${RESET}`);
+  if (config.mcpConfigPath) writeLine(`  ${colors.dim}MCP config: ${config.mcpConfigPath}${RESET}`);
+  if (config.useApi !== undefined) writeLine(`  ${colors.dim}Auth: ${config.useApi ? 'API credits' : 'subscription'}${RESET}`);
+  writeLine(`  ${colors.dim}Execution: ${config.execContext.executionId}${RESET}`);
+  writeLine(`  ${colors.dim}Task type: ${config.execContext.taskType}${RESET}`);
+  writeLine(`  ${colors.dim}Trigger: ${config.execContext.trigger}${RESET}`);
+  if (config.effort) writeLine(`  ${colors.dim}Effort: ${config.effort}${RESET}`);
+  if (config.skills && config.skills.length > 0) writeLine(`  ${colors.dim}Skills: ${config.skills.join(', ')}${RESET}`);
+  if (config.resolvedModel || config.claudeModelAlias) {
+    const source = config.explicitModel ? 'explicit' : 'auto-routed';
+    const displayModel = config.resolvedModel || config.claudeModelAlias;
+    writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
+  }
+}
+
+/** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
+function createAgentWorktree(projectRoot: string, squadName: string, agentName: string): string {
+  const timestamp = Date.now();
+  const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
+  const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
+
+  try {
+    mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
+    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    return worktreePath;
+  } catch {
+    return projectRoot; // Fall back to project root
+  }
+}
+
+/** Build shell script for detached execution with worktree isolation */
+function buildDetachedShellScript(config: {
+  projectRoot: string;
+  squadName: string;
+  agentName: string;
+  timestamp: number;
+  claudeModelAlias?: string;
+  escapedPrompt: string;
+  logFile: string;
+  pidFile: string;
+}): string {
+  const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
+  const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
+  const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  return `echo $$ > '${config.pidFile}'; ${script}`;
+}
+
+/** Prepare log directory and file paths for detached execution */
+function prepareLogFiles(projectRoot: string, squadName: string, agentName: string, timestamp: number): { logDir: string; logFile: string; pidFile: string } {
+  const logDir = join(projectRoot, '.agents', 'logs', squadName);
+  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
+  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+  }
+
+  return { logDir, logFile, pidFile };
+}
+
+/** Execute Claude in foreground mode (direct stdio, default) */
+function executeForeground(config: {
+  prompt: string;
+  claudeArgs: string[];
+  agentEnv: Record<string, string>;
+  projectRoot: string;
+  squadName: string;
+  agentName: string;
+  execContext: ExecutionContext;
+  startMs: number;
+}): Promise<string> {
+  const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
+
+  return new Promise((resolve, reject) => {
+    const claude = spawn('claude', config.claudeArgs, {
+      stdio: 'inherit',
+      cwd: workDir,
+      env: config.agentEnv,
+    });
+
+    claude.on('close', async (code) => {
+      const durationMs = Date.now() - config.startMs;
+
+      if (code === 0) {
+        updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'completed', {
+          outcome: 'Session completed successfully',
+          durationMs,
+        });
+
+        const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId);
+        if (commitResult.committed) {
+          writeLine();
+          writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
+        }
+
+        resolve('Session completed');
+      } else {
+        updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
+          error: `Claude exited with code ${code}`,
+          durationMs,
+        });
+        reject(new Error(`Claude exited with code ${code}`));
+      }
+    });
+
+    claude.on('error', (err) => {
+      const durationMs = Date.now() - config.startMs;
+      updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
+        error: String(err),
+        durationMs,
+      });
+      reject(err);
+    });
+  });
+}
+
+/** Execute Claude in watch mode (background + tail log) */
+async function executeWatch(config: {
+  projectRoot: string;
+  agentEnv: Record<string, string>;
+  logFile: string;
+  wrapperScript: string;
+}): Promise<string> {
+  const child = spawn('sh', ['-c', config.wrapperScript], {
+    cwd: config.projectRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: config.agentEnv,
+  });
+  child.unref();
+
+  await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
+
+  writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
+  writeLine();
+
+  const tail = spawn('tail', ['-f', config.logFile], { stdio: 'inherit' });
+
+  process.on('SIGINT', () => {
+    tail.kill();
+    writeLine();
+    writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
+    writeLine(`  ${colors.dim}Resume: tail -f ${config.logFile}${RESET}`);
+    process.exit(0);
+  });
+
+  return new Promise((resolve) => {
+    tail.on('close', () => {
+      resolve(`Agent running in background. Log: ${config.logFile}`);
+    });
+  });
+}
+
 async function executeWithClaude(
   prompt: string,
   options: ExecuteWithClaudeOptions
@@ -1879,329 +2260,116 @@ async function executeWithClaude(
     model,
   } = options;
 
-  // Determine execution mode:
-  // - Default is foreground (visible output)
-  // - --background (-b) runs detached
-  // - --watch (-w) runs detached but tails log
-  // - --foreground (-f) is deprecated (now default)
+  // Determine execution mode
   const runInBackground = background === true && !watch;
   const runInWatch = watch === true;
   const runInForeground = !runInBackground && !runInWatch;
 
-  // Track start time for status updates
   const startMs = Date.now();
-
-  // Ensure the project is trusted (prevents workspace trust dialog)
   const projectRoot = getProjectRoot();
   ensureProjectTrusted(projectRoot);
 
-  // Load squad for context-based MCP config resolution
+  // Resolve model and provider
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
-
-  // Select MCP config based on squad context (dynamic) or legacy mapping (fallback)
   const mcpConfigPath = selectMcpConfig(squadName, squad);
-
-  // Detect task type for telemetry and model routing
   const taskType = detectTaskType(agentName);
-
-  // Resolve model: explicit --model > squad context routing > undefined (provider default)
   const resolvedModel = resolveModel(model, squad, taskType);
-
-  // Detect provider from model (defaults to anthropic if no model specified)
   const detectedProvider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
-  // For non-Anthropic providers, delegate to executeWithProvider
+  // Delegate to non-Anthropic providers
   if (detectedProvider !== 'anthropic' && detectedProvider !== 'unknown') {
     if (verbose) {
       const source = model ? 'explicit' : 'auto-routed';
       writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
       writeLine(`  ${colors.dim}Provider: ${detectedProvider}${RESET}`);
     }
-
     return executeWithProvider(detectedProvider, prompt, {
-      verbose,
-      foreground,
-      cwd: getProjectRoot(),
-      squadName,
-      agentName,
+      verbose, foreground, cwd: projectRoot, squadName, agentName,
     });
   }
 
-  // For Anthropic, convert full model name to Claude Code alias
   const claudeModelAlias = resolvedModel ? getClaudeModelAlias(resolvedModel) : undefined;
 
-  // Build execution context for telemetry
   const execContext: ExecutionContext = {
-    squad: squadName,
-    agent: agentName,
-    taskType,
-    trigger,
+    squad: squadName, agent: agentName, taskType, trigger,
     executionId: generateExecutionId(),
   };
 
-  // Build env: remove ANTHROPIC_API_KEY unless --use-api is set
-  // This ensures Claude uses OAuth subscription by default
-  // Also remove CLAUDECODE to allow spawning from within Claude Code sessions
+  // Build base env: remove ANTHROPIC_API_KEY unless --use-api, remove CLAUDECODE
   const { ANTHROPIC_API_KEY: _apiKey, CLAUDECODE: _claudeCode, ...envWithoutApiKey } = process.env;
   const spawnEnv = useApi
     ? (() => { const { CLAUDECODE: _, ...rest } = process.env; return rest; })()
     : envWithoutApiKey;
 
-  // Escape prompt for shell
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
-  // Register context with bridge for telemetry (non-blocking)
   await registerContextWithBridge(execContext);
 
-  // Foreground mode: run Claude directly in the terminal (default)
+  // ── Foreground mode ──────────────────────────────────────────────────
   if (runInForeground) {
     if (verbose) {
-      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-      writeLine(`  ${colors.dim}Mode: foreground${RESET}`);
-      writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
-      writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
-      writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
-      writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
-      if (effort) {
-        writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
-      }
-      if (skills && skills.length > 0) {
-        writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
-      }
-      if (resolvedModel || claudeModelAlias) {
-        const source = model ? 'explicit' : 'auto-routed';
-        const displayModel = resolvedModel || claudeModelAlias;
-        writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
-      }
+      logVerboseExecution({
+        projectRoot, mode: 'foreground', useApi, execContext,
+        effort, skills, resolvedModel, claudeModelAlias, explicitModel: model,
+      });
     }
 
-    // Build claude args as array to avoid shell escaping issues with large prompts.
-    // Previous approach embedded the prompt in a shell string, which broke when
-    // the prompt contained characters that interfered with shell quoting.
+    // Build claude args as array to avoid shell escaping issues with large prompts
     const claudeArgs: string[] = [];
-    // Use --print when stdin is not a TTY (cron, systemd, pipe) to prevent Claude
-    // from entering interactive mode and hanging.
     if (!process.stdin.isTTY) claudeArgs.push('--print');
     claudeArgs.push('--dangerously-skip-permissions');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
-    claudeArgs.push('--', prompt); // raw prompt, no shell escaping needed
+    claudeArgs.push('--', prompt);
 
-    // Pass env vars via spawn env option to avoid shell injection
-    const agentEnv: Record<string, string> = {
-      ...spawnEnv as Record<string, string>,
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-      OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-      ...(effort ? { CLAUDE_EFFORT: effort } : {}),
-      ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
-    };
+    const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
+      effort, skills, includeOtel: true,
+    });
 
-    // Create isolated worktree for this agent execution
-    const fgTimestamp = Date.now();
-    const fgBranchName = `agent/${squadName}/${agentName}-${fgTimestamp}`;
-    const fgWorktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${fgTimestamp}`);
-    let fgWorkDir = projectRoot;
-    try {
-      mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-      execSync(`git worktree add '${fgWorktreePath}' -b '${fgBranchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
-      fgWorkDir = fgWorktreePath;
-    } catch {
-      // Worktree creation failed — fall back to project root
-    }
-
-    return new Promise((resolve, reject) => {
-      const claude = spawn('claude', claudeArgs, {
-        stdio: 'inherit',
-        cwd: fgWorkDir,
-        env: agentEnv,
-      });
-
-      claude.on('close', async (code) => {
-        const durationMs = Date.now() - startMs;
-
-        if (code === 0) {
-          // Update execution status to completed
-          updateExecutionStatus(squadName, agentName, execContext.executionId, 'completed', {
-            outcome: 'Session completed successfully',
-            durationMs,
-          });
-
-          // Auto-commit any changes made by the agent
-          const commitResult = await autoCommitAgentWork(squadName, agentName, execContext.executionId);
-          if (commitResult.committed) {
-            writeLine();
-            writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
-          }
-
-          resolve('Session completed');
-        } else {
-          // Update execution status to failed
-          updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
-            error: `Claude exited with code ${code}`,
-            durationMs,
-          });
-          reject(new Error(`Claude exited with code ${code}`));
-        }
-      });
-
-      claude.on('error', (err) => {
-        const durationMs = Date.now() - startMs;
-        updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
-          error: String(err),
-          durationMs,
-        });
-        reject(err);
-      });
+    return executeForeground({
+      prompt, claudeArgs, agentEnv, projectRoot,
+      squadName, agentName, execContext, startMs,
     });
   }
 
-  // Watch mode: run in background but tail the log
-  if (runInWatch) {
-    const timestamp = Date.now();
-    const logDir = join(projectRoot, '.agents', 'logs', squadName);
-    const logFile = join(logDir, `${agentName}-${timestamp}.log`);
-    const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
-
-    // Ensure log directory exists
-    if (!existsSync(logDir)) {
-      mkdirSync(logDir, { recursive: true });
-    }
-
-    if (verbose) {
-      writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-      writeLine(`  ${colors.dim}Mode: watch (background + tail)${RESET}`);
-      writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
-    }
-
-    // Pass env vars via spawn env option to avoid shell injection
-    const watchEnv: Record<string, string> = {
-      ...spawnEnv as Record<string, string>,
-      SQUADS_SQUAD: execContext.squad,
-      SQUADS_AGENT: execContext.agent,
-      SQUADS_TASK_TYPE: execContext.taskType,
-      SQUADS_TRIGGER: execContext.trigger,
-      SQUADS_EXECUTION_ID: execContext.executionId,
-      BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-    };
-
-    const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-    const watchBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-    const watchWorktreeDir = `\${PROJECT_ROOT}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
-    const shellScript = `PROJECT_ROOT='${projectRoot}'; mkdir -p "\${PROJECT_ROOT}/../.worktrees"; WORK_DIR="\${PROJECT_ROOT}"; if git -C "\${PROJECT_ROOT}" worktree add '${watchWorktreeDir}' -b '${watchBranchName}' HEAD 2>/dev/null; then WORK_DIR='${watchWorktreeDir}'; fi; cd "\${WORK_DIR}"; exec claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
-    const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
-
-    // Spawn background process
-    const child = spawn('sh', ['-c', wrapperScript], {
-      cwd: projectRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: watchEnv,
-    });
-    child.unref();
-
-    // Wait a moment for the log file to be created
-    await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
-
-    // Tail the log file
-    writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
-    writeLine();
-
-    const tail = spawn('tail', ['-f', logFile], { stdio: 'inherit' });
-
-    // Handle Ctrl+C gracefully
-    process.on('SIGINT', () => {
-      tail.kill();
-      writeLine();
-      writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
-      writeLine(`  ${colors.dim}Resume: tail -f ${logFile}${RESET}`);
-      process.exit(0);
-    });
-
-    // Wait for tail to exit (which won't happen unless killed)
-    return new Promise((resolve) => {
-      tail.on('close', () => {
-        resolve(`Agent running in background. Log: ${logFile}`);
-      });
-    });
-  }
-
-  // Background mode (--background): run detached with log file
-  // This is now opt-in behavior, not default
+  // ── Detached modes (watch + background) ──────────────────────────────
   const timestamp = Date.now();
-  const logDir = join(projectRoot, '.agents', 'logs', squadName);
-  const logFile = join(logDir, `${agentName}-${timestamp}.log`);
-  const pidFile = join(logDir, `${agentName}-${timestamp}.pid`);
+  const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
+  const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
+    effort, skills, includeOtel: !runInWatch,
+  });
 
-  // Ensure log directory exists
-  if (!existsSync(logDir)) {
-    mkdirSync(logDir, { recursive: true });
+  const wrapperScript = buildDetachedShellScript({
+    projectRoot, squadName, agentName, timestamp,
+    claudeModelAlias, escapedPrompt, logFile, pidFile,
+  });
+
+  if (runInWatch) {
+    if (verbose) {
+      logVerboseExecution({
+        projectRoot, mode: 'watch (background + tail)',
+        execContext, logFile,
+      });
+    }
+
+    return executeWatch({ projectRoot, agentEnv, logFile, wrapperScript });
   }
 
+  // ── Background mode ──────────────────────────────────────────────────
   if (verbose) {
-    writeLine(`  ${colors.dim}Project: ${projectRoot}${RESET}`);
-    writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);
-    writeLine(`  ${colors.dim}MCP config: ${mcpConfigPath}${RESET}`);
-    writeLine(`  ${colors.dim}Auth: ${useApi ? 'API credits' : 'subscription'}${RESET}`);
-    writeLine(`  ${colors.dim}Execution: ${execContext.executionId}${RESET}`);
-    writeLine(`  ${colors.dim}Task type: ${execContext.taskType}${RESET}`);
-    writeLine(`  ${colors.dim}Trigger: ${execContext.trigger}${RESET}`);
-    if (effort) {
-      writeLine(`  ${colors.dim}Effort: ${effort}${RESET}`);
-    }
-    if (skills && skills.length > 0) {
-      writeLine(`  ${colors.dim}Skills: ${skills.join(', ')}${RESET}`);
-    }
-    if (resolvedModel || claudeModelAlias) {
-      const source = model ? 'explicit' : 'auto-routed';
-      const displayModel = resolvedModel || claudeModelAlias;
-      writeLine(`  ${colors.dim}Model: ${displayModel} (${source})${RESET}`);
-    }
+    logVerboseExecution({
+      projectRoot, mode: 'background', useApi, execContext,
+      effort, skills, resolvedModel, claudeModelAlias,
+      explicitModel: model, logFile, mcpConfigPath,
+    });
   }
-
-  // Build Claude command with all permissions bypassed for autonomous execution
-  // --print ensures non-interactive mode (exits after completion, no REPL)
-  // Use shell 'exec' to replace shell with claude while keeping file redirect
-  // This ensures output goes to log even after parent exits
-  // Pass env vars via spawn env option to avoid shell injection
-  const bgEnv: Record<string, string> = {
-    ...spawnEnv as Record<string, string>,
-    SQUADS_SQUAD: execContext.squad,
-    SQUADS_AGENT: execContext.agent,
-    SQUADS_TASK_TYPE: execContext.taskType,
-    SQUADS_TRIGGER: execContext.trigger,
-    SQUADS_EXECUTION_ID: execContext.executionId,
-    BRIDGE_API: process.env.SQUADS_BRIDGE_URL || DEFAULT_BRIDGE_URL,
-    OTEL_RESOURCE_ATTRIBUTES: `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`,
-    ...(effort ? { CLAUDE_EFFORT: effort } : {}),
-    ...(skills && skills.length > 0 ? { CLAUDE_SKILLS: skills.join(',') } : {}),
-  };
-
-  // Build shell command:
-  // 1. Create isolated worktree for this agent (prevents branch collisions)
-  // 2. cd to worktree (or project root as fallback)
-  // 3. run claude (output to logfile)
-  // Note: MCP config removed - causes blocking issues in background execution
-  const modelFlag = claudeModelAlias ? `--model ${claudeModelAlias}` : '';
-  const bgBranchName = `agent/${squadName}/${agentName}-${timestamp}`;
-  const bgWorktreeDir = `${projectRoot}/../.worktrees/${squadName}-${agentName}-${timestamp}`;
-  const shellScript = `mkdir -p '${projectRoot}/../.worktrees'; WORK_DIR='${projectRoot}'; if git -C '${projectRoot}' worktree add '${bgWorktreeDir}' -b '${bgBranchName}' HEAD 2>/dev/null; then WORK_DIR='${bgWorktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${escapedPrompt}' > '${logFile}' 2>&1`;
-
-
-  // Get child PID by using a wrapper that writes PID then execs
-  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: projectRoot,
     detached: true,
     stdio: 'ignore',
-    env: bgEnv,
+    env: agentEnv,
   });
-
   child.unref();
 
   if (verbose) {
@@ -2241,7 +2409,6 @@ async function executeWithProvider(
   }
 
   const projectRoot = options.cwd || getProjectRoot();
-  const args = cliConfig.buildArgs(prompt);
   const squadName = options.squadName || 'unknown';
   const agentName = options.agentName || 'unknown';
   const timestamp = Date.now();
@@ -2266,6 +2433,26 @@ async function executeWithProvider(
   } catch {
     // Worktree creation failed — fall back to project root
   }
+
+  // Copy .agents directory into worktree so sandboxed providers can access
+  // agent definitions, memory, and config files. Providers like Gemini restrict
+  // file reads to the workspace directory, so these must be local.
+  let effectivePrompt = prompt;
+  if (workDir !== projectRoot) {
+    const agentsDir = join(projectRoot, '.agents');
+    const targetAgentsDir = join(workDir, '.agents');
+    if (existsSync(agentsDir) && !existsSync(targetAgentsDir)) {
+      try {
+        cpSync(agentsDir, targetAgentsDir, { recursive: true });
+      } catch {
+        // Non-fatal: agent def may still be accessible if tracked in git
+      }
+    }
+    // Rewrite absolute paths in prompt so sandboxed providers can resolve them
+    effectivePrompt = prompt.replaceAll(projectRoot, workDir);
+  }
+
+  const args = cliConfig.buildArgs(effectivePrompt);
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -2308,7 +2495,7 @@ async function executeWithProvider(
     mkdirSync(logDir, { recursive: true });
   }
 
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
   const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
   const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;

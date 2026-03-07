@@ -28,6 +28,7 @@ import {
   runAuthChecks,
   displayCheckResults,
 } from '../lib/setup-checks.js';
+import { writeLine } from '../lib/terminal.js';
 
 export interface InitOptions {
   provider?: string;
@@ -190,15 +191,15 @@ async function promptProvider(forceProvider?: string): Promise<Provider> {
   }
   if (!isInteractive()) return 'claude';
 
-  console.log();
-  console.log(chalk.bold('  Select your AI assistant:'));
-  console.log();
-  console.log(`  ${chalk.cyan('1)')} Claude Code ${chalk.dim('(recommended)')}`);
-  console.log(`  ${chalk.cyan('2)')} Gemini`);
-  console.log(`  ${chalk.cyan('3)')} OpenAI GPT`);
-  console.log(`  ${chalk.cyan('4)')} Ollama ${chalk.dim('(local)')}`);
-  console.log(`  ${chalk.cyan('5)')} Other/None`);
-  console.log();
+  writeLine();
+  writeLine(chalk.bold('  Select your AI assistant:'));
+  writeLine();
+  writeLine(`  ${chalk.cyan('1)')} Claude Code ${chalk.dim('(recommended)')}`);
+  writeLine(`  ${chalk.cyan('2)')} Gemini`);
+  writeLine(`  ${chalk.cyan('3)')} OpenAI GPT`);
+  writeLine(`  ${chalk.cyan('4)')} Ollama ${chalk.dim('(local)')}`);
+  writeLine(`  ${chalk.cyan('5)')} Other/None`);
+  writeLine();
 
   const rl = createInterface({
     input: process.stdin,
@@ -224,15 +225,15 @@ async function promptProvider(forceProvider?: string): Promise<Provider> {
 async function promptUseCase(): Promise<UseCase> {
   if (!isInteractive()) return 'full-company';
 
-  console.log();
-  console.log(chalk.bold('  What does your AI workforce need to do?'));
-  console.log();
-  console.log(`  ${chalk.cyan('1)')} Engineering       ${chalk.dim('— ships code (issue-solver, code-reviewer, test-writer)')}`);
-  console.log(`  ${chalk.cyan('2)')} Marketing          ${chalk.dim('— grows audience (content-drafter, social-poster, growth-analyst)')}`);
-  console.log(`  ${chalk.cyan('3)')} Operations         ${chalk.dim('— runs the business (ops-lead, finance-tracker, goal-tracker)')}`);
-  console.log(`  ${chalk.cyan('4)')} Full Company       ${chalk.dim('— all of the above')} ${chalk.green('(recommended)')}`);
-  console.log(`  ${chalk.cyan('5)')} Custom             ${chalk.dim('— empty scaffold, you build from scratch')}`);
-  console.log();
+  writeLine();
+  writeLine(chalk.bold('  What does your AI workforce need to do?'));
+  writeLine();
+  writeLine(`  ${chalk.cyan('1)')} Engineering       ${chalk.dim('— ships code (issue-solver, code-reviewer, test-writer)')}`);
+  writeLine(`  ${chalk.cyan('2)')} Marketing          ${chalk.dim('— grows audience (content-drafter, social-poster, growth-analyst)')}`);
+  writeLine(`  ${chalk.cyan('3)')} Operations         ${chalk.dim('— runs the business (ops-lead, finance-tracker, goal-tracker)')}`);
+  writeLine(`  ${chalk.cyan('4)')} Full Company       ${chalk.dim('— all of the above')} ${chalk.green('(recommended)')}`);
+  writeLine(`  ${chalk.cyan('5)')} Custom             ${chalk.dim('— empty scaffold, you build from scratch')}`);
+  writeLine();
 
   const rl = createInterface({
     input: process.stdin,
@@ -298,19 +299,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const cwd = process.cwd();
 
   // 1. Welcome
-  console.log();
-  console.log(chalk.bold('  Plant the seed for your AI workforce'));
-  console.log(chalk.dim('  https://agents-squads.com/docs/getting-started'));
-  console.log();
+  writeLine();
+  writeLine(chalk.bold('  Plant the seed for your AI workforce'));
+  writeLine(chalk.dim('  https://agents-squads.com/docs/getting-started'));
+  writeLine();
 
   // 2. Select provider
   const selectedProvider = await promptProvider(options.provider);
   const provider = PROVIDERS[selectedProvider];
 
   // 3. Prerequisite checks
-  console.log();
-  console.log(chalk.bold('  Checking prerequisites...'));
-  console.log();
+  writeLine();
+  writeLine(chalk.bold('  Checking prerequisites...'));
+  writeLine();
 
   const checks = [
     ...runAuthChecks(selectedProvider),
@@ -338,14 +339,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const { hasErrors } = displayCheckResults(checks);
 
   if (hasErrors && !options.force) {
-    console.log();
-    console.log(chalk.red('  Fix the errors above before continuing.'));
-    console.log(chalk.dim('  Or run with --force to skip checks.'));
-    console.log();
+    writeLine();
+    writeLine(chalk.red('  Fix the errors above before continuing.'));
+    writeLine(chalk.dim('  Or run with --force to skip checks.'));
+    writeLine();
     process.exit(1);
   }
 
-  console.log();
+  writeLine();
 
   // 4. Ask about the business
   let businessName: string;
@@ -361,8 +362,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
   } else {
     const dirName = path.basename(cwd);
 
-    console.log(chalk.bold('  Tell us about your business:'));
-    console.log();
+    writeLine(chalk.bold('  Tell us about your business:'));
+    writeLine();
 
     businessName = await prompt(
       'Company or project name?',
@@ -374,7 +375,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ''
     );
 
-    console.log();
+    writeLine();
 
     businessFocus = await prompt(
       'What should your first research squad investigate?',
@@ -394,12 +395,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const totalAgentCount = coreAgentCount + useCaseAgentCount;
   const totalSquadCount = coreSquadCount + useCaseConfig.squads.length;
 
-  console.log();
-  console.log(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
-  console.log(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
-  console.log(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
-  console.log(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
-  console.log();
+  writeLine();
+  writeLine(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
+  writeLine(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
+  writeLine(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
+  writeLine(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
+  writeLine();
 
   // 5. Create the seed
   const spinner = ora('Planting the seed...').start();
@@ -555,46 +556,46 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   // 6. Success message
-  console.log();
-  console.log(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
-  console.log();
-  console.log(chalk.dim('  Created:'));
+  writeLine();
+  writeLine(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
+  writeLine();
+  writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  console.log(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
-  console.log(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
-  console.log(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
+  writeLine(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
+  writeLine(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
+  writeLine(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
 
   // Use-case specific squads
   for (const squad of useCaseConfig.squads) {
     const padding = ' '.repeat(Math.max(0, 22 - squad.name.length));
-    console.log(chalk.dim(`  • .agents/squads/${squad.name}/${padding}${squad.agentCount} agents (${squad.agentSummary})`));
+    writeLine(chalk.dim(`  • .agents/squads/${squad.name}/${padding}${squad.agentCount} agents (${squad.agentSummary})`));
   }
 
-  console.log(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
-  console.log(chalk.dim('  • .agents/memory/               Persistent state'));
-  console.log(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
+  writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
+  writeLine(chalk.dim('  • .agents/memory/               Persistent state'));
+  writeLine(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
   if (selectedProvider === 'claude') {
-    console.log(chalk.dim('  • CLAUDE.md                     Operating manual'));
-    console.log(chalk.dim('  • .claude/settings.json         Session hooks'));
+    writeLine(chalk.dim('  • CLAUDE.md                     Operating manual'));
+    writeLine(chalk.dim('  • .claude/settings.json         Session hooks'));
   }
-  console.log();
-  console.log(chalk.bold('  Getting started:'));
-  console.log();
-  console.log(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
-  console.log(chalk.dim('        Git is the coordination layer — commit first'));
-  console.log();
+  writeLine();
+  writeLine(chalk.bold('  Getting started:'));
+  writeLine();
+  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
+  writeLine(chalk.dim('        Git is the coordination layer — commit first'));
+  writeLine();
 
   // Dynamic "first run" suggestion based on use case
   const firstRunCommand = getFirstRunCommand(selectedUseCase);
-  console.log(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
-  console.log(chalk.dim(`        ${firstRunCommand.description}`));
-  console.log();
-  console.log(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
-  console.log(chalk.dim('        See all your squads and agents at a glance'));
-  console.log();
-  console.log(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
-  console.log();
+  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
+  writeLine(chalk.dim(`        ${firstRunCommand.description}`));
+  writeLine();
+  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
+  writeLine(chalk.dim('        See all your squads and agents at a glance'));
+  writeLine();
+  writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
+  writeLine();
 }
 
 /**
