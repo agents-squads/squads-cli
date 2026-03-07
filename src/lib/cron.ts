@@ -82,7 +82,7 @@ export function getNextCronRun(cron: string, after: Date = new Date()): Date {
   next.setSeconds(0, 0);
   next.setMinutes(next.getMinutes() + 1); // Start from next minute
 
-  const maxIterations = 60 * 48; // 48 hours
+  const maxIterations = 60 * 24 * 8; // 8 days (covers weekly schedules)
   for (let i = 0; i < maxIterations; i++) {
     if (cronMatches(cron, next)) return next;
     next.setMinutes(next.getMinutes() + 1);
