@@ -5,12 +5,21 @@
  * to verify that the full user journey produces expected output.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
 import { mkdirSync, existsSync, readFileSync, rmSync, readdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
+
+// Clear git env vars set by the pre-commit hook so that git commands
+// executed in temp directories do not accidentally write to the
+// repository running the hook.
+beforeAll(() => {
+  delete process.env.GIT_DIR;
+  delete process.env.GIT_WORK_TREE;
+  delete process.env.GIT_INDEX_FILE;
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = resolve(fileURLToPath(import.meta.url), '..');

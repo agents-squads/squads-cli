@@ -3,6 +3,12 @@ import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+// Mock slack lib for --slack tests
+vi.mock('../../src/lib/slack.js', () => ({
+  createSquadChannel: vi.fn().mockResolvedValue('C123'),
+  isSlackConfigured: vi.fn().mockReturnValue(true),
+}));
+
 // Mock child_process for --repo tests
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
@@ -213,6 +219,47 @@ describe('create command', () => {
       await expect(createCommand('my-squad', { yes: true, repo: true, org: 'test-org' })).resolves.toBeUndefined();
 
       // Local files still exist
+      const squadDir = join(testDir, '.agents', 'squads', 'my-squad');
+      expect(existsSync(join(squadDir, 'SQUAD.md'))).toBe(true);
+    });
+  });
+
+  describe('--slack flag', () => {
+    it('creates local squad files with --slack flag', async () => {
+      const { createCommand } = await import('../../src/commands/create.js');
+      await createCommand('my-squad', { yes: true, slack: true });
+
+      const squadDir = join(testDir, '.agents', 'squads', 'my-squad');
+      expect(existsSync(join(squadDir, 'SQUAD.md'))).toBe(true);
+    });
+
+    it('calls createSquadChannel with correct squadId', async () => {
+      const slack = await import('../../src/lib/slack.js');
+      const { createCommand } = await import('../../src/commands/create.js');
+
+      await createCommand('my-squad', { yes: true, slack: true });
+
+      expect(slack.createSquadChannel).toHaveBeenCalledWith('my-squad', expect.any(String));
+    });
+
+    it('does not call createSquadChannel without --slack flag', async () => {
+      const slack = await import('../../src/lib/slack.js');
+      vi.mocked(slack.createSquadChannel).mockClear();
+      const { createCommand } = await import('../../src/commands/create.js');
+
+      await createCommand('my-squad', { yes: true });
+
+      expect(slack.createSquadChannel).not.toHaveBeenCalled();
+    });
+
+    it('continues gracefully if Slack channel creation returns null', async () => {
+      const slack = await import('../../src/lib/slack.js');
+      vi.mocked(slack.createSquadChannel).mockResolvedValueOnce(null);
+      const { createCommand } = await import('../../src/commands/create.js');
+
+      // Should not throw — local squad is still created
+      await expect(createCommand('my-squad', { yes: true, slack: true })).resolves.toBeUndefined();
+
       const squadDir = join(testDir, '.agents', 'squads', 'my-squad');
       expect(existsSync(join(squadDir, 'SQUAD.md'))).toBe(true);
     });
