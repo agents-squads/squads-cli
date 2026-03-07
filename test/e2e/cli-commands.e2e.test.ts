@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+// Clear git env vars set by pre-commit hook to prevent GIT_DIR pollution
+beforeAll(() => {
+  delete process.env.GIT_DIR;
+  delete process.env.GIT_WORK_TREE;
+  delete process.env.GIT_INDEX_FILE;
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

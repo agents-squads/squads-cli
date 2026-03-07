@@ -405,6 +405,39 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Create a Slack channel for a squad (format: squad-<name>).
+ * Returns the channel ID string, or null if creation fails.
+ */
+export async function createSquadChannel(squadId: string, topic?: string): Promise<string | null> {
+  if (!isSlackConfigured()) return null;
+
+  const channelName = `squad-${squadId}`;
+
+  try {
+    const response = await slackApi<SlackApiResponse & { channel?: SlackChannel }>('POST', 'conversations.create', {
+      name: channelName,
+      is_private: false,
+    });
+    const channelId = response.channel?.id || null;
+
+    if (channelId && topic) {
+      await slackApi('POST', 'conversations.setTopic', {
+        channel: channelId,
+        topic,
+      }).catch(() => {});
+    }
+
+    return channelId;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('name_taken')) {
+      return getSquadChannelId(squadId);
+    }
+    return null;
+  }
+}
+
+/**
  * Post a "tonight session started" notification
  */
 export async function notifyTonightStart(

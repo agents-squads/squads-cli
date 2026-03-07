@@ -17,6 +17,7 @@ import { findSquadsDir, findProjectRoot, listSquads } from '../lib/squad-parser.
 import { loadTemplate, toKebabCase, toTitleCase, type TemplateVariables } from '../lib/templates.js';
 import { track } from '../lib/telemetry.js';
 import { createGitHubRepo, detectGitHubOrg } from '../lib/github.js';
+import { createSquadChannel } from '../lib/slack.js';
 
 interface CreateOptions {
   description?: string;
@@ -26,6 +27,7 @@ interface CreateOptions {
   yes?: boolean;
   repo?: boolean;
   org?: string;
+  slack?: boolean;
 }
 
 export async function createCommand(name: string, options: CreateOptions): Promise<void> {
@@ -134,7 +136,17 @@ export async function createCommand(name: string, options: CreateOptions): Promi
     repo: !!options.repo,
   }).catch(() => {});
 
-  // 5. Create GitHub repo if --repo flag is set
+  // 5. Create Slack channel if --slack flag is set
+  let slackChannelId: string | null = null;
+  if (options.slack) {
+    slackChannelId = await createSquadChannel(squadId, `Channel for the ${squadName} squad`);
+    if (!slackChannelId) {
+      console.error(chalk.red('\n  Slack channel creation failed (check SLACK_BOT_TOKEN).\n'));
+      console.error(chalk.dim('  Local squad was created. Create the channel manually.\n'));
+    }
+  }
+
+  // 6. Create GitHub repo if --repo flag is set
   let repoUrl: string | undefined;
   if (options.repo) {
     const org = options.org ?? detectGitHubOrg();
@@ -149,7 +161,7 @@ export async function createCommand(name: string, options: CreateOptions): Promi
     }
   }
 
-  // 6. Show success
+  // 7. Show success
   const existing = listSquads(squadsDir);
   console.log();
   console.log(chalk.green('  ✓ Squad created:'), chalk.cyan(squadId));
@@ -158,6 +170,11 @@ export async function createCommand(name: string, options: CreateOptions): Promi
   console.log(`    .agents/squads/${squadId}/SQUAD.md`);
   console.log(`    .agents/squads/${squadId}/lead.md`);
   console.log(`    .agents/memory/${squadId}/lead/`);
+  if (slackChannelId) {
+    console.log();
+    console.log(chalk.dim('  Slack channel:'));
+    console.log(`    ${chalk.cyan(`#squad-${squadId}`)}`);
+  }
   if (repoUrl) {
     console.log();
     console.log(chalk.dim('  GitHub repo:'));
