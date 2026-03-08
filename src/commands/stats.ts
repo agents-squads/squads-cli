@@ -63,7 +63,6 @@ export async function statsCommand(options: {
 
   if (options.json) {
     writeLine(JSON.stringify({
-      period,
       executive_summary: generateExecutiveSummary(period),
       ...summary,
       scorecards,
