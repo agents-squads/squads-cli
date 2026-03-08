@@ -244,7 +244,20 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
       // Score based on signals
       let score = 0;
       let reason = '';
-      const targetAgent = 'issue-solver'; // default worker
+      // Conversation mode threshold: 3+ issues and no conversation in 48h.
+      // A squad conversation coordinates all agents and produces better output
+      // than dispatching a single issue-solver per issue.
+      const CONVERSATION_ISSUE_THRESHOLD = 3;
+      const CONVERSATION_COOLDOWN_MS = 48 * 60 * 60 * 1000;
+      const lastConvAge = getLastRunAge(squadName, 'conversation');
+      const conversationStale =
+        lastConvAge === null || lastConvAge > CONVERSATION_COOLDOWN_MS;
+      const useConversation =
+        issues.length >= CONVERSATION_ISSUE_THRESHOLD && conversationStale;
+
+      const targetAgent: string | undefined = useConversation
+        ? undefined          // undefined → conversation mode in dispatch
+        : 'issue-solver';    // default single-agent worker
 
       // P0/P1 issues = highest priority
       const p0Issues = issues.filter(i =>
@@ -265,8 +278,14 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
         reason = `${issues.length} open issues`;
       }
 
+      if (useConversation) {
+        score += 10; // Bonus for batching — conversation mode is more effective
+        reason += ' → conversation mode';
+      }
+
       // Staleness bonus: haven't run recently
-      const lastAge = getLastRunAge(squadName, targetAgent);
+      const agentForStaleness = targetAgent ?? 'conversation';
+      const lastAge = getLastRunAge(squadName, agentForStaleness);
       if (lastAge !== null) {
         const hoursAgo = lastAge / (1000 * 60 * 60);
         if (hoursAgo > 48) {
@@ -283,7 +302,7 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
       }
 
       // Consecutive failure penalty
-      const failKey = `${squadName}:${targetAgent}`;
+      const failKey = `${squadName}:${agentForStaleness}`;
       const failures = state.failCounts[failKey] || 0;
       if (failures >= 3) {
         score -= 40;
@@ -293,7 +312,7 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
       }
 
       // Outcome-based modifier (needs 3+ executions for data)
-      const outcomeModifier = getOutcomeScoreModifier(squadName, targetAgent);
+      const outcomeModifier = getOutcomeScoreModifier(squadName, agentForStaleness);
       if (outcomeModifier !== 0) {
         score += outcomeModifier;
         reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
@@ -332,6 +351,22 @@ function dispatchAgent(
   return {
     squad,
     agent,
+    pid: proc.pid || 0,
+    startedAt: Date.now(),
+    process: proc,
+  };
+}
+
+/** Dispatch a full squad conversation (squads run <squad>) instead of a single agent. */
+function dispatchConversation(squad: string): RunningJob {
+  const proc = spawn('squads', ['run', squad], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false,
+  });
+
+  return {
+    squad,
+    agent: 'conversation',
     pid: proc.pid || 0,
     startedAt: Date.now(),
     process: proc,
@@ -681,7 +716,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   if (options.dryRun) {
     writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch:${RESET}`);
     for (const sig of toDispatch) {
-      writeLine(`    ${colors.cyan}${sig.squad}/${sig.agent}${RESET} — ${sig.reason}`);
+      const label = sig.agent ?? 'conversation';
+      writeLine(`    ${colors.cyan}${sig.squad}/${label}${RESET} — ${sig.reason}`);
     }
     saveState(state);
     return result;
@@ -690,16 +726,24 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Dispatch agents
   const jobs: RunningJob[] = [];
   for (const sig of toDispatch) {
-    // Build task from top issue
-    const topIssue = sig.issues[0];
-    const task = topIssue
-      ? `Fix issue #${topIssue.number}: ${topIssue.title}`
-      : undefined;
+    let job: RunningJob;
 
-    writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/${sig.agent}${RESET}${task ? ` → #${topIssue?.number}` : ''}`);
-    const job = dispatchAgent(sig.squad, sig.agent || 'issue-solver', task);
+    if (sig.agent === undefined) {
+      // Conversation mode: `squads run <squad>` — coordinates all agents
+      writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/conversation${RESET} (${sig.issues.length} issues)`);
+      job = dispatchConversation(sig.squad);
+    } else {
+      // Single-agent mode: target a specific agent (usually issue-solver)
+      const topIssue = sig.issues[0];
+      const task = topIssue
+        ? `Fix issue #${topIssue.number}: ${topIssue.title}`
+        : undefined;
+      writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/${sig.agent}${RESET}${task ? ` → #${topIssue?.number}` : ''}`);
+      job = dispatchAgent(sig.squad, sig.agent, task);
+    }
+
     jobs.push(job);
-    result.dispatched.push(`${sig.squad}/${sig.agent}`);
+    result.dispatched.push(`${sig.squad}/${job.agent}`);
   }
 
   writeLine(`  ${colors.dim}${jobs.length} agents running. Waiting...${RESET}`);
