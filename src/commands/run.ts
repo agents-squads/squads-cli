@@ -1739,7 +1739,10 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
     }
   } catch (error) {
-    writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    writeLine(`  ${icons.error} ${colors.red}Failed to launch agent${RESET}`);
+    writeLine(`  ${colors.dim}${msg}${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup.${RESET}`);
   }
 }
 
@@ -2062,7 +2065,9 @@ ${loadPostExecution(squadName, agentName)}`;
           error: String(error),
           durationMs: Date.now() - startMs,
         });
-        writeLine(`  ${colors.red}${String(error)}${RESET}`);
+        const msg = error instanceof Error ? error.message : String(error);
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+        writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
         break; // Error — exit retry loop
       }
     }
@@ -2151,8 +2156,13 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     const hasOAuthCreds = existsSync(credentialsPath);
 
     if (!hasApiKey && !hasOAuthCreds) {
-      // Auth may still work via OAuth (Max subscription) — warn but don't block
-      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming OAuth${RESET}`);
+      writeLine();
+      writeLine(`  ${icons.warning} ${colors.yellow}Claude not authenticated${RESET}`);
+      writeLine(`  ${colors.dim}No API key or credentials found. To authenticate:${RESET}`);
+      writeLine(`  ${colors.dim}  Option 1 (Max subscription): run ${colors.cyan}claude${colors.dim} and log in${RESET}`);
+      writeLine(`  ${colors.dim}  Option 2 (API key): export ANTHROPIC_API_KEY=sk-ant-...${RESET}`);
+      writeLine(`  ${colors.dim}  Option 3 (check status): run ${colors.cyan}squads doctor${colors.dim} to diagnose${RESET}`);
+      writeLine();
     }
   }
 

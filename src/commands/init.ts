@@ -551,7 +551,17 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   } catch (error) {
     spinner.fail('Failed to plant the seed');
-    console.error(chalk.red(`  ${error}`));
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      writeLine(chalk.red('  Permission denied — cannot write to this directory.'));
+      writeLine(chalk.dim('  Try running in a directory you own, or check folder permissions.'));
+    } else if (err.code === 'ENOENT') {
+      writeLine(chalk.red(`  Could not find or create: ${err.path || 'unknown path'}`));
+      writeLine(chalk.dim('  Check that the directory exists and you have write access.'));
+    } else {
+      writeLine(chalk.red(`  ${err.message || String(error)}`));
+      writeLine(chalk.dim('  Run with --verbose for more details, or check squads doctor.'));
+    }
     process.exit(1);
   }
 
