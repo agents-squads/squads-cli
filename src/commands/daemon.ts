@@ -530,8 +530,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     state.dailyCostDate = today;
   }
 
-  // Check budget
-  if (state.dailyCost >= options.budget) {
+  // Check budget (0 = unlimited, subscription mode)
+  if (options.budget > 0 && state.dailyCost >= options.budget) {
     writeLine(`  ${icons.warning} ${colors.yellow}Daily budget reached ($${state.dailyCost.toFixed(2)}/$${options.budget})${RESET}`);
     saveState(state);
     return result;
@@ -702,8 +702,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
         if (!squad) continue;
 
-        // Check budget
-        if (state.dailyCost >= options.budget) break;
+        // Check budget (0 = unlimited)
+        if (options.budget > 0 && state.dailyCost >= options.budget) break;
 
         const task = buildReviewTask(pr);
         writeLine(`  ${icons.running} Addressing ${pr.comments.length} review comment(s) on ${colors.cyan}${squad}${RESET} PR #${pr.number}`);
@@ -744,7 +744,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       `*Daemon cycle complete*`,
       result.completed.length > 0 ? `Completed: ${result.completed.join(', ')}` : '',
       result.failed.length > 0 ? `Failed: ${result.failed.join(', ')}` : '',
-      `Est. cost: $${result.costEstimate.toFixed(2)} (daily: $${state.dailyCost.toFixed(2)}/$${options.budget})`,
+      `Est. cost: $${result.costEstimate.toFixed(2)} (daily: $${state.dailyCost.toFixed(2)}${options.budget > 0 ? '/$' + options.budget : ''})`,
     ].filter(Boolean).join('\n');
     slackNotify(summary);
   }
@@ -775,12 +775,13 @@ export async function daemonCommand(options: {
     dryRun: options.dryRun || false,
     verbose: options.verbose || false,
     once: options.once || false,
-    budget: parseFloat(options.budget || '10'),
+    budget: parseFloat(options.budget || '0'),
   };
 
   writeLine();
   writeLine(`  ${bold}squads daemon${RESET}`);
-  writeLine(`  ${colors.dim}Interval: ${config.interval}m | Parallel: ${config.maxParallel} | Budget: $${config.budget}/day${config.dryRun ? ' | DRY RUN' : ''}${RESET}`);
+  const budgetLabel = config.budget > 0 ? `Budget: $${config.budget}/day` : 'Subscription (no budget limit)';
+  writeLine(`  ${colors.dim}Interval: ${config.interval}m | Parallel: ${config.maxParallel} | ${budgetLabel}${config.dryRun ? ' | DRY RUN' : ''}${RESET}`);
   writeLine();
 
   // First cycle

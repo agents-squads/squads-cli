@@ -740,7 +740,7 @@ program
   .description('Autopilot: watch, decide, dispatch, learn, escalate — your AI workforce on auto')
   .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
   .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
-  .option('-b, --budget <dollars>', 'Max daily spend in dollars', '10')
+  .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
   .option('--once', 'Run one cycle and exit')
   .option('--dry-run', 'Show what would run without dispatching')
   .option('-v, --verbose', 'Show detailed scoring')
