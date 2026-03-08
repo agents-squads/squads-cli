@@ -1747,7 +1747,13 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     const msg = error instanceof Error ? error.message : String(error);
     writeLine(`  ${icons.error} ${colors.red}Failed to launch agent${RESET}`);
     writeLine(`  ${colors.dim}${msg}${RESET}`);
-    writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup.${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.yellow}This looks like a bug. Please run:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads doctor       ${colors.dim}— check your setup${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads update        ${colors.dim}— get the latest fixes${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}If the problem persists, file an issue:${RESET}`);
+    writeLine(`  ${colors.dim}https://github.com/agents-squads/squads-cli/issues${RESET}`);
   }
 }
 
@@ -2072,7 +2078,13 @@ ${loadPostExecution(squadName, agentName)}`;
         });
         const msg = error instanceof Error ? error.message : String(error);
         writeLine(`  ${colors.red}${msg}${RESET}`);
-        writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
+        writeLine();
+        writeLine(`  ${colors.yellow}This looks like a bug. Please run:${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads doctor       ${colors.dim}— check your setup${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads update        ${colors.dim}— get the latest fixes${RESET}`);
+        writeLine();
+        writeLine(`  ${colors.dim}If the problem persists, file an issue:${RESET}`);
+        writeLine(`  ${colors.dim}https://github.com/agents-squads/squads-cli/issues${RESET}`);
         break; // Error — exit retry loop
       }
     }
