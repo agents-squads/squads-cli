@@ -140,7 +140,12 @@ export async function memoryShowCommand(
 
   if (states.length === 0) {
     writeLine(`  ${colors.yellow}No memory found for squad: ${squadName}${RESET}`);
-    return;
+    const entries = listMemoryEntries(memoryDir!);
+    const squads = [...new Set(entries.map(e => e.squad))].sort();
+    if (squads.length > 0) {
+      writeLine(`  ${colors.dim}Available squads: ${squads.join(', ')}${RESET}`);
+    }
+    process.exit(1);
   }
 
   writeLine();

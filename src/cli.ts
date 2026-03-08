@@ -200,6 +200,14 @@ program
   })
   // Default action when no command provided - show status dashboard
   .action(async () => {
+    // If args were provided but didn't match any command, they're unknown
+    if (program.args.length > 0) {
+      const unknown = program.args[0];
+      process.stderr.write(`\n  Unknown command: "${unknown}"\n\n`);
+      process.stderr.write(`  Run \`squads --help\` to see available commands.\n\n`);
+      process.exit(1);
+    }
+
     const { gradient, colors, RESET } = await import('./lib/terminal.js');
     const { checkForUpdate } = await import('./lib/update.js');
 
