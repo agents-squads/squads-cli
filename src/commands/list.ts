@@ -57,6 +57,19 @@ export async function listCommand(options: ListOptions): Promise<void> {
   writeLine(`  ${gradient('squads')} ${colors.dim}list${RESET}`);
   writeLine();
 
+  // Empty state — guide new users who just ran init
+  if (squads.length === 0) {
+    writeLine(`  ${colors.yellow}No squads found in .agents/squads/${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}If you just ran \`squads init\`, make sure to commit your files:${RESET}`);
+    writeLine(`  ${colors.dim}  git add .agents && git commit -m "feat: init AI workforce"${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Then run your first agent:${RESET}`);
+    writeLine(`  ${colors.dim}  squads run research/researcher${RESET}`);
+    writeLine();
+    return;
+  }
+
   // Stats
   writeLine(`  ${colors.cyan}${squads.length}${RESET} squads  ${colors.dim}│${RESET}  ${colors.cyan}${allAgents.length}${RESET} agents`);
   writeLine();

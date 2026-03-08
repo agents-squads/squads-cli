@@ -237,36 +237,61 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
   for (const squadName of squads) {
     try {
       const repo = squadRepos[squadName];
-      if (!repo) continue; // Only score squads with repos we can check
-
-      const issues = getOpenIssues(repo);
+      // Squads without a repo: field still get scored via staleness alone.
+      // They can still run issue-solver (which handles empty queues gracefully).
+      const issues = repo ? getOpenIssues(repo) : [];
 
       // Score based on signals
       let score = 0;
       let reason = '';
-      const targetAgent = 'issue-solver'; // default worker
+      // Conversation mode threshold: 3+ issues and no conversation in 48h.
+      // A squad conversation coordinates all agents and produces better output
+      // than dispatching a single issue-solver per issue.
+      const CONVERSATION_ISSUE_THRESHOLD = 3;
+      const CONVERSATION_COOLDOWN_MS = 48 * 60 * 60 * 1000;
+      const lastConvAge = getLastRunAge(squadName, 'conversation');
+      const conversationStale =
+        lastConvAge === null || lastConvAge > CONVERSATION_COOLDOWN_MS;
+      const useConversation =
+        issues.length >= CONVERSATION_ISSUE_THRESHOLD && conversationStale;
 
-      // P0/P1 issues = highest priority
-      const p0Issues = issues.filter(i =>
-        i.labels.some(l => l.includes('P0') || l.includes('priority:P0')),
-      );
-      const p1Issues = issues.filter(i =>
-        i.labels.some(l => l.includes('P1') || l.includes('priority:P1')),
-      );
+      const targetAgent: string | undefined = useConversation
+        ? undefined          // undefined → conversation mode in dispatch
+        : 'issue-solver';    // default single-agent worker
 
-      if (p0Issues.length > 0) {
-        score += 80;
-        reason = `${p0Issues.length} P0 issues: ${p0Issues[0].title}`;
-      } else if (p1Issues.length > 0) {
-        score += 60;
-        reason = `${p1Issues.length} P1 issues: ${p1Issues[0].title}`;
-      } else if (issues.length > 0) {
-        score += 30;
-        reason = `${issues.length} open issues`;
+      if (repo) {
+        // P0/P1 issues = highest priority
+        const p0Issues = issues.filter(i =>
+          i.labels.some(l => l.includes('P0') || l.includes('priority:P0')),
+        );
+        const p1Issues = issues.filter(i =>
+          i.labels.some(l => l.includes('P1') || l.includes('priority:P1')),
+        );
+
+        if (p0Issues.length > 0) {
+          score += 80;
+          reason = `${p0Issues.length} P0 issues: ${p0Issues[0].title}`;
+        } else if (p1Issues.length > 0) {
+          score += 60;
+          reason = `${p1Issues.length} P1 issues: ${p1Issues[0].title}`;
+        } else if (issues.length > 0) {
+          score += 30;
+          reason = `${issues.length} open issues`;
+        }
+      } else {
+        // No repo configured — squad can still benefit from periodic runs
+        // (memory updates, research tasks, etc.). Use staleness-only scoring.
+        reason = 'no repo configured — staleness-based dispatch';
+      }
+
+      if (useConversation) {
+        score += 10; // Bonus for batching — conversation mode is more effective
+        reason += ' → conversation mode';
       }
 
       // Staleness bonus: haven't run recently
-      const lastAge = getLastRunAge(squadName, targetAgent);
+      const agentForStaleness = targetAgent ?? 'conversation';
+      const lastAge = getLastRunAge(squadName, agentForStaleness);
       if (lastAge !== null) {
         const hoursAgo = lastAge / (1000 * 60 * 60);
         if (hoursAgo > 48) {
@@ -280,10 +305,14 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
           score -= 30;
           reason += ` (ran ${Math.floor(hoursAgo * 60)}m ago)`;
         }
+      } else if (!repo) {
+        // Never run and no repo — give base staleness score so it eventually runs
+        score += 15;
+        reason += ' (never run)';
       }
 
       // Consecutive failure penalty
-      const failKey = `${squadName}:${targetAgent}`;
+      const failKey = `${squadName}:${agentForStaleness}`;
       const failures = state.failCounts[failKey] || 0;
       if (failures >= 3) {
         score -= 40;
@@ -293,14 +322,15 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
       }
 
       // Outcome-based modifier (needs 3+ executions for data)
-      const outcomeModifier = getOutcomeScoreModifier(squadName, targetAgent);
+      const outcomeModifier = getOutcomeScoreModifier(squadName, agentForStaleness);
       if (outcomeModifier !== 0) {
         score += outcomeModifier;
         reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
       }
 
-      // Only include squads with positive scores and actual work
-      if (score > 0 && issues.length > 0) {
+      // Include squads with positive scores.
+      // Squads with a repo must have open issues; no-repo squads run on staleness alone.
+      if (score > 0 && (issues.length > 0 || !repo)) {
         signals.push({ squad: squadName, score, reason, agent: targetAgent, issues });
       }
     } catch {
@@ -332,6 +362,22 @@ function dispatchAgent(
   return {
     squad,
     agent,
+    pid: proc.pid || 0,
+    startedAt: Date.now(),
+    process: proc,
+  };
+}
+
+/** Dispatch a full squad conversation (squads run <squad>) instead of a single agent. */
+function dispatchConversation(squad: string): RunningJob {
+  const proc = spawn('squads', ['run', squad], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: false,
+  });
+
+  return {
+    squad,
+    agent: 'conversation',
     pid: proc.pid || 0,
     startedAt: Date.now(),
     process: proc,
@@ -681,7 +727,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   if (options.dryRun) {
     writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch:${RESET}`);
     for (const sig of toDispatch) {
-      writeLine(`    ${colors.cyan}${sig.squad}/${sig.agent}${RESET} — ${sig.reason}`);
+      const label = sig.agent ?? 'conversation';
+      writeLine(`    ${colors.cyan}${sig.squad}/${label}${RESET} — ${sig.reason}`);
     }
     saveState(state);
     return result;
@@ -690,16 +737,24 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Dispatch agents
   const jobs: RunningJob[] = [];
   for (const sig of toDispatch) {
-    // Build task from top issue
-    const topIssue = sig.issues[0];
-    const task = topIssue
-      ? `Fix issue #${topIssue.number}: ${topIssue.title}`
-      : undefined;
+    let job: RunningJob;
 
-    writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/${sig.agent}${RESET}${task ? ` → #${topIssue?.number}` : ''}`);
-    const job = dispatchAgent(sig.squad, sig.agent || 'issue-solver', task);
+    if (sig.agent === undefined) {
+      // Conversation mode: `squads run <squad>` — coordinates all agents
+      writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/conversation${RESET} (${sig.issues.length} issues)`);
+      job = dispatchConversation(sig.squad);
+    } else {
+      // Single-agent mode: target a specific agent (usually issue-solver)
+      const topIssue = sig.issues[0];
+      const task = topIssue
+        ? `Fix issue #${topIssue.number}: ${topIssue.title}`
+        : undefined;
+      writeLine(`  ${icons.running} Dispatching ${colors.cyan}${sig.squad}/${sig.agent}${RESET}${task ? ` → #${topIssue?.number}` : ''}`);
+      job = dispatchAgent(sig.squad, sig.agent, task);
+    }
+
     jobs.push(job);
-    result.dispatched.push(`${sig.squad}/${sig.agent}`);
+    result.dispatched.push(`${sig.squad}/${job.agent}`);
   }
 
   writeLine(`  ${colors.dim}${jobs.length} agents running. Waiting...${RESET}`);
@@ -722,24 +777,36 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         durationMs,
       });
 
+      // Minimum duration threshold: runs completing in <30s did no real work.
+      // Count them as "skipped" (phantom completion) to avoid masking health issues.
+      const MIN_PHANTOM_DURATION_MS = 30 * 1000;
+      const effectiveOutcome =
+        outcome === 'completed' && durationMs < MIN_PHANTOM_DURATION_MS
+          ? 'skipped'
+          : outcome;
+
       // Track failures
-      if (outcome === 'failed' || outcome === 'timeout') {
+      if (effectiveOutcome === 'failed' || effectiveOutcome === 'timeout') {
         state.failCounts[key] = (state.failCounts[key] || 0) + 1;
         result.failed.push(`${job.squad}/${job.agent}`);
-        writeLine(`  ${icons.error} ${colors.red}${job.squad}/${job.agent}${RESET} ${outcome} (${durationMin}m)`);
+        writeLine(`  ${icons.error} ${colors.red}${job.squad}/${job.agent}${RESET} ${effectiveOutcome} (${durationMin}m)`);
+      } else if (effectiveOutcome === 'skipped') {
+        // Phantom completion: don't reset fail counts, don't record as success
+        result.skipped.push(`${job.squad}/${job.agent}`);
+        writeLine(`  ${icons.warning} ${colors.yellow}${job.squad}/${job.agent}${RESET} skipped (instant exit: ${durationMs}ms — no work done)`);
       } else {
         state.failCounts[key] = 0; // Reset on success
         result.completed.push(`${job.squad}/${job.agent}`);
         writeLine(`  ${icons.success} ${colors.green}${job.squad}/${job.agent}${RESET} completed (${durationMin}m)`);
       }
 
-      // Estimate cost (~$0.50 per agent run average)
-      const estimatedCost = 0.50;
+      // Estimate cost (~$0.50 per agent run average, but zero for phantom runs)
+      const estimatedCost = effectiveOutcome === 'skipped' ? 0 : 0.50;
       state.dailyCost += estimatedCost;
       result.costEstimate += estimatedCost;
 
-      // Record artifacts for outcome tracking
-      if (outcome === 'completed') {
+      // Record artifacts for outcome tracking (only real completions)
+      if (effectiveOutcome === 'completed') {
         const repo = squadRepos[job.squad];
         if (repo) {
           recordArtifacts({
@@ -756,16 +823,16 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       // Push execution signal to cognition engine (fire-and-forget)
       pushCognitionSignal({
         source: 'execution',
-        signal_type: outcome === 'completed' ? 'agent_completed' : 'agent_failed',
-        value: outcome === 'completed' ? 1 : 0,
+        signal_type: effectiveOutcome === 'completed' ? 'agent_completed' : 'agent_failed',
+        value: effectiveOutcome === 'completed' ? 1 : 0,
         unit: 'completion',
-        data: { outcome, durationMs, cost_usd: estimatedCost },
+        data: { outcome: effectiveOutcome, durationMs, cost_usd: estimatedCost },
         entity_type: 'agent',
         entity_id: `${job.squad}/${job.agent}`,
         confidence: 0.95,
       });
 
-      return { job, outcome, durationMs };
+      return { job, outcome: effectiveOutcome, durationMs };
     }),
   );
 

@@ -494,24 +494,24 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
   cleanupStaleSessions();
 
   const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity, baseline] = await Promise.all([
-    // Git stats (local, parallel across repos)
-    baseDir ? getMultiRepoGitStats(baseDir, 30) : Promise.resolve(null),
+    // Git stats (local, parallel across repos, 1.5s timeout)
+    baseDir ? timeout(getMultiRepoGitStats(baseDir, 30), 1500, null) : Promise.resolve(null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
     skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
     // Langfuse costs (network, 2s timeout)
     timeout(fetchCostSummary(100), 2000, null),
     // Bridge stats (local network, 2s timeout)
     timeout(fetchBridgeStats(), 2000, null),
-    // Activity sparkline (local, parallel across repos)
-    baseDir ? getActivitySparkline(baseDir, 14) : Promise.resolve([]),
+    // Activity sparkline (local, parallel across repos, 1.5s timeout)
+    baseDir ? timeout(getActivitySparkline(baseDir, 14), 1500, [] as number[]) : Promise.resolve([] as number[]),
     // Database availability check (1.5s timeout)
     timeout(isDatabaseAvailable(), 1500, false),
     // Dashboard history (1.5s timeout)
     timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
     // Insights (2s timeout)
     timeout(fetchInsights('week').catch(() => null), 2000, null),
-    // Session summary (parallel lsof, ~1s)
-    getLiveSessionSummaryAsync(),
+    // Session summary: lsof per AI process, cap at 1s to stay under 2s total
+    timeout(getLiveSessionSummaryAsync(), 1000, { totalSessions: 0, bySquad: {}, squadCount: 0, byTool: {} } as SessionSummary),
     // NPM download stats (network, 2s timeout)
     timeout(fetchNpmStats('squads-cli'), 2000, null),
     // Quota/autonomy info (local network, 2s timeout)

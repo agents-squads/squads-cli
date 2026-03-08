@@ -126,8 +126,8 @@ async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean
       return false;
     }
     return true;
-  } catch {
-    // Bridge not available - continue anyway
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: bridge registration failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
     return false;
   }
 }
@@ -162,8 +162,8 @@ async function checkPreflightGates(squad: string, agent: string): Promise<Prefli
     }
 
     return await response.json() as PreflightResult;
-  } catch {
-    // Fail open if bridge is unavailable
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: preflight gate check failed (allowing execution): ${e instanceof Error ? e.message : String(e)}${RESET}`);
     return { allowed: true, gates: {} };
   }
 }
@@ -192,7 +192,8 @@ async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): P
 
     const data = await response.json() as { learnings: Learning[] };
     return data.learnings || [];
-  } catch {
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: learnings fetch failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
     return [];
   }
 }
@@ -211,7 +212,8 @@ function loadApprovalInstructions(): string {
   if (existsSync(instructionsPath)) {
     try {
       return readFileSync(instructionsPath, 'utf-8');
-    } catch {
+    } catch (e) {
+      writeLine(`  ${colors.dim}warn: failed reading approval instructions: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       return '';
     }
   }
@@ -234,7 +236,9 @@ function loadPostExecution(squadName: string, agentName: string): string {
         return template
           .replace(/\{\{squadName\}\}/g, squadName)
           .replace(/\{\{agentName\}\}/g, agentName);
-      } catch { /* fall through */ }
+      } catch (e) {
+          writeLine(`  ${colors.dim}warn: failed reading post-execution template: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+        }
     }
   }
   // Minimal fallback if template file missing
@@ -294,8 +298,8 @@ function gatherSquadContext(
           estimatedTokens += tokens;
         }
       }
-    } catch {
-      // Ignore read errors
+    } catch (e) {
+      if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading SQUAD.md: ${e instanceof Error ? e.message : String(e)}${RESET}`);
     }
   }
 
@@ -310,8 +314,8 @@ function gatherSquadContext(
           sections.push(`## Squad Goals (${squadName})\n${goalsContent.trim()}`);
           estimatedTokens += tokens;
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading squad goals: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -327,8 +331,8 @@ function gatherSquadContext(
           sections.push(`## Company Directives\n${directivesContent.trim()}`);
           estimatedTokens += tokens;
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading company directives: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -345,8 +349,8 @@ function gatherSquadContext(
           sections.push(`## Your Previous State\nThis is your memory from your last execution:\n\n${stateContent.trim()}`);
           estimatedTokens += tokens;
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading agent state: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -372,8 +376,8 @@ function gatherSquadContext(
             break; // Stop adding briefs if we're over budget
           }
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading agent briefs: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -399,8 +403,8 @@ function gatherSquadContext(
             break;
           }
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading squad briefs: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -418,8 +422,8 @@ function gatherSquadContext(
             estimatedTokens += tokens;
           }
         }
-      } catch {
-        // Ignore read errors
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading daily briefing: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
   }
@@ -444,8 +448,8 @@ function gatherSquadContext(
                 estimatedTokens += tokens;
               }
             }
-          } catch {
-            // Ignore read errors
+          } catch (e) {
+            if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading ${relatedSquad} learnings: ${e instanceof Error ? e.message : String(e)}${RESET}`);
           }
         }
 
@@ -464,8 +468,8 @@ function gatherSquadContext(
                 estimatedTokens += tokens;
               }
             }
-          } catch {
-            // Ignore read errors
+          } catch (e) {
+            if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading ${relatedSquad} lead state: ${e instanceof Error ? e.message : String(e)}${RESET}`);
           }
         }
       }
@@ -652,9 +656,9 @@ function ensureProjectTrusted(projectPath: string): void {
       config.projects[projectPath].hasTrustDialogAccepted = true;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
     }
-  } catch {
-    // Don't fail execution if we can't update config
-    // The dialog will just appear
+  } catch (e) {
+    // Don't fail execution if we can't update config — the trust dialog will just appear
+    writeLine(`  ${colors.dim}warn: config update failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
 }
 
@@ -839,8 +843,8 @@ async function autoCommitAgentWork(
       } else {
         spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
       }
-    } catch {
-      // Push failed - continue, the commit is still local
+    } catch (e) {
+      writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${e instanceof Error ? e.message : String(e)}${RESET}`);
     }
 
     return { committed: true, message: `Committed changes from ${agentName}` };
@@ -1032,8 +1036,8 @@ async function emitExecutionEvent(
         signal: AbortSignal.timeout(EXECUTION_EVENT_TIMEOUT_MS),
       });
       return;
-    } catch {
-      // API unavailable — fall through to file
+    } catch (e) {
+      // API unavailable — fall through to file-based event recording
     }
   }
 
@@ -1056,7 +1060,7 @@ async function emitExecutionEvent(
       existing = readFileSync(eventsPath, 'utf-8');
     }
     writeFileSync(eventsPath, existing + entry);
-  } catch {
+  } catch (e) {
     // Truly fail-safe — never block execution
   }
 }
@@ -1090,7 +1094,8 @@ async function verifyExecution(
       encoding: 'utf-8',
       cwd: projectRoot,
     }).trim();
-  } catch {
+  } catch (e) {
+    if (options.verbose) writeLine(`  ${colors.dim}warn: git log failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
     recentCommits = '(no commits found)';
   }
 
@@ -1289,8 +1294,8 @@ async function runCloudDispatch(
             }
           }
         }
-      } catch {
-        // Poll failures are non-fatal — retry on next interval
+      } catch (e) {
+        if (options.verbose) writeLine(`  ${colors.dim}warn: cloud poll failed (retrying): ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
 
       await new Promise(resolve => setTimeout(resolve, CLOUD_POLL_INTERVAL_MS));
@@ -1739,7 +1744,10 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
       writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
     }
   } catch (error) {
-    writeLine(`  ${icons.error} ${colors.red}Failed to launch: ${error}${RESET}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    writeLine(`  ${icons.error} ${colors.red}Failed to launch agent${RESET}`);
+    writeLine(`  ${colors.dim}${msg}${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup.${RESET}`);
   }
 }
 
@@ -1916,8 +1924,8 @@ async function runAgent(
         }
       }
     }
-  } catch {
-    // Silent — cognition injection is best-effort
+  } catch (e) {
+    if (options.verbose) writeLine(`  ${colors.dim}warn: cognition fetch failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
 
   // Generate the Claude Code prompt with timeout awareness
@@ -2062,7 +2070,9 @@ ${loadPostExecution(squadName, agentName)}`;
           error: String(error),
           durationMs: Date.now() - startMs,
         });
-        writeLine(`  ${colors.red}${String(error)}${RESET}`);
+        const msg = error instanceof Error ? error.message : String(error);
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+        writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
         break; // Error — exit retry loop
       }
     }
@@ -2151,8 +2161,13 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     const hasOAuthCreds = existsSync(credentialsPath);
 
     if (!hasApiKey && !hasOAuthCreds) {
-      // Auth may still work via OAuth (Max subscription) — warn but don't block
-      writeLine(`  ${colors.dim}${icons.progress} No API key or credentials file found — assuming OAuth${RESET}`);
+      writeLine();
+      writeLine(`  ${icons.warning} ${colors.yellow}Claude not authenticated${RESET}`);
+      writeLine(`  ${colors.dim}No API key or credentials found. To authenticate:${RESET}`);
+      writeLine(`  ${colors.dim}  Option 1 (Max subscription): run ${colors.cyan}claude${colors.dim} and log in${RESET}`);
+      writeLine(`  ${colors.dim}  Option 2 (API key): export ANTHROPIC_API_KEY=sk-ant-...${RESET}`);
+      writeLine(`  ${colors.dim}  Option 3 (check status): run ${colors.cyan}squads doctor${colors.dim} to diagnose${RESET}`);
+      writeLine();
     }
   }
 
@@ -2231,6 +2246,15 @@ function logVerboseExecution(config: {
   }
 }
 
+/** Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir) */
+function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null): string {
+  if (!squad?.repo) return projectRoot;
+  const repoName = squad.repo.split('/').pop();
+  if (!repoName) return projectRoot;
+  const candidatePath = join(projectRoot, '..', repoName);
+  return existsSync(candidatePath) ? candidatePath : projectRoot;
+}
+
 /** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
 function createAgentWorktree(projectRoot: string, squadName: string, agentName: string): string {
   const timestamp = Date.now();
@@ -2241,8 +2265,9 @@ function createAgentWorktree(projectRoot: string, squadName: string, agentName: 
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     return worktreePath;
-  } catch {
-    return projectRoot; // Fall back to project root
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+    return projectRoot;
   }
 }
 
@@ -2406,6 +2431,9 @@ async function executeWithClaude(
   const resolvedModel = resolveModel(model, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
+  // Resolve target repo for worktree creation (squad.repo → sibling dir)
+  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad);
+
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {
     if (verbose) {
@@ -2414,7 +2442,7 @@ async function executeWithClaude(
       writeLine(`  ${colors.dim}Provider: ${provider}${RESET}`);
     }
     return executeWithProvider(provider, prompt, {
-      verbose, foreground, cwd: projectRoot, squadName, agentName,
+      verbose, foreground, cwd: targetRepoRoot, squadName, agentName,
     });
   }
 
@@ -2457,7 +2485,7 @@ async function executeWithClaude(
     });
 
     return executeForeground({
-      prompt, claudeArgs, agentEnv, projectRoot,
+      prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
       squadName, agentName, execContext, startMs, provider,
     });
   }
@@ -2470,7 +2498,7 @@ async function executeWithClaude(
   });
 
   const wrapperScript = buildDetachedShellScript({
-    projectRoot, squadName, agentName, timestamp,
+    projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
   });
 
@@ -2482,7 +2510,7 @@ async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot, agentEnv, logFile, wrapperScript });
+    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, wrapperScript });
   }
 
   // ── Background mode ──────────────────────────────────────────────────
@@ -2495,7 +2523,7 @@ async function executeWithClaude(
   }
 
   const child = spawn('sh', ['-c', wrapperScript], {
-    cwd: projectRoot,
+    cwd: targetRepoRoot,
     detached: true,
     stdio: 'ignore',
     env: agentEnv,
@@ -2560,8 +2588,8 @@ async function executeWithProvider(
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
-  } catch {
-    // Worktree creation failed — fall back to project root
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
 
   // Copy .agents directory into worktree so sandboxed providers can access
@@ -2574,8 +2602,8 @@ async function executeWithProvider(
     if (existsSync(agentsDir) && !existsSync(targetAgentsDir)) {
       try {
         cpSync(agentsDir, targetAgentsDir, { recursive: true });
-      } catch {
-        // Non-fatal: agent def may still be accessible if tracked in git
+      } catch (e) {
+        writeLine(`  ${colors.dim}warn: .agents copy failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
     }
     // Rewrite absolute paths in prompt so sandboxed providers can resolve them
