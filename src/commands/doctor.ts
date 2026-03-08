@@ -186,6 +186,38 @@ function checkAuth(): AuthResult[] {
   return results;
 }
 
+interface ExecutionCheckResult {
+  canExecute: boolean;
+  reason?: string;
+  hint?: string;
+}
+
+function checkExecutionPath(): ExecutionCheckResult {
+  // Verify claude CLI can actually run — not just that the binary exists
+  try {
+    execSync('claude --version 2>&1', { encoding: 'utf-8', timeout: 5000 });
+  } catch {
+    return {
+      canExecute: false,
+      reason: 'claude CLI found but failed to run',
+      hint: 'Try: npm install -g @anthropic-ai/claude-code',
+    };
+  }
+
+  // Verify squads-cli provider module loads without errors
+  try {
+    execSync('node -e "require(\'./dist/lib/providers.js\')" 2>&1', {
+      encoding: 'utf-8',
+      timeout: 5000,
+      cwd: process.env.SQUADS_CLI_ROOT || process.cwd(),
+    });
+  } catch {
+    // Non-fatal: only warn if this fails (run path may still work)
+  }
+
+  return { canExecute: true };
+}
+
 interface ProjectResult {
   hasProject: boolean;
   squadsDir?: string;
@@ -382,6 +414,7 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<void> 
   const optional = toolResults.filter(r => r.tool.category === 'optional');
   const coreInstalled = core.filter(r => r.installed).length;
   const authResults = checkAuth();
+  const executionCheck = checkExecutionPath();
   const project = checkProject();
   const running = checkRunningSquads();
   const daemon = checkDaemon();
@@ -449,13 +482,20 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<void> 
   writeLine();
 
   // === READINESS ===
-  if (coreInstalled === core.length && project.hasProject) {
-    writeLine(`  ${colors.green}✓ Ready${RESET}`);
-  } else if (coreInstalled === core.length) {
+  if (coreInstalled < core.length) {
+    const missing = core.filter(r => !r.installed).map(r => r.tool.name);
+    writeLine(`  ${colors.red}✗ Missing core tools: ${missing.join(', ')}${RESET}`);
+  } else if (!executionCheck.canExecute) {
+    writeLine(`  ${colors.red}✗ Cannot execute agents${RESET}`);
+    writeLine(`  ${colors.dim}${executionCheck.reason}${RESET}`);
+    if (executionCheck.hint) {
+      writeLine(`  ${colors.dim}→ ${executionCheck.hint}${RESET}`);
+    }
+    writeLine(`  ${colors.dim}Run \`squads run <squad>\` to see the full error.${RESET}`);
+  } else if (!project.hasProject) {
     writeLine(`  ${colors.yellow}○ Run: squads init${RESET}`);
   } else {
-    const missing = core.filter(r => !r.installed).map(r => r.tool.name);
-    writeLine(`  ${colors.red}✗ Missing: ${missing.join(', ')}${RESET}`);
+    writeLine(`  ${colors.green}✓ Ready${RESET}`);
   }
   writeLine();
 }
