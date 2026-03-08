@@ -150,15 +150,32 @@ Supports: Claude Code, Cursor, Aider, Gemini, GitHub Copilot, Sourcegraph Cody, 
 
 ### Autonomous Execution
 
-Schedule agents to run on their own with the local daemon.
+Two scheduling systems are available depending on how much control you need:
+
+**Autonomous daemon** — simple cron-style local scheduler:
 
 ```bash
-# Start the autonomous scheduler
-squads autonomous start
-
-# Check what's running
-squads autonomous status
+squads autonomous start    # Start the daemon
+squads autonomous status   # Check what's running
+squads autonomous stop     # Stop the daemon
+squads autonomous pause    # Pause without stopping
+squads autonomous resume   # Resume a paused daemon
 ```
+
+**Autopilot** — intelligent scheduler with budget control and adaptive dispatch:
+
+```bash
+# Run every 30 minutes, cap spend at $50/day
+squads autopilot --interval 30 --budget 50
+
+# Run up to 3 squads in parallel
+squads autopilot --parallel 3
+
+# Preview one cycle without executing
+squads autopilot --once --dry-run
+```
+
+Use `autonomous` when you want simple cron-like scheduling. Use `autopilot` when you want the system to watch squad state, decide what to run, learn from results, and enforce budget limits.
 
 ### Claude Code Integration
 
@@ -180,29 +197,76 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 
 ## Commands
 
+### Core
+
 | Command | Description |
 |---------|-------------|
-| `squads init` | Initialize squads in your project |
-| `squads status [squad]` | Overview of all squads and active sessions |
+| `squads init` | Initialize project with manager agent and starter squads |
+| `squads create <name>` | Create a new squad |
+| `squads list` | List agents and squads |
 | `squads run <target>` | Run a squad or specific agent |
+
+### Monitoring
+
+| Command | Description |
+|---------|-------------|
+| `squads status [squad]` | Squad overview and active sessions |
 | `squads dash [name]` | Dashboard with goals, metrics, and git activity |
-| `squads env show <squad>` | View squad execution environment |
-| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
+| `squads sessions` | Active AI coding sessions |
+| `squads stats [squad]` | Agent outcome scorecards |
+| `squads results [squad]` | Git activity + KPI goals vs actuals |
+| `squads history` | Recent execution history |
+| `squads cost` | Cost summary by squad and time period |
+| `squads health` | Infrastructure health check |
+| `squads doctor` | Check local tools, auth, and readiness |
+
+### Memory & Learning
+
+| Command | Description |
+|---------|-------------|
 | `squads memory query <q>` | Search across all agent memory |
 | `squads memory write <squad> <insight>` | Persist a learning |
 | `squads memory read <squad>` | View squad memory |
+| `squads memory sync` | Synchronize memory with git remote |
+| `squads learn <insight>` | Quick-capture a learning |
+| `squads learnings` | View and search learnings |
+
+### Goals & KPIs
+
+| Command | Description |
+|---------|-------------|
 | `squads goal set <squad> <goal>` | Set a squad objective |
 | `squads goal list` | View all goals and progress |
-| `squads exec list` | View recent execution history |
-| `squads sessions` | Show active AI coding sessions |
-| `squads autonomous start` | Start the local execution daemon |
-| `squads providers` | List available LLM providers |
-| `squads eval <target>` | Evaluate agent readiness |
-| `squads cost` | Cost summary by squad and time period |
 | `squads kpi show <squad>` | Track squad KPIs |
-| `squads sync` | Synchronize memory state |
-| `squads health` | Infrastructure health check |
+| `squads progress` | Track active and completed tasks |
+
+### Automation
+
+| Command | Description |
+|---------|-------------|
+| `squads autonomous start` | Start local cron-style scheduling daemon |
+| `squads autopilot` | Full autopilot: watch, decide, dispatch, learn |
+| `squads trigger` | Smart triggers for event-driven execution |
+| `squads approval` | Manage approval requests |
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `squads providers` | List available LLM providers |
+| `squads env show <squad>` | View squad execution environment |
+| `squads context` | Business context for agent alignment |
+| `squads eval <target>` | Evaluate agent readiness |
+| `squads sync` | Sync memory state to Postgres |
 | `squads update` | Check for and install updates |
+
+### Auth
+
+| Command | Description |
+|---------|-------------|
+| `squads login` | Authenticate with Squads platform |
+| `squads logout` | Sign out |
+| `squads whoami` | Show current auth identity |
 
 Run `squads --help` for the full command reference, or `squads <command> --help` for detailed options.
 
