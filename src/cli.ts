@@ -80,6 +80,36 @@ if (!isHelpOrVersion) {
 // Register telemetry exit handler early
 registerExitHandler();
 
+// Helper: find closest matching command name using Levenshtein distance
+function findClosestMatch(input: string, candidates: string[]): string | null {
+  function levenshtein(a: string, b: string): number {
+    const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+      Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+    );
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        dp[i][j] =
+          a[i - 1] === b[j - 1]
+            ? dp[i - 1][j - 1]
+            : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const candidate of candidates) {
+    const dist = levenshtein(input.toLowerCase(), candidate.toLowerCase());
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = candidate;
+    }
+  }
+  // Only suggest if reasonably close (at most 3 edits)
+  return bestDist <= 3 ? best : null;
+}
+
 // Helper: show removed command message
 function removedCommand(name: string, alternative: string): () => void {
   return () => {
@@ -200,6 +230,26 @@ program
   })
   // Default action when no command provided - show status dashboard
   .action(async () => {
+    // Detect unknown commands: if args were passed to the root program,
+    // they represent unrecognized subcommands (Commander passes them here)
+    const args = program.args;
+    if (args.length > 0) {
+      const unknownCmd = args[0];
+      const { colors, RESET } = await import('./lib/terminal.js');
+
+      // Find closest matching command name for a helpful suggestion
+      const knownCommands = program.commands.map((c) => c.name()).filter(Boolean);
+      const suggestion = findClosestMatch(unknownCmd, knownCommands);
+
+      writeLine(`  ${colors.red}Unknown command: "${unknownCmd}"${RESET}`);
+      if (suggestion) {
+        writeLine(`  ${colors.dim}Did you mean: ${colors.cyan}${suggestion}${RESET}${colors.dim}?${RESET}`);
+      }
+      writeLine();
+      writeLine(`  ${colors.dim}Run \`squads --help\` to see available commands.${RESET}`);
+      process.exit(1);
+    }
+
     const { gradient, colors, RESET } = await import('./lib/terminal.js');
     const { checkForUpdate } = await import('./lib/update.js');
 
