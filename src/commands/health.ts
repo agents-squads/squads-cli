@@ -199,6 +199,7 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
   writeLine(`  ${colors.purple}├${'─'.repeat(48)}┤${RESET}`);
 
   const issues: ServiceResult[] = [];
+  const optionalDown: ServiceResult[] = [];
 
   for (const result of results) {
     let statusIcon: string;
@@ -223,6 +224,8 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
         statusText = 'down';
         if (!result.optional) {
           issues.push(result);
+        } else {
+          optionalDown.push(result);
         }
         break;
     }
@@ -253,27 +256,18 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
 
   // Show issues and fixes
   if (issues.length > 0) {
-    const criticalIssues = issues.filter(i => !i.optional);
-    const optionalIssues = issues.filter(i => i.optional);
-
-    if (criticalIssues.length > 0) {
-      writeLine(`  ${colors.red}${icons.warning} ${criticalIssues.length} service(s) need attention${RESET}`);
-      for (const issue of criticalIssues) {
-        writeLine(`    ${colors.dim}•${RESET} ${issue.name}: ${issue.error || 'not responding'}`);
-        if (issue.fix) {
-          writeLine(`      ${colors.cyan}Fix:${RESET} ${issue.fix}`);
-        }
+    writeLine(`  ${colors.red}${icons.warning} ${issues.length} service(s) need attention${RESET}`);
+    for (const issue of issues) {
+      writeLine(`    ${colors.dim}•${RESET} ${issue.name}: ${issue.error || 'not responding'}`);
+      if (issue.fix) {
+        writeLine(`      ${colors.cyan}Fix:${RESET} ${issue.fix}`);
       }
-      writeLine();
     }
-
-    if (options.verbose && optionalIssues.length > 0) {
-      writeLine(`  ${colors.yellow}Optional services down:${RESET}`);
-      for (const issue of optionalIssues) {
-        writeLine(`    ${colors.dim}•${RESET} ${issue.name}`);
-      }
-      writeLine();
-    }
+    writeLine();
+  } else if (optionalDown.length > 0) {
+    writeLine(`  ${colors.green}${icons.success} Core ready${RESET} ${colors.dim}(no required services are down)${RESET}`);
+    writeLine(`  ${colors.dim}○ ${optionalDown.length} optional service(s) offline — run ${RESET}${colors.cyan}squads stack up${RESET}${colors.dim} to enable scheduling/telemetry${RESET}`);
+    writeLine();
   } else {
     writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
     writeLine();
