@@ -191,28 +191,81 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 
 ## Commands
 
+### Setup & Auth
 | Command | Description |
 |---------|-------------|
-| `squads init` | Initialize squads in your project |
-| `squads status [squad]` | Overview of all squads and active sessions |
+| `squads init` | Initialize project with squads structure and hooks |
+| `squads create <name>` | Create a new squad |
+| `squads login` | Authenticate with the Squads platform |
+| `squads logout` | Sign out |
+| `squads whoami` | Show current authenticated user |
+| `squads doctor` | Check local tools, auth, and readiness |
+
+### Squads & Agents
+| Command | Description |
+|---------|-------------|
+| `squads list` | List agents and squads |
 | `squads run <target>` | Run a squad or specific agent |
+| `squads orchestrate <squad>` | Lead agent orchestration across a squad |
+| `squads detect-squad` | Detect squad from current directory |
+
+### Monitoring & Dashboards
+| Command | Description |
+|---------|-------------|
+| `squads status [squad]` | Overview of all squads and active sessions |
 | `squads dash [name]` | Dashboard with goals, metrics, and git activity |
-| `squads env show <squad>` | View squad execution environment |
-| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
+| `squads sessions` | Show active AI coding sessions |
+| `squads stats [squad]` | Agent outcome scorecards |
+| `squads results [squad]` | Git activity and KPI goals vs actuals |
+| `squads history` | Recent execution history |
+| `squads exec list` | View execution log |
+| `squads progress` | Track active and completed tasks |
+
+### Goals & KPIs
+| Command | Description |
+|---------|-------------|
+| `squads goal set <squad> <goal>` | Set a squad objective |
+| `squads goal list` | View all goals and progress |
+| `squads kpi show <squad>` | Track squad KPIs |
+| `squads budget` | Check budget status |
+| `squads cost` | Cost summary by squad and time period |
+
+### Memory & Learning
+| Command | Description |
+|---------|-------------|
 | `squads memory query <q>` | Search across all agent memory |
 | `squads memory write <squad> <insight>` | Persist a learning |
 | `squads memory read <squad>` | View squad memory |
-| `squads goal set <squad> <goal>` | Set a squad objective |
-| `squads goal list` | View all goals and progress |
-| `squads exec list` | View recent execution history |
-| `squads sessions` | Show active AI coding sessions |
+| `squads memory sync` | Sync memory to/from remote |
+| `squads learn` | Capture a learning |
+| `squads feedback` | Record or view execution feedback |
+| `squads cognition` | Business cognition engine (beliefs, signals, decisions) |
+
+### Context & Alignment
+| Command | Description |
+|---------|-------------|
+| `squads context` | View current business context |
+| `squads context feed` | Feed business context for agent alignment |
+
+### Automation
+| Command | Description |
+|---------|-------------|
 | `squads autonomous start` | Start the local execution daemon |
-| `squads providers` | List available LLM providers |
+| `squads autopilot` | Full autopilot mode alias |
+| `squads trigger` | Smart triggers for agent execution |
+| `squads approval` | Manage approval requests |
 | `squads eval <target>` | Evaluate agent readiness |
-| `squads cost` | Cost summary by squad and time period |
-| `squads kpi show <squad>` | Track squad KPIs |
-| `squads sync` | Synchronize memory state |
+
+### Environment & Infra
+| Command | Description |
+|---------|-------------|
+| `squads env show <squad>` | View squad execution environment |
+| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
 | `squads health` | Infrastructure health check |
+| `squads providers` | List available LLM providers |
+| `squads config use <env>` | Switch environment (local\|staging\|prod) |
+| `squads deploy` | Deploy to platform |
+| `squads sync` | Sync memory state to git and optionally Postgres |
 | `squads update` | Check for and install updates |
 
 Run `squads --help` for the full command reference, or `squads <command> --help` for detailed options.
