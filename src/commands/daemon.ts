@@ -237,32 +237,38 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
   for (const squadName of squads) {
     try {
       const repo = squadRepos[squadName];
-      if (!repo) continue; // Only score squads with repos we can check
-
-      const issues = getOpenIssues(repo);
+      // Squads without a repo: field still get scored via staleness alone.
+      // They can still run issue-solver (which handles empty queues gracefully).
+      const issues = repo ? getOpenIssues(repo) : [];
 
       // Score based on signals
       let score = 0;
       let reason = '';
       const targetAgent = 'issue-solver'; // default worker
 
-      // P0/P1 issues = highest priority
-      const p0Issues = issues.filter(i =>
-        i.labels.some(l => l.includes('P0') || l.includes('priority:P0')),
-      );
-      const p1Issues = issues.filter(i =>
-        i.labels.some(l => l.includes('P1') || l.includes('priority:P1')),
-      );
+      if (repo) {
+        // P0/P1 issues = highest priority
+        const p0Issues = issues.filter(i =>
+          i.labels.some(l => l.includes('P0') || l.includes('priority:P0')),
+        );
+        const p1Issues = issues.filter(i =>
+          i.labels.some(l => l.includes('P1') || l.includes('priority:P1')),
+        );
 
-      if (p0Issues.length > 0) {
-        score += 80;
-        reason = `${p0Issues.length} P0 issues: ${p0Issues[0].title}`;
-      } else if (p1Issues.length > 0) {
-        score += 60;
-        reason = `${p1Issues.length} P1 issues: ${p1Issues[0].title}`;
-      } else if (issues.length > 0) {
-        score += 30;
-        reason = `${issues.length} open issues`;
+        if (p0Issues.length > 0) {
+          score += 80;
+          reason = `${p0Issues.length} P0 issues: ${p0Issues[0].title}`;
+        } else if (p1Issues.length > 0) {
+          score += 60;
+          reason = `${p1Issues.length} P1 issues: ${p1Issues[0].title}`;
+        } else if (issues.length > 0) {
+          score += 30;
+          reason = `${issues.length} open issues`;
+        }
+      } else {
+        // No repo configured — squad can still benefit from periodic runs
+        // (memory updates, research tasks, etc.). Use staleness-only scoring.
+        reason = 'no repo configured — staleness-based dispatch';
       }
 
       // Staleness bonus: haven't run recently
@@ -280,6 +286,10 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
           score -= 30;
           reason += ` (ran ${Math.floor(hoursAgo * 60)}m ago)`;
         }
+      } else if (!repo) {
+        // Never run and no repo — give base staleness score so it eventually runs
+        score += 15;
+        reason += ' (never run)';
       }
 
       // Consecutive failure penalty
@@ -299,8 +309,9 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
         reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
       }
 
-      // Only include squads with positive scores and actual work
-      if (score > 0 && issues.length > 0) {
+      // Include squads with positive scores.
+      // Squads with a repo must have open issues; no-repo squads run on staleness alone.
+      if (score > 0 && (issues.length > 0 || !repo)) {
         signals.push({ squad: squadName, score, reason, agent: targetAgent, issues });
       }
     } catch {
@@ -722,24 +733,36 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         durationMs,
       });
 
+      // Minimum duration threshold: runs completing in <30s did no real work.
+      // Count them as "skipped" (phantom completion) to avoid masking health issues.
+      const MIN_PHANTOM_DURATION_MS = 30 * 1000;
+      const effectiveOutcome =
+        outcome === 'completed' && durationMs < MIN_PHANTOM_DURATION_MS
+          ? 'skipped'
+          : outcome;
+
       // Track failures
-      if (outcome === 'failed' || outcome === 'timeout') {
+      if (effectiveOutcome === 'failed' || effectiveOutcome === 'timeout') {
         state.failCounts[key] = (state.failCounts[key] || 0) + 1;
         result.failed.push(`${job.squad}/${job.agent}`);
-        writeLine(`  ${icons.error} ${colors.red}${job.squad}/${job.agent}${RESET} ${outcome} (${durationMin}m)`);
+        writeLine(`  ${icons.error} ${colors.red}${job.squad}/${job.agent}${RESET} ${effectiveOutcome} (${durationMin}m)`);
+      } else if (effectiveOutcome === 'skipped') {
+        // Phantom completion: don't reset fail counts, don't record as success
+        result.skipped.push(`${job.squad}/${job.agent}`);
+        writeLine(`  ${icons.warning} ${colors.yellow}${job.squad}/${job.agent}${RESET} skipped (instant exit: ${durationMs}ms — no work done)`);
       } else {
         state.failCounts[key] = 0; // Reset on success
         result.completed.push(`${job.squad}/${job.agent}`);
         writeLine(`  ${icons.success} ${colors.green}${job.squad}/${job.agent}${RESET} completed (${durationMin}m)`);
       }
 
-      // Estimate cost (~$0.50 per agent run average)
-      const estimatedCost = 0.50;
+      // Estimate cost (~$0.50 per agent run average, but zero for phantom runs)
+      const estimatedCost = effectiveOutcome === 'skipped' ? 0 : 0.50;
       state.dailyCost += estimatedCost;
       result.costEstimate += estimatedCost;
 
-      // Record artifacts for outcome tracking
-      if (outcome === 'completed') {
+      // Record artifacts for outcome tracking (only real completions)
+      if (effectiveOutcome === 'completed') {
         const repo = squadRepos[job.squad];
         if (repo) {
           recordArtifacts({
@@ -756,16 +779,16 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       // Push execution signal to cognition engine (fire-and-forget)
       pushCognitionSignal({
         source: 'execution',
-        signal_type: outcome === 'completed' ? 'agent_completed' : 'agent_failed',
-        value: outcome === 'completed' ? 1 : 0,
+        signal_type: effectiveOutcome === 'completed' ? 'agent_completed' : 'agent_failed',
+        value: effectiveOutcome === 'completed' ? 1 : 0,
         unit: 'completion',
-        data: { outcome, durationMs, cost_usd: estimatedCost },
+        data: { outcome: effectiveOutcome, durationMs, cost_usd: estimatedCost },
         entity_type: 'agent',
         entity_id: `${job.squad}/${job.agent}`,
         confidence: 0.95,
       });
 
-      return { job, outcome, durationMs };
+      return { job, outcome: effectiveOutcome, durationMs };
     }),
   );
 
