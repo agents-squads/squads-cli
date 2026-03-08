@@ -199,6 +199,7 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
   writeLine(`  ${colors.purple}├${'─'.repeat(48)}┤${RESET}`);
 
   const issues: ServiceResult[] = [];
+  const optionalDown: ServiceResult[] = [];
 
   for (const result of results) {
     let statusIcon: string;
@@ -223,6 +224,8 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
         statusText = 'down';
         if (!result.optional) {
           issues.push(result);
+        } else {
+          optionalDown.push(result);
         }
         break;
     }
@@ -274,8 +277,16 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
       }
       writeLine();
     }
-  } else {
-    writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
+  }
+
+  // Summary: differentiate "truly all healthy" from "core ready, optional offline"
+  if (issues.length === 0) {
+    if (optionalDown.length > 0) {
+      writeLine(`  ${colors.green}${icons.success} Core ready ${colors.dim}(no required services are down)${RESET}`);
+      writeLine(`  ${colors.yellow}○ ${optionalDown.length} optional service${optionalDown.length === 1 ? '' : 's'} offline${RESET} ${colors.dim}— run ${RESET}${colors.cyan}squads stack up${RESET}${colors.dim} to enable scheduling/telemetry${RESET}`);
+    } else {
+      writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
+    }
     writeLine();
   }
 

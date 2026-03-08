@@ -140,7 +140,7 @@ export async function memoryShowCommand(
 
   if (states.length === 0) {
     writeLine(`  ${colors.yellow}No memory found for squad: ${squadName}${RESET}`);
-    return;
+    process.exit(1);
   }
 
   writeLine();

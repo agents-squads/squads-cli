@@ -166,10 +166,11 @@ describe('memoryShowCommand', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it('resolves when no squad state found', async () => {
+  it('exits 1 when no squad state found', async () => {
     mockFindMemoryDir.mockReturnValue('/path/to/memory');
     mockGetSquadState.mockReturnValue([]);
-    await expect(memoryShowCommand('cli', {})).resolves.toBeUndefined();
+    await expect(memoryShowCommand('cli', {})).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('resolves and displays squad states', async () => {
