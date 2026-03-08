@@ -47,8 +47,8 @@ export async function statusCommand(
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
-    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
-    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
     process.exit(1);
   }
 
