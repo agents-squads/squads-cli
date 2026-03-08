@@ -907,12 +907,12 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
 
   saveState(state);
 
-  // Slack summary
-  if (result.completed.length > 0 || result.failed.length > 0) {
+  // Slack notifications: only on failures and escalations (not routine completions)
+  if (result.failed.length > 0) {
     const summary = [
-      `*Daemon cycle complete*`,
+      `*Daemon cycle — failures detected*`,
+      `Failed: ${result.failed.join(', ')}`,
       result.completed.length > 0 ? `Completed: ${result.completed.join(', ')}` : '',
-      result.failed.length > 0 ? `Failed: ${result.failed.join(', ')}` : '',
       `Est. cost: $${result.costEstimate.toFixed(2)} (daily: $${state.dailyCost.toFixed(2)}${options.budget > 0 ? '/$' + options.budget : ''})`,
     ].filter(Boolean).join('\n');
     slackNotify(summary);
@@ -921,7 +921,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Escalate persistent failures
   for (const [key, count] of Object.entries(state.failCounts)) {
     if (count >= 3) {
-      slackNotify(`*Escalation*: ${key} has failed ${count} times consecutively. Needs human attention.`);
+      slackNotify(`🚨 *Escalation*: ${key} has failed ${count} times consecutively. Needs human attention.`);
     }
   }
 
