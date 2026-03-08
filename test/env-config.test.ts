@@ -38,8 +38,6 @@ const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
 
 describe('env-config', () => {
-  const origEnv = { ...process.env };
-
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset env overrides before each test
@@ -50,10 +48,6 @@ describe('env-config', () => {
     delete process.env.SQUADS_DATABASE_URL;
     delete process.env.REDIS_URL;
     delete process.env.SQUADS_ENV;
-  });
-
-  afterEach(() => {
-    process.env = { ...origEnv } as typeof process.env;
   });
 
   // ---------------------------------------------------------------------------
@@ -258,9 +252,6 @@ describe('env-config', () => {
     beforeEach(() => {
       mockExistsSync.mockReturnValue(false);
       process.env.SQUADS_ENV = 'local';
-      delete process.env.SQUADS_API_URL;
-      delete process.env.SQUADS_BRIDGE_URL;
-      delete process.env.SQUADS_CONSOLE_URL;
     });
 
     it('getApiUrl() returns a non-empty string', () => {
