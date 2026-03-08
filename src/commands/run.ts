@@ -41,7 +41,6 @@ import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer } from '../lib/github.js';
-import { homedir } from 'os';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 const CLOUD_POLL_INTERVAL_MS = 3000;
@@ -2151,25 +2150,9 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     return false;
   }
 
-  // --- Check 2: Authentication (Anthropic only — other providers handle auth internally) ---
-  if (isAnthropic) {
-    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-
-    // Check for OAuth credentials (Max subscription or claude login)
-    const home = homedir();
-    const credentialsPath = join(home, '.claude', '.credentials.json');
-    const hasOAuthCreds = existsSync(credentialsPath);
-
-    if (!hasApiKey && !hasOAuthCreds) {
-      writeLine();
-      writeLine(`  ${icons.warning} ${colors.yellow}Claude not authenticated${RESET}`);
-      writeLine(`  ${colors.dim}No API key or credentials found. To authenticate:${RESET}`);
-      writeLine(`  ${colors.dim}  Option 1 (Max subscription): run ${colors.cyan}claude${colors.dim} and log in${RESET}`);
-      writeLine(`  ${colors.dim}  Option 2 (API key): export ANTHROPIC_API_KEY=sk-ant-...${RESET}`);
-      writeLine(`  ${colors.dim}  Option 3 (check status): run ${colors.cyan}squads doctor${colors.dim} to diagnose${RESET}`);
-      writeLine();
-    }
-  }
+  // Auth check removed: Claude CLI handles its own auth errors with clear messages.
+  // Pre-checking here caused false warnings for OAuth users (keychain auth works
+  // without .credentials.json or ANTHROPIC_API_KEY). See #520.
 
   return true;
 }
