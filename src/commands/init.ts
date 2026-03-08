@@ -560,7 +560,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       writeLine(chalk.dim('  Check that the directory exists and you have write access.'));
     } else {
       writeLine(chalk.red(`  ${err.message || String(error)}`));
-      writeLine(chalk.dim('  Run with --verbose for more details, or check squads doctor.'));
+      writeLine(chalk.dim('  Run `squads doctor` to diagnose issues.'));
     }
     process.exit(1);
   }
