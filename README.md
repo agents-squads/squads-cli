@@ -162,7 +162,7 @@ squads autonomous status
 
 ### Claude Code Integration
 
-Add hooks to `.claude/settings.json` so every Claude Code session starts with squad context:
+Add hooks to `.claude/settings.json` so every Claude Code session starts with squad context. Run `squads init` to set this up automatically, or add it manually:
 
 ```json
 {
@@ -170,8 +170,19 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "squads session start",
+        "command": "squads status",
         "timeout": 10
+      }, {
+        "type": "command",
+        "command": "squads memory sync --no-push",
+        "timeout": 15
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "squads memory sync --push",
+        "timeout": 15
       }]
     }]
   }

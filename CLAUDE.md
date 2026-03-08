@@ -38,7 +38,7 @@ Persistent state across sessions at `.agents/memory/<squad>/<agent>/`.
 ```bash
 squads memory write <squad> [agent] "insight"   # Save a learning
 squads memory read <squad> [agent]               # Load context
-squads memory search "query"                     # Search across squads
+squads memory query "query"                      # Search across squads
 ```
 
 ### Milestones & PRs
@@ -71,7 +71,7 @@ This works with any git hosting that supports the `gh` CLI or equivalent.
 |---------|-------------|
 | `squads memory write <squad> [agent] "text"` | Persist a learning |
 | `squads memory read <squad> [agent]` | Load agent memory |
-| `squads memory search "query"` | Search all memory |
+| `squads memory query "query"` | Search all memory |
 | `squads memory list` | List all entries |
 
 ### Infrastructure
@@ -172,7 +172,7 @@ import { searchMemory, appendToMemory, listMemoryEntries } from '../lib/memory.j
 - **Agent definitions:** `.agents/squads/<squad>/<agent>.md`
 - **Memory files:** `.agents/memory/<squad>/<agent>/<type>.md`
 - **Session history:** `.agents/sessions/history.jsonl`
-- **CLI config:** `~/.squadsrc`
+- **CLI config:** `~/.squads/config.json` (managed via `squads config use local|staging|prod`)
 
 ### Git Workflow
 - Conventional Commits format (`feat:`, `fix:`, `docs:`, `chore:`)
