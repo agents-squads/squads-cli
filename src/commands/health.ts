@@ -275,7 +275,15 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
       writeLine();
     }
   } else {
-    writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
+    const optionalDown = results.filter(r => r.optional && r.status === 'down');
+    if (optionalDown.length > 0) {
+      const plural = optionalDown.length > 1 ? 's' : '';
+      writeLine(
+        `  ${colors.green}${icons.success} Core ready${RESET} ${colors.dim}(${optionalDown.length} optional service${plural} offline — run \`squads stack up\` to enable)${RESET}`
+      );
+    } else {
+      writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
+    }
     writeLine();
   }
 
