@@ -150,19 +150,25 @@ Supports: Claude Code, Cursor, Aider, Gemini, GitHub Copilot, Sourcegraph Cody, 
 
 ### Autonomous Execution
 
-Schedule agents to run on their own with the local daemon.
+Two scheduling modes to run agents on their own:
 
 ```bash
-# Start the autonomous scheduler
-squads autonomous start
+# Autonomous daemon — simple cron-style scheduling
+squads autonomous start           # Start the daemon
+squads autonomous status          # Check daemon status
+squads autonomous stop            # Stop the daemon
 
-# Check what's running
-squads autonomous status
+# Autopilot — intelligent scheduling with budget controls
+squads autopilot                              # Run continuously (watch → decide → dispatch)
+squads autopilot --interval 30 --budget 50   # Run every 30min, $50/day cap
+squads autopilot --once --dry-run            # Preview one cycle without executing
 ```
+
+Use `autonomous` for simple periodic runs; use `autopilot` for intelligent self-managing execution with budget enforcement and escalation.
 
 ### Claude Code Integration
 
-Add hooks to `.claude/settings.json` so every Claude Code session starts with squad context:
+Add hooks to `.claude/settings.json` so every Claude Code session starts with squad context. Run `squads init` to set this up automatically, or add manually:
 
 ```json
 {
@@ -170,8 +176,19 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "squads session start",
+        "command": "squads status",
         "timeout": 10
+      }, {
+        "type": "command",
+        "command": "squads memory sync --no-push",
+        "timeout": 15
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "squads memory sync --push",
+        "timeout": 15
       }]
     }]
   }
@@ -180,28 +197,79 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 
 ## Commands
 
+### Core
 | Command | Description |
 |---------|-------------|
 | `squads init` | Initialize squads in your project |
-| `squads status [squad]` | Overview of all squads and active sessions |
+| `squads create <name>` | Create a new squad |
+| `squads list` | List all squads and agents |
 | `squads run <target>` | Run a squad or specific agent |
+
+### Monitoring
+| Command | Description |
+|---------|-------------|
+| `squads status [squad]` | Overview of all squads and active sessions |
 | `squads dash [name]` | Dashboard with goals, metrics, and git activity |
-| `squads env show <squad>` | View squad execution environment |
-| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
+| `squads sessions` | Show active AI coding sessions |
+| `squads stats [squad]` | Agent outcome scorecards |
+| `squads results [squad]` | Git activity + KPI goals vs actuals |
+| `squads cost` | Cost summary by squad and time period |
+| `squads history` | Recent execution history |
+| `squads progress` | Track active and completed tasks |
+| `squads exec list` | View execution log |
+
+### Memory
+| Command | Description |
+|---------|-------------|
 | `squads memory query <q>` | Search across all agent memory |
 | `squads memory write <squad> <insight>` | Persist a learning |
 | `squads memory read <squad>` | View squad memory |
+| `squads memory list` | List all memory entries |
+| `squads memory sync` | Sync memory to/from remote |
+
+### Goals & KPIs
+| Command | Description |
+|---------|-------------|
 | `squads goal set <squad> <goal>` | Set a squad objective |
 | `squads goal list` | View all goals and progress |
-| `squads exec list` | View recent execution history |
-| `squads sessions` | Show active AI coding sessions |
-| `squads autonomous start` | Start the local execution daemon |
-| `squads providers` | List available LLM providers |
-| `squads eval <target>` | Evaluate agent readiness |
-| `squads cost` | Cost summary by squad and time period |
 | `squads kpi show <squad>` | Track squad KPIs |
-| `squads sync` | Synchronize memory state |
-| `squads health` | Infrastructure health check |
+
+### Execution & Scheduling
+| Command | Description |
+|---------|-------------|
+| `squads autonomous start/stop/status` | Manage the cron-style daemon |
+| `squads autopilot` | Intelligent self-managing execution |
+| `squads orchestrate` | Lead agent orchestration |
+| `squads trigger` | Smart event-based triggers |
+| `squads approval` | Manage approval requests |
+
+### Intelligence
+| Command | Description |
+|---------|-------------|
+| `squads context` | Business context for alignment |
+| `squads learn` | Capture a learning |
+| `squads feedback` | Record/view execution feedback |
+| `squads autonomy` | Autonomy score and confidence |
+| `squads cognition` | Business cognition engine |
+
+### Environment & Tools
+| Command | Description |
+|---------|-------------|
+| `squads env show <squad>` | View squad execution environment |
+| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
+| `squads providers` | List available LLM providers |
+| `squads session` | Session lifecycle management |
+| `squads login / logout / whoami` | Authentication |
+| `squads deploy` | Deploy to platform |
+
+### Infrastructure
+| Command | Description |
+|---------|-------------|
+| `squads health` | Quick infrastructure check |
+| `squads doctor` | Check local tools, auth, readiness |
+| `squads stack init/up/down/status` | Manage local Docker services |
+| `squads sync` | Synchronize memory to git/Postgres |
+| `squads eval <target>` | Evaluate agent readiness |
 | `squads update` | Check for and install updates |
 
 Run `squads --help` for the full command reference, or `squads <command> --help` for detailed options.
