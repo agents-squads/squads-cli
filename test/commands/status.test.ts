@@ -14,6 +14,7 @@ vi.mock('../../src/lib/squad-parser.js', () => ({
   loadSquad: vi.fn(),
   listSquads: vi.fn(),
   listAgents: vi.fn(),
+  findSimilarSquads: vi.fn(() => []),
   resolveExecutionContext: vi.fn(() => ({
     resolved: { skills: [], mcpServers: [], mcpSource: null },
   })),

@@ -8,6 +8,8 @@ import {
   listAgents,
   loadAgentDefinition,
   parseAgentProvider,
+  listSquads,
+  findSimilarSquads,
   EffortLevel,
   Squad,
 } from '../lib/squad-parser.js';
@@ -1385,6 +1387,10 @@ export async function runCommand(
       await runAgent(agent.name, agent.filePath, squadName, options);
     } else {
       writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
+      const similar = findSimilarSquads(target, listSquads(squadsDir));
+      if (similar.length > 0) {
+        writeLine(`  ${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
+      }
       writeLine(`  ${colors.dim}Run \`squads list\` to see available squads and agents.${RESET}`);
       process.exit(1);
     }
