@@ -209,7 +209,7 @@ async function showOverallStatus(
     const squad = loadSquad(name);
     if (squad?.repo) repoSet.add(squad.repo);
   }
-  const ops = fetchOperationalStatus([...repoSet]);
+  const ops = await fetchOperationalStatus([...repoSet]);
 
   // Compute column width from actual repo names
   const allRepoNames = [...ops.milestones.map(m => m.repo), ...ops.openPRs.map(p => p.repo)];
