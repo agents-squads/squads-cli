@@ -2246,6 +2246,15 @@ function logVerboseExecution(config: {
   }
 }
 
+/** Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir) */
+function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null): string {
+  if (!squad?.repo) return projectRoot;
+  const repoName = squad.repo.split('/').pop();
+  if (!repoName) return projectRoot;
+  const candidatePath = join(projectRoot, '..', repoName);
+  return existsSync(candidatePath) ? candidatePath : projectRoot;
+}
+
 /** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
 function createAgentWorktree(projectRoot: string, squadName: string, agentName: string): string {
   const timestamp = Date.now();
@@ -2422,6 +2431,9 @@ async function executeWithClaude(
   const resolvedModel = resolveModel(model, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
+  // Resolve target repo for worktree creation (squad.repo → sibling dir)
+  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad);
+
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {
     if (verbose) {
@@ -2430,7 +2442,7 @@ async function executeWithClaude(
       writeLine(`  ${colors.dim}Provider: ${provider}${RESET}`);
     }
     return executeWithProvider(provider, prompt, {
-      verbose, foreground, cwd: projectRoot, squadName, agentName,
+      verbose, foreground, cwd: targetRepoRoot, squadName, agentName,
     });
   }
 
@@ -2473,7 +2485,7 @@ async function executeWithClaude(
     });
 
     return executeForeground({
-      prompt, claudeArgs, agentEnv, projectRoot,
+      prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
       squadName, agentName, execContext, startMs, provider,
     });
   }
@@ -2486,7 +2498,7 @@ async function executeWithClaude(
   });
 
   const wrapperScript = buildDetachedShellScript({
-    projectRoot, squadName, agentName, timestamp,
+    projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
   });
 
@@ -2498,7 +2510,7 @@ async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot, agentEnv, logFile, wrapperScript });
+    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, wrapperScript });
   }
 
   // ── Background mode ──────────────────────────────────────────────────
@@ -2511,7 +2523,7 @@ async function executeWithClaude(
   }
 
   const child = spawn('sh', ['-c', wrapperScript], {
-    cwd: projectRoot,
+    cwd: targetRepoRoot,
     detached: true,
     stdio: 'ignore',
     env: agentEnv,
