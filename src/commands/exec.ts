@@ -90,18 +90,43 @@ export async function execListCommand(options: ListOptions = {}): Promise<void> 
 
   writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
+  const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+  let staleCount = 0;
+
   for (const exec of executions) {
     const agentName = `${exec.squad}/${exec.agent}`;
     const truncatedAgent = agentName.length > w.agent - 1
       ? agentName.slice(0, w.agent - 4) + '...'
       : agentName;
 
-    const statusIcon = exec.status === 'running' ? icons.running :
-                       exec.status === 'completed' ? icons.success : icons.error;
-    const statusColor = exec.status === 'running' ? colors.yellow :
-                        exec.status === 'completed' ? colors.green : colors.red;
+    const ageMs = Date.now() - new Date(exec.startTime).getTime();
+    const isStale = exec.status === 'running' && ageMs > STALE_THRESHOLD_MS;
+    if (isStale) staleCount++;
 
-    const statusStr = `${statusColor}${statusIcon} ${exec.status}${RESET}`;
+    let statusIcon: string;
+    let statusColor: string;
+    let statusLabel: string;
+
+    if (isStale) {
+      const staleHours = Math.floor(ageMs / (60 * 60 * 1000));
+      statusIcon = icons.warning;
+      statusColor = colors.yellow;
+      statusLabel = `stale (${staleHours}h)`;
+    } else if (exec.status === 'running') {
+      statusIcon = icons.running;
+      statusColor = colors.yellow;
+      statusLabel = 'running';
+    } else if (exec.status === 'completed') {
+      statusIcon = icons.success;
+      statusColor = colors.green;
+      statusLabel = 'completed';
+    } else {
+      statusIcon = icons.error;
+      statusColor = colors.red;
+      statusLabel = exec.status;
+    }
+
+    const statusStr = `${statusColor}${statusIcon} ${statusLabel}${RESET}`;
     const durationStr = formatDuration(exec.durationMs);
     const timeStr = formatRelativeTime(exec.startTime);
     const shortId = exec.id.slice(0, 16);
@@ -122,8 +147,10 @@ export async function execListCommand(options: ListOptions = {}): Promise<void> 
 
   // Show stats summary
   const stats = getExecutionStats(listOptions);
+  const liveRunning = stats.running - staleCount;
   const parts: string[] = [];
-  if (stats.running > 0) parts.push(`${colors.yellow}${stats.running} running${RESET}`);
+  if (liveRunning > 0) parts.push(`${colors.yellow}${liveRunning} running${RESET}`);
+  if (staleCount > 0) parts.push(`${colors.yellow}${staleCount} stale${RESET}`);
   if (stats.completed > 0) parts.push(`${colors.green}${stats.completed} completed${RESET}`);
   if (stats.failed > 0) parts.push(`${colors.red}${stats.failed} failed${RESET}`);
 
