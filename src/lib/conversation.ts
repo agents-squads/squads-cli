@@ -169,6 +169,19 @@ const VERIFIER_REJECTION_PHRASES = [
   'does not pass', 'did not pass', 'failing',
 ];
 
+/** Phrases from a lead turn that signal the session is done — hard stop */
+const LEAD_COMPLETION_PHRASES = [
+  'session complete', 'session is complete',
+  'nothing to do', 'nothing more to do', 'nothing left to do',
+  'all work is done', 'all work complete', 'work is complete', 'work is done',
+  'all tasks complete', 'all tasks done',
+  'approved', 'approving',
+  'declaring convergence', 'signaling convergence', 'signal convergence',
+  'no further action', 'no further work', 'no action needed', 'no actions needed',
+  'wrapping up', 'closing out',
+  'conversation complete', 'cycle complete',
+];
+
 /** Phrases that indicate more work needed */
 const CONTINUATION_PHRASES = [
   'needs review', 'needs feedback', 'needs input', 'need clarification',
@@ -222,7 +235,17 @@ export function detectConvergence(
     }
   }
 
-  // Continuation signals beat convergence (bias toward completing work)
+  // Lead completion: hard stop when lead signals the session is done.
+  // Checked before continuation phrases — lead saying "done" overrides stale
+  // continuation signals (e.g. "will proceed to close" shouldn't keep running).
+  if (lastTurn.role === 'lead') {
+    const leadDone = LEAD_COMPLETION_PHRASES.some(phrase => lower.includes(phrase));
+    if (leadDone) {
+      return { converged: true, reason: 'Lead signaled completion' };
+    }
+  }
+
+  // Continuation signals beat generic convergence (bias toward completing work)
   const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
   if (hasContinuation) {
     return { converged: false, reason: 'Continuation signal detected' };
