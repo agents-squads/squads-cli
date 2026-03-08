@@ -1171,6 +1171,36 @@ function handleError(error: unknown): void {
 process.on('uncaughtException', handleError);
 process.on('unhandledRejection', handleError);
 
+// Unknown command handler — catch typos and show helpful error
+function levenshtein(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+program.on('command:*', (operands: string[]) => {
+  const unknownCmd = operands[0];
+  const knownCommands = program.commands.map(c => c.name()).filter(n => n && !n.startsWith('_'));
+  const closest = knownCommands
+    .map(name => ({ name, dist: levenshtein(unknownCmd, name) }))
+    .sort((a, b) => a.dist - b.dist)[0];
+
+  writeLine(`\n  Unknown command: "${unknownCmd}"`);
+  if (closest && closest.dist <= 3) {
+    writeLine(`  Did you mean: ${closest.name}?`);
+  }
+  writeLine(`\n  Run \`squads --help\` to see available commands.\n`);
+  process.exit(1);
+});
+
 // Parse arguments (use parseAsync to properly await async actions)
 try {
   await program.parseAsync();
