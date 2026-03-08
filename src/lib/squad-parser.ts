@@ -246,6 +246,38 @@ export function listSquads(squadsDir: string): string[] {
 }
 
 /**
+ * Find squad names similar to the input using Levenshtein distance.
+ * Returns up to 3 close matches, or empty array if none are close enough.
+ */
+export function findSimilarSquads(input: string, squads: string[]): string[] {
+  const lower = input.toLowerCase();
+
+  function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+      Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+    );
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  const threshold = Math.max(2, Math.floor(input.length / 3));
+
+  return squads
+    .map(s => ({ name: s, dist: levenshtein(lower, s.toLowerCase()) }))
+    .filter(({ name, dist }) => dist <= threshold || name.toLowerCase().includes(lower) || lower.includes(name.toLowerCase()))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 3)
+    .map(({ name }) => name);
+}
+
+/**
  * List all agents in the squads directory or a specific squad.
  * Agents are markdown files (excluding SQUAD.md) in squad directories.
  * @param squadsDir - Path to the .agents/squads directory

@@ -6,6 +6,7 @@ import {
   listSquads,
   listAgents,
   resolveExecutionContext,
+  findSimilarSquads,
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import {
@@ -262,6 +263,11 @@ async function showSquadStatus(
       process.exit(1);
     }
     writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
+    const similar = findSimilarSquads(squadName, listSquads(squadsDir));
+    if (similar.length > 0) {
+      writeLine(`${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
+    }
+    writeLine(`${colors.dim}Run \`squads list\` to see available squads.${RESET}`);
     process.exit(1);
   }
 
