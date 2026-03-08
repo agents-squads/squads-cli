@@ -153,3 +153,34 @@ export async function pushCognitionSignal(signal: {
 }): Promise<boolean> {
   return apiRequest('/cognition/signals', 'POST', signal);
 }
+
+/**
+ * Ingest a memory file into the cognition engine.
+ * Fire-and-forget — returns result or null on failure.
+ */
+export async function ingestMemorySignal(body: {
+  squad: string;
+  agent: string;
+  file_type: 'state' | 'learnings' | 'executions' | 'events' | 'directives';
+  content: string;
+  content_hash: string;
+}): Promise<{ status: string; signals_created?: number } | null> {
+  const config = getApiConfig();
+  if (!config) return null;
+
+  try {
+    const response = await fetch(`${config.apiUrl}/cognition/signals/ingest-memory`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    return await response.json() as { status: string; signals_created?: number };
+  } catch {
+    return null; // Silent failure — offline-first
+  }
+}

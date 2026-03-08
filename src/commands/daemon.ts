@@ -7,8 +7,9 @@
  * This is the product: incremental smartness, not 200 agents.
  */
 
+import { createHash } from 'crypto';
 import { execSync, spawn } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -23,7 +24,7 @@ import {
   computeAllScorecards,
   getOutcomeScoreModifier,
 } from '../lib/outcomes.js';
-import { pushCognitionSignal } from '../lib/api-client.js';
+import { pushCognitionSignal, ingestMemorySignal } from '../lib/api-client.js';
 import {
   colors,
   bold,
@@ -94,6 +95,7 @@ interface DaemonState {
     durationMs: number;
   }>;
   failCounts: Record<string, number>; // squad:agent → consecutive failures
+  memoryHashes: Record<string, string>; // squad/agent/file_type → content hash
 }
 
 function defaultState(): DaemonState {
@@ -103,6 +105,7 @@ function defaultState(): DaemonState {
     dailyCostDate: new Date().toISOString().slice(0, 10),
     recentRuns: [],
     failCounts: {},
+    memoryHashes: {},
   };
 }
 
@@ -508,6 +511,101 @@ async function slackNotify(message: string): Promise<void> {
   }
 }
 
+// ── Memory ingestion ─────────────────────────────────────────────────
+
+type MemoryFileType = 'state' | 'learnings' | 'executions' | 'events' | 'directives';
+
+const INGESTIBLE_FILES: MemoryFileType[] = ['state', 'learnings', 'executions'];
+
+/**
+ * Push changed memory files to the cognition engine.
+ * Reads agent memory files (state, learnings, executions) for squads that ran,
+ * computes content hash, and POSTs to API if changed since last push.
+ * Fire-and-forget — never blocks the cycle.
+ */
+async function pushMemorySignals(
+  squads: string[],
+  state: DaemonState,
+  verbose: boolean,
+): Promise<void> {
+  const memDir = findMemoryDir();
+  if (!memDir) return;
+
+  // Initialize memoryHashes if missing (backward compat with old state files)
+  if (!state.memoryHashes) {
+    state.memoryHashes = {};
+  }
+
+  const promises: Promise<void>[] = [];
+
+  for (const squad of squads) {
+    const squadPath = join(memDir, squad);
+    if (!existsSync(squadPath)) continue;
+
+    // Find agent directories
+    let agents: string[];
+    try {
+      agents = readdirSync(squadPath, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+    } catch {
+      continue;
+    }
+
+    for (const agent of agents) {
+      for (const fileType of INGESTIBLE_FILES) {
+        const filePath = join(squadPath, agent, `${fileType}.md`);
+        if (!existsSync(filePath)) continue;
+
+        let content: string;
+        try {
+          content = readFileSync(filePath, 'utf-8');
+        } catch {
+          continue;
+        }
+
+        if (!content.trim()) continue;
+
+        // Compute hash
+        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
+        const key = `${squad}/${agent}/${fileType}`;
+
+        // Skip if unchanged
+        if (state.memoryHashes[key] === hash) continue;
+
+        // Push to API (fire-and-forget)
+        const p = ingestMemorySignal({
+          squad,
+          agent,
+          file_type: fileType,
+          content,
+          content_hash: hash,
+        }).then((result) => {
+          if (result) {
+            // Update hash on success
+            state.memoryHashes[key] = hash;
+            if (verbose && result.status === 'ingested') {
+              writeLine(`  ${colors.dim}Memory: ${key} → ${result.signals_created || 0} signals${RESET}`);
+            }
+          }
+        }).catch(() => {
+          // Silent — memory ingestion is best-effort
+        });
+
+        promises.push(p);
+      }
+    }
+  }
+
+  // Wait for all pushes (with a timeout so we don't block forever)
+  if (promises.length > 0) {
+    await Promise.race([
+      Promise.allSettled(promises),
+      new Promise<void>(resolve => setTimeout(resolve, 10000)), // 10s max
+    ]);
+  }
+}
+
 // ── Main cycle ───────────────────────────────────────────────────────
 
 async function runCycle(options: DaemonOptions): Promise<CycleResult> {
@@ -670,6 +768,10 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       return { job, outcome, durationMs };
     }),
   );
+
+  // Push changed memory files to cognition engine (fire-and-forget)
+  const dispatchedSquads = [...new Set(toDispatch.map(s => s.squad))];
+  await pushMemorySignals(dispatchedSquads, state, options.verbose);
 
   // Trim recent runs to last 50
   state.recentRuns = state.recentRuns.slice(-50);
