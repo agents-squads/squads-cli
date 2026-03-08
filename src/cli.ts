@@ -57,6 +57,7 @@ import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
+import { registerCognitionCommand } from './commands/cognition.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -247,7 +248,6 @@ program
   .option('-y, --yes', 'Accept all defaults (non-interactive)')
   .option('-r, --repo', 'Create a GitHub repository for the squad')
   .option('-o, --org <org>', 'GitHub organization for --repo (default: detected from git remote)')
-  .option('-s, --slack', 'Create a Slack channel for the squad (requires SLACK_BOT_TOKEN)')
   .addHelpText('after', `
 Examples:
   $ squads create marketing                          Create with interactive prompts
@@ -255,7 +255,6 @@ Examples:
   $ squads create marketing --force                  Overwrite existing squad
   $ squads create marketing --repo                   Create with GitHub repo
   $ squads create marketing --repo --org myorg       Create with GitHub repo in specific org
-  $ squads create marketing --slack                  Create with Slack channel
 `)
   .action(async (...args: any[]) => {
     const { createCommand } = await import('./commands/create.js');
@@ -734,19 +733,31 @@ program
     return autonomyCommand({ squad: options.squad, period: options.period, json: options.json });
   });
 
-// Daemon command - persistent intelligence loop
+// Autopilot — autonomous business operations loop
 program
-  .command('daemon')
-  .description('Run the intelligence loop: watch, decide, dispatch, observe, react')
+  .command('autopilot')
+  .alias('daemon')
+  .description('Autopilot: watch, decide, dispatch, learn, escalate — your AI workforce on auto')
   .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
   .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
-  .option('-b, --budget <dollars>', 'Max daily spend in dollars', '10')
+  .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
   .option('--once', 'Run one cycle and exit')
   .option('--dry-run', 'Show what would run without dispatching')
   .option('-v, --verbose', 'Show detailed scoring')
   .action(async (options) => {
     const { daemonCommand } = await import('./commands/daemon.js');
     return daemonCommand(options);
+  });
+
+// Stats command - agent outcome scorecards
+program
+  .command('stats [squad]')
+  .description('Show agent outcome scorecards: merge rate, waste, cost per outcome')
+  .option('-p, --period <period>', 'Time period: 7d or 30d', '7d')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (squad, options) => {
+    const { statsCommand } = await import('./commands/stats.js');
+    return statsCommand({ squad, period: options.period, json: options.json });
   });
 
 // ─── Learn (memory + knowledge) ─────────────────────────────────────────────
@@ -1058,6 +1069,9 @@ registerEvalCommand(program);
 
 // Deploy command group - push agents to platform
 registerDeployCommand(program);
+
+// Cognition command group - business cognition engine
+registerCognitionCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program

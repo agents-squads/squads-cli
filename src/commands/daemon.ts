@@ -7,8 +7,9 @@
  * This is the product: incremental smartness, not 200 agents.
  */
 
+import { createHash } from 'crypto';
 import { execSync, spawn } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -17,6 +18,13 @@ import {
 } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { getBotGhEnv } from '../lib/github.js';
+import {
+  recordArtifacts,
+  pollOutcomes,
+  computeAllScorecards,
+  getOutcomeScoreModifier,
+} from '../lib/outcomes.js';
+import { pushCognitionSignal, ingestMemorySignal } from '../lib/api-client.js';
 import {
   colors,
   bold,
@@ -87,6 +95,7 @@ interface DaemonState {
     durationMs: number;
   }>;
   failCounts: Record<string, number>; // squad:agent → consecutive failures
+  memoryHashes: Record<string, string>; // squad/agent/file_type → content hash
 }
 
 function defaultState(): DaemonState {
@@ -96,6 +105,7 @@ function defaultState(): DaemonState {
     dailyCostDate: new Date().toISOString().slice(0, 10),
     recentRuns: [],
     failCounts: {},
+    memoryHashes: {},
   };
 }
 
@@ -280,6 +290,13 @@ function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): Sq
         reason += ` (${failures} consecutive failures — needs human)`;
       } else if (failures >= 1) {
         score -= 10 * failures;
+      }
+
+      // Outcome-based modifier (needs 3+ executions for data)
+      const outcomeModifier = getOutcomeScoreModifier(squadName, targetAgent);
+      if (outcomeModifier !== 0) {
+        score += outcomeModifier;
+        reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
       }
 
       // Only include squads with positive scores and actual work
@@ -494,6 +511,101 @@ async function slackNotify(message: string): Promise<void> {
   }
 }
 
+// ── Memory ingestion ─────────────────────────────────────────────────
+
+type MemoryFileType = 'state' | 'learnings' | 'executions' | 'events' | 'directives';
+
+const INGESTIBLE_FILES: MemoryFileType[] = ['state', 'learnings', 'executions'];
+
+/**
+ * Push changed memory files to the cognition engine.
+ * Reads agent memory files (state, learnings, executions) for squads that ran,
+ * computes content hash, and POSTs to API if changed since last push.
+ * Fire-and-forget — never blocks the cycle.
+ */
+async function pushMemorySignals(
+  squads: string[],
+  state: DaemonState,
+  verbose: boolean,
+): Promise<void> {
+  const memDir = findMemoryDir();
+  if (!memDir) return;
+
+  // Initialize memoryHashes if missing (backward compat with old state files)
+  if (!state.memoryHashes) {
+    state.memoryHashes = {};
+  }
+
+  const promises: Promise<void>[] = [];
+
+  for (const squad of squads) {
+    const squadPath = join(memDir, squad);
+    if (!existsSync(squadPath)) continue;
+
+    // Find agent directories
+    let agents: string[];
+    try {
+      agents = readdirSync(squadPath, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+    } catch {
+      continue;
+    }
+
+    for (const agent of agents) {
+      for (const fileType of INGESTIBLE_FILES) {
+        const filePath = join(squadPath, agent, `${fileType}.md`);
+        if (!existsSync(filePath)) continue;
+
+        let content: string;
+        try {
+          content = readFileSync(filePath, 'utf-8');
+        } catch {
+          continue;
+        }
+
+        if (!content.trim()) continue;
+
+        // Compute hash
+        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
+        const key = `${squad}/${agent}/${fileType}`;
+
+        // Skip if unchanged
+        if (state.memoryHashes[key] === hash) continue;
+
+        // Push to API (fire-and-forget)
+        const p = ingestMemorySignal({
+          squad,
+          agent,
+          file_type: fileType,
+          content,
+          content_hash: hash,
+        }).then((result) => {
+          if (result) {
+            // Update hash on success
+            state.memoryHashes[key] = hash;
+            if (verbose && result.status === 'ingested') {
+              writeLine(`  ${colors.dim}Memory: ${key} → ${result.signals_created || 0} signals${RESET}`);
+            }
+          }
+        }).catch(() => {
+          // Silent — memory ingestion is best-effort
+        });
+
+        promises.push(p);
+      }
+    }
+  }
+
+  // Wait for all pushes (with a timeout so we don't block forever)
+  if (promises.length > 0) {
+    await Promise.race([
+      Promise.allSettled(promises),
+      new Promise<void>(resolve => setTimeout(resolve, 10000)), // 10s max
+    ]);
+  }
+}
+
 // ── Main cycle ───────────────────────────────────────────────────────
 
 async function runCycle(options: DaemonOptions): Promise<CycleResult> {
@@ -516,12 +628,21 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     state.dailyCostDate = today;
   }
 
-  // Check budget
-  if (state.dailyCost >= options.budget) {
+  // Check budget (0 = unlimited, subscription mode)
+  if (options.budget > 0 && state.dailyCost >= options.budget) {
     writeLine(`  ${icons.warning} ${colors.yellow}Daily budget reached ($${state.dailyCost.toFixed(2)}/$${options.budget})${RESET}`);
     saveState(state);
     return result;
   }
+
+  // Poll outcomes for unsettled records
+  const pollResult = pollOutcomes(botGhEnv);
+  if (pollResult.polled > 0) {
+    writeLine(`  ${colors.dim}Polled ${pollResult.polled} artifact(s), ${pollResult.settled} newly settled${RESET}`);
+  }
+
+  // Recompute scorecards
+  computeAllScorecards('7d');
 
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
@@ -617,9 +738,40 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       state.dailyCost += estimatedCost;
       result.costEstimate += estimatedCost;
 
+      // Record artifacts for outcome tracking
+      if (outcome === 'completed') {
+        const repo = squadRepos[job.squad];
+        if (repo) {
+          recordArtifacts({
+            executionId: `daemon_${job.squad}_${job.agent}_${job.startedAt}`,
+            squad: job.squad,
+            agent: job.agent,
+            completedAt: new Date().toISOString(),
+            costUsd: estimatedCost,
+            repo,
+          }, botGhEnv);
+        }
+      }
+
+      // Push execution signal to cognition engine (fire-and-forget)
+      pushCognitionSignal({
+        source: 'execution',
+        signal_type: outcome === 'completed' ? 'agent_completed' : 'agent_failed',
+        value: outcome === 'completed' ? 1 : 0,
+        unit: 'completion',
+        data: { outcome, durationMs, cost_usd: estimatedCost },
+        entity_type: 'agent',
+        entity_id: `${job.squad}/${job.agent}`,
+        confidence: 0.95,
+      });
+
       return { job, outcome, durationMs };
     }),
   );
+
+  // Push changed memory files to cognition engine (fire-and-forget)
+  const dispatchedSquads = [...new Set(toDispatch.map(s => s.squad))];
+  await pushMemorySignals(dispatchedSquads, state, options.verbose);
 
   // Trim recent runs to last 50
   state.recentRuns = state.recentRuns.slice(-50);
@@ -652,8 +804,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
         if (!squad) continue;
 
-        // Check budget
-        if (state.dailyCost >= options.budget) break;
+        // Check budget (0 = unlimited)
+        if (options.budget > 0 && state.dailyCost >= options.budget) break;
 
         const task = buildReviewTask(pr);
         writeLine(`  ${icons.running} Addressing ${pr.comments.length} review comment(s) on ${colors.cyan}${squad}${RESET} PR #${pr.number}`);
@@ -694,7 +846,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       `*Daemon cycle complete*`,
       result.completed.length > 0 ? `Completed: ${result.completed.join(', ')}` : '',
       result.failed.length > 0 ? `Failed: ${result.failed.join(', ')}` : '',
-      `Est. cost: $${result.costEstimate.toFixed(2)} (daily: $${state.dailyCost.toFixed(2)}/$${options.budget})`,
+      `Est. cost: $${result.costEstimate.toFixed(2)} (daily: $${state.dailyCost.toFixed(2)}${options.budget > 0 ? '/$' + options.budget : ''})`,
     ].filter(Boolean).join('\n');
     slackNotify(summary);
   }
@@ -725,12 +877,13 @@ export async function daemonCommand(options: {
     dryRun: options.dryRun || false,
     verbose: options.verbose || false,
     once: options.once || false,
-    budget: parseFloat(options.budget || '10'),
+    budget: parseFloat(options.budget || '0'),
   };
 
   writeLine();
   writeLine(`  ${bold}squads daemon${RESET}`);
-  writeLine(`  ${colors.dim}Interval: ${config.interval}m | Parallel: ${config.maxParallel} | Budget: $${config.budget}/day${config.dryRun ? ' | DRY RUN' : ''}${RESET}`);
+  const budgetLabel = config.budget > 0 ? `Budget: $${config.budget}/day` : 'Subscription (no budget limit)';
+  writeLine(`  ${colors.dim}Interval: ${config.interval}m | Parallel: ${config.maxParallel} | ${budgetLabel}${config.dryRun ? ' | DRY RUN' : ''}${RESET}`);
   writeLine();
 
   // First cycle
