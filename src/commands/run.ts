@@ -2404,16 +2404,16 @@ async function executeWithClaude(
   const mcpConfigPath = selectMcpConfig(squadName, squad);
   const taskType = detectTaskType(agentName);
   const resolvedModel = resolveModel(model, squad, taskType);
-  const detectedProvider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
+  const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
   // Delegate to non-Anthropic providers
-  if (detectedProvider !== 'anthropic' && detectedProvider !== 'unknown') {
+  if (provider !== 'anthropic' && provider !== 'unknown') {
     if (verbose) {
       const source = model ? 'explicit' : 'auto-routed';
       writeLine(`  ${colors.dim}Model: ${resolvedModel} (${source})${RESET}`);
-      writeLine(`  ${colors.dim}Provider: ${detectedProvider}${RESET}`);
+      writeLine(`  ${colors.dim}Provider: ${provider}${RESET}`);
     }
-    return executeWithProvider(detectedProvider, prompt, {
+    return executeWithProvider(provider, prompt, {
       verbose, foreground, cwd: projectRoot, squadName, agentName,
     });
   }
@@ -2458,7 +2458,7 @@ async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot,
-      squadName, agentName, execContext, startMs, provider: detectedProvider,
+      squadName, agentName, execContext, startMs, provider,
     });
   }
 
