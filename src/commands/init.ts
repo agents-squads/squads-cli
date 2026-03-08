@@ -593,17 +593,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(chalk.bold('  Getting started:'));
   writeLine();
-  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
-  writeLine(chalk.dim('        Git is the coordination layer — commit first'));
-  writeLine();
-
   // Dynamic "first run" suggestion based on use case
   const firstRunCommand = getFirstRunCommand(selectedUseCase);
-  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
+  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow(firstRunCommand.command)}`);
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
   writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
+  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(`squads dash`)}`);
   writeLine(chalk.dim('        See all your squads and agents at a glance'));
+  writeLine();
+  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
+  writeLine(chalk.dim('        Customize your business context for better results'));
   writeLine();
   writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   writeLine();
