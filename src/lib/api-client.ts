@@ -137,6 +137,7 @@ export async function reportConversationResult(
   });
 }
 
+
 /**
  * Push a cognition signal to the API.
  * Fire-and-forget — returns true on success, false on failure.
