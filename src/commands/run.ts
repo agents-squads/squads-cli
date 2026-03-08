@@ -297,7 +297,41 @@ function gatherSquadContext(
     }
   }
 
-  // 2. Agent's existing state (state.md) - what the agent knows
+  // 2. Squad goals - current objectives set by founder/cofounder
+  if (memoryDir) {
+    const goalsFile = join(memoryDir, squadName, 'goals.md');
+    if (existsSync(goalsFile)) {
+      try {
+        const goalsContent = readFileSync(goalsFile, 'utf-8');
+        const tokens = estimateTokens(goalsContent);
+        if (estimatedTokens + tokens < maxTokens && goalsContent.trim()) {
+          sections.push(`## Squad Goals (${squadName})\n${goalsContent.trim()}`);
+          estimatedTokens += tokens;
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 3. Company directives - strategic directives that override everything
+  if (memoryDir) {
+    const directivesFile = join(memoryDir, 'company', 'directives.md');
+    if (existsSync(directivesFile)) {
+      try {
+        const directivesContent = readFileSync(directivesFile, 'utf-8');
+        const tokens = estimateTokens(directivesContent);
+        if (estimatedTokens + tokens < maxTokens && directivesContent.trim()) {
+          sections.push(`## Company Directives\n${directivesContent.trim()}`);
+          estimatedTokens += tokens;
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+
+  // 4. Agent's existing state - what the agent knows from prior runs
   if (memoryDir) {
     const stateFile = join(memoryDir, squadName, agentName, 'state.md');
     if (existsSync(stateFile)) {
@@ -315,7 +349,7 @@ function gatherSquadContext(
     }
   }
 
-  // 3. Related briefs (if any exist in memory/squad/agent/briefs/)
+  // 5. Related briefs (if any exist in memory/squad/agent/briefs/)
   if (memoryDir) {
     const briefsDir = join(memoryDir, squadName, agentName, 'briefs');
     if (existsSync(briefsDir)) {
@@ -342,7 +376,7 @@ function gatherSquadContext(
     }
   }
 
-  // 4. Squad-level briefs (shared context for all agents in squad)
+  // 6. Squad-level briefs (shared context for all agents in squad)
   if (memoryDir) {
     const squadBriefsDir = join(memoryDir, squadName, '_briefs');
     if (existsSync(squadBriefsDir)) {
@@ -369,7 +403,7 @@ function gatherSquadContext(
     }
   }
 
-  // 5. Daily briefing (cross-squad context)
+  // 7. Daily briefing (cross-squad context)
   if (memoryDir) {
     const briefingPath = join(memoryDir, 'daily-briefing.md');
     if (existsSync(briefingPath)) {
@@ -388,7 +422,7 @@ function gatherSquadContext(
     }
   }
 
-  // 6. Cross-squad learnings (from context_from in agent frontmatter)
+  // 8. Cross-squad learnings (from context_from in agent frontmatter)
   if (memoryDir && options.agentPath) {
     const frontmatter = parseAgentFrontmatter(options.agentPath);
     if (frontmatter.context_from && frontmatter.context_from.length > 0) {
