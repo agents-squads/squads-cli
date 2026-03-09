@@ -53,6 +53,7 @@ interface UseCaseConfig {
 
 interface SquadConfig {
   name: string;
+  description: string;
   agentCount: number;
   agentSummary: string;
   dirs: string[];
@@ -98,6 +99,7 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
 function getEngineeringSquad(): SquadConfig {
   return {
     name: 'engineering',
+    description: 'Solves GitHub issues, reviews code, writes tests',
     agentCount: 3,
     agentSummary: 'issue-solver, code-reviewer, test-writer',
     dirs: [
@@ -121,6 +123,7 @@ function getEngineeringSquad(): SquadConfig {
 function getMarketingSquad(): SquadConfig {
   return {
     name: 'marketing',
+    description: 'Creates content, grows audience, tracks growth',
     agentCount: 3,
     agentSummary: 'content-drafter, social-poster, growth-analyst',
     dirs: [
@@ -144,6 +147,7 @@ function getMarketingSquad(): SquadConfig {
 function getOperationsSquad(): SquadConfig {
   return {
     name: 'operations',
+    description: 'Runs daily ops, tracks finances and goals',
     agentCount: 3,
     agentSummary: 'ops-lead, finance-tracker, goal-tracker',
     dirs: [
@@ -529,6 +533,20 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const businessBrief = loadSeedTemplate('BUSINESS_BRIEF.md.template', variables);
     await writeFile(path.join(cwd, '.agents/BUSINESS_BRIEF.md'), businessBrief);
 
+    // README.md (only if it doesn't already exist or is the default single-line stub)
+    const readmePath = path.join(cwd, 'README.md');
+    let existingReadme = '';
+    try {
+      existingReadme = await fs.readFile(readmePath, 'utf-8');
+    } catch {
+      // File doesn't exist
+    }
+    const isStub = existingReadme.trim() === '' || /^# [^\n]+\s*$/.test(existingReadme.trim());
+    if (isStub) {
+      const readmeContent = loadSeedTemplate('README.md.template', variables);
+      await writeFile(readmePath, readmeContent);
+    }
+
     spinner.text = 'Setting up operating manual...';
 
     // CLAUDE.md (the operating manual — only if it doesn't exist)
@@ -580,14 +598,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  writeLine(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
-  writeLine(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
-  writeLine(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
+  writeLine(chalk.dim('  • research/    4 agents — Researches your market, competitors, and opportunities'));
+  writeLine(chalk.dim('  • company/     5 agents — Manages goals, events, and strategy'));
+  writeLine(chalk.dim('  • intelligence/ 3 agents — Monitors trends and competitive signals'));
 
   // Use-case specific squads
   for (const squad of useCaseConfig.squads) {
-    const padding = ' '.repeat(Math.max(0, 22 - squad.name.length));
-    writeLine(chalk.dim(`  • .agents/squads/${squad.name}/${padding}${squad.agentCount} agents (${squad.agentSummary})`));
+    const namePad = ' '.repeat(Math.max(0, 14 - squad.name.length));
+    writeLine(chalk.dim(`  • ${squad.name}/${namePad}${squad.agentCount} agents — ${squad.description}`));
   }
 
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
@@ -600,18 +618,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(chalk.bold('  Getting started:'));
   writeLine();
+  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
+  writeLine(chalk.dim('        Set your business context — agents use this for every run'));
+  writeLine();
   // Dynamic "first run" suggestion based on use case
   const firstRunCommand = getFirstRunCommand(selectedUseCase);
   const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
-  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow(firstRunCommand.command)}`);
+  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
   writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
   writeLine();
-  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(`squads dash`)}`);
+  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
   writeLine(chalk.dim('        See all your squads and agents at a glance'));
-  writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
-  writeLine(chalk.dim('        Customize your business context for better results'));
   writeLine();
   writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   writeLine();
