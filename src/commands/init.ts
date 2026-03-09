@@ -356,12 +356,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
   let businessName: string;
   let businessDescription: string;
   let businessFocus: string;
+  let businessCompetitors: string;
   let selectedUseCase: UseCase;
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
     businessDescription = 'General business operations';
     businessFocus = 'Our market, competitors, and growth opportunities';
+    businessCompetitors = '';
     selectedUseCase = 'full-company';
   } else {
     const dirName = path.basename(cwd);
@@ -393,6 +395,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
       'Our market position, top competitors, and biggest growth opportunity'
     );
 
+    writeLine();
+    writeLine(chalk.dim('    e.g., "Notion, Airtable" or "BlueCart, MarketMan" (press Enter to skip)'));
+    businessCompetitors = await prompt(
+      'Who are your main competitors? (optional)',
+      ''
+    );
+
     // 4b. Use-case selection
     selectedUseCase = await promptUseCase();
   }
@@ -410,6 +419,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
   writeLine(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
   writeLine(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
+  if (businessCompetitors) {
+    writeLine(`  ${chalk.green('✓')} Competitors: ${chalk.cyan(businessCompetitors)}`);
+  }
   writeLine(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
   writeLine();
 
@@ -421,6 +433,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       BUSINESS_NAME: businessName,
       BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
       BUSINESS_FOCUS: businessFocus,
+      BUSINESS_COMPETITORS: businessCompetitors || 'Not specified yet — add to .agents/BUSINESS_BRIEF.md',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
     };
