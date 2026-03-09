@@ -529,6 +529,23 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const businessBrief = loadSeedTemplate('BUSINESS_BRIEF.md.template', variables);
     await writeFile(path.join(cwd, '.agents/BUSINESS_BRIEF.md'), businessBrief);
 
+    // README.md — project overview (skip if one already exists)
+    const readmeFirstRunCmd = getFirstRunCommand(selectedUseCase).command;
+    const useCaseSquadsTableRows = useCaseConfig.squads.map(s => {
+      return `| \`${s.name}\` | ${s.agentCount} | ${s.agentSummary} |`;
+    }).join('\n');
+    const squadSummary = useCaseConfig.squads.length > 0
+      ? `${totalAgentCount} agents across ${totalSquadCount} squads.`
+      : `${coreAgentCount} agents across ${coreSquadCount} core squads.`;
+    const readmeVariables: TemplateVariables = {
+      ...variables,
+      SQUAD_SUMMARY: squadSummary,
+      USE_CASE_SQUADS_TABLE: useCaseSquadsTableRows ? `\n${useCaseSquadsTableRows}` : '',
+      FIRST_RUN_COMMAND: readmeFirstRunCmd,
+    };
+    const readmeContent = loadSeedTemplate('README.md.template', readmeVariables);
+    await writeIfNew(path.join(cwd, 'README.md'), readmeContent);
+
     spinner.text = 'Setting up operating manual...';
 
     // CLAUDE.md (the operating manual — only if it doesn't exist)
