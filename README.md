@@ -218,6 +218,8 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 | `squads create <name>` | Create a new squad |
 | `squads list` | List agents and squads |
 | `squads run <target>` | Run a squad or specific agent |
+| `squads orchestrate <squad>` | Run squad with lead agent orchestration |
+| `squads version` | Show version information |
 
 ### Monitoring
 
@@ -226,7 +228,9 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 | `squads status [squad]` | Squad overview and active sessions |
 | `squads dash [name]` | Dashboard with goals, metrics, and git activity |
 | `squads sessions` | Active AI coding sessions |
+| `squads session` | Manage current session lifecycle |
 | `squads stats [squad]` | Agent outcome scorecards |
+| `squads exec` | View execution history and statistics |
 | `squads results [squad]` | Git activity + KPI goals vs actuals |
 | `squads history` | Recent execution history |
 | `squads cost` | Cost summary by squad and time period |
@@ -259,6 +263,8 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 |---------|-------------|
 | `squads autonomous start` | Start local cron-style scheduling daemon |
 | `squads autopilot` | Full autopilot: watch, decide, dispatch, learn |
+| `squads autonomy` | Show autonomy score and confidence metrics |
+| `squads cognition` | Business cognition engine — beliefs, decisions, reflections |
 | `squads trigger` | Smart triggers for event-driven execution |
 | `squads approval` | Manage approval requests |
 
@@ -269,6 +275,8 @@ Add hooks to `.claude/settings.json` so every Claude Code session starts with sq
 | `squads providers` | List available LLM providers |
 | `squads env show <squad>` | View squad execution environment |
 | `squads context` | Business context for agent alignment |
+| `squads detect-squad` | Detect current squad based on working directory |
+| `squads deploy` | Deploy agents to the Squads platform |
 | `squads eval <target>` | Evaluate agent readiness |
 | `squads sync` | Sync memory state to Postgres |
 | `squads update` | Check for and install updates |
