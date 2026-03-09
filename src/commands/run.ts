@@ -41,7 +41,6 @@ import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { getBotGitEnv, getBotPushUrl, getBotGhEnv, getCoAuthorTrailer } from '../lib/github.js';
-import { homedir } from 'os';
 import {
   type LoopState,
   loadLoopState,
@@ -52,16 +51,15 @@ import {
   classifyRunOutcome,
   pushMemorySignals,
   slackNotify,
-  checkNewPRs,
-  getPRsWithReviewFeedback,
-  buildReviewTask,
+
+
 } from '../lib/squad-loop.js';
 import {
   loadCognitionState,
   saveCognitionState,
   seedBeliefsIfEmpty,
   runCognitionCycle,
-  getBeliefsContext,
+
 } from '../lib/cognition.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -1061,7 +1059,7 @@ async function emitExecutionEvent(
         signal: AbortSignal.timeout(EXECUTION_EVENT_TIMEOUT_MS),
       });
       return;
-    } catch (e) {
+    } catch {
       // API unavailable — fall through to file-based event recording
     }
   }
@@ -1085,7 +1083,7 @@ async function emitExecutionEvent(
       existing = readFileSync(eventsPath, 'utf-8');
     }
     writeFileSync(eventsPath, existing + entry);
-  } catch (e) {
+  } catch {
     // Truly fail-safe — never block execution
   }
 }

@@ -185,7 +185,7 @@ export interface HealthOptions {
   verbose?: boolean;
 }
 
-export async function healthCommand(options: HealthOptions = {}): Promise<void> {
+export async function healthCommand(_options: HealthOptions = {}): Promise<void> {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}health${RESET}`);
   writeLine();

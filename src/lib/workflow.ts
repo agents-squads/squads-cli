@@ -8,11 +8,9 @@
  */
 
 import { join } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync, exec } from 'child_process';
-import { promisify } from 'util';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';;
+import { execSync } from 'child_process';;
 
-const execAsync = promisify(exec);
 import {
   type AgentRole,
   type Transcript,
@@ -70,7 +68,7 @@ interface AgentTurnConfig {
  * Returns the agent's text output.
  */
 function executeAgentTurn(config: AgentTurnConfig): string {
-  const { agentName, agentPath, role, squadName, model, transcript, task } = config;
+  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
   // Build the prompt: agent definition + transcript context + role instructions
   const transcriptContext = serializeTranscript(transcript);
@@ -150,7 +148,7 @@ IMPORTANT:
  * Same logic, but returns a Promise instead of blocking.
  */
 function executeAgentTurnAsync(config: AgentTurnConfig): Promise<string> {
-  const { agentName, agentPath, role, squadName, model, transcript, task } = config;
+  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
   let roleInstructions = '';
   switch (role) {
@@ -206,7 +204,7 @@ IMPORTANT:
           ANTHROPIC_API_KEY: undefined as unknown as string,
         },
       },
-      (error, stdout, stderr) => {
+      (error, stdout, _stderr) => {
         if (stdout && stdout.trim().length > 0) {
           resolve(stdout.trim());
         } else if (error) {
