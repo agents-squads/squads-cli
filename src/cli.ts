@@ -272,8 +272,8 @@ Examples:
 
 // Run command - execute squads or individual agents
 program
-  .command('run <target>')
-  .description('Run a squad or agent')
+  .command('run [target]')
+  .description('Run a squad, agent, or autopilot (no target = autopilot mode)')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -294,6 +294,10 @@ program
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
+  .option('-i, --interval <minutes>', 'Autopilot: minutes between cycles', '30')
+  .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
+  .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
+  .option('--once', 'Autopilot: run one cycle then exit')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -307,10 +311,13 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
   $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
+  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
+  $ squads run --once --dry-run         Preview one autopilot cycle
+  $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
-    return runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) });
+    return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
   });
 
 // List command
@@ -741,11 +748,11 @@ program
     return autonomyCommand({ squad: options.squad, period: options.period, json: options.json });
   });
 
-// Autopilot — autonomous business operations loop
+// Autopilot — deprecated, now "squads run" (no arguments)
 program
   .command('autopilot')
   .alias('daemon')
-  .description('Autopilot: watch, decide, dispatch, learn, escalate — your AI workforce on auto')
+  .description('[deprecated] Use "squads run" instead — autopilot mode when no target given')
   .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
   .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
   .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
@@ -753,8 +760,10 @@ program
   .option('--dry-run', 'Show what would run without dispatching')
   .option('-v, --verbose', 'Show detailed scoring')
   .action(async (options) => {
-    const { daemonCommand } = await import('./commands/daemon.js');
-    return daemonCommand(options);
+    const colors = termColors;
+    writeLine(`  ${colors.yellow}Note: "squads autopilot" is now "squads run" (no arguments)${termReset}`);
+    const { runCommand } = await import('./commands/run.js');
+    return runCommand(null, { interval: parseInt(options.interval || '30', 10), ...options });
   });
 
 // Stats command - agent outcome scorecards

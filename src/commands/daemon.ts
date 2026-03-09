@@ -7,24 +7,14 @@
  * This is the product: incremental smartness, not 200 agents.
  */
 
-import { createHash } from 'crypto';
-import { execSync, spawn } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-import {
-  findSquadsDir,
-  listSquads,
-} from '../lib/squad-parser.js';
-import { findMemoryDir } from '../lib/memory.js';
+import { spawn } from 'child_process';
 import { getBotGhEnv } from '../lib/github.js';
 import {
   recordArtifacts,
   pollOutcomes,
   computeAllScorecards,
-  getOutcomeScoreModifier,
 } from '../lib/outcomes.js';
-import { pushCognitionSignal, ingestMemorySignal } from '../lib/api-client.js';
+import { pushCognitionSignal } from '../lib/api-client.js';
 import {
   colors,
   bold,
@@ -32,6 +22,23 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import {
+  type LoopState,
+  type SquadSignal,
+  type GhIssue,
+  MIN_PHANTOM_DURATION_MS,
+  defaultState,
+  loadLoopState,
+  saveLoopState,
+  getSquadRepos,
+  scoreSquads,
+  getLastRunAge,
+  checkNewPRs,
+  getPRsWithReviewFeedback,
+  buildReviewTask,
+  pushMemorySignals,
+  slackNotify,
+} from '../lib/squad-loop.js';
 
 // Bot environment for gh CLI commands (populated on first cycle)
 let botGhEnv: Record<string, string> = {};
@@ -45,21 +52,6 @@ interface DaemonOptions {
   verbose: boolean;
   once: boolean;       // run one cycle and exit
   budget: number;      // max $/day
-}
-
-interface SquadSignal {
-  squad: string;
-  score: number;       // 0-100 urgency
-  reason: string;
-  agent?: string;      // specific agent to run, or undefined for squad conversation
-  issues: GhIssue[];
-}
-
-interface GhIssue {
-  number: number;
-  title: string;
-  labels: string[];
-  repo: string;
 }
 
 interface RunningJob {
@@ -76,272 +68,6 @@ interface CycleResult {
   failed: string[];
   skipped: string[];
   costEstimate: number;
-}
-
-// ── State file ───────────────────────────────────────────────────────
-
-const STATE_DIR = join(homedir(), '.squads', 'daemon');
-const STATE_FILE = join(STATE_DIR, 'state.json');
-
-interface DaemonState {
-  lastCycle: string;
-  dailyCost: number;
-  dailyCostDate: string;
-  recentRuns: Array<{
-    squad: string;
-    agent: string;
-    at: string;
-    result: 'completed' | 'failed' | 'timeout';
-    durationMs: number;
-  }>;
-  failCounts: Record<string, number>; // squad:agent → consecutive failures
-  memoryHashes: Record<string, string>; // squad/agent/file_type → content hash
-}
-
-function defaultState(): DaemonState {
-  return {
-    lastCycle: '',
-    dailyCost: 0,
-    dailyCostDate: new Date().toISOString().slice(0, 10),
-    recentRuns: [],
-    failCounts: {},
-    memoryHashes: {},
-  };
-}
-
-function loadState(): DaemonState {
-  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  if (!existsSync(STATE_FILE)) return defaultState();
-  try {
-    return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
-  } catch {
-    return defaultState();
-  }
-}
-
-function saveState(state: DaemonState): void {
-  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
-// ── Intelligence: Gather signals ─────────────────────────────────────
-
-function getOpenIssues(repo: string): GhIssue[] {
-  try {
-    const raw = execSync(
-      `gh issue list -R ${repo} --state open --json number,title,labels --limit 20`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-    );
-    const issues = JSON.parse(raw) as Array<{
-      number: number;
-      title: string;
-      labels: Array<{ name: string }>;
-    }>;
-    return issues.map(i => ({
-      number: i.number,
-      title: i.title,
-      labels: i.labels.map(l => l.name),
-      repo,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function getOpenPRs(repo: string): Array<{ number: number; title: string; branch: string; checks: string }> {
-  try {
-    const raw = execSync(
-      `gh pr list -R ${repo} --state open --json number,title,headRefName,statusCheckRollup --limit 10`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-    );
-    const prs = JSON.parse(raw) as Array<{
-      number: number;
-      title: string;
-      headRefName: string;
-      statusCheckRollup: Array<{ conclusion: string }> | null;
-    }>;
-    return prs.map(pr => ({
-      number: pr.number,
-      title: pr.title,
-      branch: pr.headRefName,
-      checks: pr.statusCheckRollup?.every(c => c.conclusion === 'SUCCESS') ? 'passing' : 'pending',
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function getLastRunAge(squad: string, agent: string): number | null {
-  const memDir = findMemoryDir();
-  if (!memDir) return null;
-
-  const execPath = join(memDir, squad, agent, 'executions.md');
-  if (!existsSync(execPath)) return null;
-
-  try {
-    const content = readFileSync(execPath, 'utf-8');
-    // Find the last timestamp
-    const timestamps = content.match(/\*\*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\*\*/g);
-    if (!timestamps || timestamps.length === 0) return null;
-
-    const last = timestamps[timestamps.length - 1].replace(/\*\*/g, '');
-    const lastDate = new Date(last);
-    return Date.now() - lastDate.getTime();
-  } catch {
-    return null;
-  }
-}
-
-// ── Intelligence: Score squads ───────────────────────────────────────
-
-/**
- * Build squad→repo mapping dynamically from SQUAD.md `repo:` fields.
- * Falls back to detecting org from git remote + squad name conventions.
- */
-function getSquadRepos(): Record<string, string> {
-  const repos: Record<string, string> = {};
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) return repos;
-
-  try {
-    const squads = listSquads(squadsDir);
-    for (const squad of squads) {
-      const squadMd = join(squadsDir, squad, 'SQUAD.md');
-      if (!existsSync(squadMd)) continue;
-
-      const content = readFileSync(squadMd, 'utf-8');
-      const repoMatch = content.match(/^repo:\s*(.+)/m);
-      if (repoMatch) {
-        repos[squad] = repoMatch[1].trim();
-      }
-    }
-  } catch {
-    // Fall back to empty — scoring will skip squads without repos
-  }
-
-  return repos;
-}
-
-function scoreSquads(state: DaemonState, squadRepos: Record<string, string>): SquadSignal[] {
-  const signals: SquadSignal[] = [];
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) return signals;
-
-  let squads: string[];
-  try {
-    squads = listSquads(squadsDir);
-  } catch {
-    return signals;
-  }
-
-  for (const squadName of squads) {
-    try {
-      const repo = squadRepos[squadName];
-      // Squads without a repo: field still get scored via staleness alone.
-      // They can still run issue-solver (which handles empty queues gracefully).
-      const issues = repo ? getOpenIssues(repo) : [];
-
-      // Score based on signals
-      let score = 0;
-      let reason = '';
-      // Conversation mode threshold: 3+ issues and no conversation in 48h.
-      // A squad conversation coordinates all agents and produces better output
-      // than dispatching a single issue-solver per issue.
-      const CONVERSATION_ISSUE_THRESHOLD = 3;
-      const CONVERSATION_COOLDOWN_MS = 48 * 60 * 60 * 1000;
-      const lastConvAge = getLastRunAge(squadName, 'conversation');
-      const conversationStale =
-        lastConvAge === null || lastConvAge > CONVERSATION_COOLDOWN_MS;
-      const useConversation =
-        issues.length >= CONVERSATION_ISSUE_THRESHOLD && conversationStale;
-
-      const targetAgent: string | undefined = useConversation
-        ? undefined          // undefined → conversation mode in dispatch
-        : 'issue-solver';    // default single-agent worker
-
-      if (repo) {
-        // P0/P1 issues = highest priority
-        const p0Issues = issues.filter(i =>
-          i.labels.some(l => l.includes('P0') || l.includes('priority:P0')),
-        );
-        const p1Issues = issues.filter(i =>
-          i.labels.some(l => l.includes('P1') || l.includes('priority:P1')),
-        );
-
-        if (p0Issues.length > 0) {
-          score += 80;
-          reason = `${p0Issues.length} P0 issues: ${p0Issues[0].title}`;
-        } else if (p1Issues.length > 0) {
-          score += 60;
-          reason = `${p1Issues.length} P1 issues: ${p1Issues[0].title}`;
-        } else if (issues.length > 0) {
-          score += 30;
-          reason = `${issues.length} open issues`;
-        }
-      } else {
-        // No repo configured — squad can still benefit from periodic runs
-        // (memory updates, research tasks, etc.). Use staleness-only scoring.
-        reason = 'no repo configured — staleness-based dispatch';
-      }
-
-      if (useConversation) {
-        score += 10; // Bonus for batching — conversation mode is more effective
-        reason += ' → conversation mode';
-      }
-
-      // Staleness bonus: haven't run recently
-      const agentForStaleness = targetAgent ?? 'conversation';
-      const lastAge = getLastRunAge(squadName, agentForStaleness);
-      if (lastAge !== null) {
-        const hoursAgo = lastAge / (1000 * 60 * 60);
-        if (hoursAgo > 48) {
-          score += 20;
-          reason += ` (stale: ${Math.floor(hoursAgo)}h since last run)`;
-        } else if (hoursAgo > 24) {
-          score += 10;
-          reason += ` (${Math.floor(hoursAgo)}h since last run)`;
-        } else if (hoursAgo < 2) {
-          // Recently ran — penalize
-          score -= 30;
-          reason += ` (ran ${Math.floor(hoursAgo * 60)}m ago)`;
-        }
-      } else if (!repo) {
-        // Never run and no repo — give base staleness score so it eventually runs
-        score += 15;
-        reason += ' (never run)';
-      }
-
-      // Consecutive failure penalty
-      const failKey = `${squadName}:${agentForStaleness}`;
-      const failures = state.failCounts[failKey] || 0;
-      if (failures >= 3) {
-        score -= 40;
-        reason += ` (${failures} consecutive failures — needs human)`;
-      } else if (failures >= 1) {
-        score -= 10 * failures;
-      }
-
-      // Outcome-based modifier (needs 3+ executions for data)
-      const outcomeModifier = getOutcomeScoreModifier(squadName, agentForStaleness);
-      if (outcomeModifier !== 0) {
-        score += outcomeModifier;
-        reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
-      }
-
-      // Include squads with positive scores.
-      // Squads with a repo must have open issues; no-repo squads run on staleness alone.
-      if (score > 0 && (issues.length > 0 || !repo)) {
-        signals.push({ squad: squadName, score, reason, agent: targetAgent, issues });
-      }
-    } catch {
-      // Skip squads that error during scoring
-      continue;
-    }
-  }
-
-  // Sort by score descending
-  signals.sort((a, b) => b.score - a.score);
-  return signals;
 }
 
 // ── Dispatch: Run agents ─────────────────────────────────────────────
@@ -414,251 +140,13 @@ function waitForJob(job: RunningJob, timeoutMs: number = 20 * 60 * 1000): Promis
   });
 }
 
-// ── React: Post-run actions ──────────────────────────────────────────
-
-function checkNewPRs(repo: string, sinceMins: number = 30): Array<{ number: number; title: string }> {
-  try {
-    const raw = execSync(
-      `gh pr list -R ${repo} --state open --json number,title,createdAt --limit 5`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-    );
-    const prs = JSON.parse(raw) as Array<{ number: number; title: string; createdAt: string }>;
-    const cutoff = Date.now() - sinceMins * 60 * 1000;
-    return prs.filter(pr => new Date(pr.createdAt).getTime() > cutoff);
-  } catch {
-    return [];
-  }
-}
-
-interface ReviewComment {
-  author: string;
-  body: string;
-  path?: string;
-  createdAt: string;
-}
-
-interface PRWithReviews {
-  number: number;
-  title: string;
-  branch: string;
-  repo: string;
-  comments: ReviewComment[];
-}
-
-/**
- * Get open PRs with unaddressed review comments (from Gemini, humans, etc).
- * Skips comments from our own bot to avoid feedback loops.
- */
-function getPRsWithReviewFeedback(repo: string): PRWithReviews[] {
-  try {
-    // Get open PRs authored by the bot
-    const prsRaw = execSync(
-      `gh pr list -R ${repo} --state open --author "agents-squads[bot]" --json number,title,headRefName --limit 10`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-    );
-    const prs = JSON.parse(prsRaw) as Array<{ number: number; title: string; headRefName: string }>;
-
-    const results: PRWithReviews[] = [];
-
-    for (const pr of prs) {
-      try {
-        // Get review comments (inline code review comments)
-        const reviewsRaw = execSync(
-          `gh api repos/${repo}/pulls/${pr.number}/comments --jq '.[] | {author: .user.login, body: .body, path: .path, createdAt: .created_at}'`,
-          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-        );
-
-        // Get issue comments (top-level PR comments like Gemini summaries)
-        const issueCommentsRaw = execSync(
-          `gh api repos/${repo}/issues/${pr.number}/comments --jq '.[] | {author: .user.login, body: .body, createdAt: .created_at}'`,
-          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...botGhEnv } },
-        );
-
-        const comments: ReviewComment[] = [];
-
-        // Parse JSONL output (one JSON object per line)
-        for (const line of [...reviewsRaw.split('\n'), ...issueCommentsRaw.split('\n')]) {
-          if (!line.trim()) continue;
-          try {
-            const comment = JSON.parse(line) as ReviewComment;
-            // Skip our own bot's comments to avoid loops
-            if (comment.author === 'agents-squads[bot]') continue;
-            comments.push(comment);
-          } catch {
-            continue;
-          }
-        }
-
-        if (comments.length > 0) {
-          results.push({
-            number: pr.number,
-            title: pr.title,
-            branch: pr.headRefName,
-            repo,
-            comments,
-          });
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    return results;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Build a task directive from review feedback for an agent to address.
- */
-function buildReviewTask(pr: PRWithReviews): string {
-  const commentSummary = pr.comments
-    .map(c => {
-      const location = c.path ? ` (${c.path})` : '';
-      return `- ${c.author}${location}: ${c.body.slice(0, 300)}`;
-    })
-    .join('\n');
-
-  return [
-    `Address review feedback on PR #${pr.number}: ${pr.title}`,
-    `Branch: ${pr.branch}`,
-    ``,
-    `Review comments to address:`,
-    commentSummary,
-    ``,
-    `Checkout the branch, fix the issues, commit, and push.`,
-  ].join('\n');
-}
-
-async function slackNotify(message: string): Promise<void> {
-  try {
-    const envPath = join(homedir(), 'agents-squads', 'hq', '.env');
-    if (!existsSync(envPath)) return;
-
-    const env = readFileSync(envPath, 'utf-8');
-    const tokenMatch = env.match(/SLACK_BOT_TOKEN=(.+)/);
-    if (!tokenMatch) return;
-
-    const token = tokenMatch[1].trim();
-    const founderId = 'U0A6NQ3U0JG';
-
-    await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ channel: founderId, text: message }),
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch {
-    // Silent — Slack is best-effort
-  }
-}
-
-// ── Memory ingestion ─────────────────────────────────────────────────
-
-type MemoryFileType = 'state' | 'learnings' | 'executions' | 'events' | 'directives';
-
-const INGESTIBLE_FILES: MemoryFileType[] = ['state', 'learnings', 'executions'];
-
-/**
- * Push changed memory files to the cognition engine.
- * Reads agent memory files (state, learnings, executions) for squads that ran,
- * computes content hash, and POSTs to API if changed since last push.
- * Fire-and-forget — never blocks the cycle.
- */
-async function pushMemorySignals(
-  squads: string[],
-  state: DaemonState,
-  verbose: boolean,
-): Promise<void> {
-  const memDir = findMemoryDir();
-  if (!memDir) return;
-
-  // Initialize memoryHashes if missing (backward compat with old state files)
-  if (!state.memoryHashes) {
-    state.memoryHashes = {};
-  }
-
-  const promises: Promise<void>[] = [];
-
-  for (const squad of squads) {
-    const squadPath = join(memDir, squad);
-    if (!existsSync(squadPath)) continue;
-
-    // Find agent directories
-    let agents: string[];
-    try {
-      agents = readdirSync(squadPath, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch {
-      continue;
-    }
-
-    for (const agent of agents) {
-      for (const fileType of INGESTIBLE_FILES) {
-        const filePath = join(squadPath, agent, `${fileType}.md`);
-        if (!existsSync(filePath)) continue;
-
-        let content: string;
-        try {
-          content = readFileSync(filePath, 'utf-8');
-        } catch {
-          continue;
-        }
-
-        if (!content.trim()) continue;
-
-        // Compute hash
-        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
-        const key = `${squad}/${agent}/${fileType}`;
-
-        // Skip if unchanged
-        if (state.memoryHashes[key] === hash) continue;
-
-        // Push to API (fire-and-forget)
-        const p = ingestMemorySignal({
-          squad,
-          agent,
-          file_type: fileType,
-          content,
-          content_hash: hash,
-        }).then((result) => {
-          if (result) {
-            // Update hash on success
-            state.memoryHashes[key] = hash;
-            if (verbose && result.status === 'ingested') {
-              writeLine(`  ${colors.dim}Memory: ${key} → ${result.signals_created || 0} signals${RESET}`);
-            }
-          }
-        }).catch(() => {
-          // Silent — memory ingestion is best-effort
-        });
-
-        promises.push(p);
-      }
-    }
-  }
-
-  // Wait for all pushes (with a timeout so we don't block forever)
-  if (promises.length > 0) {
-    await Promise.race([
-      Promise.allSettled(promises),
-      new Promise<void>(resolve => setTimeout(resolve, 10000)), // 10s max
-    ]);
-  }
-}
-
 // ── Main cycle ───────────────────────────────────────────────────────
 
 async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Refresh bot token for gh CLI calls
   botGhEnv = await getBotGhEnv();
 
-  const state = loadState();
+  const state = loadLoopState();
   const today = new Date().toISOString().slice(0, 10);
   const result: CycleResult = {
     dispatched: [],
@@ -677,7 +165,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Check budget (0 = unlimited, subscription mode)
   if (options.budget > 0 && state.dailyCost >= options.budget) {
     writeLine(`  ${icons.warning} ${colors.yellow}Daily budget reached ($${state.dailyCost.toFixed(2)}/$${options.budget})${RESET}`);
-    saveState(state);
+    saveLoopState(state);
     return result;
   }
 
@@ -693,11 +181,11 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
   const squadRepos = getSquadRepos();
-  const signals = scoreSquads(state, squadRepos);
+  const signals = scoreSquads(state, squadRepos, botGhEnv);
 
   if (signals.length === 0) {
     writeLine(`  ${colors.dim}No squads need attention${RESET}`);
-    saveState(state);
+    saveLoopState(state);
     return result;
   }
 
@@ -720,7 +208,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
 
   if (toDispatch.length === 0) {
     writeLine(`  ${colors.dim}All signals below threshold${RESET}`);
-    saveState(state);
+    saveLoopState(state);
     return result;
   }
 
@@ -730,7 +218,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       const label = sig.agent ?? 'conversation';
       writeLine(`    ${colors.cyan}${sig.squad}/${label}${RESET} — ${sig.reason}`);
     }
-    saveState(state);
+    saveLoopState(state);
     return result;
   }
 
@@ -779,7 +267,6 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
 
       // Minimum duration threshold: runs completing in <30s did no real work.
       // Count them as "skipped" (phantom completion) to avoid masking health issues.
-      const MIN_PHANTOM_DURATION_MS = 30 * 1000;
       const effectiveOutcome =
         outcome === 'completed' && durationMs < MIN_PHANTOM_DURATION_MS
           ? 'skipped'
@@ -843,7 +330,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Trim recent runs to last 50
   state.recentRuns = state.recentRuns.slice(-50);
   state.lastCycle = new Date().toISOString();
-  saveState(state);
+  saveLoopState(state);
 
   // React: check for new PRs
   writeLine();
@@ -851,7 +338,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     if (outcome !== 'completed') continue;
     const repo = squadRepos[job.squad];
     if (!repo) continue;
-    const newPRs = checkNewPRs(repo, 30);
+    const newPRs = checkNewPRs(repo, 30, botGhEnv);
     if (newPRs.length > 0) {
       writeLine(`  ${icons.success} ${colors.cyan}${job.squad}${RESET} created ${newPRs.length} PR(s):`);
       for (const pr of newPRs) {
@@ -865,7 +352,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     const reviewJobs: RunningJob[] = [];
 
     for (const repo of Object.values(squadRepos)) {
-      const prsWithFeedback = getPRsWithReviewFeedback(repo);
+      const prsWithFeedback = getPRsWithReviewFeedback(repo, botGhEnv);
       for (const pr of prsWithFeedback) {
         // Find which squad owns this repo
         const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
@@ -905,7 +392,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
     }
   }
 
-  saveState(state);
+  saveLoopState(state);
 
   // Slack notifications: only on failures and escalations (not routine completions)
   if (result.failed.length > 0) {
