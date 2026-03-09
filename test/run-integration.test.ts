@@ -166,9 +166,9 @@ Optimize CI workflows
       writeFileSync(join(squadDir, 'agent-b.md'), `# Agent B`);
       writeFileSync(join(squadDir, 'agent-c.md'), `# Agent C`);
 
-      // Should show preview without executing
+      // Should show preview without executing (dry-run to avoid actual tmux/Claude invocation)
       await expect(
-        runSquadCommand('parallel-squad', { parallel: true })
+        runSquadCommand('parallel-squad', { parallel: true, dryRun: true })
       ).resolves.not.toThrow();
     });
   });
