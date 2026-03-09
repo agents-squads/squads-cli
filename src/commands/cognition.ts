@@ -25,7 +25,7 @@ interface Belief {
   revision: number;
 }
 
-async function apiFetch(path: string, options?: RequestInit): Promise<any> {
+async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promise<T | null> {
   const { loadSession } = await import('../lib/auth.js');
   const { getApiUrl } = await import('../lib/env-config.js');
   const session = loadSession();
@@ -48,7 +48,7 @@ async function apiFetch(path: string, options?: RequestInit): Promise<any> {
       writeLine(`  ${colors.red}API error:${RESET} ${res.status} ${res.statusText}`);
       return null;
     }
-    return await res.json();
+    return (await res.json()) as T;
   } catch (error) {
     const msg = error instanceof Error && error.name === 'TimeoutError'
       ? 'Request timed out.'
