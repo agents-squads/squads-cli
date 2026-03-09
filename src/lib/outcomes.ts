@@ -448,6 +448,95 @@ export function getOutcomeRecords(): OutcomeRecord[] {
   return loadOutcomes().records;
 }
 
+// ── Quality Grading ─────────────────────────────────────────────
+
+export type QualityGrade = 'A' | 'B' | 'C' | 'D' | 'F';
+
+export interface GradeResult {
+  grade: QualityGrade;
+  reason: string;
+}
+
+/**
+ * Grade an execution's output quality using heuristics.
+ * No LLM call needed — rules-based on observable artifacts.
+ *
+ * A = Real deliverable (merged PR with code changes)
+ * B = Useful output (open PR with code, or closed issue)
+ * C = Template/report (PR with only markdown, or commits with no PR)
+ * D = Slop (large PR with no tests, or blocked agent that produced output anyway)
+ * F = Wasted run (no artifacts, or agent hit escalation)
+ */
+export function gradeExecution(record: OutcomeRecord): GradeResult {
+  const { artifacts, outcomes } = record;
+  const hasArtifacts = artifacts.prsCreated.length > 0 ||
+    artifacts.issuesCreated.length > 0 ||
+    artifacts.commits > 0;
+
+  // F: No artifacts at all
+  if (!hasArtifacts) {
+    return { grade: 'F', reason: 'No artifacts produced' };
+  }
+
+  // A: PR merged
+  if (outcomes.prsMerged > 0) {
+    if (outcomes.ciPassFirstPush === true) {
+      return { grade: 'A', reason: `${outcomes.prsMerged} PR(s) merged, CI passed first push` };
+    }
+    return { grade: 'A', reason: `${outcomes.prsMerged} PR(s) merged` };
+  }
+
+  // B: PR open or issues closed
+  if (outcomes.issuesClosed > 0) {
+    return { grade: 'B', reason: `${outcomes.issuesClosed} issue(s) closed` };
+  }
+  if (artifacts.prsCreated.length > 0 && outcomes.prsOpen > 0) {
+    return { grade: 'B', reason: `${outcomes.prsOpen} PR(s) open, awaiting review` };
+  }
+
+  // D: PR closed unmerged (rejected work)
+  if (outcomes.prsClosedUnmerged > 0) {
+    return { grade: 'D', reason: `${outcomes.prsClosedUnmerged} PR(s) closed without merge` };
+  }
+
+  // C: Only commits, no PRs
+  if (artifacts.commits > 0 && artifacts.prsCreated.length === 0) {
+    return { grade: 'C', reason: `${artifacts.commits} commits, no PR created` };
+  }
+
+  // C: Only issues created (reports, not fixes)
+  if (artifacts.issuesCreated.length > 0 && artifacts.prsCreated.length === 0) {
+    return { grade: 'C', reason: `${artifacts.issuesCreated.length} issue(s) filed, no code fix` };
+  }
+
+  return { grade: 'C', reason: 'Artifacts produced but no clear outcome yet' };
+}
+
+/**
+ * Compute average quality grade for an agent as a numeric score.
+ * A=4, B=3, C=2, D=1, F=0
+ */
+export function getAgentQualityScore(squad: string, agent: string): number | null {
+  const data = loadOutcomes();
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const records = data.records.filter(
+    r => r.squad === squad && r.agent === agent &&
+         new Date(r.completedAt).getTime() > cutoff &&
+         r.settled,
+  );
+
+  if (records.length < 2) return null; // Need at least 2 settled records
+
+  const gradeValues: Record<QualityGrade, number> = { A: 4, B: 3, C: 2, D: 1, F: 0 };
+  let total = 0;
+  for (const record of records) {
+    const { grade } = gradeExecution(record);
+    total += gradeValues[grade];
+  }
+
+  return total / records.length;
+}
+
 /**
  * Apply outcome-based score modifiers to daemon squad scoring.
  * Returns a score adjustment (positive or negative).
@@ -472,6 +561,14 @@ export function getOutcomeScoreModifier(squad: string, agent: string): number {
 
   // Expensive + low-scoring penalty
   if (card.costPerOutcome > 5) modifier -= 10;
+
+  // Quality grade modifier (heuristic grading)
+  const qualityScore = getAgentQualityScore(squad, agent);
+  if (qualityScore !== null) {
+    if (qualityScore >= 3.0) modifier += 10;       // A/B average → boost
+    else if (qualityScore < 1.5) modifier -= 25;    // D/F average → strong deprioritize
+    else if (qualityScore < 2.0) modifier -= 15;    // C/D average → deprioritize
+  }
 
   return modifier;
 }

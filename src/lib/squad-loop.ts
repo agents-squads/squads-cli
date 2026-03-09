@@ -229,6 +229,42 @@ export function getLastRunAge(squad: string, agent: string): number | null {
   }
 }
 
+// ── Escalation check ────────────────────────────────────────────────
+
+/**
+ * Check if a squad has unresolved escalations (blocked/needs-human issues).
+ * If so, the squad should be paused — no point dispatching agents that can't work.
+ */
+export function hasUnresolvedEscalation(
+  repo: string,
+  ghEnv: Record<string, string> = {},
+): { blocked: boolean; issue?: { number: number; title: string } } {
+  try {
+    const raw = execSync(
+      `gh issue list -R ${repo} --label "blocked" --state open --json number,title --limit 1`,
+      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
+    );
+    const issues = JSON.parse(raw) as Array<{ number: number; title: string }>;
+    if (issues.length > 0) {
+      return { blocked: true, issue: issues[0] };
+    }
+
+    // Also check needs-human label
+    const raw2 = execSync(
+      `gh issue list -R ${repo} --label "needs-human" --state open --json number,title --limit 1`,
+      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
+    );
+    const issues2 = JSON.parse(raw2) as Array<{ number: number; title: string }>;
+    if (issues2.length > 0) {
+      return { blocked: true, issue: issues2[0] };
+    }
+
+    return { blocked: false };
+  } catch {
+    return { blocked: false }; // Can't check = assume not blocked
+  }
+}
+
 // ── Squad scoring ────────────────────────────────────────────────────
 
 /**
@@ -278,6 +314,21 @@ export function scoreSquads(
   for (const squadName of squads) {
     try {
       const repo = squadRepos[squadName];
+
+      // Skip squads with unresolved escalations — don't waste tokens
+      if (repo) {
+        const escalation = hasUnresolvedEscalation(repo, ghEnv);
+        if (escalation.blocked) {
+          signals.push({
+            squad: squadName,
+            score: 0,
+            reason: `PAUSED: unresolved escalation #${escalation.issue?.number} — ${escalation.issue?.title}`,
+            issues: [],
+          });
+          continue;
+        }
+      }
+
       const issues = repo ? getOpenIssues(repo, ghEnv) : [];
 
       let score = 0;

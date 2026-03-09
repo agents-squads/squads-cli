@@ -11,6 +11,7 @@ import { spawn } from 'child_process';
 import { getBotGhEnv } from '../lib/github.js';
 import {
   recordArtifacts,
+  gradeExecution,
   pollOutcomes,
   computeAllScorecards,
 } from '../lib/outcomes.js';
@@ -293,10 +294,11 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       result.costEstimate += estimatedCost;
 
       // Record artifacts for outcome tracking (only real completions)
+      let qualityGrade: string | undefined;
       if (effectiveOutcome === 'completed') {
         const repo = squadRepos[job.squad];
         if (repo) {
-          recordArtifacts({
+          const record = recordArtifacts({
             executionId: `daemon_${job.squad}_${job.agent}_${job.startedAt}`,
             squad: job.squad,
             agent: job.agent,
@@ -304,6 +306,29 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
             costUsd: estimatedCost,
             repo,
           }, botGhEnv);
+
+          // Grade the execution quality
+          if (record) {
+            const { grade, reason } = gradeExecution(record);
+            qualityGrade = grade;
+
+            // Push quality signal to cognition engine
+            pushCognitionSignal({
+              source: 'execution',
+              signal_type: 'execution_quality',
+              value: { A: 4, B: 3, C: 2, D: 1, F: 0 }[grade] ?? 0,
+              unit: 'quality_score',
+              data: { grade, reason, cost_usd: estimatedCost },
+              entity_type: 'agent',
+              entity_id: `${job.squad}/${job.agent}`,
+              confidence: 0.9,
+            });
+
+            if (options.verbose) {
+              const gradeColor = grade <= 'B' ? colors.green : grade >= 'D' ? colors.red : colors.yellow;
+              writeLine(`    ${gradeColor}Grade: ${grade}${RESET} ${colors.dim}${reason}${RESET}`);
+            }
+          }
         }
       }
 
@@ -313,7 +338,7 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         signal_type: effectiveOutcome === 'completed' ? 'agent_completed' : 'agent_failed',
         value: effectiveOutcome === 'completed' ? 1 : 0,
         unit: 'completion',
-        data: { outcome: effectiveOutcome, durationMs, cost_usd: estimatedCost },
+        data: { outcome: effectiveOutcome, durationMs, cost_usd: estimatedCost, quality_grade: qualityGrade },
         entity_type: 'agent',
         entity_id: `${job.squad}/${job.agent}`,
         confidence: 0.95,
