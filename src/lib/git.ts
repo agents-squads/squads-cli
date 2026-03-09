@@ -1,6 +1,6 @@
 import { execSync, exec } from 'child_process';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -542,16 +542,25 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   // Collect all commits with full info for sorting
   const allCommits: CommitInfo[] = [];
 
-  // Build list of valid repos
-  const validRepos = SQUAD_REPOS.filter(repo => {
+  // Build list of valid repo sources
+  const repoSources: Array<{ name: string; path: string }> = [];
+
+  // Check SQUAD_REPOS subdirectories
+  for (const repo of SQUAD_REPOS) {
     const repoPath = join(basePath, repo);
-    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
-  });
+    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
+      repoSources.push({ name: repo, path: repoPath });
+    }
+  }
+
+  // Also check basePath itself (for single-project users where cwd IS the project)
+  if (existsSync(join(basePath, '.git')) && !repoSources.some(s => s.path === basePath)) {
+    repoSources.push({ name: basename(basePath), path: basePath });
+  }
 
   // Fetch git logs from all repos in parallel
   const repoResults = await Promise.all(
-    validRepos.map(async (repo) => {
-      const repoPath = join(basePath, repo);
+    repoSources.map(async ({ name: repo, path: repoPath }) => {
       try {
         const { stdout } = await execAsync(
           `git log --since="${days} days ago" --format="%H|%aN|%ad|%s" --date=short 2>/dev/null`,
@@ -750,16 +759,22 @@ export async function getActivitySparkline(basePath: string, days: number = 7): 
     activity.push(0);
   }
 
-  // Build list of valid repos
-  const validRepos = SQUAD_REPOS.filter(repo => {
+  // Build list of valid repo sources
+  const sparklineRepos: Array<string> = [];
+  for (const repo of SQUAD_REPOS) {
     const repoPath = join(basePath, repo);
-    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
-  });
+    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
+      sparklineRepos.push(repoPath);
+    }
+  }
+  // Also check basePath itself (for single-project users where cwd IS the project)
+  if (existsSync(join(basePath, '.git')) && !sparklineRepos.includes(basePath)) {
+    sparklineRepos.push(basePath);
+  }
 
   // Fetch git logs from all repos in parallel
   const results = await Promise.all(
-    validRepos.map(async (repo) => {
-      const repoPath = join(basePath, repo);
+    sparklineRepos.map(async (repoPath) => {
       try {
         const { stdout } = await execAsync(
           `git log --since="${days} days ago" --format="%ad" --date=short 2>/dev/null`,
