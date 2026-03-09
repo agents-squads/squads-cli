@@ -2398,8 +2398,19 @@ ${loadPostExecution(squadName, agentName)}`;
           durationMs: Date.now() - startMs,
         });
         const msg = error instanceof Error ? error.message : String(error);
+        const isLikelyBug = error instanceof ReferenceError || error instanceof TypeError || error instanceof SyntaxError;
         writeLine(`  ${colors.red}${msg}${RESET}`);
-        writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
+        writeLine();
+        if (isLikelyBug) {
+          writeLine(`  ${colors.yellow}This looks like a bug. Please try:${RESET}`);
+          writeLine(`  ${colors.dim}$${RESET} squads doctor          ${colors.dim}— check your setup${RESET}`);
+          writeLine(`  ${colors.dim}$${RESET} squads update           ${colors.dim}— get the latest fixes${RESET}`);
+          writeLine();
+          writeLine(`  ${colors.dim}If the problem persists, file an issue:${RESET}`);
+          writeLine(`  ${colors.dim}https://github.com/agents-squads/squads-cli/issues${RESET}`);
+        } else {
+          writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
+        }
         break; // Error — exit retry loop
       }
     }
@@ -2478,25 +2489,9 @@ async function preflightExecutorCheck(provider: string): Promise<boolean> {
     return false;
   }
 
-  // --- Check 2: Authentication (Anthropic only — other providers handle auth internally) ---
-  if (isAnthropic) {
-    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-
-    // Check for OAuth credentials (Max subscription or claude login)
-    const home = homedir();
-    const credentialsPath = join(home, '.claude', '.credentials.json');
-    const hasOAuthCreds = existsSync(credentialsPath);
-
-    if (!hasApiKey && !hasOAuthCreds) {
-      writeLine();
-      writeLine(`  ${icons.warning} ${colors.yellow}Claude not authenticated${RESET}`);
-      writeLine(`  ${colors.dim}No API key or credentials found. To authenticate:${RESET}`);
-      writeLine(`  ${colors.dim}  Option 1 (Max subscription): run ${colors.cyan}claude${colors.dim} and log in${RESET}`);
-      writeLine(`  ${colors.dim}  Option 2 (API key): export ANTHROPIC_API_KEY=sk-ant-...${RESET}`);
-      writeLine(`  ${colors.dim}  Option 3 (check status): run ${colors.cyan}squads doctor${colors.dim} to diagnose${RESET}`);
-      writeLine();
-    }
-  }
+  // Auth check removed: Claude CLI handles its own auth errors with clear messages.
+  // Pre-checking here caused false warnings for OAuth users (keychain auth works
+  // without .credentials.json or ANTHROPIC_API_KEY). See #520.
 
   return true;
 }

@@ -631,12 +631,19 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
   const tier = parseInt(process.env.ANTHROPIC_TIER || '0', 10);
 
   if (planType === 'unknown') {
-    writeLine(`  ${colors.dim}○${RESET} ${bold}Plan${RESET} ${colors.yellow}not configured${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}Set your Claude plan:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=max   ${colors.dim}# $200/mo flat${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=usage ${colors.dim}# pay-per-token${RESET}`);
-    writeLine();
+    // If no API key is set, user is likely on OAuth (Claude Code subscription)
+    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+    if (!hasApiKey) {
+      writeLine(`  ${colors.purple}◆${RESET} ${bold}Claude Code${RESET} ${colors.dim}(subscription)${RESET}`);
+      writeLine();
+    } else {
+      writeLine(`  ${colors.dim}○${RESET} ${bold}Plan${RESET} ${colors.dim}not configured${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Set your Claude plan:${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=max   ${colors.dim}# $200/mo flat${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=usage ${colors.dim}# pay-per-token${RESET}`);
+      writeLine();
+    }
   } else {
     const maxPlan = planType === 'max';
     const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
@@ -832,11 +839,10 @@ function renderInfrastructureCached(cache: DashboardCache): void {
   const hasInfra = hasLocalInfraConfig();
 
   if (!hasInfra || !stats) {
-    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(not connected)${RESET}`);
+    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(local only)${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}○${RESET} postgres  ${colors.dim}○${RESET} redis  ${colors.dim}○${RESET} otel`);
-    writeLine();
-    writeLine(`  ${colors.dim}Setup:${RESET} github.com/agents-squads/squads-cli#infrastructure`);
+    writeLine(`  ${colors.dim}Running locally — no cloud connection needed to get started.${RESET}`);
+    writeLine(`  ${colors.dim}Optional: connect for remote execution and team sharing.${RESET}`);
     writeLine();
     return;
   }

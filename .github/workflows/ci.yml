@@ -159,3 +159,22 @@ jobs:
         env:
           FORCE_COLOR: '1'
           NO_COLOR: '0'
+
+  npm-install-smoke:
+    name: npm install smoke test (PR gate)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm-install smoke test
+        run: bash scripts/e2e-smoke.sh
