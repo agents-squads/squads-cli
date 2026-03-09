@@ -195,11 +195,11 @@ export function addSignal(
   pushCognitionSignal({
     source: signal.source,
     signal_type: signal.signal_type,
-    value: signal.value,
-    unit: signal.unit,
+    value: signal.value ?? undefined,
+    unit: signal.unit ?? undefined,
     data: signal.data,
-    entity_type: signal.entity_type,
-    entity_id: signal.entity_id,
+    entity_type: signal.entity_type ?? undefined,
+    entity_id: signal.entity_id ?? undefined,
     confidence: signal.confidence,
   });
 

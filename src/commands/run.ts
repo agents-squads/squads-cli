@@ -108,6 +108,10 @@ interface RunOptions {
   task?: string; // Founder directive — replaces lead briefing in conversation mode
   maxTurns?: number; // Max conversation turns (default: 20)
   costCeiling?: number; // Cost ceiling in USD (default: 25)
+  interval?: number | string; // Autopilot: minutes between cycles
+  maxParallel?: number | string; // Autopilot: max parallel squad loops
+  budget?: number | string; // Autopilot: daily budget cap ($)
+  once?: boolean; // Autopilot: run one cycle then exit
 }
 
 /**
