@@ -425,6 +425,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
   writeLine();
 
+  // Compute first-run command once — reused in README and success output
+  const firstRunCommand = getFirstRunCommand(selectedUseCase);
+
   // 5. Create the seed
   const spinner = ora('Planting the seed...').start();
 
@@ -553,10 +556,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '| intelligence | 3 agents | Monitors trends and signals |',
       ...useCaseConfig.squads.map(s => {
         const desc = s.description || s.agentSummary;
-        return `| ${s.name.padEnd(12)} | ${String(s.agentCount) + ' agents'} | ${desc} |`;
+        return `| ${s.name.padEnd(12)} | ${s.agentCount} agents | ${desc} |`;
       }),
     ].join('\n');
-    const firstRunCmd = getFirstRunCommand(selectedUseCase);
     const readmeContent = `# ${businessName}
 
 ${businessDescription}
@@ -576,7 +578,7 @@ ${allSquadLines}
 $EDITOR .agents/BUSINESS_BRIEF.md
 
 # 2. Run your first agent
-${firstRunCmd.command}
+${firstRunCommand.command}
 
 # 3. See your workforce at a glance
 squads dash
@@ -668,7 +670,6 @@ squads dash
   writeLine(chalk.dim('        Add your business details so agents produce useful output (not generic)'));
   writeLine();
   // Step 2: Run first agent with context already set
-  const firstRunCommand = getFirstRunCommand(selectedUseCase);
   const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
   writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
