@@ -1,0 +1,44 @@
+# {{BUSINESS_NAME}}
+
+{{BUSINESS_DESCRIPTION}}
+
+## AI Workforce
+
+This project uses [Agents Squads](https://agents-squads.com) — an AI workforce that runs autonomously.
+
+### Squads
+
+| Squad | Purpose |
+|-------|---------|
+| research/ | Researches your market, competitors, and opportunities |
+| company/ | Manages goals, events, and strategy |
+| intelligence/ | Monitors trends and competitive signals |
+
+### Key Commands
+
+```bash
+# Run a single agent
+squads run research/researcher
+
+# See all squads and recent activity
+squads dash
+
+# Check system health
+squads doctor
+
+# View agent output
+squads results
+```
+
+## Setup
+
+```bash
+npm install -g squads-cli
+squads init
+```
+
+Edit `.agents/BUSINESS_BRIEF.md` to customize agent context.
+
+---
+
+*Powered by [Agents Squads](https://agents-squads.com)*
