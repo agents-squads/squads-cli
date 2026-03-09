@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { findMemoryDir } from './memory.js';
 import { pushCognitionSignal, ingestMemorySignal } from './api-client.js';
 import { slackNotify } from './squad-loop.js';
@@ -111,6 +111,23 @@ const FILE_TYPE_MAPPING: Record<string, { source: string; signal_type: string }>
 };
 
 // ── Storage ──────────────────────────────────────────────────────────
+
+/**
+ * Call Claude CLI with a prompt via stdin.
+ * Strips CLAUDECODE env var to avoid nested session errors.
+ */
+function callClaude(prompt: string, model: string, timeoutMs: number): string | null {
+  const { CLAUDECODE: _, ANTHROPIC_API_KEY: _k, ...cleanEnv } = process.env;
+  const result = spawnSync('claude', ['--print', '--model', model], {
+    input: prompt,
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    env: cleanEnv,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0 || !result.stdout) return null;
+  return result.stdout;
+}
 
 function getCognitionDir(): string {
   const memDir = findMemoryDir();
@@ -322,10 +339,8 @@ Respond with JSON only: {"supporting": [indexes], "contradicting": [indexes], "n
 
     try {
       // Call Haiku via claude CLI (uses subscription, no API key needed)
-      const result = execSync(
-        `claude --print --model haiku -p '${prompt.replace(/'/g, "'\\''")}'`,
-        { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
+      const result = callClaude(prompt, 'haiku', 30000);
+      if (!result) continue;
 
       // Parse JSON from response
       const jsonMatch = result.match(/\{[\s\S]*\}/);
@@ -485,10 +500,8 @@ Produce a business reflection. Respond as JSON only:
 }`;
 
   try {
-    const result = execSync(
-      `claude --print --model sonnet -p '${prompt.replace(/'/g, "'\\''")}'`,
-      { encoding: 'utf-8', timeout: 60000, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const result = callClaude(prompt, 'sonnet', 60000);
+    if (!result) return null;
 
     const jsonMatch = result.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
