@@ -12,6 +12,8 @@ describe('plan type detection', () => {
     delete process.env.ANTHROPIC_BUDGET_DAILY;
     delete process.env.SQUADS_DAILY_BUDGET;
     delete process.env.ANTHROPIC_TIER;
+    // Clear API key so default tests use OAuth path (no API key = subscription)
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   afterEach(() => {
@@ -103,17 +105,25 @@ describe('plan type detection', () => {
   });
 
   describe('detectPlan - defaults', () => {
-    it('defaults to unknown plan when no signals (prompts user to configure)', () => {
+    it('defaults to max plan for OAuth users (no API key = subscription)', () => {
+      // No API key = OAuth (Claude Code subscription) = max plan
       const result = detectPlan();
-      expect(result.plan).toBe('unknown');
+      expect(result.plan).toBe('max');
       expect(result.confidence).toBe('inferred');
-      expect(result.reason).toContain('Not configured');
+      expect(result.reason).toContain('OAuth');
     });
 
-    it('defaults to unknown for Tier 3 (middle tier, ambiguous)', () => {
+    it('defaults to usage plan when API key is set with no other signals', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-test-key';
+      const result = detectPlan();
+      expect(result.plan).toBe('usage');
+      expect(result.confidence).toBe('inferred');
+    });
+
+    it('defaults to max for Tier 3 OAuth users (no API key)', () => {
       process.env.ANTHROPIC_TIER = '3';
       const result = detectPlan();
-      expect(result.plan).toBe('unknown');
+      expect(result.plan).toBe('max');
       expect(result.confidence).toBe('inferred');
     });
   });
@@ -139,8 +149,8 @@ describe('plan type detection', () => {
       expect(isMaxPlan()).toBe(false);
     });
 
-    it('returns false by default (unknown plan is not max)', () => {
-      expect(isMaxPlan()).toBe(false);
+    it('returns true by default for OAuth users (no API key = subscription = max)', () => {
+      expect(isMaxPlan()).toBe(true);
     });
   });
 
