@@ -9,7 +9,7 @@
 
 import { join } from 'path';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';;
-import { execSync } from 'child_process';;
+import { execSync, exec } from 'child_process';;
 
 import {
   type AgentRole,
@@ -204,7 +204,7 @@ IMPORTANT:
           ANTHROPIC_API_KEY: undefined as unknown as string,
         },
       },
-      (error, stdout, _stderr) => {
+      (error: Error | null, stdout: string, _stderr: string) => {
         if (stdout && stdout.trim().length > 0) {
           resolve(stdout.trim());
         } else if (error) {
