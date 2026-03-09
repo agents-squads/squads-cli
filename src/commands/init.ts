@@ -595,8 +595,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   // Dynamic "first run" suggestion based on use case
   const firstRunCommand = getFirstRunCommand(selectedUseCase);
+  const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
   writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow(firstRunCommand.command)}`);
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
+  writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
   writeLine();
   writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(`squads dash`)}`);
   writeLine(chalk.dim('        See all your squads and agents at a glance'));
@@ -616,28 +618,28 @@ function getFirstRunCommand(useCase: UseCase): { command: string; description: s
     case 'engineering':
       return {
         command: 'squads run engineering/issue-solver',
-        description: 'Your first agent finds and solves GitHub issues',
+        description: 'Run a single agent — finds and solves GitHub issues (~2 min)',
       };
     case 'marketing':
       return {
         command: 'squads run marketing/content-drafter',
-        description: 'Your first agent drafts content for your business',
+        description: 'Run a single agent — drafts content for your business (~2 min)',
       };
     case 'operations':
       return {
         command: 'squads run operations/ops-lead',
-        description: 'Your first agent starts running daily operations',
+        description: 'Run a single agent — coordinates daily operations (~2 min)',
       };
     case 'full-company':
       return {
         command: 'squads run research/researcher',
-        description: 'Your first agent researches the topic you set',
+        description: 'Run a single agent — researches the topic you set (~2 min)',
       };
     case 'custom':
     default:
       return {
         command: 'squads run research/researcher',
-        description: 'Your first agent researches the topic you set',
+        description: 'Run a single agent — researches the topic you set (~2 min)',
       };
   }
 }
