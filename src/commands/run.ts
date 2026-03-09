@@ -56,6 +56,13 @@ import {
   getPRsWithReviewFeedback,
   buildReviewTask,
 } from '../lib/squad-loop.js';
+import {
+  loadCognitionState,
+  saveCognitionState,
+  seedBeliefsIfEmpty,
+  runCognitionCycle,
+  getBeliefsContext,
+} from '../lib/cognition.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 const CLOUD_POLL_INTERVAL_MS = 3000;
@@ -1648,9 +1655,15 @@ async function runAutopilot(
   const budget = parseFloat(String(options.budget || '0'));
   const once = !!options.once;
 
+  // Seed cognition beliefs on first run
+  const cognitionState = loadCognitionState();
+  seedBeliefsIfEmpty(cognitionState);
+  saveCognitionState(cognitionState);
+
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}autopilot${RESET}`);
   writeLine(`  ${colors.dim}Interval: ${interval}m | Parallel: ${maxParallel} | Budget: ${budget > 0 ? '$' + budget + '/day' : 'unlimited'}${RESET}`);
+  writeLine(`  ${colors.dim}Cognition: ${cognitionState.beliefs.length} beliefs, ${cognitionState.signals.length} signals${RESET}`);
   writeLine();
 
   let running = true;
@@ -1766,6 +1779,14 @@ async function runAutopilot(
       if (count >= 3) {
         slackNotify(`🚨 *Escalation*: ${key} has failed ${count} times consecutively.`);
       }
+    }
+
+    // ── Cognition: learn from this cycle ──
+    // Ingest memory → synthesize signals → evaluate decisions → reflect
+    writeLine(`  ${colors.dim}Cognition cycle...${RESET}`);
+    const cognitionResult = await runCognitionCycle(dispatchedSquads, !!options.verbose);
+    if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0 || cognitionResult.reflected) {
+      writeLine(`  ${colors.dim}🧠 ${cognitionResult.signalsIngested} signals → ${cognitionResult.beliefsUpdated} beliefs updated${cognitionResult.reflected ? ' → reflected' : ''}${RESET}`);
     }
 
     const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(0);
