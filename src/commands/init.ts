@@ -363,6 +363,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const dirName = path.basename(cwd);
 
     writeLine(chalk.bold('  Tell us about your business:'));
+    writeLine(chalk.dim('  (Agents read this to produce useful output — be specific)'));
     writeLine();
 
     businessName = await prompt(
@@ -370,16 +371,22 @@ export async function initCommand(options: InitOptions): Promise<void> {
       dirName
     );
 
+    writeLine(chalk.dim('    e.g., "We sell handmade coffee mugs online" or "B2B SaaS for construction teams"'));
     businessDescription = await prompt(
       'What does it do? (one sentence)',
       ''
     );
+    // Require a non-empty description — empty = generic output on first run
+    if (!businessDescription) {
+      writeLine(chalk.dim(`    Tip: Without a description, agents produce generic output. You can edit .agents/BUSINESS_BRIEF.md later.`));
+      businessDescription = `${businessName} — add your business description to .agents/BUSINESS_BRIEF.md`;
+    }
 
     writeLine();
-
+    writeLine(chalk.dim('    e.g., "Identify our top 3 competitors and what they do better than us"'));
     businessFocus = await prompt(
-      'What should your first research squad investigate?',
-      'Our market, competitors, and growth opportunities'
+      'What should your agents research first?',
+      'Our market position, top competitors, and biggest growth opportunity'
     );
 
     // 4b. Use-case selection
