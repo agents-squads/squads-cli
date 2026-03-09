@@ -84,7 +84,7 @@ function executeAgentTurn(config: AgentTurnConfig): string {
       } else if (transcript.turns.length === 0) {
         roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do`;
       } else {
-        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs that pass CI using \`gh pr merge --squash --delete-branch\``;
+        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs using \`gh pr merge --squash --delete-branch --auto\` (waits for required checks)`;
       }
       break;
     case 'scanner':

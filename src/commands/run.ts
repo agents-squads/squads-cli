@@ -2160,7 +2160,7 @@ interface ExecuteWithClaudeOptions {
 function buildAgentEnv(
   baseEnv: Record<string, string>,
   execContext: ExecutionContext,
-  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean }
+  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean; ghToken?: string }
 ): Record<string, string> {
   const env: Record<string, string> = {
     ...baseEnv,
@@ -2171,6 +2171,10 @@ function buildAgentEnv(
     SQUADS_EXECUTION_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };
+
+  // Inject bot GH_TOKEN so agents create PRs/issues as the bot identity,
+  // not the user's personal gh auth. This enables founder to review/approve.
+  if (options?.ghToken) env.GH_TOKEN = options.ghToken;
 
   if (options?.includeOtel) {
     env.OTEL_RESOURCE_ATTRIBUTES = `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`;
@@ -2430,6 +2434,13 @@ async function executeWithClaude(
 
   await registerContextWithBridge(execContext);
 
+  // Get bot token so agents create PRs/issues as bot identity (not user's personal gh auth)
+  let botGhToken: string | undefined;
+  try {
+    const ghEnv = await getBotGhEnv();
+    botGhToken = ghEnv.GH_TOKEN;
+  } catch { /* graceful: falls back to user's gh auth */ }
+
   // ── Foreground mode ──────────────────────────────────────────────────
   if (runInForeground) {
     if (verbose) {
@@ -2448,7 +2459,7 @@ async function executeWithClaude(
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-      effort, skills, includeOtel: true,
+      effort, skills, includeOtel: true, ghToken: botGhToken,
     });
 
     return executeForeground({
@@ -2461,7 +2472,7 @@ async function executeWithClaude(
   const timestamp = Date.now();
   const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-    effort, skills, includeOtel: !runInWatch,
+    effort, skills, includeOtel: !runInWatch, ghToken: botGhToken,
   });
 
   const wrapperScript = buildDetachedShellScript({
