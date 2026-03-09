@@ -25,6 +25,53 @@ interface Belief {
   revision: number;
 }
 
+interface CognitionSignal {
+  source: string;
+}
+
+interface CognitionDecision {
+  id: number;
+  title: string;
+}
+
+interface CognitionReflectionSummary {
+  created_at: string;
+  assessment: string;
+}
+
+interface CognitionBrief {
+  generated_at: string;
+  hot_beliefs?: Belief[];
+  recent_signals?: CognitionSignal[];
+  pending_decisions?: CognitionDecision[];
+  latest_reflection?: CognitionReflectionSummary;
+}
+
+interface Decision {
+  id: number;
+  title: string;
+  reasoning: string;
+  outcome_score: number | null;
+  decided_at: string;
+  decided_by: string;
+}
+
+interface Insight {
+  type: string;
+  message: string;
+}
+
+interface PriorityAdjustment {
+  description?: string;
+}
+
+interface Reflection {
+  created_at: string;
+  assessment: string;
+  insights?: Insight[];
+  priority_adjustments?: (string | PriorityAdjustment)[];
+}
+
 async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promise<T | null> {
   const { loadSession } = await import('../lib/auth.js');
   const { getApiUrl } = await import('../lib/env-config.js');
@@ -59,7 +106,7 @@ async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promi
 }
 
 async function briefCommand(): Promise<void> {
-  const data = await apiFetch('/cognition/brief');
+  const data = await apiFetch<CognitionBrief>('/cognition/brief');
   if (!data) return;
 
   writeLine();
@@ -67,7 +114,7 @@ async function briefCommand(): Promise<void> {
   writeLine();
 
   // Hot beliefs
-  if (data.hot_beliefs?.length > 0) {
+  if (data.hot_beliefs && data.hot_beliefs.length > 0) {
     writeLine(`  ${colors.red}Hot Beliefs${RESET}`);
     for (const b of data.hot_beliefs) {
       const conf = Math.round(b.confidence * 100);
@@ -78,7 +125,7 @@ async function briefCommand(): Promise<void> {
   }
 
   // Recent signals
-  if (data.recent_signals?.length > 0) {
+  if (data.recent_signals && data.recent_signals.length > 0) {
     writeLine(`  ${colors.cyan}Signals (24h)${RESET}  ${colors.dim}${data.recent_signals.length} total${RESET}`);
     const bySource: Record<string, number> = {};
     for (const s of data.recent_signals) {
@@ -91,7 +138,7 @@ async function briefCommand(): Promise<void> {
   }
 
   // Pending decisions
-  if (data.pending_decisions?.length > 0) {
+  if (data.pending_decisions && data.pending_decisions.length > 0) {
     writeLine(`  ${colors.yellow}Pending Decisions${RESET}`);
     for (const d of data.pending_decisions) {
       writeLine(`  ${colors.dim}#${d.id}${RESET} ${d.title}`);
@@ -117,7 +164,7 @@ async function beliefsCommand(options: { domain?: string; json?: boolean }): Pro
   const params = new URLSearchParams();
   if (options.domain) params.set('domain', options.domain);
   const path = `/cognition/beliefs${params.toString() ? '?' + params.toString() : ''}`;
-  const data = await apiFetch(path);
+  const data = await apiFetch<Belief[]>(path);
   if (!data) return;
 
   if (options.json) {
@@ -154,7 +201,7 @@ async function decisionsCommand(options: { evaluated?: boolean; json?: boolean }
   const params = new URLSearchParams();
   if (options.evaluated !== undefined) params.set('evaluated', String(options.evaluated));
   const path = `/cognition/decisions${params.toString() ? '?' + params.toString() : ''}`;
-  const data = await apiFetch(path);
+  const data = await apiFetch<Decision[]>(path);
   if (!data) return;
 
   if (options.json) {
@@ -182,7 +229,7 @@ async function reflectCommand(options: { scope?: string }): Promise<void> {
   writeLine();
   writeLine(`  ${colors.purple}Reflecting...${RESET} scope: ${scope}`);
 
-  const data = await apiFetch('/cognition/reflect', {
+  const data = await apiFetch<Reflection>('/cognition/reflect', {
     method: 'POST',
     body: JSON.stringify({ scope }),
   });
@@ -194,7 +241,7 @@ async function reflectCommand(options: { scope?: string }): Promise<void> {
   writeLine(`  ${data.assessment}`);
   writeLine();
 
-  if (data.insights?.length > 0) {
+  if (data.insights && data.insights.length > 0) {
     writeLine(`  ${colors.cyan}Insights${RESET}`);
     for (const i of data.insights) {
       const icon = i.type === 'warning' ? `${colors.yellow}!${RESET}` : `${colors.cyan}>${RESET}`;
@@ -203,7 +250,7 @@ async function reflectCommand(options: { scope?: string }): Promise<void> {
     writeLine();
   }
 
-  if (data.priority_adjustments?.length > 0) {
+  if (data.priority_adjustments && data.priority_adjustments.length > 0) {
     writeLine(`  ${colors.yellow}Priority Adjustments${RESET}`);
     for (const a of data.priority_adjustments) {
       writeLine(`  - ${typeof a === 'string' ? a : a.description || JSON.stringify(a)}`);
