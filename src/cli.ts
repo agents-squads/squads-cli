@@ -53,7 +53,6 @@ import { applyStackConfig } from './lib/stack-config.js';
 // Register-pattern commands (must define subcommand structure before parseAsync)
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { registerTriggerCommand } from './commands/trigger.js';
-import { registerAutonomousCommand } from './commands/autonomous.js';
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
@@ -271,7 +270,7 @@ Examples:
 // Run command - execute squads or individual agents
 program
   .command('run [target]')
-  .description('Run a squad, agent, or autopilot (no target = autopilot mode)')
+  .description('Run a squad, agent, or daemon (no target = daemon mode)')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -292,26 +291,28 @@ program
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
-  .option('-i, --interval <minutes>', 'Autopilot: minutes between cycles', '30')
-  .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
-  .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
-  .option('--once', 'Autopilot: run one cycle then exit')
+  .option('-i, --interval <minutes>', 'Daemon: minutes between scoring cycles', '30')
+  .option('--max-parallel <count>', 'Daemon: max parallel squad loops', '2')
+  .option('--budget <usd>', 'Daemon: daily budget cap ($)', '0')
+  .option('--once', 'Daemon: run one cycle then exit')
+  .option('--stop', 'Stop running daemon')
+  .option('--status', 'Show daemon status')
+  .option('--pause [reason]', 'Pause daemon (optional reason)')
+  .option('--resume', 'Resume paused daemon')
+  .option('--daemon-internal', { hidden: true })
   .addHelpText('after', `
 Examples:
-  $ squads run engineering              Run squad conversation (lead → scan → work → review)
-  $ squads run engineering --task "fix CI"  Conversation with founder directive
-  $ squads run engineering/code-review  Run specific agent (slash notation)
-  $ squads run engineering -a code-review  Same as above (flag notation)
-  $ squads run engineering --dry-run    Preview what would run
-  $ squads run engineering --parallel   Run all agents in parallel (tmux)
-  $ squads run engineering --lead       Single orchestrator with Task tool
-  $ squads run engineering -b           Run in background (detached)
-  $ squads run engineering -w           Run in background but tail logs
-  $ squads run research --provider=google  Use Gemini CLI instead of Claude
-  $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
-  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
-  $ squads run --once --dry-run         Preview one autopilot cycle
-  $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
+  $ squads run engineering              Run squad conversation
+  $ squads run engineering --task "fix CI"  Conversation with directive
+  $ squads run engineering/code-review  Run specific agent
+  $ squads run engineering -b           Run in background
+  $ squads run                          Start daemon (cron + scoring + cognition)
+  $ squads run --once --dry-run         Preview one daemon cycle
+  $ squads run -i 15 --budget 50       Daemon: 15min scoring, $50/day cap
+  $ squads run --stop                   Stop daemon
+  $ squads run --status                 Show daemon status
+  $ squads run --pause                  Pause daemon
+  $ squads run --resume                 Resume daemon
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
@@ -730,23 +731,19 @@ program
     return autonomyCommand({ squad: options.squad, period: options.period, json: options.json });
   });
 
-// Autopilot — deprecated, now "squads run" (no arguments)
-program
-  .command('autopilot')
-  .alias('daemon')
-  .description('[deprecated] Use "squads run" instead — autopilot mode when no target given')
-  .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
-  .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
-  .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
-  .option('--once', 'Run one cycle and exit')
-  .option('--dry-run', 'Show what would run without dispatching')
-  .option('-v, --verbose', 'Show detailed scoring')
-  .action(async (options) => {
-    const colors = termColors;
-    writeLine(`  ${colors.yellow}Note: "squads autopilot" is now "squads run" (no arguments)${termReset}`);
-    const { runCommand } = await import('./commands/run.js');
-    return runCommand(null, { interval: parseInt(options.interval || '30', 10), ...options });
-  });
+// Legacy aliases — redirect to unified `squads run`
+for (const alias of ['autopilot', 'daemon', 'autonomous']) {
+  program
+    .command(alias, { hidden: true })
+    .description(`[removed] Use "squads run" instead`)
+    .allowUnknownOption(true)
+    .action(() => {
+      writeLine(`  ${termColors.yellow}"squads ${alias}" has been removed. Use "squads run" instead.${termReset}`);
+      writeLine(`  ${termColors.dim}  squads run              Start daemon${termReset}`);
+      writeLine(`  ${termColors.dim}  squads run --stop       Stop daemon${termReset}`);
+      writeLine(`  ${termColors.dim}  squads run --status     Show status${termReset}`);
+    });
+}
 
 // Stats command - agent outcome scorecards
 program
@@ -922,7 +919,7 @@ registerTriggerCommand(program);
 registerApprovalCommand(program);
 
 // Autonomous command group - scheduled routines
-registerAutonomousCommand(program);
+// autonomous command removed — absorbed into `squads run` daemon mode
 
 // ─── System ──────────────────────────────────────────────────────────────────
 
@@ -1099,7 +1096,7 @@ program
 
 program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
 program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
-program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
+program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use "squads run" to start the daemon'));
 program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
 program.command('top', { hidden: true }).description('[removed]').action(removedCommand('top', 'Use: squads sessions'));
 program.command('watch', { hidden: true }).description('[removed]').action(removedCommand('watch', 'Use: watch -n 2 squads status'));

@@ -22,7 +22,26 @@ import {
 } from '../lib/permissions.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
-import { parseCooldown } from '../lib/cron.js';
+import { cronMatches, parseCooldown } from '../lib/cron.js';
+import {
+  isDaemonRunning,
+  writeDaemonPid,
+  cleanupDaemonPid,
+  spawnDaemonProcess,
+  isPaused,
+  pauseDaemon,
+  resumeDaemon,
+  loadCooldowns,
+  saveCooldowns,
+  collectRoutines,
+  getRunningAgents,
+  enforceTimeouts,
+  showDaemonStatus,
+  daemonLog,
+  getDaemonLogPath,
+  MAX_CONCURRENT,
+  EVAL_INTERVAL_SEC,
+} from '../lib/scheduler.js';
 import {
   colors,
   bold,
@@ -40,19 +59,27 @@ import { loadSession, isLoggedIn } from '../lib/auth.js';
 import { getApiUrl, getBridgeUrl } from '../lib/env-config.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
+import {
+  recordArtifacts,
+  gradeExecution,
+  pollOutcomes,
+  computeAllScorecards,
+} from '../lib/outcomes.js';
 import { getBotGitEnv, getBotPushUrl, getBotGhEnv, getCoAuthorTrailer } from '../lib/github.js';
 import {
   type LoopState,
+  MIN_PHANTOM_DURATION_MS,
   loadLoopState,
   saveLoopState,
   getSquadRepos,
   scoreSquads,
   checkCooldown,
   classifyRunOutcome,
+  checkNewPRs,
+  getPRsWithReviewFeedback,
+  buildReviewTask,
   pushMemorySignals,
   slackNotify,
-
-
 } from '../lib/squad-loop.js';
 import {
   loadCognitionState,
@@ -108,10 +135,16 @@ interface RunOptions {
   task?: string; // Founder directive — replaces lead briefing in conversation mode
   maxTurns?: number; // Max conversation turns (default: 20)
   costCeiling?: number; // Cost ceiling in USD (default: 25)
-  interval?: number | string; // Autopilot: minutes between cycles
-  maxParallel?: number | string; // Autopilot: max parallel squad loops
-  budget?: number | string; // Autopilot: daily budget cap ($)
-  once?: boolean; // Autopilot: run one cycle then exit
+  interval?: number | string; // Daemon: minutes between scoring cycles
+  maxParallel?: number | string; // Daemon: max parallel squad loops
+  budget?: number | string; // Daemon: daily budget cap ($)
+  once?: boolean; // Daemon: run one cycle then exit
+  // Daemon management flags
+  stop?: boolean; // Stop running daemon
+  status?: boolean; // Show daemon status
+  pause?: string | boolean; // Pause daemon (optional reason)
+  resume?: boolean; // Resume paused daemon
+  daemonInternal?: boolean; // Internal: marks this process as the daemon
 }
 
 /**
@@ -970,15 +1003,39 @@ export async function runCommand(
     process.exit(1);
   }
 
+  // ── Daemon management flags (no target required) ──
+  if (options.stop) {
+    const daemon = isDaemonRunning();
+    if (!daemon.running) { writeLine(`  ${colors.dim}Daemon not running${RESET}`); return; }
+    try {
+      process.kill(daemon.pid!, 'SIGTERM');
+      cleanupDaemonPid();
+      writeLine(`  ${colors.green}Daemon stopped (PID ${daemon.pid})${RESET}`);
+    } catch (e) { writeLine(`  ${colors.red}Failed to stop: ${e}${RESET}`); }
+    return;
+  }
+  if (options.status) { showDaemonStatus(); return; }
+  if (options.pause !== undefined && options.pause !== false) {
+    const reason = typeof options.pause === 'string' ? options.pause : 'Manual pause';
+    pauseDaemon(reason);
+    writeLine(`  ${colors.yellow}Daemon paused: ${reason}${RESET}`);
+    return;
+  }
+  if (options.resume) {
+    resumeDaemon();
+    writeLine(`  ${colors.green}Daemon resumed${RESET}`);
+    return;
+  }
+
   // Execution is now the default behavior (no --execute flag needed)
   // --dry-run disables execution
   if (!options.dryRun && options.execute === undefined) {
     options.execute = true;
   }
 
-  // MODE 1: Autopilot — no target means run all squads continuously
+  // MODE 1: Daemon — no target means run all squads autonomously
   if (!target) {
-    await runAutopilot(squadsDir, options);
+    await runDaemon(squadsDir, options);
     return;
   }
 
@@ -1238,10 +1295,12 @@ async function runSquad(
   writeLine();
 }
 
-// ── Autopilot mode ──────────────────────────────────────────────────
+// ── Daemon mode ─────────────────────────────────────────────────────
 // When `squads run` is called with no target, it becomes the daemon:
-// score all squads, dispatch the full loop (scanner→lead→worker→verifier)
-// for top-priority squads, push cognition signals, repeat.
+// 1. Evaluate cron routines from SQUAD.md → spawn matching agents
+// 2. Score all squads → dispatch full loops for top-priority squads
+// 3. Grade outcomes, push cognition signals, check PR reviews
+// 4. Budget/quota gate → auto-pause if exceeded
 
 // Default cooldowns per agent role (ms)
 const ROLE_COOLDOWNS: Record<string, number> = {
@@ -1252,10 +1311,6 @@ const ROLE_COOLDOWNS: Record<string, number> = {
   'issue-solver': 30 * 60 * 1000,  // 30m — default worker
 };
 
-/**
- * Classify an agent's role from its name.
- * Scanner, lead, worker, verifier — or default to worker.
- */
 function classifyAgentRole(name: string): string {
   if (name.includes('scanner') || name.includes('scan')) return 'scanner';
   if (name.includes('lead') || name.includes('orchestrat')) return 'lead';
@@ -1264,11 +1319,10 @@ function classifyAgentRole(name: string): string {
 }
 
 /**
- * Autopilot: continuous loop that scores squads and dispatches full squad loops.
- * Replaces the daemon command — same state file, same scoring, but dispatches
- * the full agent roster instead of just issue-solver.
+ * Unified daemon: cron routines + intelligent scoring + cognition learning.
+ * Runs as foreground process (default) or detached daemon (--daemon-internal).
  */
-async function runAutopilot(
+async function runDaemon(
   squadsDir: string,
   options: RunOptions,
 ): Promise<void> {
@@ -1277,146 +1331,264 @@ async function runAutopilot(
   const budget = parseFloat(String(options.budget || '0'));
   const once = !!options.once;
 
-  // Seed cognition beliefs on first run
+  // If we're being invoked as the detached daemon process
+  if (process.env.SQUADS_DAEMON === '1') {
+    writeDaemonPid();
+    daemonLog('Daemon started (unified)');
+    // Fall through to the main loop — stdout goes to daemon.log
+  } else if (!once && !options.dryRun) {
+    // Interactive start: spawn detached daemon and exit
+    const existing = isDaemonRunning();
+    if (existing.running) {
+      writeLine(`  ${colors.yellow}Daemon already running (PID ${existing.pid})${RESET}`);
+      writeLine(`  ${colors.dim}Log: ${getDaemonLogPath()}${RESET}`);
+      return;
+    }
+
+    spawnDaemonProcess();
+    await sleep(2000); // Wait for PID file
+
+    const check = isDaemonRunning();
+    if (check.running) {
+      writeLine(`  ${colors.green}Daemon started (PID ${check.pid})${RESET}`);
+    } else {
+      writeLine(`  ${colors.red}Daemon failed to start. Check log:${RESET}`);
+      writeLine(`  ${colors.dim}$ tail -20 ${getDaemonLogPath()}${RESET}`);
+    }
+
+    // Show scheduled routines
+    const routines = collectRoutines().filter(r => r.enabled !== false);
+    if (routines.length > 0) {
+      writeLine();
+      writeLine(`  ${colors.dim}${routines.length} cron routines, scoring every ${interval}m, max ${maxParallel} parallel${RESET}`);
+    }
+    writeLine(`  ${colors.dim}Stop: squads run --stop${RESET}`);
+    writeLine(`  ${colors.dim}Log: tail -f ${getDaemonLogPath()}${RESET}`);
+    return;
+  }
+
+  // Seed cognition
   const cognitionState = loadCognitionState();
   seedBeliefsIfEmpty(cognitionState);
   saveCognitionState(cognitionState);
 
   writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}autopilot${RESET}`);
-  writeLine(`  ${colors.dim}Interval: ${interval}m | Parallel: ${maxParallel} | Budget: ${budget > 0 ? '$' + budget + '/day' : 'unlimited'}${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}daemon${RESET}`);
+  writeLine(`  ${colors.dim}Scoring: ${interval}m | Parallel: ${maxParallel} | Budget: ${budget > 0 ? '$' + budget + '/day' : 'unlimited'}${RESET}`);
   writeLine(`  ${colors.dim}Cognition: ${cognitionState.beliefs.length} beliefs, ${cognitionState.signals.length} signals${RESET}`);
+
+  const routines = collectRoutines().filter(r => r.enabled !== false);
+  if (routines.length > 0) {
+    writeLine(`  ${colors.dim}Cron: ${routines.length} routines${RESET}`);
+  }
   writeLine();
 
+  // Persistent cooldowns for cron routines (survives daemon restarts)
+  const cronCooldowns = loadCooldowns();
+  let consecutiveFailures = 0;
+  const AUTO_PAUSE_THRESHOLD = 5;
+
   let running = true;
-  const handleSignal = () => { running = false; };
+  const handleSignal = () => {
+    running = false;
+    saveCooldowns(cronCooldowns);
+    cleanupDaemonPid();
+    daemonLog('Daemon stopped (signal)');
+  };
   process.on('SIGINT', handleSignal);
   process.on('SIGTERM', handleSignal);
 
-  while (running) {
-    const cycleStart = Date.now();
-    const state = loadLoopState();
+  // Track last scoring cycle time
+  let lastScoringCycle = 0;
 
-    // Reset daily cost at midnight
+  // Main tick loop (every EVAL_INTERVAL_SEC)
+  while (running) {
+    const tickStart = Date.now();
+
+    // ── Check pause state ──
+    const pauseStatus = isPaused();
+    if (pauseStatus.paused) {
+      enforceTimeouts(); // Still enforce timeouts while paused
+      await sleep(EVAL_INTERVAL_SEC * 1000);
+      continue;
+    }
+
+    // ── Budget check ──
+    const state = loadLoopState();
     const today = new Date().toISOString().slice(0, 10);
     if (state.dailyCostDate !== today) {
       state.dailyCost = 0;
       state.dailyCostDate = today;
     }
-
-    // Budget check
     if (budget > 0 && state.dailyCost >= budget) {
-      writeLine(`  ${icons.warning} ${colors.yellow}Daily budget reached ($${state.dailyCost.toFixed(2)}/$${budget})${RESET}`);
+      daemonLog(`Budget reached ($${state.dailyCost.toFixed(2)}/$${budget})`);
       saveLoopState(state);
-      if (once) break;
-      await sleep(interval * 60 * 1000);
+      await sleep(EVAL_INTERVAL_SEC * 1000);
       continue;
     }
 
-    writeLine(`  ${colors.dim}── Cycle ${new Date().toLocaleTimeString()} ──${RESET}`);
+    // ── 1. Cron routines (every tick) ──
+    const now = new Date();
+    now.setSeconds(0, 0);
+    const currentRunning = getRunningAgents();
+    enforceTimeouts();
 
-    // Get bot env for GitHub API calls
-    let ghEnv: Record<string, string> = {};
-    try { ghEnv = await getBotGhEnv(); } catch { /* use default */ }
+    for (const routine of routines) {
+      if (!cronMatches(routine.schedule, now)) continue;
 
-    // Score squads
-    const squadRepos = getSquadRepos();
-    const signals = scoreSquads(state, squadRepos, ghEnv);
+      for (const agentName of routine.agents) {
+        const key = `${routine.squad}/${agentName}`;
 
-    if (signals.length === 0 || signals.every(s => s.score <= 0)) {
-      writeLine(`  ${colors.dim}No squads need attention${RESET}`);
-      saveLoopState(state);
-      if (once) break;
-      await sleep(interval * 60 * 1000);
-      continue;
-    }
+        // Cooldown check
+        if (routine.cooldown) {
+          const last = cronCooldowns.get(key);
+          const cooldownMs = parseCooldown(routine.cooldown);
+          if (last && Date.now() - last < cooldownMs) continue;
+        }
 
-    // Pick top N squads to dispatch
-    const toDispatch = signals
-      .filter(s => s.score > 0)
-      .slice(0, maxParallel);
+        // Already running check
+        if (currentRunning.some(r => r.squad === routine.squad && r.agent === agentName)) continue;
 
-    writeLine(`  ${colors.dim}Dispatching ${toDispatch.length} squad(s):${RESET}`);
-    for (const sig of toDispatch) {
-      writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
-    }
+        // Concurrency check
+        if (getRunningAgents().length >= MAX_CONCURRENT) {
+          daemonLog(`SKIP: ${key} — concurrency limit`);
+          continue;
+        }
 
-    if (options.dryRun) {
-      writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads${RESET}`);
-      saveLoopState(state);
-      if (once) break;
-      await sleep(interval * 60 * 1000);
-      continue;
-    }
-
-    // Dispatch squad loops in parallel
-    const results = await Promise.allSettled(
-      toDispatch.map(sig => {
-        const squad = loadSquad(sig.squad);
-        if (!squad) return Promise.resolve();
-        return runSquadLoop(squad, squadsDir, state, ghEnv, options);
-      })
-    );
-
-    // Summarize results
-    const failed: string[] = [];
-    const completed: string[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      const name = toDispatch[i].squad;
-      if (r.status === 'rejected') {
-        failed.push(name);
-        state.failCounts[name] = (state.failCounts[name] || 0) + 1;
-      } else {
-        completed.push(name);
-        delete state.failCounts[name];
+        daemonLog(`CRON: ${key} (routine: ${routine.name})`);
+        try {
+          const modelFlag = routine.model ? `--model ${routine.model}` : '';
+          execSync(
+            `squads run ${routine.squad}/${agentName} --background ${modelFlag} --trigger scheduled`,
+            { cwd: process.cwd(), stdio: 'ignore', timeout: 10000, env: { ...process.env, CLAUDECODE: '' } }
+          );
+          cronCooldowns.set(key, Date.now());
+          saveCooldowns(cronCooldowns);
+          consecutiveFailures = 0;
+          daemonLog(`SPAWNED: ${key}`);
+        } catch (err) {
+          consecutiveFailures++;
+          daemonLog(`ERROR: ${key} (${consecutiveFailures}/${AUTO_PAUSE_THRESHOLD}): ${err}`);
+          if (consecutiveFailures >= AUTO_PAUSE_THRESHOLD) {
+            pauseDaemon(`Auto-paused: ${consecutiveFailures} consecutive spawn failures`);
+            daemonLog('AUTO-PAUSED');
+          }
+        }
       }
     }
 
-    // Estimate cost (rough: $1 per squad loop)
-    const cycleCost = toDispatch.length * 1.0;
-    state.dailyCost += cycleCost;
+    // ── 2. Intelligence scoring (every interval minutes) ──
+    const timeSinceLastScoring = tickStart - lastScoringCycle;
+    if (timeSinceLastScoring >= interval * 60 * 1000 || lastScoringCycle === 0) {
+      lastScoringCycle = tickStart;
 
-    // Push memory signals for dispatched squads
-    const dispatchedSquads = toDispatch.map(s => s.squad);
-    await pushMemorySignals(dispatchedSquads, state, !!options.verbose);
+      let ghEnv: Record<string, string> = {};
+      try { ghEnv = await getBotGhEnv(); } catch { /* use default */ }
 
-    // Trim and save state
-    state.recentRuns = state.recentRuns.slice(-100);
-    state.lastCycle = new Date().toISOString();
-    saveLoopState(state);
-
-    // Slack: only on failures
-    if (failed.length > 0) {
-      slackNotify([
-        `*Autopilot cycle — failures*`,
-        `Failed: ${failed.join(', ')}`,
-        `Completed: ${completed.join(', ')}`,
-        `Daily: $${state.dailyCost.toFixed(2)}${budget > 0 ? '/$' + budget : ''}`,
-      ].join('\n'));
-    }
-
-    // Escalate persistent failures
-    for (const [key, count] of Object.entries(state.failCounts)) {
-      if (count >= 3) {
-        slackNotify(`🚨 *Escalation*: ${key} has failed ${count} times consecutively.`);
+      // Poll outcomes for unsettled records
+      const pollResult = pollOutcomes(ghEnv);
+      if (pollResult.polled > 0) {
+        daemonLog(`Polled ${pollResult.polled} artifact(s), ${pollResult.settled} settled`);
       }
-    }
+      computeAllScorecards('7d');
 
-    // ── Cognition: learn from this cycle ──
-    // Ingest memory → synthesize signals → evaluate decisions → reflect
-    writeLine(`  ${colors.dim}Cognition cycle...${RESET}`);
-    const cognitionResult = await runCognitionCycle(dispatchedSquads, !!options.verbose);
-    if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0 || cognitionResult.reflected) {
-      writeLine(`  ${colors.dim}🧠 ${cognitionResult.signalsIngested} signals → ${cognitionResult.beliefsUpdated} beliefs updated${cognitionResult.reflected ? ' → reflected' : ''}${RESET}`);
-    }
+      const squadRepos = getSquadRepos();
+      const signals = scoreSquads(state, squadRepos, ghEnv);
 
-    const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(0);
-    writeLine(`  ${colors.dim}Cycle done in ${elapsed}s | Daily: $${state.dailyCost.toFixed(2)}${RESET}`);
-    writeLine();
+      if (signals.length > 0 && signals.some(s => s.score > 0)) {
+        const toDispatch = signals.filter(s => s.score > 0).slice(0, maxParallel);
+
+        writeLine(`  ${colors.dim}── Scoring ${new Date().toLocaleTimeString()} ──${RESET}`);
+        for (const sig of toDispatch) {
+          writeLine(`    ${colors.cyan}${sig.squad}${RESET} (${sig.score}) — ${sig.reason}`);
+        }
+
+        if (!options.dryRun) {
+          const results = await Promise.allSettled(
+            toDispatch.map(sig => {
+              const squad = loadSquad(sig.squad);
+              if (!squad) return Promise.resolve();
+              return runSquadLoop(squad, squadsDir, state, ghEnv, options);
+            })
+          );
+
+          const failed: string[] = [];
+          const completed: string[] = [];
+          for (let i = 0; i < results.length; i++) {
+            const name = toDispatch[i].squad;
+            if (results[i].status === 'rejected') {
+              failed.push(name);
+              state.failCounts[name] = (state.failCounts[name] || 0) + 1;
+            } else {
+              completed.push(name);
+              delete state.failCounts[name];
+            }
+          }
+
+          state.dailyCost += toDispatch.length * 1.0;
+
+          // Push memory signals
+          await pushMemorySignals(toDispatch.map(s => s.squad), state, !!options.verbose);
+
+          // Slack on failures
+          if (failed.length > 0) {
+            slackNotify(`*Daemon cycle — failures*\nFailed: ${failed.join(', ')}\nCompleted: ${completed.join(', ')}\nDaily: $${state.dailyCost.toFixed(2)}${budget > 0 ? '/$' + budget : ''}`);
+          }
+
+          // Escalate persistent failures
+          for (const [key, count] of Object.entries(state.failCounts)) {
+            if (count >= 3) {
+              slackNotify(`*Escalation*: ${key} has failed ${count} times consecutively.`);
+            }
+          }
+
+          // Check for new PRs from completed squads
+          for (let i = 0; i < results.length; i++) {
+            if (results[i].status !== 'fulfilled') continue;
+            const repo = squadRepos[toDispatch[i].squad];
+            if (!repo) continue;
+            const newPRs = checkNewPRs(repo, 30, ghEnv);
+            if (newPRs.length > 0) {
+              daemonLog(`${toDispatch[i].squad} created ${newPRs.length} PR(s)`);
+            }
+          }
+
+          // PR review feedback loop — address Gemini/human comments
+          for (const repo of Object.values(squadRepos)) {
+            const prsWithFeedback = getPRsWithReviewFeedback(repo, ghEnv);
+            for (const pr of prsWithFeedback) {
+              const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
+              if (!squad) continue;
+              if (budget > 0 && state.dailyCost >= budget) break;
+              const task = buildReviewTask(pr);
+              daemonLog(`Review fix: ${squad} PR #${pr.number} (${pr.comments.length} comments)`);
+              try {
+                execSync(`squads run ${squad}/issue-solver --background --task "${task.replace(/"/g, '\\"')}"`, {
+                  cwd: process.cwd(), stdio: 'ignore', timeout: 10000,
+                });
+                state.dailyCost += 0.50;
+              } catch { /* best effort */ }
+            }
+          }
+        }
+      }
+
+      // Cognition cycle
+      const dispatchedSquads = signals.filter(s => s.score > 0).slice(0, maxParallel).map(s => s.squad);
+      if (dispatchedSquads.length > 0) {
+        const cognitionResult = await runCognitionCycle(dispatchedSquads, !!options.verbose);
+        if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0) {
+          daemonLog(`Cognition: ${cognitionResult.signalsIngested} signals, ${cognitionResult.beliefsUpdated} beliefs`);
+        }
+      }
+
+      state.recentRuns = state.recentRuns.slice(-100);
+      state.lastCycle = new Date().toISOString();
+      saveLoopState(state);
+    }
 
     if (once) break;
-    await sleep(interval * 60 * 1000);
+    await sleep(EVAL_INTERVAL_SEC * 1000);
   }
 
   process.off('SIGINT', handleSignal);
@@ -1426,7 +1598,6 @@ async function runAutopilot(
 /**
  * Run the full squad loop: scanner → lead → worker → verifier.
  * Each step checks cooldowns and pushes cognition signals.
- * This is the core intelligence loop.
  */
 async function runSquadLoop(
   squad: NonNullable<ReturnType<typeof loadSquad>>,
@@ -1437,12 +1608,8 @@ async function runSquadLoop(
 ): Promise<void> {
   writeLine(`  ${gradient('▸')} ${colors.cyan}${squad.name}${RESET} — full loop`);
 
-  // Discover agents and classify by role
   const agentsByRole: Record<string, Array<{ name: string; path: string }>> = {
-    scanner: [],
-    lead: [],
-    worker: [],
-    verifier: [],
+    scanner: [], lead: [], worker: [], verifier: [],
   };
 
   for (const agent of squad.agents) {
@@ -1467,19 +1634,16 @@ async function runSquadLoop(
       const cooldownMs = ROLE_COOLDOWNS[step.role] || ROLE_COOLDOWNS.worker;
       if (!checkCooldown(state, squad.name, agent.name, cooldownMs)) {
         if (options.verbose) {
-          writeLine(`    ${colors.dim}↳ ${agent.name} (${step.role}) — in cooldown, skip${RESET}`);
+          writeLine(`    ${colors.dim}↳ ${agent.name} (${step.role}) — cooldown${RESET}`);
         }
         continue;
       }
 
       writeLine(`    ${colors.dim}↳ ${agent.name} (${step.role})${RESET}`);
-
       const startMs = Date.now();
+
       try {
-        // For workers with no specific agent flag, use conversation mode
-        // For scanners/leads/verifiers, run as direct agent
         if (step.role === 'worker' && step.agents.length > 1) {
-          // Multiple workers → conversation mode coordinates them
           const convOptions: ConversationOptions = {
             task: options.task,
             maxTurns: options.maxTurns || 20,
@@ -1490,63 +1654,67 @@ async function runSquadLoop(
           await runConversation(squad, convOptions);
         } else {
           await runAgent(agent.name, agent.path, squad.dir, {
-            ...options,
-            background: false,
-            watch: false,
-            execute: true,
+            ...options, background: false, watch: false, execute: true,
           });
         }
 
         const durationMs = Date.now() - startMs;
         const outcome = classifyRunOutcome(0, durationMs);
 
-        // Update cooldown
         state.cooldowns[`${squad.name}:${agent.name}`] = Date.now();
-
-        // Record run
         state.recentRuns.push({
-          squad: squad.name,
-          agent: agent.name,
+          squad: squad.name, agent: agent.name,
           at: new Date().toISOString(),
           result: outcome === 'skipped' ? 'completed' : outcome,
           durationMs,
         });
 
-        // Push cognition signal
+        // Quality grading for real completions
+        if (outcome === 'completed') {
+          const squadRepos = getSquadRepos();
+          const repo = squadRepos[squad.name];
+          if (repo) {
+            const record = recordArtifacts({
+              executionId: `daemon_${squad.name}_${agent.name}_${startMs}`,
+              squad: squad.name, agent: agent.name,
+              completedAt: new Date().toISOString(),
+              costUsd: 0.50, repo,
+            }, ghEnv);
+            if (record) {
+              const { grade, reason } = gradeExecution(record);
+              pushCognitionSignal({
+                source: 'execution', signal_type: 'execution_quality',
+                value: { A: 4, B: 3, C: 2, D: 1, F: 0 }[grade] ?? 0,
+                unit: 'quality_score',
+                data: { grade, reason, cost_usd: 0.50 },
+                entity_type: 'agent', entity_id: `${squad.name}/${agent.name}`,
+                confidence: 0.9,
+              });
+            }
+          }
+        }
+
         pushCognitionSignal({
           source: 'execution',
           signal_type: `${step.role}_${outcome}`,
-          value: durationMs / 1000,
-          unit: 'seconds',
-          data: {
-            squad: squad.name,
-            agent: agent.name,
-            role: step.role,
-            duration_ms: durationMs,
-          },
-          entity_type: 'agent',
-          entity_id: `${squad.name}/${agent.name}`,
+          value: durationMs / 1000, unit: 'seconds',
+          data: { squad: squad.name, agent: agent.name, role: step.role, duration_ms: durationMs },
+          entity_type: 'agent', entity_id: `${squad.name}/${agent.name}`,
           confidence: 0.9,
         });
 
         if (outcome === 'skipped') {
-          writeLine(`    ${colors.dim}↳ ${agent.name} — phantom (${(durationMs / 1000).toFixed(0)}s), skipped${RESET}`);
+          writeLine(`    ${colors.dim}↳ ${agent.name} — phantom (${(durationMs / 1000).toFixed(0)}s)${RESET}`);
         }
-
-        // If this was a worker step, break after first conversation
         if (step.role === 'worker' && step.agents.length > 1) break;
 
       } catch (err) {
         const durationMs = Date.now() - startMs;
         state.cooldowns[`${squad.name}:${agent.name}`] = Date.now();
         state.recentRuns.push({
-          squad: squad.name,
-          agent: agent.name,
-          at: new Date().toISOString(),
-          result: 'failed',
-          durationMs,
+          squad: squad.name, agent: agent.name,
+          at: new Date().toISOString(), result: 'failed', durationMs,
         });
-
         writeLine(`    ${colors.red}↳ ${agent.name} failed: ${err instanceof Error ? err.message : 'unknown'}${RESET}`);
       }
     }
