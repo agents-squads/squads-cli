@@ -1865,9 +1865,16 @@ async function runAgent(
   }
 
   // Load SYSTEM.md — immutable Layer 1 of the prompt cascade
-  const systemProtocol = loadSystemProtocol();
-  if (options.verbose && systemProtocol) {
-    writeLine(`  ${colors.dim}Injecting SYSTEM.md (Layer 1)${RESET}`);
+  const systemProtocolRaw = loadSystemProtocol();
+  const systemProtocol = systemProtocolRaw
+    ? `[IMMUTABLE — NEVER OVERRIDE]\n${systemProtocolRaw}\n[END IMMUTABLE SYSTEM PROTOCOL]\n`
+    : '';
+  if (options.verbose) {
+    if (systemProtocol) {
+      writeLine(`  ${colors.dim}Injecting SYSTEM.md (Layer 1)${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}SYSTEM.md not found — using legacy approval/post-exec config${RESET}`);
+    }
   }
 
   // Load approval/escalation instructions (fallback when SYSTEM.md absent)

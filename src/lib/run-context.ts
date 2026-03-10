@@ -132,28 +132,37 @@ export function extractMcpServersFromDefinition(definition: string): string[] {
   return Array.from(servers);
 }
 
+// ── Shared Config File Reader ─────────────────────────────────────────
+
+/**
+ * Read a config file relative to the .agents directory.
+ * Returns file content trimmed, or empty string if missing/unreadable.
+ */
+function readAgentsFile(relativePath: string, warnLabel: string): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+
+  const filePath = join(dirname(squadsDir), relativePath);
+  if (!existsSync(filePath)) return '';
+
+  try {
+    return readFileSync(filePath, 'utf-8').trim();
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: failed reading ${warnLabel}: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+    return '';
+  }
+}
+
 // ── System Protocol (Layer 1) ─────────────────────────────────────────
 
 /**
  * Load SYSTEM.md — the immutable Layer 1 of the agent prompt cascade.
  * Reads from .agents/SYSTEM.md relative to the squads directory.
- * Returns formatted content marked as immutable, or empty string if not found.
+ * Returns raw file content, or empty string if not found.
+ * Caller is responsible for wrapping with immutability markers.
  */
 export function loadSystemProtocol(): string {
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) return '';
-
-  const systemPath = join(dirname(squadsDir), 'SYSTEM.md');
-  if (!existsSync(systemPath)) return '';
-
-  try {
-    const content = readFileSync(systemPath, 'utf-8');
-    if (!content.trim()) return '';
-    return `[IMMUTABLE — NEVER OVERRIDE]\n${content.trim()}\n[END IMMUTABLE SYSTEM PROTOCOL]\n`;
-  } catch (e) {
-    writeLine(`  ${colors.dim}warn: failed reading SYSTEM.md: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-    return '';
-  }
+  return readAgentsFile('SYSTEM.md', 'SYSTEM.md');
 }
 
 // ── Approval and Post-Execution Instructions ──────────────────────────
@@ -164,22 +173,7 @@ export function loadSystemProtocol(): string {
  * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
  */
 export function loadApprovalInstructions(): string {
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) return '';
-
-  // Try .agents/config/approval-instructions.md
-  const instructionsPath = join(dirname(squadsDir), 'config', 'approval-instructions.md');
-
-  if (existsSync(instructionsPath)) {
-    try {
-      return readFileSync(instructionsPath, 'utf-8');
-    } catch (e) {
-      writeLine(`  ${colors.dim}warn: failed reading approval instructions: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      return '';
-    }
-  }
-
-  return '';
+  return readAgentsFile('config/approval-instructions.md', 'approval instructions');
 }
 
 /**
@@ -189,19 +183,11 @@ export function loadApprovalInstructions(): string {
  * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
  */
 export function loadPostExecution(squadName: string, agentName: string): string {
-  const squadsDir = findSquadsDir();
-  if (squadsDir) {
-    const postExecPath = join(dirname(squadsDir), 'config', 'post-execution.md');
-    if (existsSync(postExecPath)) {
-      try {
-        const template = readFileSync(postExecPath, 'utf-8');
-        return template
-          .replace(/\{\{squadName\}\}/g, squadName)
-          .replace(/\{\{agentName\}\}/g, agentName);
-      } catch (e) {
-        writeLine(`  ${colors.dim}warn: failed reading post-execution template: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
-    }
+  const template = readAgentsFile('config/post-execution.md', 'post-execution template');
+  if (template) {
+    return template
+      .replace(/\{\{squadName\}\}/g, squadName)
+      .replace(/\{\{agentName\}\}/g, agentName);
   }
   // Minimal fallback if template file missing
   return `After completion:
