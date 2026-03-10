@@ -5,6 +5,10 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Run each test file in its own forked process so process.env mutations
+    // (GIT_DIR deletions in E2E beforeAll hooks) don't leak across concurrently
+    // running test files. Fixes parallel test failures in issue #578.
+    pool: 'forks',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
