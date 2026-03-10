@@ -31,90 +31,112 @@ squads status
 
 ## How It Works
 
+Everything in Squads is a plain text file. There are three concepts:
+
+- **`SQUAD.md`** — defines a team. Contains the squad's mission, goals, KPIs, and which agents belong to it. One per squad directory. **This file is edited by the human** to set direction.
+
+- **`agent.md`** (e.g. `code-review.md`, `issue-solver.md`) — defines one agent. Contains a role, a model preference, and instructions for what the agent should do. When you run it, Squads launches a coding session (Claude, Gemini, etc.) with these instructions as the prompt. **This file is edited by the human** to shape behavior.
+
+- **`memory/`** — where agents write what they learn. Execution state, learnings, past outcomes. Survives restarts, syncs via git, and is searchable across the entire organization. **This directory is written by agents** automatically.
+
+Context cascades down: system config (shared base) → squad definition (team goals) → agent definition (unique role) → memory (runtime context). Each layer adds specificity without repeating what's above it.
+
 ```
 .agents/
-├── config/
-│   └── SYSTEM.md              # Base behavior (shared across all agents)
 ├── squads/
 │   ├── engineering/
-│   │   ├── SQUAD.md            # Squad identity, goals, KPIs
-│   │   ├── code-review.md      # Agent definition
-│   │   └── backend.md          # Agent definition
+│   │   ├── SQUAD.md            # "Ship v2.0, reduce CI time below 3min"
+│   │   ├── code-review.md      # Reviews PRs for security and style
+│   │   └── issue-solver.md     # Picks up GitHub issues and writes fixes
 │   └── marketing/
-│       ├── SQUAD.md
-│       └── content.md
-└── memory/                     # Persistent state (auto-managed)
-    ├── engineering/
-    └── marketing/
+│       ├── SQUAD.md            # "Grow organic traffic 3x"
+│       └── content-writer.md   # Writes blog posts from research data
+└── memory/
+    ├── engineering/             # What engineering agents have learned
+    └── marketing/               # What marketing agents have learned
 ```
-
-**Context cascades down:** system config (base behavior) → squad definition (identity + goals) → agent definition (unique instructions) → runtime memory (ephemeral context).
-
-Everything is plain text. No databases, no servers, no config files beyond markdown.
 
 ## Running Agents
 
+There's one command with two modes: run a specific target, or run everything autonomously.
+
 ```bash
-# Run a specific agent
-squads run engineering/code-review
+# Run one agent — launches a session with its instructions
+squads run engineering/issue-solver
 
-# Run with a specific directive
-squads run engineering --task "Review all open PRs for security issues"
+# Run a squad — lead briefs the team, workers execute, verifier validates
+squads run engineering
 
-# Run a full squad conversation (lead briefs → workers iterate → convergence)
-squads run engineering --parallel
+# Give a directive — your priority overrides the lead's assessment
+squads run engineering --task "Fix all P0 bugs before Friday"
 
-# Autonomous scheduling with budget control
-squads autopilot --interval 30 --budget 50
+# Daemon mode — scores all squads, dispatches work, learns, repeats forever
+squads run
 ```
 
-## Base Squads
+When you run a squad, agents execute in a structured loop: **scanner** checks for work (open issues, failing CI), **lead** prioritizes and delegates, **workers** execute (write code, create PRs), **verifier** validates the output. Each agent writes what it learned to memory, so the next run starts smarter.
 
-These squads are battle-tested and produce real outputs autonomously:
+The daemon (`squads run` with no target) combines cron schedules from `SQUAD.md` with intelligent scoring. Every minute it evaluates which routines are due. Every N minutes it scores all squads based on open issues, PR status, and past outcomes — then dispatches full squad loops, grades the results (A-F), and feeds signals into the cognition engine. It runs as a detached background process.
 
-| Squad | What It Does | Agents |
-|-------|-------------|--------|
-| **engineering** | Code review, CI/CD, infrastructure, issue resolution | lead, scanner, worker, verifier, issue-solver |
-| **marketing** | Content creation, SEO, social media, brand voice | lead, writer, seo-analyst, social-scheduler |
-| **finance** | Budget tracking, cost analysis, financial reporting | lead, scanner, verifier, bookkeeper |
-| **operations** | Org health, agent performance, architecture gaps | lead, scanner, worker, verifier, critic |
-| **research** | Deep research, competitive intelligence, domain analysis | lead, analyst, synthesizer |
-| **product** | Roadmap, specs, user feedback synthesis, sprint planning | lead, scanner, worker |
-| **customer** | Inbound lead qualification, CRM, onboarding | lead, scanner, worker |
-| **website** | Site quality, SEO audits, content updates, testing | lead, scanner, tester |
+```bash
+squads run                     # Start daemon (detached)
+squads run --once --dry-run    # Preview one cycle without executing
+squads run -i 15 --budget 50   # 15-min scoring interval, $50/day cap
+squads run --status            # Show daemon status + scheduled routines
+squads run --stop              # Stop the daemon
+squads run --pause             # Pause without stopping
+squads run --resume            # Resume after pause
+```
 
-Each squad follows a consistent pattern: **lead** (coordinates), **scanner** (monitors), **worker** (executes), **verifier** (validates).
+## What You Can Build
+
+Squads ships with starter templates, but the real value is building squads for your domain. Here are patterns that work:
+
+| Pattern | Example | What Agents Do |
+|---------|---------|---------------|
+| **Code ops** | engineering squad | Scanner finds open issues, issue-solver writes fixes as PRs, verifier checks CI |
+| **Content pipeline** | marketing squad | Researcher gathers data, writer produces drafts, SEO analyst optimizes |
+| **Financial ops** | finance squad | Scanner pulls transactions, bookkeeper categorizes, verifier reconciles |
+| **Quality gates** | operations squad | Scanner audits agent performance, critic reviews output quality |
+| **Research** | research squad | Analyst investigates a topic, synthesizer produces intelligence briefs |
+| **Site monitoring** | website squad | Tester runs automated checks, scanner finds issues, lead files bugs |
+
+Every squad follows the same shape — **lead, scanner, worker, verifier** — but the instructions inside each `.md` file are completely different. You write the markdown, Squads handles the execution.
 
 ## Key Commands
 
 ```bash
-# Status & monitoring
+# Run
+squads run <squad>             # Run a full squad loop
+squads run <squad>/<agent>     # Run a single agent
+squads run                     # Start daemon (cron + scoring + cognition)
+squads run --stop              # Stop daemon
+squads run --status            # Show daemon status
+
+# Monitor
 squads status [squad]          # Overview of all squads
 squads dash                    # Dashboard with goals, metrics, git activity
-squads sessions                # Active AI coding sessions across your machine
-squads cost                    # Cost summary by squad and period
+squads sessions                # Detect active AI sessions across your machine
+squads cost                    # Cost summary by squad and time period
 squads doctor                  # Check local tools, auth, readiness
 
-# Memory & learning
+# Memory
 squads memory query "topic"    # Search across all agent memory
 squads memory write squad "x"  # Persist a learning
 squads memory read squad       # View squad knowledge
 squads memory sync             # Sync memory with git remote
 
-# Goals & tracking
+# Goals
 squads goal set squad "goal"   # Set a squad objective
 squads goal list               # View all goals and progress
 squads results [squad]         # Git activity + KPI goals vs actuals
-
-# Automation
-squads autonomous start        # Cron-style local scheduling
-squads autopilot               # Intelligent dispatch with budget control
-squads cognition               # Business cognition engine (beliefs, decisions)
 ```
 
-Run `squads --help` for the full command reference, or `squads <command> --help` for options.
+Run `squads --help` for the full command reference.
 
 ## Supported Providers
+
+Squads doesn't run models directly — it orchestrates existing CLI tools. Each provider is a coding assistant CLI that agents are dispatched to:
 
 | Provider | CLI | Models |
 |----------|-----|--------|
@@ -128,12 +150,12 @@ Run `squads --help` for the full command reference, or `squads <command> --help`
 
 ```bash
 squads run research --provider=google --model=gemini-2.5-flash
-squads providers    # List available providers
+squads providers    # List which CLIs are installed
 ```
 
 ## Prerequisites
 
-Squads orchestrates existing CLI tools. Install the ones your squads need:
+Install the tools your squads need:
 
 | Tool | Required | Used For |
 |------|----------|----------|
@@ -142,12 +164,11 @@ Squads orchestrates existing CLI tools. Install the ones your squads need:
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes (default provider) | Agent execution |
 | [GitHub CLI](https://cli.github.com) (`gh`) | Recommended | Issue tracking, PRs, project management |
 | [Google Cloud CLI](https://cloud.google.com/sdk) (`gcloud`) | Optional | GCP deployment, secrets |
-| [Google Workspace CLI](https://github.com/nicholasgasior/gws) (`gws`) | Optional | Drive, Gmail, Calendar, Sheets |
 | [Docker](https://www.docker.com) | Optional | Local Postgres/Redis for API |
 
 ## Claude Code Integration
 
-Squads hooks into Claude Code for automatic context injection:
+Squads hooks into Claude Code so every session starts with squad context and syncs memory when it ends:
 
 ```json
 {
