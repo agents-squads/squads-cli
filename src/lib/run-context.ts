@@ -132,11 +132,36 @@ export function extractMcpServersFromDefinition(definition: string): string[] {
   return Array.from(servers);
 }
 
+// ── System Protocol (Layer 1) ─────────────────────────────────────────
+
+/**
+ * Load SYSTEM.md — the immutable Layer 1 of the agent prompt cascade.
+ * Reads from .agents/SYSTEM.md relative to the squads directory.
+ * Returns formatted content marked as immutable, or empty string if not found.
+ */
+export function loadSystemProtocol(): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+
+  const systemPath = join(dirname(squadsDir), 'SYSTEM.md');
+  if (!existsSync(systemPath)) return '';
+
+  try {
+    const content = readFileSync(systemPath, 'utf-8');
+    if (!content.trim()) return '';
+    return `[IMMUTABLE — NEVER OVERRIDE]\n${content.trim()}\n[END IMMUTABLE SYSTEM PROTOCOL]\n`;
+  } catch (e) {
+    writeLine(`  ${colors.dim}warn: failed reading SYSTEM.md: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+    return '';
+  }
+}
+
 // ── Approval and Post-Execution Instructions ──────────────────────────
 
 /**
  * Load approval/escalation instructions from config file.
  * Returns the instructions content or empty string if not found.
+ * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
  */
 export function loadApprovalInstructions(): string {
   const squadsDir = findSquadsDir();
@@ -161,6 +186,7 @@ export function loadApprovalInstructions(): string {
  * Load post-execution instructions from .agents/config/post-execution.md.
  * Substitutes {{squadName}} and {{agentName}} placeholders.
  * Falls back to a minimal inline default if file not found.
+ * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
  */
 export function loadPostExecution(squadName: string, agentName: string): string {
   const squadsDir = findSquadsDir();
