@@ -24,16 +24,11 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import {
-  type LoopState,
-  type SquadSignal,
-  type GhIssue,
   MIN_PHANTOM_DURATION_MS,
-  defaultState,
   loadLoopState,
   saveLoopState,
   getSquadRepos,
   scoreSquads,
-  getLastRunAge,
   checkNewPRs,
   getPRsWithReviewFeedback,
   buildReviewTask,

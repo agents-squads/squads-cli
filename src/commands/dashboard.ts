@@ -2,7 +2,7 @@ import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
+import { fetchCostSummary, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase, getLatestBaseline, BaselineSnapshot } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';

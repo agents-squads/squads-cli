@@ -9,13 +9,10 @@
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import {
   colors,
   RESET,
-  bold,
   gradient,
-  icons,
   writeLine,
   padEnd,
 } from '../lib/terminal.js';

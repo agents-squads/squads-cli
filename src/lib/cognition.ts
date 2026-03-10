@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { findMemoryDir } from './memory.js';
 import { pushCognitionSignal, ingestMemorySignal } from './api-client.js';
 import { slackNotify } from './squad-loop.js';

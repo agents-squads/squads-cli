@@ -12,7 +12,6 @@
 
 import {
   computeAllScorecards,
-  getOutcomeRecords,
 } from '../lib/outcomes.js';
 import {
   generateWorkforceSummary,

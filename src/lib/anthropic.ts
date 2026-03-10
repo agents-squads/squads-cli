@@ -199,7 +199,7 @@ export async function uploadSkill(skillPath: string): Promise<Skill> {
 /**
  * Delete a skill by ID
  */
-export async function deleteSkill(skillId: string): Promise<void> {
+export async function deleteSkill(_skillId: string): Promise<void> {
   // Validate API key is available
   getClient();
 
@@ -214,7 +214,7 @@ export async function deleteSkill(skillId: string): Promise<void> {
 /**
  * Get skill details by ID
  */
-export async function getSkill(skillId: string): Promise<Skill | null> {
+export async function getSkill(_skillId: string): Promise<Skill | null> {
   // Validate API key is available
   getClient();
 
