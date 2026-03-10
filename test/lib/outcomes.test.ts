@@ -54,6 +54,19 @@ const mockExecSync = vi.mocked(execSync);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+function makeOutcomes(overrides: Partial<OutcomeRecord['outcomes']> = {}): OutcomeRecord['outcomes'] {
+  return {
+    issuesClosed: 0,
+    issuesOpen: 0,
+    prsMerged: 0,
+    prsClosedUnmerged: 0,
+    prsOpen: 0,
+    ciPassFirstPush: null,
+    reviewCycleHours: null,
+    ...overrides,
+  };
+}
+
 function makeRecord(overrides: Partial<OutcomeRecord> = {}): OutcomeRecord {
   return {
     executionId: 'exec-1',
@@ -62,15 +75,7 @@ function makeRecord(overrides: Partial<OutcomeRecord> = {}): OutcomeRecord {
     completedAt: new Date().toISOString(),
     costUsd: 1.0,
     artifacts: { issuesCreated: [], prsCreated: [], commits: 0 },
-    outcomes: {
-      issuesClosed: 0,
-      issuesOpen: 0,
-      prsMerged: 0,
-      prsClosedUnmerged: 0,
-      prsOpen: 0,
-      ciPassFirstPush: null,
-      reviewCycleHours: null,
-    },
+    outcomes: makeOutcomes(),
     lastPolledAt: new Date().toISOString(),
     settled: false,
     ...overrides,
@@ -110,7 +115,7 @@ describe('gradeExecution', () => {
   it('returns A when PR is merged', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [], prsCreated: [{ repo: 'r', number: 1 }], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 1, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsMerged: 1 }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('A');
@@ -120,7 +125,7 @@ describe('gradeExecution', () => {
   it('returns A with CI note when PR merged and CI passed', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [], prsCreated: [{ repo: 'r', number: 1 }], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 1, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: true, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsMerged: 1, ciPassFirstPush: true }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('A');
@@ -130,7 +135,7 @@ describe('gradeExecution', () => {
   it('returns B when issues closed', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [{ repo: 'r', number: 10 }], prsCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 1, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ issuesClosed: 1 }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('B');
@@ -140,7 +145,7 @@ describe('gradeExecution', () => {
   it('returns B when PR open and awaiting review', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [], prsCreated: [{ repo: 'r', number: 2 }], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 1, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsOpen: 1 }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('B');
@@ -150,7 +155,7 @@ describe('gradeExecution', () => {
   it('returns D when PR closed unmerged', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [], prsCreated: [{ repo: 'r', number: 3 }], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 1, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsClosedUnmerged: 1 }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('D');
@@ -160,7 +165,7 @@ describe('gradeExecution', () => {
   it('returns C when only commits exist (no PRs)', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [], prsCreated: [], commits: 3 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes(),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('C');
@@ -170,7 +175,7 @@ describe('gradeExecution', () => {
   it('returns C when only issues created (no code fix)', () => {
     const record = makeRecord({
       artifacts: { issuesCreated: [{ repo: 'r', number: 5 }], prsCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 1, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ issuesOpen: 1 }),
     });
     const result = gradeExecution(record);
     expect(result.grade).toBe('C');
@@ -197,8 +202,8 @@ describe('computeScorecard', () => {
 
   it('calculates merge rate correctly', () => {
     const records = [
-      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: { ...makeRecord().outcomes, prsMerged: 1, prsOpen: 0 } }),
-      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: { ...makeRecord().outcomes, prsMerged: 0, prsOpen: 1 } }),
+      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
+      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsOpen: 1 }) }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -220,7 +225,7 @@ describe('computeScorecard', () => {
 
   it('calculates cost per outcome', () => {
     const records = [
-      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: { ...makeRecord().outcomes, prsMerged: 1 } }),
+      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -290,7 +295,7 @@ describe('getAgentQualityScore', () => {
       executionId: 'e1',
       settled: true,
       artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 },
-      outcomes: { ...makeRecord().outcomes, prsMerged: 1 },
+      outcomes: makeOutcomes({ prsMerged: 1 }),
     });
     const waste = makeRecord({ executionId: 'e2', settled: true }); // F grade
     setupStore([merged, waste]);
@@ -341,10 +346,6 @@ describe('getOutcomeScoreModifier', () => {
       avgReviewCycleHours: 2, costPerOutcome: 1,
     };
     setupStore([], [card]);
-    // Also need settled records for quality score — use empty store for records
-    mockReadFileSync.mockReturnValue(
-      JSON.stringify({ records: [], scorecards: [card], lastUpdated: '' }) as never,
-    );
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
     expect(result).toBeLessThan(0); // penalty applied
   });
@@ -356,9 +357,7 @@ describe('getOutcomeScoreModifier', () => {
       issueResolutionRate: 0.6, ciPassRate: 0.9,
       avgReviewCycleHours: 1, costPerOutcome: 0.5,
     };
-    mockReadFileSync.mockReturnValue(
-      JSON.stringify({ records: [], scorecards: [card], lastUpdated: '' }) as never,
-    );
+    setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
     expect(result).toBeGreaterThan(0); // bonus applied
   });
@@ -435,7 +434,7 @@ describe('pollOutcomes', () => {
     const record = makeRecord({
       executionId: 'e1',
       artifacts: { prsCreated: [{ repo: 'owner/repo', number: 42 }], issuesCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 1, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsOpen: 1 }),
     });
     setupStore([record]);
 
@@ -458,7 +457,7 @@ describe('pollOutcomes', () => {
     const record = makeRecord({
       executionId: 'e1',
       artifacts: { prsCreated: [], issuesCreated: [{ repo: 'owner/repo', number: 10 }], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 1, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 0, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ issuesOpen: 1 }),
     });
     setupStore([record]);
     mockExecSync.mockReturnValue(JSON.stringify({ state: 'CLOSED' }) as never);
@@ -472,7 +471,7 @@ describe('pollOutcomes', () => {
     const record = makeRecord({
       executionId: 'e1',
       artifacts: { prsCreated: [{ repo: 'owner/repo', number: 1 }], issuesCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 1, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsOpen: 1 }),
     });
     setupStore([record]);
     mockExecSync.mockReturnValue(JSON.stringify({ state: 'OPEN', mergedAt: null, createdAt: new Date().toISOString(), statusCheckRollup: null }) as never);
@@ -485,7 +484,7 @@ describe('pollOutcomes', () => {
     const record = makeRecord({
       executionId: 'e1',
       artifacts: { prsCreated: [{ repo: 'owner/repo', number: 1 }], issuesCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 1, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsOpen: 1 }),
     });
     setupStore([record]);
     mockExecSync.mockImplementation(() => { throw new Error('gh: command not found'); });
@@ -500,7 +499,7 @@ describe('pollOutcomes', () => {
       executionId: 'e1',
       completedAt: oldDate,
       artifacts: { prsCreated: [{ repo: 'owner/repo', number: 1 }], issuesCreated: [], commits: 0 },
-      outcomes: { issuesClosed: 0, issuesOpen: 0, prsMerged: 0, prsClosedUnmerged: 0, prsOpen: 1, ciPassFirstPush: null, reviewCycleHours: null },
+      outcomes: makeOutcomes({ prsOpen: 1 }),
     });
     setupStore([record]);
     mockExecSync.mockReturnValue(JSON.stringify({ state: 'OPEN', mergedAt: null, createdAt: oldDate, statusCheckRollup: null }) as never);
