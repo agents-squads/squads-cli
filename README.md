@@ -1,6 +1,6 @@
-# squads
+# Agents Squads
 
-**Your AI workforce.** One person + AI teammates = a real business.
+**AI workforce for real businesses.** Finance, marketing, engineering, operations — for the cost of API calls, not salaries.
 
 [![npm version](https://img.shields.io/npm/v/squads-cli.svg)](https://www.npmjs.com/package/squads-cli)
 [![npm downloads](https://img.shields.io/npm/dw/squads-cli.svg)](https://www.npmjs.com/package/squads-cli)
