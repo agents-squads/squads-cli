@@ -5,6 +5,10 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Run each test file in an isolated forked subprocess.
+    // Prevents process.env mutations (GIT_DIR deletions in E2E beforeAll hooks)
+    // from leaking across concurrently-running test files. Fixes #578.
+    pool: 'forks',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
