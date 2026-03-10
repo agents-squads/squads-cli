@@ -61,7 +61,9 @@ function runCli(
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: opts.timeout ?? 30000,
-      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      // Override HOME so ~/.squads/ config writes land in cwd, not the real home.
+      // This prevents parallel test files from sharing daemon/config state.
+      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', HOME: cwd },
       input: opts.input,
     });
     return { stdout: stripAnsi(stdout), stderr: '', exitCode: 0, durationMs: Date.now() - start };
@@ -86,7 +88,7 @@ function logStep(step: Omit<StepResult, never>) {
 }
 
 // Create test dir once for the entire journey
-const JOURNEY_DIR = join(tmpdir(), `squads-first-run-${Date.now()}`);
+const JOURNEY_DIR = join(tmpdir(), `squads-first-run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
 mkdirSync(JOURNEY_DIR, { recursive: true });
 execSync('git init -q', { cwd: JOURNEY_DIR });
 testDir = JOURNEY_DIR;
