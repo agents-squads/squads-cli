@@ -704,7 +704,7 @@ export function computePhases(squadNames?: string[]): Map<number, string[]> {
   const processed = new Set<string>();
 
   // Process phases until all squads are assigned
-  let remaining = new Set([...deps.keys()]);
+  const remaining = new Set([...deps.keys()]);
 
   while (remaining.size > 0) {
     // Find all squads with in-degree 0 (no unresolved deps)
