@@ -275,6 +275,11 @@ describe('memorySearchCommand', () => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
+    process.env.SQUADS_BRIDGE_URL = 'http://test:8088';
+  });
+
+  afterEach(() => {
+    delete process.env.SQUADS_BRIDGE_URL;
   });
 
   it('resolves when bridge returns 503', async () => {
@@ -339,6 +344,11 @@ describe('memoryExtractCommand', () => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
+    process.env.SQUADS_BRIDGE_URL = 'http://test:8088';
+  });
+
+  afterEach(() => {
+    delete process.env.SQUADS_BRIDGE_URL;
   });
 
   it('resolves when bridge returns no conversations', async () => {
