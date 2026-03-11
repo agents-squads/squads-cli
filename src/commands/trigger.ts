@@ -13,8 +13,9 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { writeLine } from "../lib/terminal.js";
+import { getApiUrl } from "../lib/env-config.js";
 
-const API_URL = process.env.SQUADS_API_URL || process.env.SCHEDULER_URL || "http://localhost:8090";
+const API_URL = getApiUrl();
 
 interface Trigger {
   id: string;

@@ -17,12 +17,10 @@ interface StackConfig {
 }
 
 const DEFAULT_CONFIG: StackConfig = {
-  SQUADS_DATABASE_URL: 'postgresql://user:password@localhost:5432/squads',
-  SQUADS_BRIDGE_URL: 'http://localhost:8088',
-  LANGFUSE_HOST: 'http://localhost:3100',
+  SQUADS_BRIDGE_URL: '',
+  LANGFUSE_HOST: '',
   LANGFUSE_PUBLIC_KEY: '',
   LANGFUSE_SECRET_KEY: '',
-  REDIS_URL: 'redis://localhost:6379',
 };
 
 const CONFIG_PATH = join(homedir(), '.squadsrc');

@@ -130,8 +130,8 @@ interface ExecutionContext {
 }
 
 /**
- * Register execution context with the squads-bridge for telemetry
- * This allows the bridge to tag incoming OTel data with correct squad/agent info
+ * Register execution context with the API for telemetry
+ * This allows the API to tag incoming OTel data with correct squad/agent info
  */
 async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
   const bridgeUrl = getBridgeUrl();
@@ -147,6 +147,7 @@ async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean
         task_type: ctx.taskType,
         trigger: ctx.trigger,
       }),
+      signal: AbortSignal.timeout(3000),
     });
 
     if (!response.ok) {
@@ -182,6 +183,7 @@ async function checkPreflightGates(squad: string, agent: string): Promise<Prefli
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ squad, agent }),
+      signal: AbortSignal.timeout(3000),
     });
 
     if (!response.ok) {
@@ -211,7 +213,8 @@ async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): P
 
   try {
     const response = await fetch(
-      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`
+      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`,
+      { signal: AbortSignal.timeout(3000) }
     );
 
     if (!response.ok) {
