@@ -2099,10 +2099,13 @@ async function runAgent(
 
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
+  const taskDirective = options.task
+    ? `\n## TASK DIRECTIVE (overrides default behavior)\n${options.task}\n`
+    : '';
   const prompt = `Execute the ${agentName} agent from squad ${squadName}.
 
 Read the agent definition at ${agentPath} and follow its instructions exactly.
-
+${taskDirective}
 The agent definition contains:
 - Purpose/role
 - Tools it can use (MCP servers, skills)
