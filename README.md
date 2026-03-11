@@ -48,9 +48,77 @@ squads status
     └── marketing/
 ```
 
-**Context cascades down:** system config (base behavior) → squad definition (identity + goals) → agent definition (unique instructions) → runtime memory (ephemeral context).
+**Context cascades down:** `SYSTEM.md` (base behavior) → `SQUAD.md` (squad identity + goals) → `agent.md` (unique instructions) → `state.md` (ephemeral runtime context).
 
 Everything is plain text. No databases, no servers, no config files beyond markdown.
+
+## How Agents Think
+
+Squads uses a layered context cascade to give each agent exactly the right
+information for its role. Not too much (wasted tokens, confused agents),
+not too little (blind execution, duplicate work).
+
+### The Cascade
+
+Every agent execution loads context in priority order:
+
+| Layer | What | Why |
+|-------|------|-----|
+| System Protocol | Approvals, git workflow, escalation | Immutable rules every agent follows |
+| Squad Identity | Mission, aspirational goals, output format | Who am I, what do I produce |
+| Priorities | Current operational priorities | What to work on now (weekly) |
+| Directives | Company-wide strategic overlay | What matters to the org |
+| Feedback | Last cycle evaluation | What was valuable, what was noise |
+| Memory | Agent state from last run | What I already know |
+| Active Work | Open PRs and issues | What exists — don't duplicate |
+| Briefings | Daily briefing, cross-squad context | What's happening elsewhere |
+
+A token budget ensures context fits the model's window. Lower layers drop
+gracefully when budget runs out — identity and priorities always load,
+briefings drop first.
+
+### Goals vs Priorities
+
+Squads separates aspiration from execution:
+
+- **Goals** live in `SQUAD.md` — atemporal, aspirational ("Zero friction first-run")
+- **Priorities** live in `priorities.md` — temporal, operational ("Fix #461 this week")
+
+`squads goal set` writes aspirational goals. Priorities are updated by leads
+or founders between cycles. Both are injected — goals as squad identity,
+priorities as current focus.
+
+### Role-Based Depth
+
+Not every agent needs the same context:
+
+- **Scanners** get minimal context (identity + priorities + state) — they discover, don't decide
+- **Workers** add directives + feedback + active work — they execute with awareness
+- **Leads** get everything including cross-squad context — they orchestrate
+- **Evaluators** get org-wide summaries — they assess and generate feedback
+
+### The Feedback Loop
+
+After each execution cycle, a lead evaluates squad outputs against goals:
+what was valuable, what was noise, what to prioritize next. This evaluation
+is written to `feedback.md` and injected into the next cycle — closing the
+loop so agents learn from their own output quality over time.
+
+### Phase Ordering
+
+Squads declare dependencies in their SQUAD.md frontmatter:
+
+```yaml
+---
+name: product
+depends_on: [engineering, customer, research]
+---
+```
+
+The CLI automatically computes execution phases via topological sort.
+Squads with no dependencies run first. Squads with `depends_on: ["*"]`
+run last (evaluation). Within each phase, squads run in parallel.
+Use `squads run --phased` to enable phase-ordered execution.
 
 ## Running Agents
 

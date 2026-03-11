@@ -296,6 +296,7 @@ program
   .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
   .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
   .option('--once', 'Autopilot: run one cycle then exit')
+  .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)

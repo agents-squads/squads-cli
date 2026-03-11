@@ -4,11 +4,21 @@
  * Helpers for building agent execution context and parsing agent definitions.
  * Extracted from src/commands/run.ts to reduce its size.
  *
- * Responsibilities:
- * - Agent frontmatter parsing (acceptance_criteria, cooldown, max_retries, context_from)
- * - MCP server discovery from agent definitions
- * - Squad context assembly (SQUAD.md, goals, directives, state, briefs, learnings)
- * - Approval and post-execution instruction loading
+ * Context cascade (role-based, priority-ordered):
+ *   SYSTEM.md (immutable, outside budget)
+ *   1. SQUAD.md — mission + goals + output format
+ *   2. priorities.md — current operational priorities
+ *   3. directives.md — company-wide strategic overlay
+ *   4. feedback.md — last cycle evaluation
+ *   5. state.md — agent's memory from last execution
+ *   6. active-work.md — open PRs and issues
+ *   7. Agent briefs — agent-level briefing files
+ *   8. Squad briefs — squad-level briefing files
+ *   9. Daily briefing — org-wide daily briefing
+ *  10. Cross-squad learnings — shared learnings from other squads
+ *
+ * Sections load in priority order. When budget is exhausted, later sections drop.
+ * Role determines which sections are included and the total token budget.
  */
 
 import { join, dirname } from 'path';
@@ -17,14 +27,29 @@ import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
 
-// ── Constants ─────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────
 
-const DEFAULT_CONTEXT_TOKENS = 8000;
-const DEFAULT_FALLBACK_CHARS = 2000;
-const MAX_AGENT_BRIEFS = 3;
-const MAX_SQUAD_BRIEFS = 2;
-const MAX_LEARNINGS_CHARS = 1500;
-const MAX_LEAD_STATE_CHARS = 1000;
+export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo';
+
+// ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
+
+const ROLE_BUDGETS: Record<ContextRole, number> = {
+  scanner: 4000,   // ~1000 tokens — identity + priorities + state
+  worker: 12000,   // ~3000 tokens — + directives, feedback, active-work
+  lead: 24000,     // ~6000 tokens — all sections
+  coo: 32000,      // ~8000 tokens — all sections + expanded
+};
+
+/**
+ * Which sections each role gets access to.
+ * Numbers correspond to section order in the cascade.
+ */
+const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
+  scanner: new Set([1, 2, 5]),                        // SQUAD.md, priorities, state
+  worker:  new Set([1, 2, 3, 4, 5, 6]),               // + directives, feedback, active-work
+  lead:    new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),  // all sections
+  coo:     new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),  // all sections + expanded budget
+};
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
 
@@ -43,9 +68,15 @@ export interface AgentFrontmatter {
  * Handles non-standard format where frontmatter appears after a heading.
  */
 export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
-  if (!existsSync(agentPath)) return {};
+  if (!agentPath || !existsSync(agentPath)) return {};
 
-  const content = readFileSync(agentPath, 'utf-8');
+  let content: string;
+  try {
+    content = readFileSync(agentPath, 'utf-8');
+  } catch {
+    return {};
+  }
+  if (!content) return {};
   const lines = content.split('\n');
   let inFrontmatter = false;
   const yamlLines: string[] = [];
@@ -153,34 +184,32 @@ function readAgentsFile(relativePath: string, warnLabel: string): string {
   }
 }
 
-// ── System Protocol (Layer 1) ─────────────────────────────────────────
+// ── System Protocol ───────────────────────────────────────────────────
 
 /**
- * Load SYSTEM.md — the immutable Layer 1 of the agent prompt cascade.
- * Reads from .agents/SYSTEM.md relative to the squads directory.
- * Returns raw file content, or empty string if not found.
- * Caller is responsible for wrapping with immutability markers.
+ * Load SYSTEM.md — the single base protocol for all agents.
+ * Replaces the old approval-instructions.md + post-execution.md split.
+ * Falls back to legacy approval-instructions.md if SYSTEM.md doesn't exist.
  */
 export function loadSystemProtocol(): string {
-  return readAgentsFile('SYSTEM.md', 'SYSTEM.md');
+  const systemMd = readAgentsFile('config/SYSTEM.md', 'SYSTEM.md');
+  if (systemMd) return systemMd;
+
+  // Fallback to legacy approval-instructions.md
+  return loadApprovalInstructions();
 }
 
-// ── Approval and Post-Execution Instructions ──────────────────────────
-
 /**
- * Load approval/escalation instructions from config file.
- * Returns the instructions content or empty string if not found.
- * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
+ * Legacy: load approval instructions. Kept for backward compat — prefer SYSTEM.md.
+ * @deprecated Absorbed into SYSTEM.md. Used as fallback when SYSTEM.md absent.
  */
 export function loadApprovalInstructions(): string {
   return readAgentsFile('config/approval-instructions.md', 'approval instructions');
 }
 
 /**
- * Load post-execution instructions from .agents/config/post-execution.md.
- * Substitutes {{squadName}} and {{agentName}} placeholders.
- * Falls back to a minimal inline default if file not found.
- * @deprecated Absorbed into SYSTEM.md (Layer 1). Used as fallback when SYSTEM.md absent.
+ * Legacy: load post-execution instructions.
+ * @deprecated Absorbed into SYSTEM.md. Used as fallback when SYSTEM.md absent.
  */
 export function loadPostExecution(squadName: string, agentName: string): string {
   const template = readAgentsFile('config/post-execution.md', 'post-execution template');
@@ -189,250 +218,201 @@ export function loadPostExecution(squadName: string, agentName: string): string 
       .replace(/\{\{squadName\}\}/g, squadName)
       .replace(/\{\{agentName\}\}/g, agentName);
   }
-  // Minimal fallback if template file missing
-  return `After completion:
-- Create a branch, commit with Conventional Commits, push, and open a PR targeting develop
-- NEVER commit to main directly
-- Type /exit when done`;
+  return '';
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+/** Safely read a file, returning empty string on failure */
+function safeRead(path: string): string {
+  try {
+    return existsSync(path) ? readFileSync(path, 'utf-8').trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Read all .md files from a directory, concatenated */
+function readDirMd(dirPath: string, maxChars: number): string {
+  if (!existsSync(dirPath)) return '';
+  try {
+    const files = readdirSync(dirPath).filter(f => f.endsWith('.md')).sort();
+    const parts: string[] = [];
+    let totalChars = 0;
+    for (const file of files) {
+      const content = safeRead(join(dirPath, file));
+      if (!content) continue;
+      if (totalChars + content.length > maxChars) break;
+      parts.push(content);
+      totalChars += content.length;
+    }
+    return parts.join('\n\n');
+  } catch {
+    return '';
+  }
 }
 
 // ── Squad Context Assembly ────────────────────────────────────────────
 
 /**
  * Gather squad context for prompt injection.
- * Includes SQUAD.md mission/goals, agent's existing state, and relevant briefs.
- * This ensures agents build on existing knowledge rather than starting from scratch.
+ *
+ * Role-based context cascade (10 sections, priority-ordered):
+ * Sections load in order until the token budget is exhausted.
+ * Missing files are skipped gracefully — no crashes on first run or new squads.
  */
 export function gatherSquadContext(
   squadName: string,
   agentName: string,
-  options: { verbose?: boolean; maxTokens?: number; agentPath?: string } = {}
+  options: { verbose?: boolean; maxTokens?: number; agentPath?: string; role?: ContextRole } = {}
 ): string {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return '';
 
   const memoryDir = findMemoryDir();
-  const maxTokens = options.maxTokens || DEFAULT_CONTEXT_TOKENS;
+  const role = options.role || 'worker';
+  const budget = options.maxTokens ? options.maxTokens * 4 : ROLE_BUDGETS[role];
+  const allowedSections = ROLE_SECTIONS[role];
   const sections: string[] = [];
-  let estimatedTokens = 0;
+  let usedChars = 0;
 
-  // Helper to estimate tokens (rough: ~4 chars per token)
-  const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+  /** Try to add a section. Returns true if added, false if budget exceeded or not allowed. */
+  function addSection(sectionNum: number, header: string, content: string, maxChars?: number): boolean {
+    if (!allowedSections.has(sectionNum)) return false;
+    if (!content) return false;
 
-  // 1. SQUAD.md - mission, goals, and key context
+    let text = content;
+    const cap = maxChars || (budget - usedChars);
+    if (text.length > cap) {
+      text = text.substring(0, cap) + '\n...';
+    }
+
+    if (usedChars + text.length > budget) {
+      // Budget exhausted — drop this and all later sections
+      if (options.verbose) {
+        writeLine(`  ${colors.dim}Context budget exhausted at section ${sectionNum} (${header})${RESET}`);
+      }
+      return false;
+    }
+
+    sections.push(`## ${header}\n${text}`);
+    usedChars += text.length;
+    return true;
+  }
+
+  // ── Section 1: SQUAD.md ──
   const squadFile = join(squadsDir, squadName, 'SQUAD.md');
   if (existsSync(squadFile)) {
     try {
-      const squadContent = readFileSync(squadFile, 'utf-8');
-      // Extract key sections (skip frontmatter YAML, focus on mission/goals/output)
-      const missionMatch = squadContent.match(/## Mission[\s\S]*?(?=\n## |$)/i);
-      const goalsMatch = squadContent.match(/## (?:Goals|Objectives)[\s\S]*?(?=\n## |$)/i);
-      const outputMatch = squadContent.match(/## Output[\s\S]*?(?=\n## |$)/i);
-      const contextMatch = squadContent.match(/## Context[\s\S]*?(?=\n## |$)/i);
-
-      let squadContext = '';
-      if (missionMatch) squadContext += missionMatch[0] + '\n';
-      if (goalsMatch) squadContext += goalsMatch[0] + '\n';
-      if (outputMatch) squadContext += outputMatch[0] + '\n';
-      if (contextMatch) squadContext += contextMatch[0] + '\n';
-
-      // If no structured sections found, include first 2000 chars
-      if (!squadContext && squadContent.length > 0) {
-        squadContext = squadContent.substring(0, DEFAULT_FALLBACK_CHARS);
-      }
-
-      if (squadContext) {
-        const tokens = estimateTokens(squadContext);
-        if (estimatedTokens + tokens < maxTokens) {
-          sections.push(`## Squad Context (${squadName})\n${squadContext.trim()}`);
-          estimatedTokens += tokens;
-        }
-      }
+      const content = readFileSync(squadFile, 'utf-8');
+      // Extract mission section; fall back to first N chars
+      const missionMatch = content.match(/## Mission[\s\S]*?(?=\n## |$)/i);
+      const squad = missionMatch ? missionMatch[0] : content.substring(0, 2000);
+      addSection(1, `Squad: ${squadName}`, squad.trim());
     } catch (e) {
       if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading SQUAD.md: ${e instanceof Error ? e.message : String(e)}${RESET}`);
     }
   }
 
-  // 2. Squad goals - current objectives set by founder/cofounder
+  // ── Section 2: priorities.md (fallback to goals.md for backward compat) ──
   if (memoryDir) {
+    const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
     const goalsFile = join(memoryDir, squadName, 'goals.md');
-    if (existsSync(goalsFile)) {
-      try {
-        const goalsContent = readFileSync(goalsFile, 'utf-8');
-        const tokens = estimateTokens(goalsContent);
-        if (estimatedTokens + tokens < maxTokens && goalsContent.trim()) {
-          sections.push(`## Squad Goals (${squadName})\n${goalsContent.trim()}`);
-          estimatedTokens += tokens;
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading squad goals: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const file = existsSync(prioritiesFile) ? prioritiesFile : goalsFile;
+    const content = safeRead(file);
+    if (content) {
+      addSection(2, 'Priorities', content);
     }
   }
 
-  // 3. Company directives - strategic directives that override everything
+  // ── Section 3: directives.md ──
   if (memoryDir) {
     const directivesFile = join(memoryDir, 'company', 'directives.md');
-    if (existsSync(directivesFile)) {
-      try {
-        const directivesContent = readFileSync(directivesFile, 'utf-8');
-        const tokens = estimateTokens(directivesContent);
-        if (estimatedTokens + tokens < maxTokens && directivesContent.trim()) {
-          sections.push(`## Company Directives\n${directivesContent.trim()}`);
-          estimatedTokens += tokens;
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading company directives: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const content = safeRead(directivesFile);
+    if (content) {
+      addSection(3, 'Directives', content);
     }
   }
 
-  // 4. Agent's existing state - what the agent knows from prior runs
+  // ── Section 4: feedback.md ──
+  if (memoryDir) {
+    const feedbackFile = join(memoryDir, squadName, 'feedback.md');
+    const content = safeRead(feedbackFile);
+    if (content) {
+      addSection(4, 'Feedback', content);
+    }
+  }
+
+  // ── Section 5: state.md ──
   if (memoryDir) {
     const stateFile = join(memoryDir, squadName, agentName, 'state.md');
-    if (existsSync(stateFile)) {
-      try {
-        const stateContent = readFileSync(stateFile, 'utf-8');
-        const tokens = estimateTokens(stateContent);
-
-        if (estimatedTokens + tokens < maxTokens && stateContent.trim()) {
-          sections.push(`## Your Previous State\nThis is your memory from your last execution:\n\n${stateContent.trim()}`);
-          estimatedTokens += tokens;
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading agent state: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const content = safeRead(stateFile);
+    if (content) {
+      // Scanner gets capped state, lead/coo get full
+      const stateCap = role === 'scanner' ? 2000 : undefined;
+      addSection(5, 'Previous State', content, stateCap);
     }
   }
 
-  // 5. Related briefs (if any exist in memory/squad/agent/briefs/)
+  // ── Section 6: active-work.md ──
+  if (memoryDir) {
+    const activeWorkFile = join(memoryDir, squadName, 'active-work.md');
+    const content = safeRead(activeWorkFile);
+    if (content) {
+      addSection(6, 'Active Work', content);
+    }
+  }
+
+  // ── Section 7: Agent briefs ──
   if (memoryDir) {
     const briefsDir = join(memoryDir, squadName, agentName, 'briefs');
-    if (existsSync(briefsDir)) {
-      try {
-        const briefFiles = readdirSync(briefsDir)
-          .filter(f => f.endsWith('.md'))
-          .slice(0, MAX_AGENT_BRIEFS);
-
-        for (const briefFile of briefFiles) {
-          const briefPath = join(briefsDir, briefFile);
-          const briefContent = readFileSync(briefPath, 'utf-8');
-          const tokens = estimateTokens(briefContent);
-
-          if (estimatedTokens + tokens < maxTokens) {
-            sections.push(`## Brief: ${briefFile.replace('.md', '')}\n${briefContent.trim()}`);
-            estimatedTokens += tokens;
-          } else {
-            break; // Stop adding briefs if we're over budget
-          }
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading agent briefs: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const content = readDirMd(briefsDir, 3000);
+    if (content) {
+      addSection(7, 'Agent Briefs', content);
     }
   }
 
-  // 6. Squad-level briefs (shared context for all agents in squad)
+  // ── Section 8: Squad briefs ──
   if (memoryDir) {
-    const squadBriefsDir = join(memoryDir, squadName, '_briefs');
-    if (existsSync(squadBriefsDir)) {
-      try {
-        const squadBriefs = readdirSync(squadBriefsDir)
-          .filter(f => f.endsWith('.md'))
-          .slice(0, MAX_SQUAD_BRIEFS);
-
-        for (const briefFile of squadBriefs) {
-          const briefPath = join(squadBriefsDir, briefFile);
-          const briefContent = readFileSync(briefPath, 'utf-8');
-          const tokens = estimateTokens(briefContent);
-
-          if (estimatedTokens + tokens < maxTokens) {
-            sections.push(`## Squad Brief: ${briefFile.replace('.md', '')}\n${briefContent.trim()}`);
-            estimatedTokens += tokens;
-          } else {
-            break;
-          }
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading squad briefs: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const briefsDir = join(memoryDir, squadName, '_briefs');
+    const content = readDirMd(briefsDir, 3000);
+    if (content) {
+      addSection(8, 'Squad Briefs', content);
     }
   }
 
-  // 7. Daily briefing (cross-squad context)
+  // ── Section 9: Daily briefing ──
   if (memoryDir) {
-    const briefingPath = join(memoryDir, 'daily-briefing.md');
-    if (existsSync(briefingPath)) {
-      try {
-        const briefingContent = readFileSync(briefingPath, 'utf-8');
-        if (briefingContent.trim()) {
-          const tokens = estimateTokens(briefingContent);
-          if (estimatedTokens + tokens < maxTokens) {
-            sections.push(`## Daily Briefing\n${briefingContent.trim()}`);
-            estimatedTokens += tokens;
-          }
-        }
-      } catch (e) {
-        if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading daily briefing: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-      }
+    const dailyFile = join(memoryDir, 'daily-briefing.md');
+    const content = safeRead(dailyFile);
+    if (content) {
+      addSection(9, 'Daily Briefing', content);
     }
   }
 
-  // 8. Cross-squad learnings (from context_from in agent frontmatter)
-  if (memoryDir && options.agentPath) {
-    const frontmatter = parseAgentFrontmatter(options.agentPath);
-    if (frontmatter.context_from && frontmatter.context_from.length > 0) {
-      for (const relatedSquad of frontmatter.context_from) {
-        // Related squad shared learnings
-        const learningsPath = join(memoryDir, relatedSquad, 'shared', 'learnings.md');
-        if (existsSync(learningsPath)) {
-          try {
-            let learningsContent = readFileSync(learningsPath, 'utf-8');
-            if (learningsContent.trim()) {
-              if (learningsContent.length > MAX_LEARNINGS_CHARS) {
-                learningsContent = learningsContent.slice(0, MAX_LEARNINGS_CHARS) + '\n...(truncated)';
-              }
-              const tokens = estimateTokens(learningsContent);
-              if (estimatedTokens + tokens < maxTokens) {
-                sections.push(`## ${relatedSquad} Squad Learnings\n${learningsContent.trim()}`);
-                estimatedTokens += tokens;
-              }
-            }
-          } catch (e) {
-            if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading ${relatedSquad} learnings: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-          }
-        }
-
-        // Related squad lead state
-        const leadStatePath = join(memoryDir, relatedSquad, `${relatedSquad}-lead`, 'state.md');
-        if (existsSync(leadStatePath)) {
-          try {
-            let leadState = readFileSync(leadStatePath, 'utf-8');
-            if (leadState.trim()) {
-              if (leadState.length > MAX_LEAD_STATE_CHARS) {
-                leadState = leadState.slice(0, MAX_LEAD_STATE_CHARS) + '\n...(truncated)';
-              }
-              const tokens = estimateTokens(leadState);
-              if (estimatedTokens + tokens < maxTokens) {
-                sections.push(`## ${relatedSquad} Lead State\n${leadState.trim()}`);
-                estimatedTokens += tokens;
-              }
-            }
-          } catch (e) {
-            if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading ${relatedSquad} lead state: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-          }
-        }
+  // ── Section 10: Cross-squad learnings ──
+  if (memoryDir) {
+    // Load from context_from squads if defined in agent frontmatter
+    const frontmatter = options.agentPath ? parseAgentFrontmatter(options.agentPath) : {};
+    const contextSquads = frontmatter.context_from || [];
+    const learningParts: string[] = [];
+    for (const ctx of contextSquads) {
+      const learningsFile = join(memoryDir, ctx, 'shared', 'learnings.md');
+      const content = safeRead(learningsFile);
+      if (content) {
+        learningParts.push(`### ${ctx}\n${content}`);
       }
+    }
+    if (learningParts.length > 0) {
+      addSection(10, 'Cross-Squad Learnings', learningParts.join('\n\n'));
     }
   }
 
-  if (sections.length === 0) {
-    return '';
-  }
+  if (sections.length === 0) return '';
 
   if (options.verbose) {
-    writeLine(`  ${colors.dim}Context: ${sections.length} sections (~${estimatedTokens} tokens)${RESET}`);
+    writeLine(`  ${colors.dim}Context: ${sections.length} sections, ~${Math.ceil(usedChars / 4)} tokens (${role} role, budget: ~${Math.ceil(budget / 4)})${RESET}`);
   }
 
-  return `\n# EXISTING CONTEXT\nBuild on this existing knowledge - do NOT start from scratch:\n\n${sections.join('\n\n')}\n`;
+  return `\n# CONTEXT\n${sections.join('\n\n')}\n`;
 }

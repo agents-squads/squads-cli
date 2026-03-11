@@ -26,6 +26,10 @@ import {
   type Squad,
   findSquadsDir,
 } from './squad-parser.js';
+import {
+  type ContextRole,
+  gatherSquadContext,
+} from './run-context.js';
 
 // =============================================================================
 // Configuration
@@ -70,8 +74,14 @@ interface AgentTurnConfig {
 function executeAgentTurn(config: AgentTurnConfig): string {
   const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
-  // Build the prompt: agent definition + transcript context + role instructions
+  // Build the prompt: agent definition + squad context + transcript context + role instructions
   const transcriptContext = serializeTranscript(transcript);
+
+  // Inject role-based squad context (priorities, feedback, active work, etc.)
+  const contextRole: ContextRole = agentName.includes('company-lead') ? 'coo' : (role as ContextRole);
+  const squadContext = gatherSquadContext(squadName, agentName, {
+    agentPath, role: contextRole
+  });
 
   let roleInstructions: string;
   switch (role) {
@@ -101,7 +111,7 @@ function executeAgentTurn(config: AgentTurnConfig): string {
 Read your full agent definition at ${agentPath} and follow its instructions.
 
 ${roleInstructions}
-
+${squadContext}
 ${transcriptContext}
 
 IMPORTANT:
@@ -115,6 +125,8 @@ IMPORTANT:
   const resolvedModel = config.model || modelForRole(role);
 
   // Execute via claude --print (captures output)
+  // Strip CLAUDECODE and ANTHROPIC_API_KEY so child process uses Max subscription
+  const { CLAUDECODE: _cc, ANTHROPIC_API_KEY: _ak, ...cleanEnv } = process.env;
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   try {
@@ -125,11 +137,7 @@ IMPORTANT:
         timeout: 15 * 60 * 1000, // 15 min per turn
         maxBuffer: 10 * 1024 * 1024, // 10MB
         encoding: 'utf-8',
-        env: {
-          ...process.env,
-          CLAUDECODE: '', // Allow nested sessions
-          ANTHROPIC_API_KEY: undefined, // Use Max subscription
-        },
+        env: cleanEnv,
       }
     );
     return output.trim();
@@ -189,6 +197,7 @@ IMPORTANT:
 - When done, summarize what you did in 2-3 sentences.`;
 
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const { CLAUDECODE: _cc2, ANTHROPIC_API_KEY: _ak2, ...cleanEnvAsync } = process.env;
 
   return new Promise((resolve) => {
     exec(
@@ -198,11 +207,7 @@ IMPORTANT:
         timeout: 15 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf-8',
-        env: {
-          ...process.env,
-          CLAUDECODE: '',
-          ANTHROPIC_API_KEY: undefined as unknown as string,
-        },
+        env: cleanEnvAsync,
       },
       (error: Error | null, stdout: string, _stderr: string) => {
         if (stdout && stdout.trim().length > 0) {

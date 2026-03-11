@@ -26,6 +26,11 @@ vi.mock('../../src/lib/squad-parser.js', () => ({
   findSquadsDir: vi.fn(),
 }));
 
+// Mock run-context to avoid file system reads in unit tests
+vi.mock('../../src/lib/run-context.js', () => ({
+  gatherSquadContext: vi.fn().mockReturnValue(''),
+}));
+
 // Mock conversation to keep tests fast
 vi.mock('../../src/lib/conversation.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/conversation.js')>('../../src/lib/conversation.js');
