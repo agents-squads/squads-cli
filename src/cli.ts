@@ -297,6 +297,7 @@ program
   .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
   .option('--once', 'Autopilot: run one cycle then exit')
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
+  .option('--no-eval', 'Skip post-run COO evaluation')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
