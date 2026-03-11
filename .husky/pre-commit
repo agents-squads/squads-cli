@@ -2,64 +2,51 @@
 # Pre-commit hook: block PII and internal references on public repo
 # squads-cli is PUBLIC — never commit client names, personal emails, internal strategy
 
-# Patterns that must NEVER appear in staged files
-# Add patterns as needed — this is a safety net, not a replacement for review
-BLOCKED_PATTERNS=(
-  # Client names (real companies we work with)
-  "innspiral"
-  "sg2030"
-  "parque.arauco"
-  "sodimac"
-  "enaex"
-  "hortifrut"
-  "aguas.andinas"
-  "cmpc"
-  "Andes.Moves"
-  "Andes.Movements"
-  # Internal references
-  "squads-hq"
-  # Personal emails (add more as needed)
-  "kokevidaurre@"
-  "jorgevidaurre@"
-  # Strategy/financial
-  "burn.rate"
-  "runway"
-  "consulting.revenue"
-  "pricing-strategy"
-)
+# Load blocked patterns from local file (NOT committed to git)
+# To set up: create .husky/.blocked-patterns with one pattern per line
+# Example:
+#   client-name
+#   personal@email
+#   internal-term
+PATTERNS_FILE="$(dirname "$0")/.blocked-patterns"
 
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -f "$PATTERNS_FILE" ]; then
+  STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
 
-if [ -z "$STAGED_FILES" ]; then
-  exit 0
-fi
+  if [ -n "$STAGED_FILES" ]; then
+    FOUND=0
+    while IFS= read -r pattern || [ -n "$pattern" ]; do
+      # Skip empty lines and comments
+      case "$pattern" in
+        ""|\#*) continue ;;
+      esac
 
-FOUND=0
-for pattern in "${BLOCKED_PATTERNS[@]}"; do
-  # Search staged content (not just filenames)
-  MATCHES=$(git diff --cached -U0 | grep -iE "^\+" | grep -iE "$pattern" | head -3)
-  if [ -n "$MATCHES" ]; then
-    if [ "$FOUND" -eq 0 ]; then
+      MATCHES=$(git diff --cached -U0 | grep -iE "^\+" | grep -iE "$pattern" | head -3)
+      if [ -n "$MATCHES" ]; then
+        if [ "$FOUND" -eq 0 ]; then
+          echo ""
+          echo "BLOCKED: PII or internal reference detected in staged changes"
+          echo "This is a PUBLIC repo. The following patterns are not allowed:"
+          echo ""
+        fi
+        echo "  Pattern: $pattern"
+        echo "  $MATCHES"
+        echo ""
+        FOUND=1
+      fi
+    done < "$PATTERNS_FILE"
+
+    if [ "$FOUND" -eq 1 ]; then
+      echo "Fix: Remove the flagged content, then commit again."
+      echo "Override: git commit --no-verify (use ONLY if you're sure it's a false positive)"
       echo ""
-      echo "BLOCKED: PII or internal reference detected in staged changes"
-      echo "This is a PUBLIC repo. The following patterns are not allowed:"
-      echo ""
+      exit 1
     fi
-    echo "  Pattern: $pattern"
-    echo "  $MATCHES"
-    echo ""
-    FOUND=1
   fi
-done
-
-if [ "$FOUND" -eq 1 ]; then
-  echo "Fix: Remove the flagged content, then commit again."
-  echo "Override: git commit --no-verify (use ONLY if you're sure it's a false positive)"
-  echo ""
-  exit 1
 fi
 
 # Quality gate: if source or test files changed, run build + tests
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
 SRC_CHANGED=$(echo "$STAGED_FILES" | grep -E '\.(ts|tsx|js)$' | head -1)
 if [ -n "$SRC_CHANGED" ]; then
   echo "Quality gate: source files changed — running build + tests..."
