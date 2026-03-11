@@ -2442,6 +2442,37 @@ function createAgentWorktree(projectRoot: string, squadName: string, agentName: 
   }
 }
 
+/** Remove a worktree and its branch after agent execution completes */
+function cleanupWorktree(worktreePath: string, projectRoot: string): void {
+  if (worktreePath === projectRoot) return; // fallback mode, nothing to clean
+
+  try {
+    // Extract branch name from worktree before removing
+    const branchInfo = execSync(`git -C '${projectRoot}' worktree list --porcelain`, { encoding: 'utf-8' });
+    let branchName = '';
+    const lines = branchInfo.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === `worktree ${worktreePath}` && i + 2 < lines.length) {
+        const branchLine = lines[i + 2]; // "branch refs/heads/..."
+        if (branchLine.startsWith('branch refs/heads/')) {
+          branchName = branchLine.replace('branch refs/heads/', '');
+        }
+        break;
+      }
+    }
+
+    // Remove worktree
+    execSync(`git -C '${projectRoot}' worktree remove '${worktreePath}' --force`, { stdio: 'pipe' });
+
+    // Delete the agent branch (only agent/* branches, safety check)
+    if (branchName && branchName.startsWith('agent/')) {
+      execSync(`git -C '${projectRoot}' branch -D '${branchName}'`, { stdio: 'pipe' });
+    }
+  } catch {
+    // Non-critical — worktree prune will catch it later
+  }
+}
+
 /** Build shell script for detached execution with worktree isolation */
 function buildDetachedShellScript(config: {
   projectRoot: string;
@@ -2456,7 +2487,8 @@ function buildDetachedShellScript(config: {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
   const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const cleanup = `if [ "\${WORK_DIR}" != '${config.projectRoot}' ]; then git -C '${config.projectRoot}' worktree remove "\${WORK_DIR}" --force 2>/dev/null; BRANCH='${branchName}'; git -C '${config.projectRoot}' branch -D "\${BRANCH}" 2>/dev/null; fi`;
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1; ${cleanup}`;
   return `echo $$ > '${config.pidFile}'; ${script}`;
 }
 
@@ -2509,12 +2541,14 @@ function executeForeground(config: {
           writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
         }
 
+        cleanupWorktree(workDir, config.projectRoot);
         resolve('Session completed');
       } else {
         updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
           error: `Claude exited with code ${code}`,
           durationMs,
         });
+        cleanupWorktree(workDir, config.projectRoot);
         reject(new Error(`Claude exited with code ${code}`));
       }
     });
@@ -2525,6 +2559,7 @@ function executeForeground(config: {
         error: String(err),
         durationMs,
       });
+      cleanupWorktree(workDir, config.projectRoot);
       reject(err);
     });
   });
@@ -2810,6 +2845,7 @@ async function executeWithProvider(
       });
 
       proc.on('close', (code) => {
+        cleanupWorktree(workDir, projectRoot);
         if (code === 0) {
           resolve('Session completed');
         } else {
@@ -2818,6 +2854,7 @@ async function executeWithProvider(
       });
 
       proc.on('error', (err) => {
+        cleanupWorktree(workDir, projectRoot);
         reject(err);
       });
     });
@@ -2834,7 +2871,10 @@ async function executeWithProvider(
 
   const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
   const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const cleanupCmd = workDir !== projectRoot
+    ? `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null; git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null`
+    : '';
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
