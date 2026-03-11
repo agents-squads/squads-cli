@@ -114,6 +114,7 @@ interface RunOptions {
   budget?: number | string; // Autopilot: daily budget cap ($)
   once?: boolean; // Autopilot: run one cycle then exit
   phased?: boolean; // Autopilot: use dependency-based phase ordering
+  eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
 }
 
 /**
@@ -1030,6 +1031,8 @@ export async function runCommand(
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
     await flushEvents(); // Ensure telemetry is sent before potential exit
     await runSquad(squad, squadsDir, options);
+    // Post-run COO evaluation (default on, --no-eval to skip)
+    await runPostEvaluation([squad.name], options);
   } else {
     // Try to find as an agent
     const agents = listAgents(squadsDir);
@@ -1039,8 +1042,10 @@ export async function runCommand(
       // Extract squad name from path
       const pathParts = agent.filePath.split('/');
       const squadIdx = pathParts.indexOf('squads');
-      const squadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
-      await runAgent(agent.name, agent.filePath, squadName, options);
+      const resolvedSquadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
+      await runAgent(agent.name, agent.filePath, resolvedSquadName, options);
+      // Post-run COO evaluation for the squad this agent belongs to
+      await runPostEvaluation([resolvedSquadName], options);
     } else {
       writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
       const similar = findSimilarSquads(target, listSquads(squadsDir));
@@ -1238,6 +1243,68 @@ async function runSquad(
   writeLine(`  ${colors.dim}After execution, record outcome:${RESET}`);
   writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.name}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
   writeLine();
+}
+
+// ── Post-run evaluation ─────────────────────────────────────────────
+// After any squad run, dispatch the COO (company-lead) to evaluate outputs.
+// This is the feedback loop that makes the system learn.
+
+const EVAL_TIMEOUT_MINUTES = 15;
+
+/**
+ * Run the COO evaluation after squad execution.
+ * Dispatches company-lead with a scoped evaluation task for the squads that just ran.
+ * Generates feedback.md and active-work.md per squad.
+ */
+async function runPostEvaluation(
+  squadsRun: string[],
+  options: RunOptions,
+): Promise<void> {
+  // Skip if running company squad itself (prevent recursion)
+  if (squadsRun.length === 1 && squadsRun[0] === 'company') return;
+  // Skip if evaluation disabled
+  if (options.eval === false) return;
+  // Skip dry-run
+  if (options.dryRun) return;
+  // Skip background runs — evaluation needs foreground context
+  if (options.background) return;
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return;
+
+  // Find company-lead agent
+  const cooPath = join(squadsDir, 'company', 'company-lead.md');
+  if (!existsSync(cooPath)) {
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Skipping evaluation: company-lead.md not found${RESET}`);
+    }
+    return;
+  }
+
+  const squadList = squadsRun.join(', ');
+  writeLine();
+  writeLine(`  ${gradient('eval')} ${colors.dim}COO evaluating: ${squadList}${RESET}`);
+
+  const evalTask = `Post-run evaluation for: ${squadList}.
+
+Your evaluation scope:
+1. For each squad listed, query its repo for open PRs and recent commits (last 24h)
+2. Compare outputs against .agents/memory/{squad}/priorities.md and .agents/memory/company/directives.md
+3. Write .agents/memory/{squad}/feedback.md with assessment grade, valuable/noise analysis, next priorities
+4. Write .agents/memory/{squad}/active-work.md with open PRs, backlog issues, and duplicate patterns to avoid
+5. Commit all feedback + active-work files to hq main
+
+${squadsRun.length > 1 ? `Cross-squad assessment: evaluate how outputs from ${squadList} connect. Are there duplicated efforts? Missing handoffs? Coordination gaps?` : ''}
+
+Focus on output QUALITY not activity. Grade honestly: A = moved goals forward, F = noise/regression.`;
+
+  await runAgent('company-lead', cooPath, 'company', {
+    ...options,
+    task: evalTask,
+    timeout: EVAL_TIMEOUT_MINUTES,
+    eval: false, // prevent recursion
+    trigger: 'manual',
+  });
 }
 
 // ── Autopilot mode ──────────────────────────────────────────────────
@@ -1465,6 +1532,12 @@ async function runAutopilot(
       if (count >= 3) {
         slackNotify(`🚨 *Escalation*: ${key} has failed ${count} times consecutively.`);
       }
+    }
+
+    // ── Post-run COO evaluation ──
+    // Evaluate outputs from all dispatched squads (skips if company was the only one)
+    if (dispatchedSquadNames.length > 0) {
+      await runPostEvaluation(dispatchedSquadNames, options);
     }
 
     // ── Cognition: learn from this cycle ──
