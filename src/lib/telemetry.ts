@@ -228,6 +228,7 @@ export async function flushEvents(): Promise<void> {
         'X-Squads-Key': TELEMETRY_KEY,
       },
       body: JSON.stringify({ events: batch }),
+      signal: AbortSignal.timeout(5000),
     });
   } catch {
     // Restore events on failure (will retry on next track)

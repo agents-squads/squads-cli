@@ -207,6 +207,7 @@ This allows tracking multiple executions per day.`;
     writeLine(`\n${colors.cyan}Starting lead in foreground...${colors.reset}`);
     writeLine(`${colors.dim}Press Ctrl+C to stop${colors.reset}\n`);
 
+    const { CLAUDECODE: _cc, ...cleanOrcEnv } = process.env;
     const claude = spawn('claude', [
       '--permission-mode', 'bypassPermissions',
       '--mcp-config', mcpConfigPath,
@@ -214,7 +215,7 @@ This allows tracking multiple executions per day.`;
     ], {
       stdio: 'inherit',
       env: {
-        ...process.env,
+        ...cleanOrcEnv,
         SQUADS_SQUAD: squadName,
         SQUADS_AGENT: leadAgent,
         SQUADS_ROLE: 'lead',
@@ -229,7 +230,7 @@ This allows tracking multiple executions per day.`;
     // Run lead in tmux (background)
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
 
-    const claudeCmd = `cd '${projectRoot}' && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+    const claudeCmd = `cd '${projectRoot}' && unset CLAUDECODE && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
     const tmux = spawn('tmux', [
       'new-session',

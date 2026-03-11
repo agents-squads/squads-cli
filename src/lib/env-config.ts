@@ -42,15 +42,15 @@ const CONFIG_DIR = join(homedir(), '.squads');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: SquadsConfig = {
-  current: 'local',
+  current: 'prod',
   environments: {
     local: {
-      api_url: 'http://localhost:8090',
-      admin_api_url: 'http://localhost:8091',
-      console_url: 'http://localhost:4322',
-      bridge_url: 'http://localhost:8088',
-      database_url: 'postgresql://squads:squads@localhost:5432/squads',
-      redis_url: 'redis://localhost:6379',
+      api_url: process.env.SQUADS_API_URL || '',
+      admin_api_url: process.env.SQUADS_ADMIN_API_URL || '',
+      console_url: process.env.SQUADS_CONSOLE_URL || '',
+      bridge_url: process.env.SQUADS_BRIDGE_URL || '',
+      database_url: process.env.SQUADS_DATABASE_URL || '',
+      redis_url: process.env.REDIS_URL || '',
       execution: 'local',
     },
     staging: {

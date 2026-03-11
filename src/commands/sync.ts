@@ -12,6 +12,7 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import { track, Events } from '../lib/telemetry.js';
+import { getEnv } from '../lib/env-config.js';
 
 interface CommitInfo {
   hash: string;
@@ -298,7 +299,7 @@ function gitPullMemory(): { success: boolean; output: string; behind: number; ah
  */
 async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
   const squadsDir = findSquadsDir();
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = getEnv().bridge_url;
 
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
@@ -418,7 +419,7 @@ async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
     writeLine();
   }
 }
@@ -703,7 +704,7 @@ function parseLearningsFile(filePath: string, squad: string, agent: string | nul
  * Sync learnings from .agents/memory to Postgres
  */
 async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = getEnv().bridge_url;
   const memoryDir = findMemoryDir();
 
   writeLine();
@@ -781,7 +782,7 @@ async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
   }
 
   writeLine();
@@ -966,7 +967,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
       const pgAvailable = await isPostgresAvailable();
       if (!pgAvailable) {
         writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-        writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+        writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
       } else {
         try {
           const result: SyncResult = await syncAllCycleData();
@@ -1066,7 +1067,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     const pgAvailable = await isPostgresAvailable();
     if (!pgAvailable) {
       writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-      writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+      writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
       writeLine();
     } else {
       try {

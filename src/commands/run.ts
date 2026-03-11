@@ -51,8 +51,8 @@ import {
   classifyRunOutcome,
   pushMemorySignals,
   slackNotify,
-
-
+  computePhases,
+  scoreSquadsForPhase,
 } from '../lib/squad-loop.js';
 import {
   loadCognitionState,
@@ -63,13 +63,13 @@ import {
 } from '../lib/cognition.js';
 import {
   type AgentFrontmatter,
+  type ContextRole,
   parseAgentFrontmatter,
   extractMcpServersFromDefinition,
-  loadApprovalInstructions,
-  loadPostExecution,
   loadSystemProtocol,
   gatherSquadContext,
 } from '../lib/run-context.js';
+import { classifyAgent } from '../lib/conversation.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 const CLOUD_POLL_INTERVAL_MS = 3000;
@@ -113,6 +113,8 @@ interface RunOptions {
   maxParallel?: number | string; // Autopilot: max parallel squad loops
   budget?: number | string; // Autopilot: daily budget cap ($)
   once?: boolean; // Autopilot: run one cycle then exit
+  phased?: boolean; // Autopilot: use dependency-based phase ordering
+  eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
 }
 
 /**
@@ -128,8 +130,8 @@ interface ExecutionContext {
 }
 
 /**
- * Register execution context with the squads-bridge for telemetry
- * This allows the bridge to tag incoming OTel data with correct squad/agent info
+ * Register execution context with the API for telemetry
+ * This allows the API to tag incoming OTel data with correct squad/agent info
  */
 async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
   const bridgeUrl = getBridgeUrl();
@@ -145,6 +147,7 @@ async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean
         task_type: ctx.taskType,
         trigger: ctx.trigger,
       }),
+      signal: AbortSignal.timeout(3000),
     });
 
     if (!response.ok) {
@@ -180,6 +183,7 @@ async function checkPreflightGates(squad: string, agent: string): Promise<Prefli
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ squad, agent }),
+      signal: AbortSignal.timeout(3000),
     });
 
     if (!response.ok) {
@@ -209,7 +213,8 @@ async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): P
 
   try {
     const response = await fetch(
-      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`
+      `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`,
+      { signal: AbortSignal.timeout(3000) }
     );
 
     if (!response.ok) {
@@ -768,8 +773,8 @@ FAIL: <brief reason>`;
   try {
     const escapedPrompt = verifyPrompt.replace(/'/g, "'\\''");
     const result = execSync(
-      `claude --print --model haiku -- '${escapedPrompt}'`,
-      { encoding: 'utf-8', cwd: projectRoot, timeout: VERIFICATION_EXEC_TIMEOUT_MS }
+      `unset CLAUDECODE; claude --print --model haiku -- '${escapedPrompt}'`,
+      { encoding: 'utf-8', cwd: projectRoot, timeout: VERIFICATION_EXEC_TIMEOUT_MS, shell: '/bin/sh' }
     ).trim();
 
     if (options.verbose) {
@@ -1029,6 +1034,8 @@ export async function runCommand(
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
     await flushEvents(); // Ensure telemetry is sent before potential exit
     await runSquad(squad, squadsDir, options);
+    // Post-run COO evaluation (default on, --no-eval to skip)
+    await runPostEvaluation([squad.name], options);
   } else {
     // Try to find as an agent
     const agents = listAgents(squadsDir);
@@ -1038,8 +1045,10 @@ export async function runCommand(
       // Extract squad name from path
       const pathParts = agent.filePath.split('/');
       const squadIdx = pathParts.indexOf('squads');
-      const squadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
-      await runAgent(agent.name, agent.filePath, squadName, options);
+      const resolvedSquadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
+      await runAgent(agent.name, agent.filePath, resolvedSquadName, options);
+      // Post-run COO evaluation for the squad this agent belongs to
+      await runPostEvaluation([resolvedSquadName], options);
     } else {
       writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
       const similar = findSimilarSquads(target, listSquads(squadsDir));
@@ -1239,6 +1248,120 @@ async function runSquad(
   writeLine();
 }
 
+// ── Post-run evaluation ─────────────────────────────────────────────
+// After any squad run, dispatch the COO (company-lead) to evaluate outputs.
+// This is the feedback loop that makes the system learn.
+
+const EVAL_TIMEOUT_MINUTES = 15;
+
+/**
+ * Run the COO evaluation after squad execution.
+ * Dispatches company-lead with a scoped evaluation task for the squads that just ran.
+ * Generates feedback.md and active-work.md per squad.
+ */
+async function runPostEvaluation(
+  squadsRun: string[],
+  options: RunOptions,
+): Promise<void> {
+  // Skip if running company squad itself (prevent recursion)
+  if (squadsRun.length === 1 && squadsRun[0] === 'company') return;
+  // Skip if evaluation disabled
+  if (options.eval === false) return;
+  // Skip dry-run
+  if (options.dryRun) return;
+  // Skip background runs — evaluation needs foreground context
+  if (options.background) return;
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return;
+
+  // Find company-lead agent
+  const cooPath = join(squadsDir, 'company', 'company-lead.md');
+  if (!existsSync(cooPath)) {
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Skipping evaluation: company-lead.md not found${RESET}`);
+    }
+    return;
+  }
+
+  const squadList = squadsRun.join(', ');
+  writeLine();
+  writeLine(`  ${gradient('eval')} ${colors.dim}COO evaluating: ${squadList}${RESET}`);
+
+  const evalTask = `Post-run evaluation for: ${squadList}.
+
+## Evaluation Process
+
+For each squad (${squadList}):
+
+### 1. Read previous feedback FIRST
+Read \`.agents/memory/{squad}/feedback.md\` if it exists. Note the previous grade, identified patterns, and priorities. This is your baseline — you are measuring CHANGE, not just current state.
+
+### 2. Gather current evidence
+- PRs (last 7 days): \`gh pr list --state all --limit 20 --json number,title,state,mergedAt,createdAt\`
+- Recent commits (last 7 days): \`gh api repos/{owner}/{repo}/commits?since=YYYY-MM-DDT00:00:00Z&per_page=20 --jq '.[].commit.message'\`
+- Open issues: \`gh issue list --state open --limit 15 --json number,title,labels\`
+- Read \`.agents/memory/{squad}/priorities.md\` and \`.agents/memory/company/directives.md\`
+- Read \`.agents/memory/{squad}/active-work.md\` (previous cycle's work tracking)
+
+### 3. Write feedback.md (APPEND history, don't overwrite)
+\`\`\`markdown
+# Feedback — {squad}
+
+## Current Assessment (YYYY-MM-DD): [A-F]
+Merge rate: X% | Noise ratio: Y% | Priority alignment: Z%
+
+## Trajectory: [improving | stable | declining | new]
+Previous grade: [grade] → Current: [grade]. [1-line explanation of why]
+
+## Valuable (continue)
+- [specific PR/issue that advanced priorities]
+
+## Noise (stop)
+- [specific anti-pattern observed]
+
+## Next Cycle Priorities
+1. [specific actionable item]
+
+## History
+| Date | Grade | Key Signal |
+|------|-------|------------|
+| YYYY-MM-DD | X | [what drove this grade] |
+[keep last 10 entries, append new row]
+\`\`\`
+
+### 4. Write active-work.md
+\`\`\`markdown
+# Active Work — {squad} (YYYY-MM-DD)
+## Continue (open PRs)
+- #{number}: {title} — {status/next action}
+## Backlog (assigned issues)
+- #{number}: {title} — {priority}
+## Do NOT Create
+- {description of known duplicate patterns from feedback history}
+\`\`\`
+
+### 5. Commit to hq main
+${squadsRun.length > 1 ? `
+### 6. Cross-squad assessment
+Evaluate how outputs from ${squadList} connect:
+- Duplicated efforts across squads?
+- Missing handoffs (one squad's output should feed another)?
+- Coordination gaps (conflicting PRs, redundant issues)?
+- Combined trajectory: is the org getting more effective or more noisy?
+Write cross-squad findings to \`.agents/memory/company/cross-squad-review.md\`.
+` : ''}
+CRITICAL: You are measuring DIRECTION not just position. A C-grade squad improving from F is better than a B-grade squad declining from A. The history table IS the feedback loop — agents read it next cycle.`;
+
+  await runAgent('company-lead', cooPath, 'company', {
+    ...options,
+    task: evalTask,
+    timeout: EVAL_TIMEOUT_MINUTES,
+    eval: false, // prevent recursion
+    trigger: 'manual',
+  });
+}
+
 // ── Autopilot mode ──────────────────────────────────────────────────
 // When `squads run` is called with no target, it becomes the daemon:
 // score all squads, dispatch the full loop (scanner→lead→worker→verifier)
@@ -1255,13 +1378,10 @@ const ROLE_COOLDOWNS: Record<string, number> = {
 
 /**
  * Classify an agent's role from its name.
- * Scanner, lead, worker, verifier — or default to worker.
+ * Uses classifyAgent from conversation.ts, falls back to 'worker'.
  */
 function classifyAgentRole(name: string): string {
-  if (name.includes('scanner') || name.includes('scan')) return 'scanner';
-  if (name.includes('lead') || name.includes('orchestrat')) return 'lead';
-  if (name.includes('verif') || name.includes('critic') || name.includes('eval')) return 'verifier';
-  return 'worker';
+  return classifyAgent(name) ?? 'worker';
 }
 
 /**
@@ -1322,65 +1442,130 @@ async function runAutopilot(
 
     // Score squads
     const squadRepos = getSquadRepos();
-    const signals = scoreSquads(state, squadRepos, ghEnv);
 
-    if (signals.length === 0 || signals.every(s => s.score <= 0)) {
-      writeLine(`  ${colors.dim}No squads need attention${RESET}`);
-      saveLoopState(state);
-      if (once) break;
-      await sleep(interval * 60 * 1000);
-      continue;
-    }
-
-    // Pick top N squads to dispatch
-    const toDispatch = signals
-      .filter(s => s.score > 0)
-      .slice(0, maxParallel);
-
-    writeLine(`  ${colors.dim}Dispatching ${toDispatch.length} squad(s):${RESET}`);
-    for (const sig of toDispatch) {
-      writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
-    }
-
-    if (options.dryRun) {
-      writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads${RESET}`);
-      saveLoopState(state);
-      if (once) break;
-      await sleep(interval * 60 * 1000);
-      continue;
-    }
-
-    // Dispatch squad loops in parallel
-    const results = await Promise.allSettled(
-      toDispatch.map(sig => {
-        const squad = loadSquad(sig.squad);
-        if (!squad) return Promise.resolve();
-        return runSquadLoop(squad, squadsDir, state, ghEnv, options);
-      })
-    );
-
-    // Summarize results
+    let dispatchedSquadNames: string[];
     const failed: string[] = [];
     const completed: string[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      const name = toDispatch[i].squad;
-      if (r.status === 'rejected') {
-        failed.push(name);
-        state.failCounts[name] = (state.failCounts[name] || 0) + 1;
-      } else {
-        completed.push(name);
-        delete state.failCounts[name];
+
+    if (options.phased) {
+      // ── Phased dispatch: execute squads in dependency order ──
+      const phases = computePhases();
+      const phaseCount = phases.size;
+      writeLine(`  ${colors.dim}Phased mode: ${phaseCount} phase(s)${RESET}`);
+
+      dispatchedSquadNames = [];
+
+      for (const [phaseNum, phaseSquads] of phases) {
+        writeLine(`  ${colors.dim}── Phase ${phaseNum} (${phaseSquads.join(', ')}) ──${RESET}`);
+
+        // Score only squads in this phase
+        const phaseSignals = scoreSquadsForPhase(phaseSquads, state, squadRepos, ghEnv);
+        const phaseDispatch = phaseSignals
+          .filter(s => s.score > 0)
+          .slice(0, maxParallel);
+
+        if (phaseDispatch.length === 0) {
+          writeLine(`    ${colors.dim}No squads need attention in this phase${RESET}`);
+          continue;
+        }
+
+        for (const sig of phaseDispatch) {
+          writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
+        }
+
+        if (options.dryRun) {
+          continue;
+        }
+
+        // Dispatch phase squads in parallel, wait for all before next phase
+        const phaseResults = await Promise.allSettled(
+          phaseDispatch.map(sig => {
+            const squad = loadSquad(sig.squad);
+            if (!squad) return Promise.resolve();
+            return runSquadLoop(squad, squadsDir, state, ghEnv, options);
+          })
+        );
+
+        for (let i = 0; i < phaseResults.length; i++) {
+          const name = phaseDispatch[i].squad;
+          dispatchedSquadNames.push(name);
+          if (phaseResults[i].status === 'rejected') {
+            failed.push(name);
+            state.failCounts[name] = (state.failCounts[name] || 0) + 1;
+          } else {
+            completed.push(name);
+            delete state.failCounts[name];
+          }
+        }
       }
+
+      if (options.dryRun) {
+        writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads in phase order${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+    } else {
+      // ── Flat dispatch: score-based, no phase ordering ──
+      const signals = scoreSquads(state, squadRepos, ghEnv);
+
+      if (signals.length === 0 || signals.every(s => s.score <= 0)) {
+        writeLine(`  ${colors.dim}No squads need attention${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+
+      // Pick top N squads to dispatch
+      const toDispatch = signals
+        .filter(s => s.score > 0)
+        .slice(0, maxParallel);
+
+      writeLine(`  ${colors.dim}Dispatching ${toDispatch.length} squad(s):${RESET}`);
+      for (const sig of toDispatch) {
+        writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
+      }
+
+      if (options.dryRun) {
+        writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+
+      // Dispatch squad loops in parallel
+      const results = await Promise.allSettled(
+        toDispatch.map(sig => {
+          const squad = loadSquad(sig.squad);
+          if (!squad) return Promise.resolve();
+          return runSquadLoop(squad, squadsDir, state, ghEnv, options);
+        })
+      );
+
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        const name = toDispatch[i].squad;
+        if (r.status === 'rejected') {
+          failed.push(name);
+          state.failCounts[name] = (state.failCounts[name] || 0) + 1;
+        } else {
+          completed.push(name);
+          delete state.failCounts[name];
+        }
+      }
+
+      dispatchedSquadNames = toDispatch.map(s => s.squad);
     }
 
     // Estimate cost (rough: $1 per squad loop)
-    const cycleCost = toDispatch.length * 1.0;
+    const cycleCost = dispatchedSquadNames.length * 1.0;
     state.dailyCost += cycleCost;
 
     // Push memory signals for dispatched squads
-    const dispatchedSquads = toDispatch.map(s => s.squad);
-    await pushMemorySignals(dispatchedSquads, state, !!options.verbose);
+    await pushMemorySignals(dispatchedSquadNames, state, !!options.verbose);
 
     // Trim and save state
     state.recentRuns = state.recentRuns.slice(-100);
@@ -1404,10 +1589,16 @@ async function runAutopilot(
       }
     }
 
+    // ── Post-run COO evaluation ──
+    // Evaluate outputs from all dispatched squads (skips if company was the only one)
+    if (dispatchedSquadNames.length > 0) {
+      await runPostEvaluation(dispatchedSquadNames, options);
+    }
+
     // ── Cognition: learn from this cycle ──
     // Ingest memory → synthesize signals → evaluate decisions → reflect
     writeLine(`  ${colors.dim}Cognition cycle...${RESET}`);
-    const cognitionResult = await runCognitionCycle(dispatchedSquads, !!options.verbose);
+    const cognitionResult = await runCognitionCycle(dispatchedSquadNames, !!options.verbose);
     if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0 || cognitionResult.reflected) {
       writeLine(`  ${colors.dim}🧠 ${cognitionResult.signalsIngested} signals → ${cognitionResult.beliefsUpdated} beliefs updated${cognitionResult.reflected ? ' → reflected' : ''}${RESET}`);
     }
@@ -1744,8 +1935,13 @@ async function runAgent(
 
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
-    // Show context that would be injected
-    const dryRunContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
+    // Show context that would be injected (with role-based gating)
+    const dryRunAgentRole = classifyAgent(agentName);
+    const dryRunContextRole: ContextRole = agentName.includes('company-lead') ? 'coo'
+      : (dryRunAgentRole as ContextRole | null) ?? 'worker';
+    const dryRunContext = gatherSquadContext(squadName, agentName, {
+      verbose: options.verbose, agentPath, role: dryRunContextRole
+    });
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
       writeLine(`  ${colors.dim}${definition.slice(0, DRYRUN_DEF_MAX_CHARS)}...${RESET}`);
@@ -1864,27 +2060,19 @@ async function runAgent(
     writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
   }
 
-  // Load SYSTEM.md — immutable Layer 1 of the prompt cascade
-  const systemProtocolRaw = loadSystemProtocol();
-  const systemProtocol = systemProtocolRaw
-    ? `[IMMUTABLE — NEVER OVERRIDE]\n${systemProtocolRaw}\n[END IMMUTABLE SYSTEM PROTOCOL]\n`
-    : '';
-  if (options.verbose) {
-    if (systemProtocol) {
-      writeLine(`  ${colors.dim}Injecting SYSTEM.md (Layer 1)${RESET}`);
-    } else {
-      writeLine(`  ${colors.dim}SYSTEM.md not found — using legacy approval/post-exec config${RESET}`);
-    }
-  }
+  // Load system protocol (SYSTEM.md, replaces legacy approval + post-execution)
+  const systemProtocol = loadSystemProtocol();
+  const systemContext = systemProtocol ? `\n${systemProtocol}\n` : '';
 
-  // Load approval/escalation instructions (fallback when SYSTEM.md absent)
-  const approvalInstructions = systemProtocol ? '' : loadApprovalInstructions();
-  const approvalContext = approvalInstructions
-    ? `\n${approvalInstructions}\n`
-    : '';
+  // Derive context role from agent name for role-based context gating
+  const agentRole = classifyAgent(agentName);
+  const contextRole: ContextRole = agentName.includes('company-lead') ? 'coo'
+    : (agentRole as ContextRole | null) ?? 'worker';
 
-  // Gather squad context (SQUAD.md, agent state, briefs)
-  const squadContext = gatherSquadContext(squadName, agentName, { verbose: options.verbose, agentPath });
+  // Gather squad context (role-based: scanners get minimal, leads get everything)
+  const squadContext = gatherSquadContext(squadName, agentName, {
+    verbose: options.verbose, agentPath, role: contextRole
+  });
 
   // Fetch cognition beliefs for prompt injection (Reflexion pattern)
   let cognitionContext = '';
@@ -1914,12 +2102,13 @@ async function runAgent(
 
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
-  // Post-execution instructions: skip if SYSTEM.md is loaded (it contains them)
-  const postExecution = systemProtocol ? '' : loadPostExecution(squadName, agentName);
-  const prompt = `${systemProtocol}Execute the ${agentName} agent from squad ${squadName}.
+  const taskDirective = options.task
+    ? `\n## TASK DIRECTIVE (overrides default behavior)\n${options.task}\n`
+    : '';
+  const prompt = `Execute the ${agentName} agent from squad ${squadName}.
 
 Read the agent definition at ${agentPath} and follow its instructions exactly.
-
+${taskDirective}
 The agent definition contains:
 - Purpose/role
 - Tools it can use (MCP servers, skills)
@@ -1932,13 +2121,11 @@ TOOL PREFERENCE: Always prefer CLI tools over MCP servers when both can accompli
 - Use \`git\` CLI for version control
 - Use Bash for file operations, builds, tests
 - Only use MCP tools when CLI cannot do it or MCP is significantly better
-${squadContext}${cognitionContext}${learningContext}${approvalContext}
+${systemContext}${squadContext}${cognitionContext}${learningContext}
 TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - Focus on the most important tasks first
 - If a task is taking too long, move on and note it for next run
-- Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes
-
-${postExecution}`;
+- Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
@@ -2176,8 +2363,10 @@ function buildAgentEnv(
   execContext: ExecutionContext,
   options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean; ghToken?: string }
 ): Record<string, string> {
+  // Strip CLAUDECODE to allow spawning claude from within a Claude Code session
+  const { CLAUDECODE: _, ...cleanEnv } = baseEnv;
   const env: Record<string, string> = {
-    ...baseEnv,
+    ...cleanEnv,
     SQUADS_SQUAD: execContext.squad,
     SQUADS_AGENT: execContext.agent,
     SQUADS_TASK_TYPE: execContext.taskType,
@@ -2256,6 +2445,37 @@ function createAgentWorktree(projectRoot: string, squadName: string, agentName: 
   }
 }
 
+/** Remove a worktree and its branch after agent execution completes */
+function cleanupWorktree(worktreePath: string, projectRoot: string): void {
+  if (worktreePath === projectRoot) return; // fallback mode, nothing to clean
+
+  try {
+    // Extract branch name from worktree before removing
+    const branchInfo = execSync(`git -C '${projectRoot}' worktree list --porcelain`, { encoding: 'utf-8' });
+    let branchName = '';
+    const lines = branchInfo.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === `worktree ${worktreePath}` && i + 2 < lines.length) {
+        const branchLine = lines[i + 2]; // "branch refs/heads/..."
+        if (branchLine.startsWith('branch refs/heads/')) {
+          branchName = branchLine.replace('branch refs/heads/', '');
+        }
+        break;
+      }
+    }
+
+    // Remove worktree
+    execSync(`git -C '${projectRoot}' worktree remove '${worktreePath}' --force`, { stdio: 'pipe' });
+
+    // Delete the agent branch (only agent/* branches, safety check)
+    if (branchName && branchName.startsWith('agent/')) {
+      execSync(`git -C '${projectRoot}' branch -D '${branchName}'`, { stdio: 'pipe' });
+    }
+  } catch {
+    // Non-critical — worktree prune will catch it later
+  }
+}
+
 /** Build shell script for detached execution with worktree isolation */
 function buildDetachedShellScript(config: {
   projectRoot: string;
@@ -2270,7 +2490,8 @@ function buildDetachedShellScript(config: {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
   const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; claude --print --dangerously-skip-permissions ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const cleanup = `if [ "\${WORK_DIR}" != '${config.projectRoot}' ]; then git -C '${config.projectRoot}' worktree remove "\${WORK_DIR}" --force 2>/dev/null; BRANCH='${branchName}'; git -C '${config.projectRoot}' branch -D "\${BRANCH}" 2>/dev/null; fi`;
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1; ${cleanup}`;
   return `echo $$ > '${config.pidFile}'; ${script}`;
 }
 
@@ -2323,12 +2544,14 @@ function executeForeground(config: {
           writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
         }
 
+        cleanupWorktree(workDir, config.projectRoot);
         resolve('Session completed');
       } else {
         updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
           error: `Claude exited with code ${code}`,
           durationMs,
         });
+        cleanupWorktree(workDir, config.projectRoot);
         reject(new Error(`Claude exited with code ${code}`));
       }
     });
@@ -2339,6 +2562,7 @@ function executeForeground(config: {
         error: String(err),
         durationMs,
       });
+      cleanupWorktree(workDir, config.projectRoot);
       reject(err);
     });
   });
@@ -2468,6 +2692,7 @@ async function executeWithClaude(
     const claudeArgs: string[] = [];
     if (!process.stdin.isTTY) claudeArgs.push('--print');
     claudeArgs.push('--dangerously-skip-permissions');
+    claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
@@ -2623,6 +2848,7 @@ async function executeWithProvider(
       });
 
       proc.on('close', (code) => {
+        cleanupWorktree(workDir, projectRoot);
         if (code === 0) {
           resolve('Session completed');
         } else {
@@ -2631,6 +2857,7 @@ async function executeWithProvider(
       });
 
       proc.on('error', (err) => {
+        cleanupWorktree(workDir, projectRoot);
         reject(err);
       });
     });
@@ -2647,7 +2874,10 @@ async function executeWithProvider(
 
   const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
   const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const cleanupCmd = workDir !== projectRoot
+    ? `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null; git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null`
+    : '';
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {

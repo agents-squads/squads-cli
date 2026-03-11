@@ -1,51 +1,19 @@
 /**
  * Local stack detection and configuration
- * Checks if Postgres/Langfuse/Redis are running locally
+ * Checks if API services are reachable
  */
 
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { getEnv } from './env-config.js';
 
 interface LocalService {
   name: string;
-  port: number;
-  healthUrl: string;
+  url: string;
   running: boolean;
 }
 
 interface LocalStackStatus {
   running: boolean;
   services: LocalService[];
-  configPath: string | null;
-}
-
-const LOCAL_SERVICES = [
-  { name: 'postgres', port: 5433, healthUrl: '' },
-  { name: 'langfuse', port: 3100, healthUrl: 'http://localhost:3100/api/public/health' },
-  { name: 'redis', port: 6379, healthUrl: '' },
-];
-
-/**
- * Check if a port is open (service running) via TCP socket
- */
-async function isPortOpen(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const net = require('net');
-    const socket = new net.Socket();
-
-    socket.setTimeout(1000);
-    socket.on('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.on('error', () => resolve(false));
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-
-    socket.connect(port, 'localhost');
-  });
 }
 
 /**
@@ -68,63 +36,58 @@ async function checkHealth(url: string): Promise<boolean> {
 }
 
 /**
- * Check status of all local services
+ * Check status of configured services
  */
 export async function getLocalStackStatus(): Promise<LocalStackStatus> {
+  const env = getEnv();
   const services: LocalService[] = [];
 
-  for (const service of LOCAL_SERVICES) {
+  const checks = [
+    { name: 'API', url: env.api_url ? `${env.api_url}/health` : '' },
+    { name: 'Traces', url: process.env.LANGFUSE_HOST ? `${process.env.LANGFUSE_HOST}/api/public/health` : '' },
+  ];
+
+  for (const check of checks) {
     let running = false;
 
-    if (service.healthUrl) {
-      running = await checkHealth(service.healthUrl);
-    } else {
-      running = await isPortOpen(service.port);
+    if (check.url) {
+      running = await checkHealth(check.url);
     }
 
     services.push({
-      ...service,
+      name: check.name,
+      url: check.url,
       running,
     });
   }
 
-  // Find docker-compose.yml location
-  const possiblePaths = [
-    join(process.cwd(), 'docker', 'docker-compose.yml'),
-    join(process.cwd(), 'docker-compose.yml'),
-    join(__dirname, '..', '..', 'docker', 'docker-compose.yml'),
-  ];
-
-  const configPath = possiblePaths.find((p) => existsSync(p)) || null;
-
   return {
     running: services.some((s) => s.running),
     services,
-    configPath,
   };
 }
 
 /**
- * Check if Langfuse is available locally
+ * Check if Langfuse is available
  */
 export async function isLangfuseLocal(): Promise<boolean> {
   const host = process.env.LANGFUSE_HOST || process.env.LANGFUSE_BASE_URL;
-  if (host && host.includes('localhost')) {
+  if (host) {
     return await checkHealth(`${host}/api/public/health`);
   }
   return false;
 }
 
 /**
- * Get recommended environment variables for local stack
+ * Get recommended environment variables
  */
 export function getLocalEnvVars(): Record<string, string> {
   return {
-    LANGFUSE_HOST: 'http://localhost:3100',
-    LANGFUSE_PUBLIC_KEY: '(create in Langfuse UI)',
-    LANGFUSE_SECRET_KEY: '(create in Langfuse UI)',
-    SQUADS_DATABASE_URL: 'postgresql://user:password@localhost:5432/squads',
-    REDIS_URL: 'redis://localhost:6379',
+    LANGFUSE_HOST: '(configure via squads login)',
+    LANGFUSE_PUBLIC_KEY: '(configure via squads login)',
+    LANGFUSE_SECRET_KEY: '(configure via squads login)',
+    SQUADS_DATABASE_URL: '(configure via squads login)',
+    REDIS_URL: '(configure via squads login)',
   };
 }
 
@@ -134,21 +97,19 @@ export function getLocalEnvVars(): Record<string, string> {
 export function formatLocalStatus(status: LocalStackStatus): string {
   const lines: string[] = [];
 
-  lines.push('Local Stack Status:');
+  lines.push('Service Status:');
   lines.push('');
 
   for (const service of status.services) {
     const icon = service.running ? '●' : '○';
-    const state = service.running ? 'running' : 'stopped';
-    lines.push(`  ${icon} ${service.name.padEnd(10)} :${service.port}  ${state}`);
+    const state = service.running ? 'running' : 'unavailable';
+    lines.push(`  ${icon} ${service.name.padEnd(10)} ${state}`);
   }
 
   lines.push('');
 
   if (!status.running) {
-    lines.push('Start with: cd docker && docker-compose up -d');
-  } else if (!status.services.find((s) => s.name === 'langfuse')?.running) {
-    lines.push('Langfuse not running. Start with: docker-compose up -d langfuse');
+    lines.push('Run `squads login` to connect to cloud services.');
   }
 
   return lines.join('\n');

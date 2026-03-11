@@ -130,7 +130,7 @@ export function buildWorkerCommand(config: {
   // 4. Kills tmux session
   return `
 cd '${config.projectRoot}' && \\
-claude --print --permission-mode acceptEdits --mcp-config '${config.mcpConfigPath}' -- '${escapedPrompt}'; \\
+unset CLAUDECODE && claude --print --permission-mode acceptEdits --mcp-config '${config.mcpConfigPath}' -- '${escapedPrompt}'; \\
 EXIT_CODE=$?; \\
 echo '{"type":"'$([ $EXIT_CODE -eq 0 ] && echo completed || echo failed)'","squad":"${config.squad}","agent":"${config.agent}","executionId":"${config.executionId}","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","exitCode":'$EXIT_CODE'}' > '${eventsDir}/pending/${config.executionId}-${config.agent}.json'; \\
 tmux kill-session -t ${config.sessionName} 2>/dev/null

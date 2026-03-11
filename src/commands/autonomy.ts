@@ -7,6 +7,7 @@ import {
   bold,
 } from '../lib/terminal.js';
 import { track, Events } from '../lib/telemetry.js';
+import { getEnv } from '../lib/env-config.js';
 
 interface AutonomyOptions {
   squad?: string;
@@ -42,7 +43,7 @@ interface AutonomyScore {
  * Shows how ready the system is for autonomous operation.
  */
 export async function autonomyCommand(options: AutonomyOptions = {}): Promise<void> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = getEnv().bridge_url;
   const period = options.period || 'today';
 
   await track(Events.CLI_STATUS, { command: 'autonomy', period, squad: options.squad });
@@ -145,7 +146,7 @@ export async function autonomyCommand(options: AutonomyOptions = {}): Promise<vo
     writeLine(`  ${icons.error} ${colors.red}Failed to fetch autonomy score${RESET}`);
     writeLine(`  ${colors.dim}${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
     writeLine();
   }
 }

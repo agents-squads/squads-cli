@@ -62,6 +62,8 @@ export interface SquadFrontmatter {
   effort?: EffortLevel;
   /** Multi-LLM provider configuration */
   providers?: SquadProviders;
+  /** Squad names this squad must wait for before executing (phase ordering) */
+  depends_on?: string[];
 }
 
 export interface Agent {
@@ -144,6 +146,8 @@ export interface Squad {
   permissions?: Record<string, boolean>;
   /** Raw frontmatter for accessing KPIs and other custom fields */
   frontmatter?: Record<string, unknown>;
+  /** Squad names this squad must wait for (phase ordering) */
+  depends_on?: string[];
 }
 
 /**
@@ -353,6 +357,8 @@ export function parseSquadFile(filePath: string): Squad {
     providers: fm.providers,
     // Preserve raw frontmatter for KPIs and other custom fields
     frontmatter: frontmatter as Record<string, unknown>,
+    // Phase ordering: which squads must complete before this one
+    depends_on: Array.isArray(fm.depends_on) ? fm.depends_on : undefined,
   };
 
   let currentSection = '';

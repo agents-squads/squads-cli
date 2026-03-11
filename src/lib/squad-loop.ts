@@ -14,6 +14,8 @@ import { homedir } from 'os';
 import {
   findSquadsDir,
   listSquads,
+  loadSquad,
+  type Squad,
 } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';
@@ -633,4 +635,125 @@ export async function pushMemorySignals(
       new Promise<void>(resolve => setTimeout(resolve, 10000)),
     ]);
   }
+}
+
+// ── Phase Computation ─────────────────────────────────────────────────
+
+/**
+ * Compute execution phases from squad depends_on declarations.
+ * Performs topological sort with cycle detection.
+ *
+ * Rules:
+ * - No depends_on = phase 0 (runs first)
+ * - depends_on: ["*"] = last phase (evaluation)
+ * - Circular deps = grouped into same phase
+ * - Missing deps = warned and ignored
+ *
+ * @returns Map from phase number to array of squad names in that phase
+ */
+export function computePhases(squadNames?: string[]): Map<number, string[]> {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return new Map([[0, squadNames || []]]);
+
+  // Load all squads and their depends_on
+  const names = squadNames || listSquads(squadsDir);
+  const deps = new Map<string, string[]>();
+  const starSquads: string[] = []; // depends_on: ["*"]
+
+  for (const name of names) {
+    const squad = loadSquad(name);
+    if (!squad) continue;
+
+    if (squad.depends_on && squad.depends_on.length === 1 && squad.depends_on[0] === '*') {
+      starSquads.push(name);
+      continue;
+    }
+
+    // Filter out deps that reference squads not in our set
+    const validDeps = (squad.depends_on || []).filter(d => names.includes(d));
+    if (squad.depends_on) {
+      const invalid = squad.depends_on.filter(d => d !== '*' && !names.includes(d));
+      if (invalid.length > 0) {
+        writeLine(`  ${colors.dim}warn: ${name} depends_on unknown squads: ${invalid.join(', ')}${RESET}`);
+      }
+    }
+    deps.set(name, validDeps);
+  }
+
+  // Topological sort with cycle detection (Kahn's algorithm)
+  const inDegree = new Map<string, number>();
+  const adjList = new Map<string, string[]>(); // dep -> dependents
+
+  for (const [squad, squadDeps] of deps) {
+    if (!inDegree.has(squad)) inDegree.set(squad, 0);
+    for (const dep of squadDeps) {
+      if (!adjList.has(dep)) adjList.set(dep, []);
+      adjList.get(dep)!.push(squad);
+      inDegree.set(squad, (inDegree.get(squad) || 0) + 1);
+      if (!inDegree.has(dep)) inDegree.set(dep, 0);
+    }
+  }
+
+  // Also ensure squads with no deps and not in adjList are included
+  for (const [squad] of deps) {
+    if (!inDegree.has(squad)) inDegree.set(squad, 0);
+  }
+
+  const phases = new Map<number, string[]>();
+  let phase = 0;
+  const processed = new Set<string>();
+
+  // Process phases until all squads are assigned
+  const remaining = new Set([...deps.keys()]);
+
+  while (remaining.size > 0) {
+    // Find all squads with in-degree 0 (no unresolved deps)
+    const ready: string[] = [];
+    for (const squad of remaining) {
+      if ((inDegree.get(squad) || 0) <= 0) {
+        ready.push(squad);
+      }
+    }
+
+    if (ready.length === 0) {
+      // Cycle detected — group remaining into current phase
+      const cycled = [...remaining];
+      if (!phases.has(phase)) phases.set(phase, []);
+      phases.get(phase)!.push(...cycled);
+      for (const s of cycled) processed.add(s);
+      break;
+    }
+
+    phases.set(phase, ready);
+    for (const squad of ready) {
+      processed.add(squad);
+      remaining.delete(squad);
+      // Decrement in-degree for dependents
+      for (const dependent of (adjList.get(squad) || [])) {
+        inDegree.set(dependent, (inDegree.get(dependent) || 0) - 1);
+      }
+    }
+    phase++;
+  }
+
+  // Star squads go in the last phase
+  if (starSquads.length > 0) {
+    phases.set(phase, starSquads);
+  }
+
+  return phases;
+}
+
+/**
+ * Score only squads in a specific phase.
+ * Wrapper around scoreSquads that filters to phase members.
+ */
+export function scoreSquadsForPhase(
+  phaseSquads: string[],
+  state: LoopState,
+  squadRepos: Record<string, string>,
+  ghEnv: Record<string, string>,
+): SquadSignal[] {
+  const allSignals = scoreSquads(state, squadRepos, ghEnv);
+  return allSignals.filter(s => phaseSquads.includes(s.squad));
 }

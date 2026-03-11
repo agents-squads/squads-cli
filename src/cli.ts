@@ -296,6 +296,8 @@ program
   .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
   .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
   .option('--once', 'Autopilot: run one cycle then exit')
+  .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
+  .option('--no-eval', 'Skip post-run COO evaluation')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -835,7 +837,7 @@ memory
 // search (new name) — also keep old 'search' subcommand
 memory
   .command('search <query>')
-  .description('Search conversations stored via squads-bridge (requires bridge service)')
+  .description('Search stored conversations (requires authentication: squads login)')
   .option('-l, --limit <limit>', 'Number of results', '10')
   .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
   .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
@@ -1097,7 +1099,7 @@ program
 
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
-program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
+program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));
 program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
 program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
 program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
@@ -1123,10 +1125,10 @@ function handleError(error: unknown): void {
   // Check for common error types and provide helpful messages
   if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
     console.error(chalk.red('\nConnection error:'), err.message);
-    console.error(chalk.dim('\nCore commands (init, run, status, eval) work without infrastructure.'));
+    console.error(chalk.dim('\nCore commands (init, run, status, eval) work without cloud services.'));
     console.error(chalk.dim('If you need scheduling or telemetry:'));
-    console.error(chalk.dim('  1. Check infrastructure: squads health'));
-    console.error(chalk.dim('  2. Start containers: docker compose up -d'));
+    console.error(chalk.dim('  1. Authenticate: squads login'));
+    console.error(chalk.dim('  2. Check services: squads health'));
     console.error(chalk.dim('  3. Check your network connection'));
   } else if (err.message.includes('ENOENT')) {
     console.error(chalk.red('\nFile not found:'), err.message);

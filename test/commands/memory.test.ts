@@ -275,6 +275,11 @@ describe('memorySearchCommand', () => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
+    process.env.SQUADS_BRIDGE_URL = 'http://test:8088';
+  });
+
+  afterEach(() => {
+    delete process.env.SQUADS_BRIDGE_URL;
   });
 
   it('resolves when bridge returns 503', async () => {
@@ -339,6 +344,11 @@ describe('memoryExtractCommand', () => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
+    process.env.SQUADS_BRIDGE_URL = 'http://test:8088';
+  });
+
+  afterEach(() => {
+    delete process.env.SQUADS_BRIDGE_URL;
   });
 
   it('resolves when bridge returns no conversations', async () => {
@@ -363,6 +373,7 @@ describe('memoryExtractCommand', () => {
   });
 
   it('sends sessions to mem0 and reports success', async () => {
+    process.env.MEM0_API_URL = 'http://localhost:3000';
     const conversations = [
       { id: 1, session_id: 'sess-abc', role: 'user', content: 'hello', squad: 'cli', agent: 'agent', created_at: new Date().toISOString() },
     ];
@@ -377,6 +388,7 @@ describe('memoryExtractCommand', () => {
       });
     await expect(memoryExtractCommand()).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    delete process.env.MEM0_API_URL;
   });
 
   it('handles mem0 failure gracefully', async () => {

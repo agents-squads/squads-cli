@@ -8,16 +8,20 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 
-Squads organizes AI agents into domain-aligned teams that coordinate work, accumulate knowledge, and operate autonomously. Agents are plain markdown files — no framework lock-in, no proprietary formats. Works with Claude, Gemini, GPT, Grok, and local models.
+Instead of building fragile Python state machines, Squads turns native LLM CLIs into autonomous managers. The filesystem is long-term memory. GitHub is the async message bus. Markdown is the only config format. No framework lock-in, no proprietary runtime — just the tools developers already use.
 
 ## Why Squads
 
-Most AI agent tools give you a single assistant. Squads gives you an **organization** — specialized teams that divide labor, share context, and improve over time.
+Most agent frameworks trap you inside their runtime: custom Python classes, proprietary state graphs, vendor-locked tool registries. When the framework breaks, your agents break. When the framework pivots, you rewrite.
 
-- **Agents are markdown files.** A squad is a directory. An agent is a `.md` file with a role, model, and instructions. Version it, review it in PRs, edit it in any editor.
-- **Persistent memory.** Agents write learnings as they work. Knowledge survives restarts, carries forward, and is searchable across the entire organization.
-- **Multi-provider.** Route each agent to the right model: Claude for deep reasoning, Gemini for speed, GPT for breadth, local models for privacy.
-- **Autonomous execution.** Agents run on schedules, respect budgets, and coordinate through a shared memory layer — not a central orchestrator.
+Squads takes the opposite approach. **The operating system is the framework.**
+
+- **Native CLIs are the runtime.** Claude Code, Gemini CLI, Codex — each is already a capable autonomous agent. Squads orchestrates them as-is, routing tasks to the right model without wrapping them in abstraction layers. When Claude ships a new capability, your agents get it immediately.
+- **The filesystem is memory.** Agent knowledge lives in plain markdown files — `state.md`, `learnings.md`, `feedback.md`. No vector databases, no embeddings, no retrieval pipelines. `grep` is your search engine. Git is your version history. Knowledge survives anything.
+- **GitHub is the message bus.** Squads coordinate through issues, PRs, and labels — not custom pub/sub systems. A scanner files an issue; a worker picks it up; a verifier checks the PR. The entire workflow is visible, auditable, and works with every CI/CD system that exists.
+- **Markdown is the only config.** A squad is a directory. An agent is a `.md` file. Edit it in vim, review it in a PR, diff it in git. No YAML pipelines, no JSON schemas, no DSLs to learn.
+- **Multi-provider by default.** Route each agent to the right model: Claude for deep reasoning, Gemini for speed, GPT for breadth, local models for privacy. Swap providers without touching agent definitions.
+- **Autonomous, not assisted.** Agents run on schedules, respect budgets, evaluate their own output quality, and improve over time — closing the loop between execution and learning without human intervention.
 
 ## Quick Start
 
@@ -48,9 +52,77 @@ squads status
     └── marketing/
 ```
 
-**Context cascades down:** system config (base behavior) → squad definition (identity + goals) → agent definition (unique instructions) → runtime memory (ephemeral context).
+**Context cascades down:** `SYSTEM.md` (base behavior) → `SQUAD.md` (squad identity + goals) → `agent.md` (unique instructions) → `state.md` (ephemeral runtime context).
 
 Everything is plain text. No databases, no servers, no config files beyond markdown.
+
+## How Agents Think
+
+Squads uses a layered context cascade to give each agent exactly the right
+information for its role. Not too much (wasted tokens, confused agents),
+not too little (blind execution, duplicate work).
+
+### The Cascade
+
+Every agent execution loads context in priority order:
+
+| Layer | What | Why |
+|-------|------|-----|
+| System Protocol | Approvals, git workflow, escalation | Immutable rules every agent follows |
+| Squad Identity | Mission, aspirational goals, output format | Who am I, what do I produce |
+| Priorities | Current operational priorities | What to work on now (weekly) |
+| Directives | Company-wide strategic overlay | What matters to the org |
+| Feedback | Last cycle evaluation | What was valuable, what was noise |
+| Memory | Agent state from last run | What I already know |
+| Active Work | Open PRs and issues | What exists — don't duplicate |
+| Briefings | Daily briefing, cross-squad context | What's happening elsewhere |
+
+A token budget ensures context fits the model's window. Lower layers drop
+gracefully when budget runs out — identity and priorities always load,
+briefings drop first.
+
+### Goals vs Priorities
+
+Squads separates aspiration from execution:
+
+- **Goals** live in `SQUAD.md` — atemporal, aspirational ("Zero friction first-run")
+- **Priorities** live in `priorities.md` — temporal, operational ("Fix #461 this week")
+
+`squads goal set` writes aspirational goals. Priorities are updated by leads
+or founders between cycles. Both are injected — goals as squad identity,
+priorities as current focus.
+
+### Role-Based Depth
+
+Not every agent needs the same context:
+
+- **Scanners** get minimal context (identity + priorities + state) — they discover, don't decide
+- **Workers** add directives + feedback + active work — they execute with awareness
+- **Leads** get everything including cross-squad context — they orchestrate
+- **Evaluators** get org-wide summaries — they assess and generate feedback
+
+### The Feedback Loop
+
+After each execution cycle, a lead evaluates squad outputs against goals:
+what was valuable, what was noise, what to prioritize next. This evaluation
+is written to `feedback.md` and injected into the next cycle — closing the
+loop so agents learn from their own output quality over time.
+
+### Phase Ordering
+
+Squads declare dependencies in their SQUAD.md frontmatter:
+
+```yaml
+---
+name: product
+depends_on: [engineering, customer, research]
+---
+```
+
+The CLI automatically computes execution phases via topological sort.
+Squads with no dependencies run first. Squads with `depends_on: ["*"]`
+run last (evaluation). Within each phase, squads run in parallel.
+Use `squads run --phased` to enable phase-ordered execution.
 
 ## Running Agents
 

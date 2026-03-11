@@ -132,7 +132,7 @@ describe('setup-checks', () => {
       expect(result.name).toBe('Docker');
     });
 
-    it('returns warning when Docker installed but not running, no colima', () => {
+    it('returns ok when Docker installed but not running (Docker is optional)', () => {
       // isDockerRunning -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
       // commandExists('docker') -> true
@@ -141,11 +141,10 @@ describe('setup-checks', () => {
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkDockerPrereqs();
-      expect(result.status).toBe('warning');
-      expect(result.message).toContain('not running');
+      expect(result.status).toBe('ok');
     });
 
-    it('returns warning when Docker + Colima installed but Colima not running', () => {
+    it('returns ok when Docker + Colima installed but Colima not running (optional)', () => {
       // isDockerRunning -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
       // commandExists('docker') -> true
@@ -156,8 +155,7 @@ describe('setup-checks', () => {
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkDockerPrereqs();
-      expect(result.status).toBe('warning');
-      expect(result.fixCommand).toBe('colima start');
+      expect(result.status).toBe('ok');
     });
 
     it('returns ok when Colima is running', () => {
@@ -175,15 +173,14 @@ describe('setup-checks', () => {
       expect(result.name).toBe('Docker (Colima)');
     });
 
-    it('returns warning when Docker is not installed', () => {
+    it('returns ok when Docker is not installed (Docker is optional)', () => {
       // isDockerRunning -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
       // commandExists('docker') -> false
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkDockerPrereqs();
-      expect(result.status).toBe('warning');
-      expect(result.message).toContain('Optional');
+      expect(result.status).toBe('ok');
     });
   });
 

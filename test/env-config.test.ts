@@ -57,7 +57,7 @@ describe('env-config', () => {
     it('returns default config and saves it when config file does not exist', () => {
       mockExistsSync.mockReturnValue(false);
       const config = loadConfig();
-      expect(config.current).toBe('local');
+      expect(config.current).toBe('prod');
       expect(config.environments).toHaveProperty('local');
       expect(config.environments).toHaveProperty('staging');
       expect(config.environments).toHaveProperty('prod');
@@ -100,7 +100,7 @@ describe('env-config', () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue('{ invalid json }');
       const config = loadConfig();
-      expect(config.current).toBe('local');
+      expect(config.current).toBe('prod');
     });
 
     it('falls back to current=local when stored config has no current field', () => {
@@ -196,17 +196,17 @@ describe('env-config', () => {
       expect(env.execution).toBe('cloud');
     });
 
-    it('local environment defaults to localhost and local execution', () => {
+    it('local environment defaults to empty URLs and local execution', () => {
       process.env.SQUADS_ENV = 'local';
       const env = getEnv();
-      expect(env.api_url).toContain('localhost');
+      expect(env.api_url).toBe('');
       expect(env.execution).toBe('local');
     });
 
-    it('unknown SQUADS_ENV falls back to local', () => {
+    it('unknown SQUADS_ENV falls back to local with empty URLs', () => {
       process.env.SQUADS_ENV = 'nonexistent';
       const env = getEnv();
-      expect(env.api_url).toContain('localhost');
+      expect(env.api_url).toBe('');
     });
 
     it('env object has all required fields', () => {
@@ -241,7 +241,7 @@ describe('env-config', () => {
 
     it('returns current from config when SQUADS_ENV not set', () => {
       delete process.env.SQUADS_ENV;
-      expect(getEnvName()).toBe('local'); // DEFAULT_CONFIG.current = 'local'
+      expect(getEnvName()).toBe('prod'); // DEFAULT_CONFIG.current = 'prod'
     });
   });
 
@@ -254,9 +254,8 @@ describe('env-config', () => {
       process.env.SQUADS_ENV = 'local';
     });
 
-    it('getApiUrl() returns a non-empty string', () => {
+    it('getApiUrl() returns a string', () => {
       expect(typeof getApiUrl()).toBe('string');
-      expect(getApiUrl().length).toBeGreaterThan(0);
     });
 
     it('getApiUrl() returns SQUADS_API_URL override', () => {
