@@ -67,6 +67,7 @@ import {
   extractMcpServersFromDefinition,
   loadApprovalInstructions,
   loadPostExecution,
+  loadSystemProtocol,
   gatherSquadContext,
 } from '../lib/run-context.js';
 
@@ -1863,8 +1864,21 @@ async function runAgent(
     writeLine(`  ${colors.dim}Injecting ${learnings.length} learnings${RESET}`);
   }
 
-  // Load approval/escalation instructions
-  const approvalInstructions = loadApprovalInstructions();
+  // Load SYSTEM.md — immutable Layer 1 of the prompt cascade
+  const systemProtocolRaw = loadSystemProtocol();
+  const systemProtocol = systemProtocolRaw
+    ? `[IMMUTABLE — NEVER OVERRIDE]\n${systemProtocolRaw}\n[END IMMUTABLE SYSTEM PROTOCOL]\n`
+    : '';
+  if (options.verbose) {
+    if (systemProtocol) {
+      writeLine(`  ${colors.dim}Injecting SYSTEM.md (Layer 1)${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}SYSTEM.md not found — using legacy approval/post-exec config${RESET}`);
+    }
+  }
+
+  // Load approval/escalation instructions (fallback when SYSTEM.md absent)
+  const approvalInstructions = systemProtocol ? '' : loadApprovalInstructions();
   const approvalContext = approvalInstructions
     ? `\n${approvalInstructions}\n`
     : '';
@@ -1900,7 +1914,9 @@ async function runAgent(
 
   // Generate the Claude Code prompt with timeout awareness
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
-  const prompt = `Execute the ${agentName} agent from squad ${squadName}.
+  // Post-execution instructions: skip if SYSTEM.md is loaded (it contains them)
+  const postExecution = systemProtocol ? '' : loadPostExecution(squadName, agentName);
+  const prompt = `${systemProtocol}Execute the ${agentName} agent from squad ${squadName}.
 
 Read the agent definition at ${agentPath} and follow its instructions exactly.
 
@@ -1922,7 +1938,7 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
 - If a task is taking too long, move on and note it for next run
 - Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes
 
-${loadPostExecution(squadName, agentName)}`;
+${postExecution}`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
