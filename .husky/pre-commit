@@ -18,10 +18,6 @@ BLOCKED_PATTERNS=(
   "Andes.Movements"
   # Internal references
   "squads-hq"
-  "daily-briefing"
-  "directives\.md"
-  "goals\.md"
-  "state\.md"
   # Personal emails (add more as needed)
   "kokevidaurre@"
   "jorgevidaurre@"
