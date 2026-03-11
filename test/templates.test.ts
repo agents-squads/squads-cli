@@ -4,7 +4,6 @@ import {
   toTitleCase,
   getTemplateSource,
   templateExists,
-  getLocalEnvVars,
 } from '../src/lib/templates';
 import { formatLocalStatus } from '../src/lib/local';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
@@ -104,75 +103,50 @@ describe('templates utilities', () => {
 
 describe('local utilities', () => {
   describe('formatLocalStatus', () => {
-    it('formats all stopped services correctly', () => {
+    it('formats unavailable services correctly', () => {
       const status = {
         running: false,
         services: [
-          { name: 'postgres', port: 5433, healthUrl: '', running: false },
-          { name: 'langfuse', port: 3100, healthUrl: 'http://localhost:3100/api/public/health', running: false },
-          { name: 'redis', port: 6379, healthUrl: '', running: false },
+          { name: 'API', url: '', running: false },
+          { name: 'Traces', url: '', running: false },
         ],
-        configPath: null,
       };
 
       const result = formatLocalStatus(status);
-      expect(result).toContain('Local Stack Status:');
-      expect(result).toContain('○ postgres');
-      expect(result).toContain('○ langfuse');
-      expect(result).toContain('○ redis');
-      expect(result).toContain('stopped');
-      expect(result).toContain('docker-compose up -d');
+      expect(result).toContain('Service Status');
+      expect(result).toContain('○ API');
+      expect(result).toContain('○ Traces');
+      expect(result).toContain('unavailable');
+      expect(result).toContain('squads login');
     });
 
     it('formats running services correctly', () => {
       const status = {
         running: true,
         services: [
-          { name: 'postgres', port: 5433, healthUrl: '', running: true },
-          { name: 'langfuse', port: 3100, healthUrl: 'http://localhost:3100/api/public/health', running: true },
-          { name: 'redis', port: 6379, healthUrl: '', running: true },
+          { name: 'API', url: 'http://localhost:8088/health', running: true },
+          { name: 'Traces', url: 'http://localhost:3100/api/public/health', running: true },
         ],
-        configPath: '/path/to/docker-compose.yml',
       };
 
       const result = formatLocalStatus(status);
-      expect(result).toContain('● postgres');
-      expect(result).toContain('● langfuse');
-      expect(result).toContain('● redis');
+      expect(result).toContain('● API');
+      expect(result).toContain('● Traces');
       expect(result).toContain('running');
     });
 
-    it('shows langfuse start hint when only langfuse is stopped', () => {
+    it('shows mixed status correctly', () => {
       const status = {
         running: true,
         services: [
-          { name: 'postgres', port: 5433, healthUrl: '', running: true },
-          { name: 'langfuse', port: 3100, healthUrl: 'http://localhost:3100/api/public/health', running: false },
-          { name: 'redis', port: 6379, healthUrl: '', running: true },
+          { name: 'API', url: 'http://localhost:8088/health', running: true },
+          { name: 'Traces', url: '', running: false },
         ],
-        configPath: null,
       };
 
       const result = formatLocalStatus(status);
-      expect(result).toContain('Langfuse not running');
-      expect(result).toContain('docker-compose up -d langfuse');
-    });
-
-    it('formats port numbers correctly', () => {
-      const status = {
-        running: false,
-        services: [
-          { name: 'postgres', port: 5433, healthUrl: '', running: false },
-          { name: 'langfuse', port: 3100, healthUrl: '', running: false },
-          { name: 'redis', port: 6379, healthUrl: '', running: false },
-        ],
-        configPath: null,
-      };
-
-      const result = formatLocalStatus(status);
-      expect(result).toContain(':5433');
-      expect(result).toContain(':3100');
-      expect(result).toContain(':6379');
+      expect(result).toContain('● API');
+      expect(result).toContain('○ Traces');
     });
   });
 });

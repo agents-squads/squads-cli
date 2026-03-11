@@ -363,6 +363,7 @@ describe('memoryExtractCommand', () => {
   });
 
   it('sends sessions to mem0 and reports success', async () => {
+    process.env.MEM0_API_URL = 'http://localhost:3000';
     const conversations = [
       { id: 1, session_id: 'sess-abc', role: 'user', content: 'hello', squad: 'cli', agent: 'agent', created_at: new Date().toISOString() },
     ];
@@ -377,6 +378,7 @@ describe('memoryExtractCommand', () => {
       });
     await expect(memoryExtractCommand()).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    delete process.env.MEM0_API_URL;
   });
 
   it('handles mem0 failure gracefully', async () => {
