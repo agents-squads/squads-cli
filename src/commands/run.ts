@@ -1287,16 +1287,68 @@ async function runPostEvaluation(
 
   const evalTask = `Post-run evaluation for: ${squadList}.
 
-Your evaluation scope:
-1. For each squad listed, query its repo for open PRs and recent commits (last 24h)
-2. Compare outputs against .agents/memory/{squad}/priorities.md and .agents/memory/company/directives.md
-3. Write .agents/memory/{squad}/feedback.md with assessment grade, valuable/noise analysis, next priorities
-4. Write .agents/memory/{squad}/active-work.md with open PRs, backlog issues, and duplicate patterns to avoid
-5. Commit all feedback + active-work files to hq main
+## Evaluation Process
 
-${squadsRun.length > 1 ? `Cross-squad assessment: evaluate how outputs from ${squadList} connect. Are there duplicated efforts? Missing handoffs? Coordination gaps?` : ''}
+For each squad (${squadList}):
 
-Focus on output QUALITY not activity. Grade honestly: A = moved goals forward, F = noise/regression.`;
+### 1. Read previous feedback FIRST
+Read \`.agents/memory/{squad}/feedback.md\` if it exists. Note the previous grade, identified patterns, and priorities. This is your baseline — you are measuring CHANGE, not just current state.
+
+### 2. Gather current evidence
+- PRs (last 7 days): \`gh pr list --state all --limit 20 --json number,title,state,mergedAt,createdAt\`
+- Recent commits (last 7 days): \`gh api repos/{owner}/{repo}/commits?since=YYYY-MM-DDT00:00:00Z&per_page=20 --jq '.[].commit.message'\`
+- Open issues: \`gh issue list --state open --limit 15 --json number,title,labels\`
+- Read \`.agents/memory/{squad}/priorities.md\` and \`.agents/memory/company/directives.md\`
+- Read \`.agents/memory/{squad}/active-work.md\` (previous cycle's work tracking)
+
+### 3. Write feedback.md (APPEND history, don't overwrite)
+\`\`\`markdown
+# Feedback — {squad}
+
+## Current Assessment (YYYY-MM-DD): [A-F]
+Merge rate: X% | Noise ratio: Y% | Priority alignment: Z%
+
+## Trajectory: [improving | stable | declining | new]
+Previous grade: [grade] → Current: [grade]. [1-line explanation of why]
+
+## Valuable (continue)
+- [specific PR/issue that advanced priorities]
+
+## Noise (stop)
+- [specific anti-pattern observed]
+
+## Next Cycle Priorities
+1. [specific actionable item]
+
+## History
+| Date | Grade | Key Signal |
+|------|-------|------------|
+| YYYY-MM-DD | X | [what drove this grade] |
+[keep last 10 entries, append new row]
+\`\`\`
+
+### 4. Write active-work.md
+\`\`\`markdown
+# Active Work — {squad} (YYYY-MM-DD)
+## Continue (open PRs)
+- #{number}: {title} — {status/next action}
+## Backlog (assigned issues)
+- #{number}: {title} — {priority}
+## Do NOT Create
+- {description of known duplicate patterns from feedback history}
+\`\`\`
+
+### 5. Commit to hq main
+${squadsRun.length > 1 ? `
+### 6. Cross-squad assessment
+Evaluate how outputs from ${squadList} connect:
+- Duplicated efforts across squads?
+- Missing handoffs (one squad's output should feed another)?
+- Coordination gaps (conflicting PRs, redundant issues)?
+- Combined trajectory: is the org getting more effective or more noisy?
+Write cross-squad findings to \`.agents/memory/company/cross-squad-review.md\`.
+` : ''}
+CRITICAL: You are measuring DIRECTION not just position. A C-grade squad improving from F is better than a B-grade squad declining from A. The history table IS the feedback loop — agents read it next cycle.`;
 
   await runAgent('company-lead', cooPath, 'company', {
     ...options,
