@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- [#442](https://github.com/agents-squads/squads-cli/pull/442) [`993dabf`](https://github.com/agents-squads/squads-cli/commit/993dabf5a41c9d6c52e48739ac400c2e854e1ddb) Thanks [@kokevidaurre](https://github.com/kokevidaurre)! - Add GitHub App bot identity for agent commits, daemon command, and dynamic AI co-authors
+
 All notable changes to squads-cli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
@@ -8,12 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2026-02-20
 
 ### Security
+
 - fix(security): escape HTML in OAuth callback responses (#323)
 - fix(security): prevent shell injection in agent spawn (#324)
 - fix(security): restrict auth file permissions to owner-only (#325)
 - security: remove internal infrastructure references from public repo
 
 ### Added
+
 - feat(run): memory injection, event emission, Ralph verification loop
 - feat(run): foreground default, status tracking, auto-commit
 - feat(run): inject Output section with target repo into agent context
@@ -34,11 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: add light mode terminal palette (#221)
 
 ### Changed
+
 - refactor: remove pg, ioredis, supabase from CLI dependencies (#303)
 - refactor(run): deprecate -e flag, add native Claude execution pattern
 - refactor: clean up unused code
 
 ### Fixed
+
 - fix: update memory tests to match new ## date format
 - fix: add worktree isolation to executeWithProvider
 - fix: use git worktrees for agent isolation instead of checkout
@@ -64,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: add backlinks to agents-squads.com
 
 ### Tests
+
 - test: add comprehensive tests for core commands (#244)
 - test: add comprehensive database operation tests (#246)
 - test: extract cron functions to lib/cron.ts and add comprehensive tests (#301)
@@ -81,6 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - test: fix flaky memory tests on macOS (#242)
 
 ### CI
+
 - ci: add P1 issue aging alert workflow (#236)
 
 ## [0.5.1] - 2026-01-27
