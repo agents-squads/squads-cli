@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
-import { findSquadsDir } from '../lib/squad-parser.js';
+import { findSquadsDir, listSquads, parseSquadFile } from '../lib/squad-parser.js';
 import { syncAllCycleData, isPostgresAvailable, closeCycleSyncPool, SyncResult } from '../lib/cycle-sync.js';
 import {
   colors,
@@ -12,6 +12,7 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import { track, Events } from '../lib/telemetry.js';
+import { getEnv } from '../lib/env-config.js';
 
 interface CommitInfo {
   hash: string;
@@ -26,35 +27,81 @@ interface _SquadUpdate {
   summary: string;
 }
 
-// Map file paths to squads
-const PATH_TO_SQUAD: Record<string, string> = {
-  'squads-cli': 'product',
-  'agents-squads-web': 'website',
-  'research': 'research',
-  'intelligence': 'intelligence',
-  'customer': 'customer',
-  'finance': 'finance',
-  'engineering': 'engineering',
-  'product': 'product',
-  'company': 'company',
-  '.agents/squads': 'engineering',
-  '.agents/memory': 'engineering',
-};
+interface SquadMappings {
+  pathToSquad: Record<string, string>;
+  messageToSquad: Record<string, string>;
+}
 
-// Keywords in commit messages that map to squads
-const MESSAGE_TO_SQUAD: Record<string, string> = {
-  'cli': 'product',
-  'website': 'website',
-  'web': 'website',
-  'homepage': 'website',
-  'research': 'research',
-  'intel': 'intelligence',
-  'lead': 'customer',
-  'finance': 'finance',
-  'cost': 'finance',
-  'engineering': 'engineering',
-  'infra': 'engineering',
-};
+/**
+ * Build squad mappings dynamically from the current project's squad definitions.
+ * Uses `repo:` frontmatter field for path mapping and squad dir name as keyword fallback.
+ * Falls back to static defaults when no squads directory is found (e.g., fresh installs).
+ */
+function buildSquadMappings(): SquadMappings {
+  const pathToSquad: Record<string, string> = {};
+  const messageToSquad: Record<string, string> = {};
+
+  const squadsDir = findSquadsDir();
+  if (squadsDir) {
+    const squadNames = listSquads(squadsDir);
+    for (const name of squadNames) {
+      const squadFile = `${squadsDir}/${name}/SQUAD.md`;
+      try {
+        const squad = parseSquadFile(squadFile);
+        // repo: field maps a repo name to this squad
+        if (squad.repo) {
+          pathToSquad[squad.repo] = name;
+        }
+        // Squad dir name matches itself as a path pattern and keyword
+        pathToSquad[name] = name;
+        messageToSquad[name] = name;
+      } catch {
+        // Corrupt SQUAD.md — skip silently, dir name still usable
+        pathToSquad[name] = name;
+        messageToSquad[name] = name;
+      }
+    }
+    // Always map .agents dirs to engineering (structural convention)
+    if (squadNames.includes('engineering')) {
+      pathToSquad['.agents/squads'] = 'engineering';
+      pathToSquad['.agents/memory'] = 'engineering';
+    }
+  }
+
+  // If dynamic discovery found nothing (no squads dir), fall back to static defaults
+  if (Object.keys(pathToSquad).length === 0) {
+    return {
+      pathToSquad: {
+        'squads-cli': 'product',
+        'agents-squads-web': 'website',
+        'research': 'research',
+        'intelligence': 'intelligence',
+        'customer': 'customer',
+        'finance': 'finance',
+        'engineering': 'engineering',
+        'product': 'product',
+        'company': 'company',
+        '.agents/squads': 'engineering',
+        '.agents/memory': 'engineering',
+      },
+      messageToSquad: {
+        'cli': 'product',
+        'website': 'website',
+        'web': 'website',
+        'homepage': 'website',
+        'research': 'research',
+        'intel': 'intelligence',
+        'lead': 'customer',
+        'finance': 'finance',
+        'cost': 'finance',
+        'engineering': 'engineering',
+        'infra': 'engineering',
+      },
+    };
+  }
+
+  return { pathToSquad, messageToSquad };
+}
 
 function getLastSyncTime(memoryDir: string): string | null {
   const syncFile = join(memoryDir, '.last-sync');
@@ -110,12 +157,12 @@ function getRecentCommits(since?: string): CommitInfo[] {
   return commits;
 }
 
-function detectSquadsFromCommit(commit: CommitInfo): string[] {
+function detectSquadsFromCommit(commit: CommitInfo, mappings: SquadMappings): string[] {
   const squads = new Set<string>();
 
   // Check file paths
   for (const file of commit.files) {
-    for (const [pathPattern, squad] of Object.entries(PATH_TO_SQUAD)) {
+    for (const [pathPattern, squad] of Object.entries(mappings.pathToSquad)) {
       if (file.includes(pathPattern)) {
         squads.add(squad);
       }
@@ -124,7 +171,7 @@ function detectSquadsFromCommit(commit: CommitInfo): string[] {
 
   // Check commit message
   const msgLower = commit.message.toLowerCase();
-  for (const [keyword, squad] of Object.entries(MESSAGE_TO_SQUAD)) {
+  for (const [keyword, squad] of Object.entries(mappings.messageToSquad)) {
     if (msgLower.includes(keyword)) {
       squads.add(squad);
     }
@@ -133,11 +180,11 @@ function detectSquadsFromCommit(commit: CommitInfo): string[] {
   return Array.from(squads);
 }
 
-function groupCommitsBySquad(commits: CommitInfo[]): Map<string, CommitInfo[]> {
+function groupCommitsBySquad(commits: CommitInfo[], mappings: SquadMappings): Map<string, CommitInfo[]> {
   const grouped = new Map<string, CommitInfo[]>();
 
   for (const commit of commits) {
-    const squads = detectSquadsFromCommit(commit);
+    const squads = detectSquadsFromCommit(commit, mappings);
 
     for (const squad of squads) {
       if (!grouped.has(squad)) {
@@ -252,7 +299,7 @@ function gitPullMemory(): { success: boolean; output: string; behind: number; ah
  */
 async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
   const squadsDir = findSquadsDir();
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = getEnv().bridge_url;
 
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
@@ -372,7 +419,7 @@ async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
     writeLine();
   }
 }
@@ -463,9 +510,9 @@ const SIGNIFICANT_PATTERNS = [
 /**
  * Analyze commits and generate learnings based on patterns
  */
-function analyzeCommitsForLearnings(commits: CommitInfo[]): GeneratedLearning[] {
+function analyzeCommitsForLearnings(commits: CommitInfo[], mappings: SquadMappings): GeneratedLearning[] {
   const learnings: GeneratedLearning[] = [];
-  const squadCommits = groupCommitsBySquad(commits);
+  const squadCommits = groupCommitsBySquad(commits, mappings);
 
   for (const [squad, squadCommitList] of squadCommits) {
     // Group by category (feat, fix, etc.)
@@ -657,7 +704,7 @@ function parseLearningsFile(filePath: string, squad: string, agent: string | nul
  * Sync learnings from .agents/memory to Postgres
  */
 async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+  const bridgeUrl = getEnv().bridge_url;
   const memoryDir = findMemoryDir();
 
   writeLine();
@@ -735,7 +782,7 @@ async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}Is the bridge running? Check: curl ${bridgeUrl}/health${RESET}`);
+    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
   }
 
   writeLine();
@@ -814,7 +861,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     writeLine(`  ${icons.progress} Analyzing ${colors.cyan}${commits.length}${RESET} commits...`);
 
     // Analyze and generate learnings
-    const learnings = analyzeCommitsForLearnings(commits);
+    const learnings = analyzeCommitsForLearnings(commits, buildSquadMappings());
 
     if (learnings.length === 0) {
       writeLine(`  ${colors.dim}No significant patterns detected${RESET}`);
@@ -920,7 +967,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
       const pgAvailable = await isPostgresAvailable();
       if (!pgAvailable) {
         writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-        writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+        writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
       } else {
         try {
           const result: SyncResult = await syncAllCycleData();
@@ -964,8 +1011,8 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
   writeLine(`  ${colors.cyan}${commits.length}${RESET} commits to process`);
   writeLine();
 
-  // Group by squad
-  const bySquad = groupCommitsBySquad(commits);
+  // Group by squad (mappings built dynamically from local squad definitions)
+  const bySquad = groupCommitsBySquad(commits, buildSquadMappings());
 
   if (bySquad.size === 0) {
     writeLine(`  ${colors.yellow}No squad-related commits found${RESET}`);
@@ -1020,7 +1067,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     const pgAvailable = await isPostgresAvailable();
     if (!pgAvailable) {
       writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-      writeLine(`  ${colors.dim}Run \`squads stack up\` to start the database${RESET}`);
+      writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
       writeLine();
     } else {
       try {

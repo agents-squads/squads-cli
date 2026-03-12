@@ -1,7 +1,7 @@
 /**
  * squads health - Quick infrastructure health check
  *
- * Lightweight check that doesn't require Docker - just pings endpoints
+ * Lightweight check that pings configured service endpoints
  */
 
 import {
@@ -12,6 +12,7 @@ import {
   writeLine,
   padEnd,
 } from '../lib/terminal.js';
+import { getEnv } from '../lib/env-config.js';
 
 const FETCH_TIMEOUT_MS = 2000;
 
@@ -40,38 +41,40 @@ interface TriggerStats {
   };
 }
 
-const SERVICES: ServiceCheck[] = [
-  {
-    name: 'PostgreSQL',
-    url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/stats`,
-    optional: true,
-    fix: 'squads stack up postgres',
-  },
-  {
-    name: 'Redis',
-    url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/stats`,
-    optional: true,
-    fix: 'squads stack up redis',
-  },
-  {
-    name: 'Bridge API',
-    url: `${process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088'}/health`,
-    optional: true,
-    fix: 'squads stack up bridge',
-  },
-  {
-    name: 'Scheduler',
-    url: `${process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090'}/health`,
-    optional: true,
-    fix: 'squads stack up scheduler',
-  },
-  {
-    name: 'Langfuse',
-    url: `${process.env.LANGFUSE_HOST || 'http://localhost:3100'}/api/public/health`,
-    optional: true,
-    fix: 'squads stack up langfuse',
-  },
-];
+function getServiceChecks(): ServiceCheck[] {
+  const env = getEnv();
+
+  const checks: ServiceCheck[] = [];
+
+  if (env.api_url) {
+    checks.push({
+      name: 'API',
+      url: `${env.api_url}/health`,
+      optional: true,
+      fix: 'squads login',
+    });
+  }
+
+  if (env.bridge_url) {
+    checks.push({
+      name: 'Bridge',
+      url: `${env.bridge_url}/health`,
+      optional: true,
+      fix: 'squads login',
+    });
+  }
+
+  if (process.env.LANGFUSE_HOST) {
+    checks.push({
+      name: 'Traces',
+      url: `${process.env.LANGFUSE_HOST}/api/public/health`,
+      optional: true,
+      fix: 'squads login',
+    });
+  }
+
+  return checks;
+}
 
 /**
  * Fetch with timeout
@@ -129,12 +132,15 @@ async function checkService(service: ServiceCheck): Promise<ServiceResult> {
 }
 
 /**
- * Get trigger stats from scheduler
+ * Get trigger stats from API
  */
 async function getTriggerStats(): Promise<TriggerStats | null> {
   try {
-    const schedulerUrl = process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || 'http://localhost:8090';
-    const response = await fetchWithTimeout(`${schedulerUrl}/api/triggers/stats`);
+    const env = getEnv();
+    const apiUrl = env.api_url;
+    if (!apiUrl) return null;
+
+    const response = await fetchWithTimeout(`${apiUrl}/api/triggers/stats`);
 
     if (!response.ok) return null;
 
@@ -185,10 +191,23 @@ export interface HealthOptions {
   verbose?: boolean;
 }
 
-export async function healthCommand(options: HealthOptions = {}): Promise<void> {
+export async function healthCommand(_options: HealthOptions = {}): Promise<void> {
   writeLine();
   writeLine(`  ${gradient('squads')} ${colors.dim}health${RESET}`);
   writeLine();
+
+  const SERVICES = getServiceChecks();
+
+  if (SERVICES.length === 0) {
+    writeLine(`  ${colors.yellow}${icons.warning} No services configured${RESET}`);
+    writeLine(`  ${colors.dim}Run ${RESET}${colors.cyan}squads login${RESET}${colors.dim} to connect to cloud services${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.cyan}${icons.progress}${RESET} Running in local mode ${colors.dim}(no cloud services required)${RESET}`);
+    writeLine(`    Core commands work without cloud services: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
+    writeLine(`    Memory uses local ${colors.dim}.agents/memory/${RESET} files.`);
+    writeLine();
+    return;
+  }
 
   // Check all services in parallel
   const results = await Promise.all(SERVICES.map(checkService));
@@ -199,6 +218,7 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
   writeLine(`  ${colors.purple}├${'─'.repeat(48)}┤${RESET}`);
 
   const issues: ServiceResult[] = [];
+  const optionalDown: ServiceResult[] = [];
 
   for (const result of results) {
     let statusIcon: string;
@@ -223,6 +243,8 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
         statusText = 'down';
         if (!result.optional) {
           issues.push(result);
+        } else {
+          optionalDown.push(result);
         }
         break;
     }
@@ -236,9 +258,9 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
   writeLine(`  ${colors.purple}└${'─'.repeat(48)}┘${RESET}`);
   writeLine();
 
-  // Get trigger stats if scheduler is up
-  const schedulerUp = results.find(r => r.name === 'Scheduler')?.status === 'healthy';
-  if (schedulerUp) {
+  // Get trigger stats if API is up
+  const apiUp = results.find(r => r.name === 'API')?.status === 'healthy';
+  if (apiUp) {
     const stats = await getTriggerStats();
     if (stats) {
       const lastFireText = stats.lastFire
@@ -253,27 +275,18 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
 
   // Show issues and fixes
   if (issues.length > 0) {
-    const criticalIssues = issues.filter(i => !i.optional);
-    const optionalIssues = issues.filter(i => i.optional);
-
-    if (criticalIssues.length > 0) {
-      writeLine(`  ${colors.red}${icons.warning} ${criticalIssues.length} service(s) need attention${RESET}`);
-      for (const issue of criticalIssues) {
-        writeLine(`    ${colors.dim}•${RESET} ${issue.name}: ${issue.error || 'not responding'}`);
-        if (issue.fix) {
-          writeLine(`      ${colors.cyan}Fix:${RESET} ${issue.fix}`);
-        }
+    writeLine(`  ${colors.red}${icons.warning} ${issues.length} service(s) need attention${RESET}`);
+    for (const issue of issues) {
+      writeLine(`    ${colors.dim}•${RESET} ${issue.name}: ${issue.error || 'not responding'}`);
+      if (issue.fix) {
+        writeLine(`      ${colors.cyan}Fix:${RESET} ${issue.fix}`);
       }
-      writeLine();
     }
-
-    if (options.verbose && optionalIssues.length > 0) {
-      writeLine(`  ${colors.yellow}Optional services down:${RESET}`);
-      for (const issue of optionalIssues) {
-        writeLine(`    ${colors.dim}•${RESET} ${issue.name}`);
-      }
-      writeLine();
-    }
+    writeLine();
+  } else if (optionalDown.length > 0) {
+    writeLine(`  ${colors.green}${icons.success} Core ready${RESET} ${colors.dim}(no required services are down)${RESET}`);
+    writeLine(`  ${colors.dim}○ ${optionalDown.length} optional service(s) offline — run ${RESET}${colors.cyan}squads login${RESET}${colors.dim} to connect${RESET}`);
+    writeLine();
   } else {
     writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
     writeLine();
@@ -282,15 +295,15 @@ export async function healthCommand(options: HealthOptions = {}): Promise<void> 
   // Show mode info
   const allDown = results.every(r => r.status === 'down');
   if (allDown) {
-    writeLine(`  ${colors.cyan}${icons.progress}${RESET} Running in local mode ${colors.dim}(no database required)${RESET}`);
-    writeLine(`    Core commands work without infrastructure: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
+    writeLine(`  ${colors.cyan}${icons.progress}${RESET} Running in local mode ${colors.dim}(no cloud services required)${RESET}`);
+    writeLine(`    Core commands work without cloud services: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
     writeLine(`    Memory uses local ${colors.dim}.agents/memory/${RESET} files.`);
     writeLine();
-    writeLine(`    ${colors.dim}To enable scheduling and telemetry:${RESET} squads stack up`);
+    writeLine(`    ${colors.dim}To enable scheduling and telemetry:${RESET} squads login`);
     writeLine();
-  } else if (!schedulerUp) {
-    writeLine(`  ${colors.yellow}${icons.warning} Scheduler not running - triggers won't auto-fire${RESET}`);
-    writeLine(`    ${colors.dim}Start with:${RESET} squads stack up scheduler`);
+  } else if (!apiUp) {
+    writeLine(`  ${colors.yellow}${icons.warning} API not reachable - triggers won't auto-fire${RESET}`);
+    writeLine(`    ${colors.dim}Check connection:${RESET} squads login`);
     writeLine();
   }
 }

@@ -2,7 +2,7 @@ import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
-import { fetchCostSummary, formatCostBar, fetchRateLimits, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
+import { fetchCostSummary, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase, getLatestBaseline, BaselineSnapshot } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
@@ -494,24 +494,24 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
   cleanupStaleSessions();
 
   const [gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity, baseline] = await Promise.all([
-    // Git stats (local, parallel across repos)
-    baseDir ? getMultiRepoGitStats(baseDir, 30) : Promise.resolve(null),
+    // Git stats (local, parallel across repos, 1.5s timeout)
+    baseDir ? timeout(getMultiRepoGitStats(baseDir, 30), 1500, null) : Promise.resolve(null),
     // GitHub stats (network, ~20-30s) - skip by default for fast mode
     skipGitHub ? Promise.resolve(null) : Promise.resolve(baseDir ? getGitHubStatsOptimized(baseDir, 30) : null),
     // Langfuse costs (network, 2s timeout)
     timeout(fetchCostSummary(100), 2000, null),
     // Bridge stats (local network, 2s timeout)
     timeout(fetchBridgeStats(), 2000, null),
-    // Activity sparkline (local, parallel across repos)
-    baseDir ? getActivitySparkline(baseDir, 14) : Promise.resolve([]),
+    // Activity sparkline (local, parallel across repos, 1.5s timeout)
+    baseDir ? timeout(getActivitySparkline(baseDir, 14), 1500, [] as number[]) : Promise.resolve([] as number[]),
     // Database availability check (1.5s timeout)
     timeout(isDatabaseAvailable(), 1500, false),
     // Dashboard history (1.5s timeout)
     timeout(getDashboardHistory(14).catch(() => [] as DashboardSnapshot[]), 1500, [] as DashboardSnapshot[]),
     // Insights (2s timeout)
     timeout(fetchInsights('week').catch(() => null), 2000, null),
-    // Session summary (parallel lsof, ~1s)
-    getLiveSessionSummaryAsync(),
+    // Session summary: lsof per AI process, cap at 1s to stay under 2s total
+    timeout(getLiveSessionSummaryAsync(), 1000, { totalSessions: 0, bySquad: {}, squadCount: 0, byTool: {} } as SessionSummary),
     // NPM download stats (network, 2s timeout)
     timeout(fetchNpmStats('squads-cli'), 2000, null),
     // Quota/autonomy info (local network, 2s timeout)
@@ -529,80 +529,6 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
   return { gitStats, ghStats, costs, bridgeStats, activity, dbAvailable, history, insights, sessionSummary, npmStats, quotaInfo, capacity, baseline, roiMetrics, squadProjections };
 }
 
-/**
- * Save dashboard snapshot to local PostgreSQL for historical tracking
- */
-async function _saveSnapshot(
-  squadData: SquadMetrics[],
-  ghStats: GitHubStats | null,
-  _baseDir: string | null
-): Promise<void> {
-  // Check if database is available
-  const dbAvailable = await isDatabaseAvailable();
-  if (!dbAvailable) return;
-
-  // Fetch additional data for snapshot
-  const gitStats = _baseDir ? await getMultiRepoGitStats(_baseDir, 30) : null;
-  const costs = await fetchCostSummary(100);
-
-  // Build squad snapshot data
-  const squadsData: SquadSnapshotData[] = squadData.map(s => ({
-    name: s.name,
-    commits: s.github?.commits || 0,
-    prsOpened: s.github?.prsOpened || 0,
-    prsMerged: s.github?.prsMerged || 0,
-    issuesClosed: s.github?.issuesClosed || 0,
-    issuesOpen: s.github?.issuesOpen || 0,
-    goalsActive: s.goals.filter(g => !g.completed).length,
-    goalsTotal: s.goals.length,
-    progress: s.goalProgress,
-  }));
-
-  // Build authors data
-  const authorsData = gitStats
-    ? Array.from(gitStats.commitsByAuthor.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([name, commits]) => ({ name, commits }))
-    : [];
-
-  // Build repos data
-  const reposData = gitStats
-    ? Array.from(gitStats.commitsByRepo.entries())
-        .sort((a, b) => b[1] - a[1])
-        .map(([name, commits]) => ({ name, commits }))
-    : [];
-
-  // Calculate totals
-  const totalInputTokens = costs?.bySquad.reduce((sum: number, s: { inputTokens: number }) => sum + s.inputTokens, 0) || 0;
-  const totalOutputTokens = costs?.bySquad.reduce((sum: number, s: { outputTokens: number }) => sum + s.outputTokens, 0) || 0;
-  const overallProgress = squadData.length > 0
-    ? Math.round(squadData.reduce((sum, s) => sum + s.goalProgress, 0) / squadData.length)
-    : 0;
-
-  const snapshot: DashboardSnapshot = {
-    totalSquads: squadData.length,
-    totalCommits: gitStats?.totalCommits || 0,
-    totalPrsMerged: ghStats?.prsMerged || 0,
-    totalIssuesClosed: ghStats?.issuesClosed || 0,
-    totalIssuesOpen: ghStats?.issuesOpen || 0,
-    goalProgressPct: overallProgress,
-    costUsd: costs?.totalCost || 0,
-    dailyBudgetUsd: costs?.dailyBudget || 0, // 0 = not configured (no hardcoded defaults)
-    inputTokens: totalInputTokens,
-    outputTokens: totalOutputTokens,
-    commits30d: gitStats?.totalCommits || 0,
-    avgCommitsPerDay: gitStats?.avgCommitsPerDay || 0,
-    activeDays: gitStats?.activeDays || 0,
-    peakCommits: gitStats?.peakDay?.count || 0,
-    peakDate: gitStats?.peakDay?.date || null,
-    squadsData,
-    authorsData,
-    reposData,
-  };
-
-  await saveDashboardSnapshot(snapshot);
-}
 
 // Find agents-squads base directory (project-scoped, not global)
 function findAgentsSquadsDir(): string | null {
@@ -621,232 +547,6 @@ function findAgentsSquadsDir(): string | null {
   return null;
 }
 
-async function _renderGitPerformance(): Promise<void> {
-  const baseDir = findAgentsSquadsDir();
-
-  if (!baseDir) {
-    writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no repos found)${RESET}`);
-    writeLine();
-    return;
-  }
-
-  const [stats, activity] = await Promise.all([
-    getMultiRepoGitStats(baseDir, 30),
-    getActivitySparkline(baseDir, 14),
-  ]);
-
-  if (stats.totalCommits === 0) {
-    writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(no commits in 30d)${RESET}`);
-    writeLine();
-    return;
-  }
-
-  writeLine(`  ${bold}Git Activity${RESET} ${colors.dim}(30d)${RESET}`);
-  writeLine();
-
-  // Sparkline for last 14 days
-  const spark = sparkline(activity);
-  writeLine(`  ${colors.dim}Last 14d:${RESET} ${spark}`);
-  writeLine();
-
-  // Key metrics row
-  const metrics = [
-    `${colors.cyan}${stats.totalCommits}${RESET} commits`,
-    `${colors.green}${stats.avgCommitsPerDay}${RESET}/day`,
-    `${colors.purple}${stats.activeDays}${RESET} active days`,
-  ];
-  if (stats.peakDay) {
-    metrics.push(`${colors.yellow}${stats.peakDay.count}${RESET} peak ${colors.dim}(${stats.peakDay.date})${RESET}`);
-  }
-  writeLine(`  ${metrics.join(`  ${colors.dim}│${RESET}  `)}`);
-  writeLine();
-
-  // Repos by commits (top 5)
-  const sortedRepos = Array.from(stats.commitsByRepo.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5);
-
-  if (sortedRepos.length > 0) {
-    const maxRepoCommits = sortedRepos[0][1];
-
-    for (const [repo, commits] of sortedRepos) {
-      const bar = barChart(commits, maxRepoCommits, 12);
-      writeLine(`  ${colors.cyan}${padEnd(repo, 20)}${RESET}${bar} ${colors.dim}${commits}${RESET}`);
-    }
-    writeLine();
-  }
-
-  // Authors (top 3)
-  const sortedAuthors = Array.from(stats.commitsByAuthor.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
-
-  if (sortedAuthors.length > 0) {
-    const authorLine = sortedAuthors
-      .map(([author, count]) => `${colors.dim}${truncate(author, 15)}${RESET} ${colors.cyan}${count}${RESET}`)
-      .join(`  ${colors.dim}│${RESET}  `);
-    writeLine(`  ${colors.dim}By author:${RESET} ${authorLine}`);
-    writeLine();
-  }
-}
-
-async function _renderTokenEconomics(_squadNames: string[]): Promise<void> {
-  const costs = await fetchCostSummary(100);
-
-  if (!costs) {
-    // No Langfuse config or API error - show hint
-    writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(no data)${RESET}`);
-    writeLine(`  ${colors.dim}Set LANGFUSE_PUBLIC_KEY & LANGFUSE_SECRET_KEY for cost tracking${RESET}`);
-    writeLine();
-    return;
-  }
-
-  writeLine(`  ${bold}Token Economics${RESET} ${colors.dim}(last 100 calls)${RESET}`);
-  writeLine();
-
-  // Budget bar - display depends on plan type
-  const maxPlan = isMaxPlan();
-  if (maxPlan) {
-    // On Max plan, costs are informational (no real budget constraint)
-    writeLine(`  ${colors.dim}Daily spend${RESET} ${colors.green}$${costs.totalCost.toFixed(2)}${RESET} ${colors.dim}(target: $${costs.dailyBudget})${RESET}`);
-  } else {
-    // On usage plan, show budget bar with clear labeling
-    const barWidth = 32;
-    const costBar = formatCostBar(Math.min(costs.usedPercent, 100), barWidth);
-    const pctColor = costs.usedPercent > 100 ? colors.red : costs.usedPercent > 80 ? colors.yellow : colors.green;
-    writeLine(`  ${colors.dim}Daily target $${costs.dailyBudget}${RESET} [${costBar}] ${pctColor}$${costs.totalCost.toFixed(2)}${RESET}`);
-    if (costs.usedPercent > 100) {
-      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.dim}${costs.usedPercent.toFixed(0)}% of target - consider increasing SQUADS_DAILY_BUDGET${RESET}`);
-    } else {
-      writeLine(`  ${colors.cyan}$${costs.idleBudget.toFixed(2)}${RESET} ${colors.dim}remaining of daily target${RESET}`);
-    }
-  }
-  writeLine();
-
-  // Anthropic tier and limits
-  const tier = parseInt(process.env.ANTHROPIC_TIER || '4', 10);
-
-  // RPM limits by tier (same for all models)
-  const rpmByTier: Record<number, number> = { 1: 50, 2: 1000, 3: 2000, 4: 4000 };
-  const rpmLimit = rpmByTier[tier] || 4000;
-
-  // Token limits by tier and model family (ITPM/OTPM per minute)
-  const tokenLimits: Record<number, Record<string, { itpm: number; otpm: number }>> = {
-    1: { opus: { itpm: 30000, otpm: 8000 }, sonnet: { itpm: 30000, otpm: 8000 }, haiku: { itpm: 50000, otpm: 10000 } },
-    2: { opus: { itpm: 450000, otpm: 90000 }, sonnet: { itpm: 450000, otpm: 90000 }, haiku: { itpm: 450000, otpm: 90000 } },
-    3: { opus: { itpm: 800000, otpm: 160000 }, sonnet: { itpm: 800000, otpm: 160000 }, haiku: { itpm: 1000000, otpm: 200000 } },
-    4: { opus: { itpm: 2000000, otpm: 400000 }, sonnet: { itpm: 2000000, otpm: 400000 }, haiku: { itpm: 4000000, otpm: 800000 } },
-  };
-
-  const modelShortNames: Record<string, string> = {
-    'claude-opus-4-5-20251101': 'opus-4.5',
-    'claude-sonnet-4-20250514': 'sonnet-4',
-    'claude-haiku-4-5-20251001': 'haiku-4.5',
-    'claude-3-5-sonnet-20241022': 'sonnet-3.5',
-    'claude-3-5-haiku-20241022': 'haiku-3.5',
-  };
-
-  const modelToFamily: Record<string, string> = {
-    'claude-opus-4-5-20251101': 'opus',
-    'claude-sonnet-4-20250514': 'sonnet',
-    'claude-haiku-4-5-20251001': 'haiku',
-    'claude-3-5-sonnet-20241022': 'sonnet',
-    'claude-3-5-haiku-20241022': 'haiku',
-  };
-
-  // Aggregate stats by model
-  const modelStats: Record<string, { calls: number; input: number; output: number; cached: number }> = {};
-  for (const squad of costs.bySquad) {
-    for (const [model, count] of Object.entries(squad.models)) {
-      if (!modelStats[model]) {
-        modelStats[model] = { calls: 0, input: 0, output: 0, cached: 0 };
-      }
-      modelStats[model].calls += count;
-    }
-    // Distribute tokens proportionally (approximation since we don't have per-model token breakdown)
-    const totalCalls = Object.values(squad.models).reduce((a, b) => a + b, 0);
-    for (const [model, count] of Object.entries(squad.models)) {
-      const ratio = totalCalls > 0 ? count / totalCalls : 0;
-      modelStats[model].input += Math.round(squad.inputTokens * ratio);
-      modelStats[model].output += Math.round(squad.outputTokens * ratio);
-    }
-  }
-
-  // Total tokens for all models
-  const _totalInput = costs.bySquad.reduce((sum, s) => sum + s.inputTokens, 0);
-  const _totalOutput = costs.bySquad.reduce((sum, s) => sum + s.outputTokens, 0);
-  const _totalCalls = costs.bySquad.reduce((sum, s) => sum + s.calls, 0);
-
-  // Cost projections - extrapolate based on hours elapsed today
-  const now = new Date();
-  const hoursElapsed = Math.max(now.getHours() + now.getMinutes() / 60, 1); // At least 1 hour to avoid division issues
-  const hourlyRate = costs.totalCost / hoursElapsed;
-  const dailyProjection = hourlyRate * 24;
-  const monthlyProjection = dailyProjection * 30;
-
-  // Fetch real rate limits from proxy (if available)
-  const rateLimits = await fetchRateLimits();
-  const hasRealLimits = rateLimits.source === 'proxy' && Object.keys(rateLimits.limits).length > 0;
-
-  // Display rate limits section
-  if (hasRealLimits) {
-    writeLine(`  ${colors.dim}Rate Limits${RESET} ${colors.green}(live)${RESET}`);
-
-    for (const [family, limits] of Object.entries(rateLimits.limits)) {
-      const name = family === 'opus' ? 'opus' : family === 'sonnet' ? 'sonnet' : family === 'haiku' ? 'haiku' : family;
-
-      // Request rate usage
-      const reqUsed = limits.requestsLimit - limits.requestsRemaining;
-      const reqPct = limits.requestsLimit > 0 ? (reqUsed / limits.requestsLimit) * 100 : 0;
-      const reqColor = reqPct > 80 ? colors.red : reqPct > 50 ? colors.yellow : colors.green;
-
-      // Token rate usage
-      const tokUsed = limits.tokensLimit - limits.tokensRemaining;
-      const tokPct = limits.tokensLimit > 0 ? (tokUsed / limits.tokensLimit) * 100 : 0;
-      const tokColor = tokPct > 80 ? colors.red : tokPct > 50 ? colors.yellow : colors.green;
-
-      writeLine(`  ${colors.cyan}${padEnd(name, 8)}${RESET} ${reqColor}${String(reqUsed).padStart(4)}${RESET}${colors.dim}/${limits.requestsLimit}req${RESET}  ${tokColor}${formatK(tokUsed)}${RESET}${colors.dim}/${formatK(limits.tokensLimit)}tok${RESET}`);
-    }
-  } else {
-    writeLine(`  ${colors.dim}Rate Limits (Tier ${tier})${RESET}`);
-
-    const sortedModels = Object.entries(modelStats).sort((a, b) => b[1].calls - a[1].calls);
-    for (const [model, stats] of sortedModels.slice(0, 3)) {
-      const name = modelShortNames[model] || model.split('-').slice(1, 3).join('-');
-      const family = modelToFamily[model] || 'sonnet';
-      const limits = tokenLimits[tier]?.[family] || { itpm: 1000000, otpm: 200000 };
-
-      // RPM
-      const rpmPct = (stats.calls / rpmLimit) * 100;
-      const rpmColor = rpmPct > 80 ? colors.red : rpmPct > 50 ? colors.yellow : colors.green;
-
-      // Format: model [RPM bar] calls  [ITPM] input  [OTPM] output
-      writeLine(`  ${colors.cyan}${padEnd(name, 11)}${RESET} ${rpmColor}${String(stats.calls).padStart(4)}${RESET}${colors.dim}rpm${RESET}  ${colors.dim}${formatK(stats.input)}${RESET}${colors.dim}/${formatK(limits.itpm)}i${RESET}  ${colors.dim}${formatK(stats.output)}${RESET}${colors.dim}/${formatK(limits.otpm)}o${RESET}`);
-    }
-  }
-  writeLine();
-
-  // Cache efficiency
-  if (costs.totalCachedTokens > 0 || costs.cacheHitRate > 0) {
-    const cacheColor = costs.cacheHitRate > 50 ? colors.green : costs.cacheHitRate > 20 ? colors.yellow : colors.red;
-    writeLine(`  ${colors.dim}Cache:${RESET} ${cacheColor}${costs.cacheHitRate.toFixed(1)}%${RESET} hit rate  ${colors.dim}(${formatK(costs.totalCachedTokens)} cached / ${formatK(costs.totalInputTokens + costs.totalCachedTokens)} total)${RESET}`);
-    writeLine();
-  }
-
-  // Cost projections
-  writeLine(`  ${colors.dim}Projections${RESET}`);
-  const projColor = dailyProjection > costs.dailyBudget ? colors.red : colors.green;
-  writeLine(`  ${colors.dim}Daily:${RESET}  ${projColor}~$${dailyProjection.toFixed(2)}${RESET}${colors.dim}/${costs.dailyBudget}${RESET}  ${colors.dim}Monthly:${RESET} ${colors.cyan}~$${monthlyProjection.toFixed(0)}${RESET}`);
-
-  // Alerts
-  if (dailyProjection > costs.dailyBudget * 0.8) {
-    writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}Projected to exceed daily budget${RESET}`);
-  }
-  if (costs.usedPercent > 80) {
-    writeLine(`  ${colors.red}⚠${RESET} ${colors.red}${costs.usedPercent.toFixed(0)}% of daily budget used${RESET}`);
-  }
-  writeLine();
-}
 
 // Format number as K/M
 function formatK(n: number): string {
@@ -855,205 +555,6 @@ function formatK(n: number): string {
   return String(n);
 }
 
-async function _renderHistoricalTrends(): Promise<void> {
-  // Check if database is available
-  const dbAvailable = await isDatabaseAvailable();
-  if (!dbAvailable) return;
-
-  const history = await getDashboardHistory(14);
-  if (history.length < 2) return; // Need at least 2 data points
-
-  writeLine(`  ${bold}Usage Trends${RESET} ${colors.dim}(${history.length}d history)${RESET}`);
-  writeLine();
-
-  // Daily cost sparkline (most recent first, so reverse for left-to-right)
-  const dailyCosts = history.map(h => h.costUsd).reverse();
-  const costSparkStr = sparkline(dailyCosts);
-  const totalSpend = dailyCosts.reduce((sum, c) => sum + c, 0);
-  const avgDaily = totalSpend / dailyCosts.length;
-
-  writeLine(`  ${colors.dim}Cost:${RESET} ${costSparkStr}  ${colors.green}$${totalSpend.toFixed(2)}${RESET} total  ${colors.dim}($${avgDaily.toFixed(2)}/day avg)${RESET}`);
-
-  // Token usage trend
-  const inputTokens = history.map(h => h.inputTokens).reverse();
-  const totalInput = inputTokens.reduce((sum, t) => sum + t, 0);
-  const tokenSparkStr = sparkline(inputTokens);
-
-  writeLine(`  ${colors.dim}Tokens:${RESET} ${tokenSparkStr}  ${colors.cyan}${formatK(totalInput)}${RESET} input  ${colors.dim}(${formatK(Math.round(totalInput / inputTokens.length))}/day)${RESET}`);
-
-  // Goal progress trend
-  const goalProgress = history.map(h => h.goalProgressPct).reverse();
-  const latestProgress = goalProgress[goalProgress.length - 1] || 0;
-  const earliestProgress = goalProgress[0] || 0;
-  const progressDelta = latestProgress - earliestProgress;
-  const progressColor = progressDelta > 0 ? colors.green : progressDelta < 0 ? colors.red : colors.dim;
-  const progressSign = progressDelta > 0 ? '+' : '';
-
-  writeLine(`  ${colors.dim}Goals:${RESET} ${sparkline(goalProgress)}  ${colors.purple}${latestProgress}%${RESET}  ${progressColor}${progressSign}${progressDelta.toFixed(0)}%${RESET}${colors.dim} vs start${RESET}`);
-  writeLine();
-}
-
-async function _renderInsights(): Promise<void> {
-  const insights = await fetchInsights('week');
-
-  if (insights.source === 'none' || insights.taskMetrics.length === 0) {
-    // No insights data available - skip section entirely
-    return;
-  }
-
-  writeLine(`  ${bold}Agent Insights${RESET} ${colors.dim}(${insights.days}d)${RESET}`);
-  writeLine();
-
-  // Task completion metrics (aggregated)
-  const totals = insights.taskMetrics.reduce(
-    (acc, t) => ({
-      tasks: acc.tasks + t.tasksTotal,
-      completed: acc.completed + t.tasksCompleted,
-      failed: acc.failed + t.tasksFailed,
-      retries: acc.retries + t.totalRetries,
-      withRetries: acc.withRetries + t.tasksWithRetries,
-    }),
-    { tasks: 0, completed: 0, failed: 0, retries: 0, withRetries: 0 }
-  );
-
-  if (totals.tasks > 0) {
-    const successRate = totals.tasks > 0 ? ((totals.completed / totals.tasks) * 100).toFixed(0) : '0';
-    const successColor = parseInt(successRate) >= 80 ? colors.green : parseInt(successRate) >= 60 ? colors.yellow : colors.red;
-
-    // Task completion row
-    writeLine(`  ${colors.dim}Tasks:${RESET} ${colors.green}${totals.completed}${RESET}${colors.dim}/${totals.tasks} completed${RESET}  ${successColor}${successRate}%${RESET}${colors.dim} success${RESET}  ${colors.red}${totals.failed}${RESET}${colors.dim} failed${RESET}`);
-
-    // Retry metrics
-    if (totals.retries > 0) {
-      const retryRate = totals.tasks > 0 ? ((totals.withRetries / totals.tasks) * 100).toFixed(0) : '0';
-      const retryColor = parseInt(retryRate) > 30 ? colors.red : parseInt(retryRate) > 15 ? colors.yellow : colors.green;
-      writeLine(`  ${colors.dim}Retries:${RESET} ${retryColor}${totals.retries}${RESET}${colors.dim} total${RESET}  ${retryColor}${retryRate}%${RESET}${colors.dim} of tasks needed retry${RESET}`);
-    }
-  }
-
-  // Quality metrics (if feedback exists)
-  const qualityTotals = insights.qualityMetrics.reduce(
-    (acc, q) => ({
-      feedback: acc.feedback + q.feedbackCount,
-      qualitySum: acc.qualitySum + (q.avgQuality * q.feedbackCount),
-      helpfulSum: acc.helpfulSum + (q.helpfulPct * q.feedbackCount / 100),
-      fixSum: acc.fixSum + (q.fixRequiredPct * q.feedbackCount / 100),
-    }),
-    { feedback: 0, qualitySum: 0, helpfulSum: 0, fixSum: 0 }
-  );
-
-  if (qualityTotals.feedback > 0) {
-    const avgQuality = qualityTotals.qualitySum / qualityTotals.feedback;
-    const helpfulPct = (qualityTotals.helpfulSum / qualityTotals.feedback) * 100;
-    const fixPct = (qualityTotals.fixSum / qualityTotals.feedback) * 100;
-
-    const qualityColor = avgQuality >= 4 ? colors.green : avgQuality >= 3 ? colors.yellow : colors.red;
-    const stars = '★'.repeat(Math.round(avgQuality)) + '☆'.repeat(5 - Math.round(avgQuality));
-
-    writeLine(`  ${colors.dim}Quality:${RESET} ${qualityColor}${stars}${RESET} ${colors.dim}(${avgQuality.toFixed(1)}/5)${RESET}  ${colors.green}${helpfulPct.toFixed(0)}%${RESET}${colors.dim} helpful${RESET}  ${fixPct > 20 ? colors.red : colors.dim}${fixPct.toFixed(0)}% needed fixes${RESET}`);
-  }
-
-  // Context window utilization
-  const contextMetrics = insights.taskMetrics.filter(t => t.avgContextPct > 0);
-  if (contextMetrics.length > 0) {
-    const avgContext = contextMetrics.reduce((sum, t) => sum + t.avgContextPct, 0) / contextMetrics.length;
-    const maxContext = Math.max(...contextMetrics.map(t => t.maxContextTokens));
-
-    // Context utilization colors: green < 40%, yellow 40-70%, red > 70%
-    const contextColor = avgContext < 40 ? colors.green : avgContext < 70 ? colors.yellow : colors.red;
-    const contextStatus = avgContext < 40 ? 'lean' : avgContext < 70 ? 'moderate' : 'heavy';
-
-    writeLine(`  ${colors.dim}Context:${RESET} ${contextColor}${avgContext.toFixed(0)}%${RESET}${colors.dim} avg utilization (${contextStatus})${RESET}  ${colors.dim}peak ${formatK(maxContext)} tokens${RESET}`);
-  }
-
-  writeLine();
-
-  // Top tools (compact)
-  if (insights.topTools.length > 0) {
-    const toolLine = insights.topTools.slice(0, 5).map(t => {
-      const successColor = t.successRate >= 95 ? colors.green : t.successRate >= 80 ? colors.yellow : colors.red;
-      return `${colors.dim}${t.toolName.replace('mcp__', '').slice(0, 12)}${RESET} ${successColor}${t.successRate.toFixed(0)}%${RESET}`;
-    }).join('  ');
-
-    writeLine(`  ${colors.dim}Tools:${RESET} ${toolLine}`);
-
-    // Tool failure alert
-    if (insights.toolFailureRate > 5) {
-      writeLine(`  ${colors.yellow}⚠${RESET} ${colors.yellow}${insights.toolFailureRate.toFixed(1)}% tool failure rate${RESET}`);
-    }
-    writeLine();
-  }
-}
-
-async function _renderInfrastructure(): Promise<void> {
-  const stats = await fetchBridgeStats();
-
-  if (!stats) {
-    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(bridge offline)${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}Start with:${RESET} cd docker && docker-compose up -d`);
-    writeLine(`  ${colors.dim}Docs:${RESET} https://agents-squads.com/docs/setup`);
-    writeLine(`  ${colors.yellow}Need help?${RESET} ${colors.dim}hello@agents-squads.com${RESET}`);
-    writeLine();
-    return;
-  }
-
-  writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(${stats.source})${RESET}`);
-  writeLine();
-
-  // Health status row
-  const pgStatus = stats.health.postgres === 'connected' ? `${colors.green}●${RESET}` : `${colors.red}●${RESET}`;
-  const redisStatus = stats.health.redis === 'connected' ? `${colors.green}●${RESET}` : stats.health.redis === 'disabled' ? `${colors.dim}○${RESET}` : `${colors.red}●${RESET}`;
-  // OTel pipeline is working if we have data flowing (postgres connected + generations > 0)
-  const otelWorking = stats.health.postgres === 'connected' && stats.today.generations > 0;
-  const otelStatus = otelWorking ? `${colors.green}●${RESET}` : `${colors.dim}○${RESET}`;
-
-  writeLine(`  ${pgStatus} postgres  ${redisStatus} redis  ${otelStatus} otel`);
-  writeLine();
-
-  // Today's real-time metrics
-  if (stats.today.generations > 0 || stats.today.costUsd > 0) {
-    // On Max plan, cost is informational only (green). On usage plan, color by budget usage.
-    const maxPlan = isMaxPlan();
-    const costColor = maxPlan ? colors.green : (stats.budget.usedPct > 80 ? colors.red : stats.budget.usedPct > 50 ? colors.yellow : colors.green);
-    const costDisplay = maxPlan
-      ? `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}`
-      : `${costColor}$${stats.today.costUsd.toFixed(2)}${RESET}${colors.dim}/$${stats.budget.daily}${RESET}`;
-    writeLine(`  ${colors.dim}Today:${RESET} ${colors.cyan}${stats.today.generations}${RESET}${colors.dim} calls${RESET}  ${costDisplay}  ${colors.dim}${formatK(stats.today.inputTokens)}+${formatK(stats.today.outputTokens)} tokens${RESET}`);
-
-    // Model breakdown
-    if (stats.byModel && stats.byModel.length > 0) {
-      const modelLine = stats.byModel.map(m => {
-        const shortName = m.model.includes('opus') ? 'opus' :
-                          m.model.includes('sonnet') ? 'sonnet' :
-                          m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
-        return `${colors.dim}${shortName}${RESET} ${colors.cyan}${m.generations}${RESET}`;
-      }).join('  ');
-      writeLine(`  ${colors.dim}Models:${RESET} ${modelLine}`);
-    }
-
-    // Squad breakdown
-    if (stats.bySquad.length > 1) {
-      const squadLine = stats.bySquad.slice(0, 4).map(s =>
-        `${colors.dim}${s.squad}${RESET} ${colors.green}$${s.costUsd.toFixed(2)}${RESET}`
-      ).join('  ');
-      writeLine(`  ${colors.dim}Squads:${RESET} ${squadLine}`);
-    }
-  }
-
-  // Week totals
-  if (stats.week && stats.week.generations > 0) {
-    const weekModelLine = stats.week.byModel?.map(m => {
-      const shortName = m.model.includes('opus') ? 'opus' :
-                        m.model.includes('sonnet') ? 'sonnet' :
-                        m.model.includes('haiku') ? 'haiku' : m.model.slice(0, 10);
-      return `${colors.dim}${shortName}${RESET} ${colors.purple}$${m.costUsd.toFixed(0)}${RESET}`;
-    }).join('  ') || '';
-    writeLine(`  ${colors.dim}Week:${RESET}  ${colors.cyan}${stats.week.generations}${RESET}${colors.dim} calls${RESET}  ${colors.purple}$${stats.week.costUsd.toFixed(2)}${RESET}  ${weekModelLine}`);
-  }
-
-  writeLine();
-}
 
 // === CACHED RENDER FUNCTIONS (use pre-fetched data) ===
 
@@ -1130,12 +631,19 @@ function renderTokenEconomicsCached(cache: DashboardCache, goalCount?: { active:
   const tier = parseInt(process.env.ANTHROPIC_TIER || '0', 10);
 
   if (planType === 'unknown') {
-    writeLine(`  ${colors.dim}○${RESET} ${bold}Plan${RESET} ${colors.yellow}not configured${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.dim}Set your Claude plan:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=max   ${colors.dim}# $200/mo flat${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=usage ${colors.dim}# pay-per-token${RESET}`);
-    writeLine();
+    // If no API key is set, user is likely on OAuth (Claude Code subscription)
+    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+    if (!hasApiKey) {
+      writeLine(`  ${colors.purple}◆${RESET} ${bold}Claude Code${RESET} ${colors.dim}(subscription)${RESET}`);
+      writeLine();
+    } else {
+      writeLine(`  ${colors.dim}○${RESET} ${bold}Plan${RESET} ${colors.dim}not configured${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Set your Claude plan:${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=max   ${colors.dim}# $200/mo flat${RESET}`);
+      writeLine(`  ${colors.dim}$${RESET} export SQUADS_PLAN_TYPE=usage ${colors.dim}# pay-per-token${RESET}`);
+      writeLine();
+    }
   } else {
     const maxPlan = planType === 'max';
     const planIcon = maxPlan ? `${colors.purple}◆${RESET}` : `${colors.dim}○${RESET}`;
@@ -1331,11 +839,10 @@ function renderInfrastructureCached(cache: DashboardCache): void {
   const hasInfra = hasLocalInfraConfig();
 
   if (!hasInfra || !stats) {
-    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(not connected)${RESET}`);
+    writeLine(`  ${bold}Infrastructure${RESET} ${colors.dim}(local only)${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}○${RESET} postgres  ${colors.dim}○${RESET} redis  ${colors.dim}○${RESET} otel`);
-    writeLine();
-    writeLine(`  ${colors.dim}Setup:${RESET} github.com/agents-squads/squads-cli#infrastructure`);
+    writeLine(`  ${colors.dim}Running locally — no cloud connection needed to get started.${RESET}`);
+    writeLine(`  ${colors.dim}Optional: connect for remote execution and team sharing.${RESET}`);
     writeLine();
     return;
   }

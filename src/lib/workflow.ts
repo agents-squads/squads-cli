@@ -8,11 +8,9 @@
  */
 
 import { join } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync, exec } from 'child_process';
-import { promisify } from 'util';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';;
+import { execSync, exec } from 'child_process';;
 
-const execAsync = promisify(exec);
 import {
   type AgentRole,
   type Transcript,
@@ -28,6 +26,10 @@ import {
   type Squad,
   findSquadsDir,
 } from './squad-parser.js';
+import {
+  type ContextRole,
+  gatherSquadContext,
+} from './run-context.js';
 
 // =============================================================================
 // Configuration
@@ -70,10 +72,16 @@ interface AgentTurnConfig {
  * Returns the agent's text output.
  */
 function executeAgentTurn(config: AgentTurnConfig): string {
-  const { agentName, agentPath, role, squadName, model, transcript, task } = config;
+  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
-  // Build the prompt: agent definition + transcript context + role instructions
+  // Build the prompt: agent definition + squad context + transcript context + role instructions
   const transcriptContext = serializeTranscript(transcript);
+
+  // Inject role-based squad context (priorities, feedback, active work, etc.)
+  const contextRole: ContextRole = agentName.includes('company-lead') ? 'coo' : (role as ContextRole);
+  const squadContext = gatherSquadContext(squadName, agentName, {
+    agentPath, role: contextRole
+  });
 
   let roleInstructions: string;
   switch (role) {
@@ -84,7 +92,7 @@ function executeAgentTurn(config: AgentTurnConfig): string {
       } else if (transcript.turns.length === 0) {
         roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do`;
       } else {
-        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs that pass CI using \`gh pr merge --squash --delete-branch\``;
+        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs using \`gh pr merge --squash --delete-branch --auto\` (waits for required checks)`;
       }
       break;
     case 'scanner':
@@ -103,7 +111,7 @@ function executeAgentTurn(config: AgentTurnConfig): string {
 Read your full agent definition at ${agentPath} and follow its instructions.
 
 ${roleInstructions}
-
+${squadContext}
 ${transcriptContext}
 
 IMPORTANT:
@@ -117,6 +125,8 @@ IMPORTANT:
   const resolvedModel = config.model || modelForRole(role);
 
   // Execute via claude --print (captures output)
+  // Strip CLAUDECODE and ANTHROPIC_API_KEY so child process uses Max subscription
+  const { CLAUDECODE: _cc, ANTHROPIC_API_KEY: _ak, ...cleanEnv } = process.env;
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   try {
@@ -127,11 +137,7 @@ IMPORTANT:
         timeout: 15 * 60 * 1000, // 15 min per turn
         maxBuffer: 10 * 1024 * 1024, // 10MB
         encoding: 'utf-8',
-        env: {
-          ...process.env,
-          CLAUDECODE: '', // Allow nested sessions
-          ANTHROPIC_API_KEY: undefined, // Use Max subscription
-        },
+        env: cleanEnv,
       }
     );
     return output.trim();
@@ -150,7 +156,7 @@ IMPORTANT:
  * Same logic, but returns a Promise instead of blocking.
  */
 function executeAgentTurnAsync(config: AgentTurnConfig): Promise<string> {
-  const { agentName, agentPath, role, squadName, model, transcript, task } = config;
+  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
   let roleInstructions = '';
   switch (role) {
@@ -191,6 +197,7 @@ IMPORTANT:
 - When done, summarize what you did in 2-3 sentences.`;
 
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const { CLAUDECODE: _cc2, ANTHROPIC_API_KEY: _ak2, ...cleanEnvAsync } = process.env;
 
   return new Promise((resolve) => {
     exec(
@@ -200,13 +207,9 @@ IMPORTANT:
         timeout: 15 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf-8',
-        env: {
-          ...process.env,
-          CLAUDECODE: '',
-          ANTHROPIC_API_KEY: undefined as unknown as string,
-        },
+        env: cleanEnvAsync,
       },
-      (error, stdout, stderr) => {
+      (error: Error | null, stdout: string, _stderr: string) => {
         if (stdout && stdout.trim().length > 0) {
           resolve(stdout.trim());
         } else if (error) {

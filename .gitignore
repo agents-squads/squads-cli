@@ -9,3 +9,6 @@ dist/
 # Generated files - never commit
 coverage/
 docker/.env
+
+# Local PII patterns — never commit
+.husky/.blocked-patterns

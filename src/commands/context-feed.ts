@@ -7,6 +7,7 @@
 
 import { existsSync, statSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { getEnv } from '../lib/env-config.js';
 import {
   findSquadsDir,
   loadSquad,
@@ -97,7 +98,7 @@ interface BriefingOptions {
 // Business Brief Parser
 // ============================================================================
 
-const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+const BRIDGE_URL = getEnv().bridge_url;
 
 async function syncBriefToBridge(brief: BusinessBrief, sourcePath: string): Promise<boolean> {
   try {

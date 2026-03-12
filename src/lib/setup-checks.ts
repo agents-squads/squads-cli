@@ -125,44 +125,25 @@ export function isColimaRunning(): boolean {
 }
 
 /**
- * Check Docker/Colima prerequisites
+ * Check Docker/Colima prerequisites (informational only, never required)
  */
 export function checkDockerPrereqs(): CheckResult {
-  // Check if Docker is running
+  // Docker is never required for the CLI — purely informational
   if (isDockerRunning()) {
-    return { name: 'Docker', status: 'ok' };
+    return { name: 'Docker', status: 'ok', message: 'Available (optional)' };
   }
 
-  // Docker not running - check if it's installed
   if (commandExists('docker')) {
-    // Check if Colima is available as an alternative
-    if (commandExists('colima')) {
-      if (isColimaRunning()) {
-        return { name: 'Docker (Colima)', status: 'ok' };
-      }
-      return {
-        name: 'Docker',
-        status: 'warning',
-        message: 'Docker installed but not running',
-        hint: 'Start Docker Desktop or run: colima start',
-        fixCommand: 'colima start',
-      };
+    if (commandExists('colima') && isColimaRunning()) {
+      return { name: 'Docker (Colima)', status: 'ok', message: 'Available (optional)' };
     }
-
-    return {
-      name: 'Docker',
-      status: 'warning',
-      message: 'Docker installed but not running',
-      hint: 'Start Docker Desktop',
-    };
   }
 
-  // Docker not installed
+  // Not installed or not running — that's fine
   return {
     name: 'Docker',
-    status: 'warning',
-    message: 'Optional: enables scheduling, telemetry, and persistent storage',
-    hint: 'Core commands (init, run, status, eval) work without Docker. Install for scheduling: brew install --cask docker',
+    status: 'ok',
+    message: 'Not detected (optional — not required for CLI usage)',
   };
 }
 

@@ -57,8 +57,14 @@ export function detectPlan(): PlanDetection {
     return { plan: 'usage', confidence: 'inferred', reason: `Tier ${tier} (new user)` };
   }
 
-  // 5. Default: unknown - prompt user to configure
-  return { plan: 'unknown', confidence: 'inferred', reason: 'Not configured' };
+  // 5. No API key = OAuth (Claude Code subscription) → treat as Max plan
+  // Users authenticated via OAuth have a flat subscription and don't need cost tracking.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { plan: 'max', confidence: 'inferred', reason: 'OAuth (Claude Code subscription)' };
+  }
+
+  // 6. API key set but no other signals → usage plan (pay-per-token)
+  return { plan: 'usage', confidence: 'inferred', reason: 'API key (pay-per-token)' };
 }
 
 /**

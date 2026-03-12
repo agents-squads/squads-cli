@@ -18,9 +18,15 @@ import {
 } from '../lib/terminal.js';
 import { checkServiceAvailable, showServiceSetupGuide } from '../lib/services.js';
 import { track, Events } from '../lib/telemetry.js';
+import { getEnv } from '../lib/env-config.js';
 
-const SQUADS_BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
-const MEM0_API_URL = process.env.MEM0_API_URL || 'http://localhost:8000';
+function getBridgeUrl(): string {
+  return getEnv().bridge_url;
+}
+
+function getMem0Url(): string {
+  return process.env.MEM0_API_URL || '';
+}
 
 interface MemoryOptions {
   squad?: string;
@@ -140,7 +146,12 @@ export async function memoryShowCommand(
 
   if (states.length === 0) {
     writeLine(`  ${colors.yellow}No memory found for squad: ${squadName}${RESET}`);
-    return;
+    const entries = listMemoryEntries(memoryDir!);
+    const squads = [...new Set(entries.map(e => e.squad))].sort();
+    if (squads.length > 0) {
+      writeLine(`  ${colors.dim}Available squads: ${squads.join(', ')}${RESET}`);
+    }
+    process.exit(1);
   }
 
   writeLine();
@@ -289,12 +300,22 @@ export async function memorySearchCommand(
   }
 
   try {
-    const response = await fetch(`${SQUADS_BRIDGE_URL}/api/conversations/search?${params}`);
+    const bridgeUrl = getBridgeUrl();
+    if (!bridgeUrl) {
+      writeLine(`  ${colors.yellow}API service unavailable${RESET}`);
+      writeLine(`  ${colors.dim}Conversation search requires authentication. Run \`squads login\` to connect.${RESET}`);
+      writeLine(`  ${colors.dim}For local memory search, use: squads memory query "${query}"${RESET}`);
+      writeLine();
+      return;
+    }
+
+    const response = await fetch(`${bridgeUrl}/api/conversations/search?${params}`, {
+      signal: AbortSignal.timeout(5000),
+    });
 
     if (!response.ok) {
       if (response.status === 503) {
-        writeLine(`  ${colors.yellow}Bridge service not available${RESET}`);
-        writeLine(`  ${colors.dim}Conversation search requires the bridge service.${RESET}`);
+        writeLine(`  ${colors.yellow}API service unavailable. Run \`squads login\` to connect.${RESET}`);
         writeLine(`  ${colors.dim}For local memory search, use: squads memory query "${query}"${RESET}`);
         writeLine();
         return;
@@ -310,8 +331,8 @@ export async function memorySearchCommand(
       writeLine(`  ${colors.yellow}No conversations found for "${query}"${RESET}`);
       writeLine();
       writeLine(`  ${colors.dim}Conversations are captured via hooks. Make sure:${RESET}`);
-      writeLine(`  ${colors.dim}  1. squads-bridge is running (docker compose up)${RESET}`);
-      writeLine(`  ${colors.dim}  2. telemetry hooks are configured in Claude settings${RESET}`);
+      writeLine(`  ${colors.dim}  1. You are authenticated (squads login)${RESET}`);
+      writeLine(`  ${colors.dim}  2. Telemetry hooks are configured in Claude settings${RESET}`);
       writeLine();
       return;
     }
@@ -418,12 +439,21 @@ export async function memoryExtractCommand(
   const hours = options.hours || 24;
 
   try {
-    // 1. Fetch recent conversations from bridge
+    // 1. Fetch recent conversations from API
     writeLine(`  ${colors.dim}Fetching conversations from last ${hours}h...${RESET}`);
 
-    const bridgeResponse = await fetch(`${SQUADS_BRIDGE_URL}/api/conversations/recent`);
+    const bridgeUrl = getBridgeUrl();
+    if (!bridgeUrl) {
+      writeLine(`  ${colors.yellow}API service unavailable. Run \`squads login\` to connect.${RESET}`);
+      writeLine();
+      return;
+    }
+
+    const bridgeResponse = await fetch(`${bridgeUrl}/api/conversations/recent`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!bridgeResponse.ok) {
-      throw new Error(`Bridge API error: ${bridgeResponse.status}`);
+      throw new Error(`API error: ${bridgeResponse.status}`);
     }
 
     const { conversations, count } = await bridgeResponse.json() as {
@@ -488,7 +518,13 @@ export async function memoryExtractCommand(
       }));
 
       try {
-        const mem0Response = await fetch(`${MEM0_API_URL}/memories`, {
+        const mem0Url = getMem0Url();
+        if (!mem0Url) {
+          writeLine(`  ${colors.yellow}Memory service not configured. Run \`squads login\` to connect.${RESET}`);
+          writeLine();
+          return;
+        }
+        const mem0Response = await fetch(`${mem0Url}/memories`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -500,7 +536,8 @@ export async function memoryExtractCommand(
               source: 'squads-cli',
               extracted_at: new Date().toISOString()
             }
-          })
+          }),
+          signal: AbortSignal.timeout(10000),
         });
 
         if (mem0Response.ok) {

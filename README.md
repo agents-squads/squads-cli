@@ -1,10 +1,6 @@
-<div align="center">
-
 # squads
 
-**Your AI workforce**
-
-One person + AI teammates = a real business.
+**Your AI workforce.** One person + AI teammates = a real business.
 
 [![npm version](https://img.shields.io/npm/v/squads-cli.svg)](https://www.npmjs.com/package/squads-cli)
 [![npm downloads](https://img.shields.io/npm/dw/squads-cli.svg)](https://www.npmjs.com/package/squads-cli)
@@ -12,62 +8,183 @@ One person + AI teammates = a real business.
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 
-[Documentation](https://agents-squads.com/docs) · [Getting Started](https://agents-squads.com/onboarding) · [Architecture](https://agents-squads.com/engineering/squads-architecture)
+Instead of building fragile Python state machines, Squads turns native LLM CLIs into autonomous managers. The filesystem is long-term memory. GitHub is the async message bus. Markdown is the only config format. No framework lock-in, no proprietary runtime — just the tools developers already use.
 
-</div>
+## Why Squads
 
----
+Most agent frameworks trap you inside their runtime: custom Python classes, proprietary state graphs, vendor-locked tool registries. When the framework breaks, your agents break. When the framework pivots, you rewrite.
 
-Squads organizes AI agents into domain-aligned teams -- marketing, engineering, finance, operations -- that coordinate work, remember what they learn, and track goals over time. Agents are plain markdown files. No framework lock-in, no proprietary formats. Works with any LLM provider.
+Squads takes the opposite approach. **The operating system is the framework.**
 
-![squads dashboard](./assets/dashboard.png)
+- **Native CLIs are the runtime.** Claude Code, Gemini CLI, Codex — each is already a capable autonomous agent. Squads orchestrates them as-is, routing tasks to the right model without wrapping them in abstraction layers. When Claude ships a new capability, your agents get it immediately.
+- **The filesystem is memory.** Agent knowledge lives in plain markdown files — `state.md`, `learnings.md`, `feedback.md`. No vector databases, no embeddings, no retrieval pipelines. `grep` is your search engine. Git is your version history. Knowledge survives anything.
+- **GitHub is the message bus.** Squads coordinate through issues, PRs, and labels — not custom pub/sub systems. A scanner files an issue; a worker picks it up; a verifier checks the PR. The entire workflow is visible, auditable, and works with every CI/CD system that exists.
+- **Markdown is the only config.** A squad is a directory. An agent is a `.md` file. Edit it in vim, review it in a PR, diff it in git. No YAML pipelines, no JSON schemas, no DSLs to learn.
+- **Multi-provider by default.** Route each agent to the right model: Claude for deep reasoning, Gemini for speed, GPT for breadth, local models for privacy. Swap providers without touching agent definitions.
+- **Autonomous, not assisted.** Agents run on schedules, respect budgets, evaluate their own output quality, and improve over time — closing the loop between execution and learning without human intervention.
 
 ## Quick Start
 
 ```bash
 npm install -g squads-cli
 squads init
+squads status
 ```
 
+`squads init` creates a `.agents/` directory in your project with starter squads and configures Claude Code hooks for automatic context injection.
+
+## How It Works
+
 ```
-$ squads status
-
-  squads status
-  ● 3 active sessions across 2 squads (claude 2, gemini 1)
-
-  4/4 squads  |  memory: enabled
-
-  SQUAD           AGENTS  MEMORY        ACTIVITY
-  engineering     3       4 entries     today
-  marketing       2       2 entries     today
-  research        5       1 entry       yesterday
-  operations      2       --            3d ago
+.agents/
+├── config/
+│   └── SYSTEM.md              # Base behavior (shared across all agents)
+├── squads/
+│   ├── engineering/
+│   │   ├── SQUAD.md            # Squad identity, goals, KPIs
+│   │   ├── code-review.md      # Agent definition
+│   │   └── backend.md          # Agent definition
+│   └── marketing/
+│       ├── SQUAD.md
+│       └── content.md
+└── memory/                     # Persistent state (auto-managed)
+    ├── engineering/
+    └── marketing/
 ```
+
+**Context cascades down:** `SYSTEM.md` (base behavior) → `SQUAD.md` (squad identity + goals) → `agent.md` (unique instructions) → `state.md` (ephemeral runtime context).
+
+Everything is plain text. No databases, no servers, no config files beyond markdown.
+
+## How Agents Think
+
+Squads uses a layered context cascade to give each agent exactly the right
+information for its role. Not too much (wasted tokens, confused agents),
+not too little (blind execution, duplicate work).
+
+### The Cascade
+
+Every agent execution loads context in priority order:
+
+| Layer | What | Why |
+|-------|------|-----|
+| System Protocol | Approvals, git workflow, escalation | Immutable rules every agent follows |
+| Squad Identity | Mission, aspirational goals, output format | Who am I, what do I produce |
+| Priorities | Current operational priorities | What to work on now (weekly) |
+| Directives | Company-wide strategic overlay | What matters to the org |
+| Feedback | Last cycle evaluation | What was valuable, what was noise |
+| Memory | Agent state from last run | What I already know |
+| Active Work | Open PRs and issues | What exists — don't duplicate |
+| Briefings | Daily briefing, cross-squad context | What's happening elsewhere |
+
+A token budget ensures context fits the model's window. Lower layers drop
+gracefully when budget runs out — identity and priorities always load,
+briefings drop first.
+
+### Goals vs Priorities
+
+Squads separates aspiration from execution:
+
+- **Goals** live in `SQUAD.md` — atemporal, aspirational ("Zero friction first-run")
+- **Priorities** live in `priorities.md` — temporal, operational ("Fix #461 this week")
+
+`squads goal set` writes aspirational goals. Priorities are updated by leads
+or founders between cycles. Both are injected — goals as squad identity,
+priorities as current focus.
+
+### Role-Based Depth
+
+Not every agent needs the same context:
+
+- **Scanners** get minimal context (identity + priorities + state) — they discover, don't decide
+- **Workers** add directives + feedback + active work — they execute with awareness
+- **Leads** get everything including cross-squad context — they orchestrate
+- **Evaluators** get org-wide summaries — they assess and generate feedback
+
+### The Feedback Loop
+
+After each execution cycle, a lead evaluates squad outputs against goals:
+what was valuable, what was noise, what to prioritize next. This evaluation
+is written to `feedback.md` and injected into the next cycle — closing the
+loop so agents learn from their own output quality over time.
+
+### Phase Ordering
+
+Squads declare dependencies in their SQUAD.md frontmatter:
+
+```yaml
+---
+name: product
+depends_on: [engineering, customer, research]
+---
+```
+
+The CLI automatically computes execution phases via topological sort.
+Squads with no dependencies run first. Squads with `depends_on: ["*"]`
+run last (evaluation). Within each phase, squads run in parallel.
+Use `squads run --phased` to enable phase-ordered execution.
+
+## Running Agents
 
 ```bash
 # Run a specific agent
 squads run engineering/code-review
 
-# Run an entire squad in parallel
+# Run with a specific directive
+squads run engineering --task "Review all open PRs for security issues"
+
+# Run a full squad conversation (lead briefs → workers iterate → convergence)
 squads run engineering --parallel
 
-# Search across all agent memory
-squads memory query "authentication patterns"
-
-# Set and track goals
-squads goal set engineering "Ship v2.0 by Friday"
-squads dash
+# Autonomous scheduling with budget control
+squads autopilot --interval 30 --budget 50
 ```
 
-## Why Squads
+## Base Squads
 
-**Agents are markdown files.** No DSLs, no YAML pipelines, no SDKs. A squad is a directory. An agent is a `.md` file with a role, model preference, and instructions. You own everything -- version it, edit it, fork it.
+These squads are battle-tested and produce real outputs autonomously:
 
-**Multi-provider by default.** Route agents to the right model for the job. Claude for deep reasoning, Gemini for speed, GPT-4o for breadth, Ollama for local execution. Switch providers per agent or per run with a single flag.
+| Squad | What It Does | Agents |
+|-------|-------------|--------|
+| **engineering** | Code review, CI/CD, infrastructure, issue resolution | lead, scanner, worker, verifier, issue-solver |
+| **marketing** | Content creation, SEO, social media, brand voice | lead, writer, seo-analyst, social-scheduler |
+| **finance** | Budget tracking, cost analysis, financial reporting | lead, scanner, verifier, bookkeeper |
+| **operations** | Org health, agent performance, architecture gaps | lead, scanner, worker, verifier, critic |
+| **research** | Deep research, competitive intelligence, domain analysis | lead, analyst, synthesizer |
+| **product** | Roadmap, specs, user feedback synthesis, sprint planning | lead, scanner, worker |
+| **customer** | Inbound lead qualification, CRM, onboarding | lead, scanner, worker |
+| **website** | Site quality, SEO audits, content updates, testing | lead, scanner, tester |
 
-**Memory that persists.** Agents accumulate knowledge across sessions. Learnings survive restarts, context carries forward, and any agent can search the collective memory of the organization.
+Each squad follows a consistent pattern: **lead** (coordinates), **scanner** (monitors), **worker** (executes), **verifier** (validates).
 
-**Goals, not just tasks.** Set objectives at the squad level, track progress through KPIs, and get executive summaries. Squads is a business operating system, not a script runner.
+## Key Commands
+
+```bash
+# Status & monitoring
+squads status [squad]          # Overview of all squads
+squads dash                    # Dashboard with goals, metrics, git activity
+squads sessions                # Active AI coding sessions across your machine
+squads cost                    # Cost summary by squad and period
+squads doctor                  # Check local tools, auth, readiness
+
+# Memory & learning
+squads memory query "topic"    # Search across all agent memory
+squads memory write squad "x"  # Persist a learning
+squads memory read squad       # View squad knowledge
+squads memory sync             # Sync memory with git remote
+
+# Goals & tracking
+squads goal set squad "goal"   # Set a squad objective
+squads goal list               # View all goals and progress
+squads results [squad]         # Git activity + KPI goals vs actuals
+
+# Automation
+squads autonomous start        # Cron-style local scheduling
+squads autopilot               # Intelligent dispatch with budget control
+squads cognition               # Business cognition engine (beliefs, decisions)
+```
+
+Run `squads --help` for the full command reference, or `squads <command> --help` for options.
 
 ## Supported Providers
 
@@ -82,200 +199,47 @@ squads dash
 | Ollama | `ollama` | Any local model |
 
 ```bash
-# Use a specific provider for a run
 squads run research --provider=google --model=gemini-2.5-flash
-
-# Check which providers are available
-squads providers
+squads providers    # List available providers
 ```
 
-## Features
+## Prerequisites
 
-### Dashboard
+Squads orchestrates existing CLI tools. Install the ones your squads need:
 
-Full visibility into squad activity, goal progress, and git contribution metrics.
+| Tool | Required | Used For |
+|------|----------|----------|
+| [Node.js](https://nodejs.org) >= 18 | Yes | Runtime |
+| [Git](https://git-scm.com) | Yes | Memory sync, version control |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes (default provider) | Agent execution |
+| [GitHub CLI](https://cli.github.com) (`gh`) | Recommended | Issue tracking, PRs, project management |
+| [Google Cloud CLI](https://cloud.google.com/sdk) (`gcloud`) | Optional | GCP deployment, secrets |
+| [Google Workspace CLI](https://github.com/nicholasgasior/gws) (`gws`) | Optional | Drive, Gmail, Calendar, Sheets |
+| [Docker](https://www.docker.com) | Optional | Local Postgres/Redis for API |
 
-```
-$ squads dash
+## Claude Code Integration
 
-  squads dashboard
-  ● 7 active sessions across 3 squads
-
-  8/10 squads  |  404 commits  |  use -f for PRs/issues
-
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35% goal progress
-
-  SQUAD        COMMITS PRs ISSUES GOALS  PROGRESS
-  marketing    203     0   0/0    9/12   ━━━━━━━━
-  engineering  139     0   0/0    0/1    ━━━━━━━━
-  cli          48      0   0/0    2/3    ━━━━━━━━
-
-  Git Activity (30d)
-  Last 14d: ▁▁▁▁▁▁▁▄▆▄▆▅█▂
-  404 commits  |  13.5/day  |  21 active days
-```
-
-The `--ceo` flag produces an executive summary with P0/P1 priorities and spend tracking.
-
-### Memory System
-
-Agents write learnings as they work. The memory system makes that knowledge searchable and shareable across the organization.
-
-```bash
-# Capture a learning from the command line
-squads memory write engineering "Redis connection pooling requires min 5 connections for our load"
-
-# Search all agent memory
-squads memory query "deployment"
-
-# View a specific squad's accumulated knowledge
-squads memory read engineering
-```
-
-### Session Detection
-
-Automatically detects running AI coding sessions across your machine and maps them to squads based on working directory.
-
-```
-$ squads sessions
-
-  ● 4 active sessions
-  claude  engineering/backend    ~/projects/api         12m
-  claude  engineering/frontend   ~/projects/web         3m
-  gemini  research/analyst       ~/projects/research    45m
-  cursor  marketing/content      ~/projects/site        8m
-```
-
-Supports: Claude Code, Cursor, Aider, Gemini, GitHub Copilot, Sourcegraph Cody, Continue.
-
-### Autonomous Execution
-
-Schedule agents to run on their own with the local daemon.
-
-```bash
-# Start the autonomous scheduler
-squads autonomous start
-
-# Check what's running
-squads autonomous status
-```
-
-### Claude Code Integration
-
-Add hooks to `.claude/settings.json` so every Claude Code session starts with squad context:
+Squads hooks into Claude Code for automatic context injection:
 
 ```json
 {
   "hooks": {
     "SessionStart": [{
-      "hooks": [{
-        "type": "command",
-        "command": "squads session start",
-        "timeout": 10
-      }]
+      "hooks": [
+        { "type": "command", "command": "squads status", "timeout": 10 },
+        { "type": "command", "command": "squads memory sync --no-push", "timeout": 15 }
+      ]
+    }],
+    "Stop": [{
+      "hooks": [
+        { "type": "command", "command": "squads memory sync --push", "timeout": 15 }
+      ]
     }]
   }
 }
 ```
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `squads init` | Initialize squads in your project |
-| `squads status [squad]` | Overview of all squads and active sessions |
-| `squads run <target>` | Run a squad or specific agent |
-| `squads dash [name]` | Dashboard with goals, metrics, and git activity |
-| `squads env show <squad>` | View squad execution environment |
-| `squads env prompt <squad> -a <agent>` | Generate agent execution prompt |
-| `squads memory query <q>` | Search across all agent memory |
-| `squads memory write <squad> <insight>` | Persist a learning |
-| `squads memory read <squad>` | View squad memory |
-| `squads goal set <squad> <goal>` | Set a squad objective |
-| `squads goal list` | View all goals and progress |
-| `squads exec list` | View recent execution history |
-| `squads sessions` | Show active AI coding sessions |
-| `squads autonomous start` | Start the local execution daemon |
-| `squads providers` | List available LLM providers |
-| `squads eval <target>` | Evaluate agent readiness |
-| `squads cost` | Cost summary by squad and time period |
-| `squads kpi show <squad>` | Track squad KPIs |
-| `squads sync` | Synchronize memory state |
-| `squads health` | Infrastructure health check |
-| `squads update` | Check for and install updates |
-
-Run `squads --help` for the full command reference, or `squads <command> --help` for detailed options.
-
-## Project Structure
-
-After `squads init`, your project gets a `.agents/` directory:
-
-```
-your-project/
-├── .agents/
-│   ├── squads/                  # Squad definitions
-│   │   ├── engineering/
-│   │   │   ├── SQUAD.md         # Squad config, goals, KPIs
-│   │   │   ├── code-review.md   # Agent: role, model, instructions
-│   │   │   └── backend.md       # Agent: another team member
-│   │   └── marketing/
-│   │       ├── SQUAD.md
-│   │       └── content.md
-│   ├── memory/                  # Persistent state (auto-managed)
-│   │   ├── engineering/
-│   │   └── marketing/
-│   └── outputs/                 # Agent work products
-└── CLAUDE.md                    # Optional: project-level AI context
-```
-
-Everything is plain text. Version it with git, review it in PRs, edit it in any editor.
-
-## Configuration
-
-### Agent Definition
-
-Each agent is a markdown file with YAML frontmatter:
-
-```markdown
----
-model: sonnet
-provider: anthropic
-effort: high
-timeout: 30
----
-
-# Code Review Agent
-
-You review pull requests for correctness, security, and style.
-
-## Instructions
-- Check for common vulnerability patterns
-- Verify test coverage for new code paths
-- Flag any breaking API changes
-```
-
-### Squad Definition
-
-`SQUAD.md` configures the team:
-
-```markdown
----
-agents:
-  - code-review
-  - backend
-  - frontend
-model: sonnet
-provider: anthropic
----
-
-# Engineering Squad
-
-Owns the codebase. Ships features, fixes bugs, maintains quality.
-
-## Goals
-- P0: Ship v2.0 release
-- P1: Reduce CI build time below 3 minutes
-```
+`squads init` configures this automatically.
 
 ## Development
 
@@ -284,48 +248,34 @@ git clone https://github.com/agents-squads/squads-cli.git
 cd squads-cli
 npm install
 npm run build
-npm link           # Makes 'squads' available globally
+npm link       # Makes 'squads' available globally
 npm test
 ```
 
-### Tech Stack
-
-- **TypeScript** (strict mode) with **Commander.js** for CLI parsing
-- **Vitest** for testing
-- **tsup** for bundling
-- Built on the [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-node) with multi-provider abstraction
+TypeScript (strict mode), Commander.js, Vitest, tsup. Built on the [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-node) with multi-provider abstraction.
 
 ## Contributing
 
-Contributions are welcome. Please open an issue first to discuss what you'd like to change.
+Contributions welcome. Open an issue first to discuss changes.
 
 1. Fork the repository
 2. Create your branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
+3. Commit your changes
+4. Open a Pull Request
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Community
 
-- [GitHub Issues](https://github.com/agents-squads/squads-cli/issues) -- Bug reports and feature requests
-- [GitHub Discussions](https://github.com/agents-squads/squads-cli/discussions) -- Questions and ideas
-- [Documentation](https://agents-squads.com/docs) -- Guides, tutorials, and API reference
+- [GitHub Issues](https://github.com/agents-squads/squads-cli/issues) — Bug reports and feature requests
+- [GitHub Discussions](https://github.com/agents-squads/squads-cli/discussions) — Questions and ideas
+- [Website](https://agents-squads.com) — Documentation and guides
 
-## Related Projects
+## Related
 
-- [agents-squads](https://github.com/agents-squads/agents-squads) -- The full framework
-- [engram](https://github.com/agents-squads/engram) -- Persistent memory for AI agents (MCP server)
+- [agents-squads](https://github.com/agents-squads/agents-squads) — The framework
+- [engram](https://github.com/agents-squads/engram) — Persistent memory for AI agents (MCP server)
 
 ## License
 
 [MIT](LICENSE)
-
----
-
-<div align="center">
-
-Built by [Agents Squads](https://agents-squads.com)
-
-</div>

@@ -1,6 +1,6 @@
 import { execSync, exec } from 'child_process';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -542,16 +542,25 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   // Collect all commits with full info for sorting
   const allCommits: CommitInfo[] = [];
 
-  // Build list of valid repos
-  const validRepos = SQUAD_REPOS.filter(repo => {
+  // Build list of valid repo sources
+  const repoSources: Array<{ name: string; path: string }> = [];
+
+  // Check SQUAD_REPOS subdirectories
+  for (const repo of SQUAD_REPOS) {
     const repoPath = join(basePath, repo);
-    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
-  });
+    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
+      repoSources.push({ name: repo, path: repoPath });
+    }
+  }
+
+  // Also check basePath itself (for single-project users where cwd IS the project)
+  if (existsSync(join(basePath, '.git')) && !repoSources.some(s => s.path === basePath)) {
+    repoSources.push({ name: basename(basePath), path: basePath });
+  }
 
   // Fetch git logs from all repos in parallel
   const repoResults = await Promise.all(
-    validRepos.map(async (repo) => {
-      const repoPath = join(basePath, repo);
+    repoSources.map(async ({ name: repo, path: repoPath }) => {
       try {
         const { stdout } = await execAsync(
           `git log --since="${days} days ago" --format="%H|%aN|%ad|%s" --date=short 2>/dev/null`,
@@ -661,10 +670,11 @@ export interface OperationalStatus {
  * Fetch operational status: milestones + open PRs across repos.
  * Repos are discovered from squad definitions (SQUAD.md `repo` field).
  * Uses gh CLI — gracefully returns empty if gh is unavailable.
+ * Fetches all repos in parallel for performance.
  *
  * @param repos - Array of "owner/repo" strings (e.g., ["agents-squads/squads-cli"])
  */
-export function fetchOperationalStatus(repos: string[]): OperationalStatus {
+export async function fetchOperationalStatus(repos: string[]): Promise<OperationalStatus> {
   const result: OperationalStatus = { milestones: [], openPRs: [], error: null };
 
   if (repos.length === 0) {
@@ -678,50 +688,62 @@ export function fetchOperationalStatus(repos: string[]): OperationalStatus {
     return result;
   }
 
-  for (const fullRepo of repos) {
-    const repoShort = fullRepo.split('/').pop() || fullRepo;
+  // Fetch all repos in parallel
+  const repoResults = await Promise.all(
+    repos.map(async (fullRepo) => {
+      const repoShort = fullRepo.split('/').pop() || fullRepo;
+      const milestones: OperationalStatus['milestones'] = [];
+      const openPRs: OperationalStatus['openPRs'] = [];
 
-    // Fetch milestones
-    try {
-      const msOutput = execSync(
-        `gh api "repos/${fullRepo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
-      ).trim();
+      // Fetch milestones and PRs concurrently per repo
+      const [msResult, prResult] = await Promise.allSettled([
+        execAsync(
+          `gh api "repos/${fullRepo}/milestones?state=open" --jq '.[] | [.title, .open_issues, .closed_issues, .due_on] | @tsv' 2>/dev/null`,
+          { encoding: 'utf-8', timeout: 8000 }
+        ),
+        execAsync(
+          `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
+          { encoding: 'utf-8', timeout: 8000 }
+        ),
+      ]);
 
-      for (const line of msOutput.split('\n').filter(l => l.trim())) {
-        const [title, open, closed, dueOn] = line.split('\t');
-        const openIssues = parseInt(open) || 0;
-        const closedIssues = parseInt(closed) || 0;
-        const totalIssues = openIssues + closedIssues;
-        result.milestones.push({
-          repo: repoShort,
-          title,
-          openIssues,
-          closedIssues,
-          totalIssues,
-          percent: totalIssues > 0 ? Math.floor((closedIssues / totalIssues) * 100) : 0,
-          dueOn: dueOn && dueOn !== 'null' ? dueOn : null,
-        });
+      if (msResult.status === 'fulfilled') {
+        for (const line of msResult.value.stdout.trim().split('\n').filter(l => l.trim())) {
+          const [title, open, closed, dueOn] = line.split('\t');
+          const openIssues = parseInt(open) || 0;
+          const closedIssues = parseInt(closed) || 0;
+          const totalIssues = openIssues + closedIssues;
+          milestones.push({
+            repo: repoShort,
+            title,
+            openIssues,
+            closedIssues,
+            totalIssues,
+            percent: totalIssues > 0 ? Math.floor((closedIssues / totalIssues) * 100) : 0,
+            dueOn: dueOn && dueOn !== 'null' ? dueOn : null,
+          });
+        }
       }
-    } catch { /* skip repo */ }
 
-    // Fetch open PRs (try develop first, then main)
-    try {
-      const prOutput = execSync(
-        `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 }
-      ).trim();
-
-      for (const line of prOutput.split('\n').filter(l => l.trim())) {
-        const [num, base, ...titleParts] = line.split('\t');
-        result.openPRs.push({
-          repo: repoShort,
-          number: parseInt(num) || 0,
-          title: titleParts.join('\t'),
-          base,
-        });
+      if (prResult.status === 'fulfilled') {
+        for (const line of prResult.value.stdout.trim().split('\n').filter(l => l.trim())) {
+          const [num, base, ...titleParts] = line.split('\t');
+          openPRs.push({
+            repo: repoShort,
+            number: parseInt(num) || 0,
+            title: titleParts.join('\t'),
+            base,
+          });
+        }
       }
-    } catch { /* skip repo */ }
+
+      return { milestones, openPRs };
+    })
+  );
+
+  for (const { milestones, openPRs } of repoResults) {
+    result.milestones.push(...milestones);
+    result.openPRs.push(...openPRs);
   }
 
   return result;
@@ -737,16 +759,22 @@ export async function getActivitySparkline(basePath: string, days: number = 7): 
     activity.push(0);
   }
 
-  // Build list of valid repos
-  const validRepos = SQUAD_REPOS.filter(repo => {
+  // Build list of valid repo sources
+  const sparklineRepos: Array<string> = [];
+  for (const repo of SQUAD_REPOS) {
     const repoPath = join(basePath, repo);
-    return existsSync(repoPath) && existsSync(join(repoPath, '.git'));
-  });
+    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
+      sparklineRepos.push(repoPath);
+    }
+  }
+  // Also check basePath itself (for single-project users where cwd IS the project)
+  if (existsSync(join(basePath, '.git')) && !sparklineRepos.includes(basePath)) {
+    sparklineRepos.push(basePath);
+  }
 
   // Fetch git logs from all repos in parallel
   const results = await Promise.all(
-    validRepos.map(async (repo) => {
-      const repoPath = join(basePath, repo);
+    sparklineRepos.map(async (repoPath) => {
       try {
         const { stdout } = await execAsync(
           `git log --since="${days} days ago" --format="%ad" --date=short 2>/dev/null`,

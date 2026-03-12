@@ -8,24 +8,25 @@ export function isColorEnabled(): boolean {
   if (process.env.NO_COLOR !== undefined) return false;
   // Force color via environment variable
   if (process.env.FORCE_COLOR !== undefined) return true;
-  // AI coding assistants - enable colors (they support ANSI)
+  // TTY check first — piped output (squads | grep) never gets colors
+  if (process.stdout.isTTY === true) return true;
+  // AI coding assistants that may not expose a TTY but support ANSI rendering
+  // Only reached when isTTY is undefined (not explicitly a terminal)
   if (isAiCli()) return true;
-  // Check if output is a TTY
-  return process.stdout.isTTY ?? false;
+  return false;
 }
 
 // Check if running under an AI coding assistant
+// Only include env vars that are EXCLUSIVELY set by the tool's terminal session,
+// not general API keys (e.g. GEMINI_API_KEY, CODEIUM_API_KEY) which users set globally
+// and cause false positives when piping output.
 export function isAiCli(): boolean {
   // Claude Code
   if (process.env.CLAUDECODE !== undefined) return true;
-  // Gemini CLI
-  if (process.env.GEMINI_API_KEY !== undefined) return true;
   // Cursor
   if (process.env.CURSOR_CHANNEL !== undefined) return true;
   // Sourcegraph Cody
   if (process.env.CODY_AUTH !== undefined) return true;
-  // Windsurf (Codeium)
-  if (process.env.CODEIUM_API_KEY !== undefined) return true;
   // Copilot CLI
   if (process.env.GITHUB_COPILOT_CLI !== undefined) return true;
   // Aider

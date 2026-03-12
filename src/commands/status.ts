@@ -6,6 +6,7 @@ import {
   listSquads,
   listAgents,
   resolveExecutionContext,
+  findSimilarSquads,
 } from '../lib/squad-parser.js';
 import { findMemoryDir, getSquadState } from '../lib/memory.js';
 import {
@@ -46,8 +47,8 @@ export async function statusCommand(
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
-    writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
-    writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
+    writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads init\` to create one.${RESET}`);
     process.exit(1);
   }
 
@@ -209,7 +210,7 @@ async function showOverallStatus(
     const squad = loadSquad(name);
     if (squad?.repo) repoSet.add(squad.repo);
   }
-  const ops = fetchOperationalStatus([...repoSet]);
+  const ops = await fetchOperationalStatus([...repoSet]);
 
   // Compute column width from actual repo names
   const allRepoNames = [...ops.milestones.map(m => m.repo), ...ops.openPRs.map(p => p.repo)];
@@ -262,6 +263,11 @@ async function showSquadStatus(
       process.exit(1);
     }
     writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
+    const similar = findSimilarSquads(squadName, listSquads(squadsDir));
+    if (similar.length > 0) {
+      writeLine(`${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
+    }
+    writeLine(`${colors.dim}Run \`squads list\` to see available squads.${RESET}`);
     process.exit(1);
   }
 

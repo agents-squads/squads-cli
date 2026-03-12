@@ -2,7 +2,7 @@
  * squads history - Show recent agent execution history
  *
  * Sources:
- * 1. PostgreSQL traces table (via bridge)
+ * 1. PostgreSQL traces table (via API)
  * 2. Local session history (.agents/sessions/history.jsonl)
  */
 
@@ -18,8 +18,9 @@ import {
   icons,
   writeLine,
 } from '../lib/terminal.js';
+import { getEnv } from '../lib/env-config.js';
 
-const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+const BRIDGE_URL = getEnv().bridge_url;
 const FETCH_TIMEOUT_MS = 3000;
 
 interface Execution {

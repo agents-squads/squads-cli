@@ -1,7 +1,7 @@
 /**
- * Cost tracking via Squads Bridge (postgres) or Langfuse
- * Primary: Squads Bridge API → PostgreSQL
- * Fallback: Langfuse API (if bridge unavailable)
+ * Cost tracking via API or Langfuse
+ * Primary: Squads API → PostgreSQL
+ * Fallback: Langfuse API (if API unavailable)
  */
 
 import {
@@ -12,6 +12,7 @@ import {
   calcCost as calcProviderCost,
   getProviderDisplayName,
 } from './providers.js';
+import { getEnv } from './env-config.js';
 
 // Re-export provider types for convenience
 export { ProviderName, ProviderDetection, detectProviderFromModel, detectProvidersFromEnv, getProviderDisplayName };
@@ -70,7 +71,7 @@ const _MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
 const DEFAULT_DAILY_BUDGET = 200.0;
 const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
-const BRIDGE_URL = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
+const BRIDGE_URL = getEnv().bridge_url;
 const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
 
 /**
@@ -536,10 +537,8 @@ export interface QuotaInfo {
 }
 
 export async function fetchQuotaInfo(): Promise<QuotaInfo | null> {
-  const bridgeUrl = process.env.SQUADS_BRIDGE_URL || 'http://localhost:8088';
-
   try {
-    const response = await fetch(`${bridgeUrl}/api/autonomy/score`);
+    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/autonomy/score`);
     if (!response.ok) return null;
 
     const data = await response.json() as {
@@ -809,9 +808,9 @@ export interface NpmStats {
 export async function fetchNpmStats(packageName: string = process.env.SQUADS_NPM_PACKAGE || 'squads-cli'): Promise<NpmStats | null> {
   try {
     const [dayRes, weekRes, monthRes] = await Promise.all([
-      fetch(`https://api.npmjs.org/downloads/point/last-day/${packageName}`),
-      fetch(`https://api.npmjs.org/downloads/point/last-week/${packageName}`),
-      fetch(`https://api.npmjs.org/downloads/point/last-month/${packageName}`),
+      fetchWithTimeout(`https://api.npmjs.org/downloads/point/last-day/${packageName}`, {}, 3000),
+      fetchWithTimeout(`https://api.npmjs.org/downloads/point/last-week/${packageName}`, {}, 3000),
+      fetchWithTimeout(`https://api.npmjs.org/downloads/point/last-month/${packageName}`, {}, 3000),
     ]);
 
     if (!dayRes.ok || !weekRes.ok || !monthRes.ok) return null;

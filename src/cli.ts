@@ -200,6 +200,14 @@ program
   })
   // Default action when no command provided - show status dashboard
   .action(async () => {
+    // If args were provided but didn't match any command, they're unknown
+    if (program.args.length > 0) {
+      const unknown = program.args[0];
+      process.stderr.write(`\n  Unknown command: "${unknown}"\n\n`);
+      process.stderr.write(`  Run \`squads --help\` to see available commands.\n\n`);
+      process.exit(1);
+    }
+
     const { gradient, colors, RESET } = await import('./lib/terminal.js');
     const { checkForUpdate } = await import('./lib/update.js');
 
@@ -231,10 +239,9 @@ program
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
   .option('-q, --quick', 'Quick init - create files only, skip interactive prompts')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { initCommand } = await import('./commands/init.js');
-    // @ts-expect-error Commander action args spread
-    return initCommand(...args);
+    return initCommand(options);
   });
 
 // Create command - add a new squad to your workforce
@@ -256,16 +263,15 @@ Examples:
   $ squads create marketing --repo                   Create with GitHub repo
   $ squads create marketing --repo --org myorg       Create with GitHub repo in specific org
 `)
-  .action(async (...args: any[]) => {
+  .action(async (name, options) => {
     const { createCommand } = await import('./commands/create.js');
-    // @ts-expect-error Commander action args spread
-    return createCommand(...args);
+    return createCommand(name, options);
   });
 
 // Run command - execute squads or individual agents
 program
-  .command('run <target>')
-  .description('Run a squad or agent')
+  .command('run [target]')
+  .description('Run a squad, agent, or autopilot (no target = autopilot mode)')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -286,6 +292,12 @@ program
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
   .option('-j, --json', 'Output as JSON')
+  .option('-i, --interval <minutes>', 'Autopilot: minutes between cycles', '30')
+  .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
+  .option('--budget <usd>', 'Autopilot: daily budget cap ($)', '0')
+  .option('--once', 'Autopilot: run one cycle then exit')
+  .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
+  .option('--no-eval', 'Skip post-run COO evaluation')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -299,10 +311,13 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
   $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
+  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
+  $ squads run --once --dry-run         Preview one autopilot cycle
+  $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
-    return runCommand(target, { ...options, timeout: parseInt(options.timeout, 10) });
+    return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
   });
 
 // List command
@@ -313,10 +328,9 @@ program
   .option('-a, --agents', 'List agents only')
   .option('-v, --verbose', 'Show additional details')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { listCommand } = await import('./commands/list.js');
-    // @ts-expect-error Commander action args spread
-    return listCommand(...args);
+    return listCommand(options);
   });
 
 // Orchestrate command - lead-coordinated squad execution
@@ -332,19 +346,18 @@ env
   .command('show <squad>')
   .description('Show execution environment for a squad')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { contextShowCommand } = await import('./commands/context.js');
-    // @ts-expect-error Commander action args spread
-    return contextShowCommand(...args);
+    return contextShowCommand(squad, options);
   });
 
 env
   .command('list')
   .description('List execution environment for all squads')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { contextListCommand } = await import('./commands/context.js');
-    return contextListCommand(...args);
+    return contextListCommand(options);
   });
 
 env
@@ -353,10 +366,9 @@ env
   .option('-d, --dry-run', 'Show what would be generated without writing files')
   .option('-f, --force', 'Force regeneration even if config exists')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { contextActivateCommand } = await import('./commands/context.js');
-    // @ts-expect-error Commander action args spread
-    return contextActivateCommand(...args);
+    return contextActivateCommand(squad, options);
   });
 
 env
@@ -364,10 +376,9 @@ env
   .description('Output ready-to-use prompt for Claude Code execution')
   .option('-a, --agent <agent>', 'Agent to execute (required)')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { contextPromptCommand } = await import('./commands/context.js');
-    // @ts-expect-error Commander action args spread
-    return contextPromptCommand(...args);
+    return contextPromptCommand(squad, options);
   });
 
 // Exec command group - execution history introspection
@@ -392,10 +403,9 @@ exec
   .command('show <id>')
   .description('Show execution details')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (id, options) => {
     const { execShowCommand } = await import('./commands/exec.js');
-    // @ts-expect-error Commander action args spread
-    return execShowCommand(...args);
+    return execShowCommand(id, options);
   });
 
 exec
@@ -403,9 +413,9 @@ exec
   .description('Show execution statistics')
   .option('-s, --squad <squad>', 'Filter by squad')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { execStatsCommand } = await import('./commands/exec.js');
-    return execStatsCommand(...args);
+    return execStatsCommand(options);
   });
 
 // Default action: show list
@@ -459,9 +469,9 @@ program
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { statusCommand } = await import('./commands/status.js');
-    return statusCommand(...args);
+    return statusCommand(squad, options);
   });
 
 // Context command - business context for alignment
@@ -485,9 +495,9 @@ program
   .description('Show cost summary (today, week, by squad)')
   .option('-s, --squad <squad>', 'Filter to specific squad')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { costCommand } = await import('./commands/cost.js');
-    return costCommand(...args);
+    return costCommand(options);
   });
 
 // Budget check command - pre-flight budget validation
@@ -496,10 +506,9 @@ program
   .description('Check budget status for a squad')
   .argument('<squad>', 'Squad to check')
   .option('--json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { budgetCheckCommand } = await import('./commands/cost.js');
-    // @ts-expect-error Commander action args spread
-    return budgetCheckCommand(...args);
+    return budgetCheckCommand(squad, options);
   });
 
 // Health command - quick infrastructure check
@@ -560,10 +569,9 @@ goal
   .command('set <squad> <description>')
   .description('Set a goal for a squad')
   .option('-m, --metric <metrics...>', 'Metrics to track')
-  .action(async (...args: any[]) => {
+  .action(async (squad, description, options) => {
     const { goalSetCommand } = await import('./commands/goal.js');
-    // @ts-expect-error Commander action args spread
-    return goalSetCommand(...args);
+    return goalSetCommand(squad, description, options);
   });
 
 goal
@@ -571,27 +579,25 @@ goal
   .description('List goals for squad(s)')
   .option('-a, --all', 'Show completed goals too')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { goalListCommand } = await import('./commands/goal.js');
-    return goalListCommand(...args);
+    return goalListCommand(squad, options);
   });
 
 goal
   .command('complete <squad> <index>')
   .description('Mark a goal as completed')
-  .action(async (...args: any[]) => {
+  .action(async (squad, index) => {
     const { goalCompleteCommand } = await import('./commands/goal.js');
-    // @ts-expect-error Commander action args spread
-    return goalCompleteCommand(...args);
+    return goalCompleteCommand(squad, index);
   });
 
 goal
   .command('progress <squad> <index> <progress>')
   .description('Update goal progress')
-  .action(async (...args: any[]) => {
+  .action(async (squad, index, progress) => {
     const { goalProgressCommand } = await import('./commands/goal.js');
-    // @ts-expect-error Commander action args spread
-    return goalProgressCommand(...args);
+    return goalProgressCommand(squad, index, progress);
   });
 
 // KPI command group - track squad metrics
@@ -612,19 +618,18 @@ kpi
   .command('list')
   .description('List all KPIs across squads')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { kpiListCommand } = await import('./commands/kpi.js');
-    return kpiListCommand(...args);
+    return kpiListCommand(options);
   });
 
 kpi
   .command('show <squad>')
   .description('Show KPI status for a squad')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { kpiShowCommand } = await import('./commands/kpi.js');
-    // @ts-expect-error Commander action args spread
-    return kpiShowCommand(...args);
+    return kpiShowCommand(squad, options);
   });
 
 kpi
@@ -632,10 +637,9 @@ kpi
   .description('Record a KPI value')
   .option('-n, --note <note>', 'Add a note to the record')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, kpi, value, options) => {
     const { kpiRecordCommand } = await import('./commands/kpi.js');
-    // @ts-expect-error Commander action args spread
-    return kpiRecordCommand(...args);
+    return kpiRecordCommand(squad, kpi, value, options);
   });
 
 kpi
@@ -643,19 +647,18 @@ kpi
   .description('Show KPI trend over time')
   .option('-p, --periods <n>', 'Number of periods to show', '7')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, kpi, options) => {
     const { kpiTrendCommand } = await import('./commands/kpi.js');
-    // @ts-expect-error Commander action args spread
-    return kpiTrendCommand(...args);
+    return kpiTrendCommand(squad, kpi, options);
   });
 
 kpi
   .command('insights [squad]')
   .description('Generate insights from KPI data')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { kpiInsightsCommand } = await import('./commands/kpi.js');
-    return kpiInsightsCommand(...args);
+    return kpiInsightsCommand(squad, options);
   });
 
 // Progress command - track agent task progress
@@ -663,28 +666,26 @@ const progress = program
   .command('progress')
   .description('Track active and completed agent tasks')
   .option('-v, --verbose', 'Show more activity')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { progressCommand } = await import('./commands/progress.js');
-    return progressCommand(...args);
+    return progressCommand(options);
   });
 
 progress
   .command('start <squad> <description>')
   .description('Register a new active task')
-  .action(async (...args: any[]) => {
+  .action(async (squad, description) => {
     const { progressStartCommand } = await import('./commands/progress.js');
-    // @ts-expect-error Commander action args spread
-    return progressStartCommand(...args);
+    return progressStartCommand(squad, description);
   });
 
 progress
   .command('complete <taskId>')
   .description('Mark a task as completed')
   .option('-f, --failed', 'Mark as failed instead')
-  .action(async (...args: any[]) => {
+  .action(async (taskId, options) => {
     const { progressCompleteCommand } = await import('./commands/progress.js');
-    // @ts-expect-error Commander action args spread
-    return progressCompleteCommand(...args);
+    return progressCompleteCommand(taskId, options);
   });
 
 // Feedback command group
@@ -697,20 +698,18 @@ feedback
   .command('add <squad> <rating> <feedback>')
   .description('Add feedback for last execution (rating 1-5)')
   .option('-l, --learning <learnings...>', 'Learnings to extract')
-  .action(async (...args: any[]) => {
+  .action(async (squad, rating, feedbackText, options) => {
     const { feedbackAddCommand } = await import('./commands/feedback.js');
-    // @ts-expect-error Commander action args spread
-    return feedbackAddCommand(...args);
+    return feedbackAddCommand(squad, rating, feedbackText, options);
   });
 
 feedback
   .command('show <squad>')
   .description('Show feedback history')
   .option('-n, --limit <n>', 'Number of entries to show', '5')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { feedbackShowCommand } = await import('./commands/feedback.js');
-    // @ts-expect-error Commander action args spread
-    return feedbackShowCommand(...args);
+    return feedbackShowCommand(squad, options);
   });
 
 feedback
@@ -733,11 +732,11 @@ program
     return autonomyCommand({ squad: options.squad, period: options.period, json: options.json });
   });
 
-// Autopilot — autonomous business operations loop
+// Autopilot — deprecated, now "squads run" (no arguments)
 program
   .command('autopilot')
   .alias('daemon')
-  .description('Autopilot: watch, decide, dispatch, learn, escalate — your AI workforce on auto')
+  .description('[deprecated] Use "squads run" instead — autopilot mode when no target given')
   .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
   .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
   .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
@@ -745,8 +744,10 @@ program
   .option('--dry-run', 'Show what would run without dispatching')
   .option('-v, --verbose', 'Show detailed scoring')
   .action(async (options) => {
-    const { daemonCommand } = await import('./commands/daemon.js');
-    return daemonCommand(options);
+    const colors = termColors;
+    writeLine(`  ${colors.yellow}Note: "squads autopilot" is now "squads run" (no arguments)${termReset}`);
+    const { runCommand } = await import('./commands/run.js');
+    return runCommand(null, { interval: parseInt(options.interval || '30', 10), ...options });
   });
 
 // Stats command - agent outcome scorecards
@@ -783,10 +784,9 @@ memory
   .description('Search across all squad memory')
   .option('-s, --squad <squad>', 'Limit search to specific squad')
   .option('-a, --agent <agent>', 'Limit search to specific agent')
-  .action(async (...args: any[]) => {
+  .action(async (query, options) => {
     const { memoryQueryCommand } = await import('./commands/memory.js');
-    // @ts-expect-error Commander action args spread
-    return memoryQueryCommand(...args);
+    return memoryQueryCommand(query, options);
   });
 
 // read (new name) + show (alias)
@@ -794,10 +794,9 @@ memory
   .command('read <squad>')
   .alias('show')
   .description('Show memory for a squad')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { memoryShowCommand } = await import('./commands/memory.js');
-    // @ts-expect-error Commander action args spread
-    return memoryShowCommand(...args);
+    return memoryShowCommand(squad, options);
   });
 
 // write (new name) + update (alias)
@@ -807,10 +806,9 @@ memory
   .description('Add to squad memory')
   .option('-a, --agent <agent>', 'Specific agent (default: squad-lead)')
   .option('-t, --type <type>', 'Memory type: state, learnings, feedback', 'learnings')
-  .action(async (...args: any[]) => {
+  .action(async (squad, content, options) => {
     const { memoryUpdateCommand } = await import('./commands/memory.js');
-    // @ts-expect-error Commander action args spread
-    return memoryUpdateCommand(...args);
+    return memoryUpdateCommand(squad, content, options);
   });
 
 memory
@@ -839,7 +837,7 @@ memory
 // search (new name) — also keep old 'search' subcommand
 memory
   .command('search <query>')
-  .description('Search conversations stored via squads-bridge (requires bridge service)')
+  .description('Search stored conversations (requires authentication: squads login)')
   .option('-l, --limit <limit>', 'Number of results', '10')
   .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
   .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
@@ -875,10 +873,9 @@ program
   .option('-c, --category <category>', 'Category: success, failure, pattern, tip')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('--context <context>', 'Additional context')
-  .action(async (...args: any[]) => {
+  .action(async (insight, options) => {
     const { learnCommand } = await import('./commands/learn.js');
-    // @ts-expect-error Commander action args spread
-    return learnCommand(...args);
+    return learnCommand(insight, options);
   });
 
 const learn = program
@@ -891,20 +888,18 @@ learn
   .option('-n, --limit <n>', 'Number to show', '10')
   .option('-c, --category <category>', 'Filter by category')
   .option('--tag <tag>', 'Filter by tag')
-  .action(async (...args: any[]) => {
+  .action(async (squad, options) => {
     const { learnShowCommand } = await import('./commands/learn.js');
-    // @ts-expect-error Commander action args spread
-    return learnShowCommand(...args);
+    return learnShowCommand(squad, options);
   });
 
 learn
   .command('search <query>')
   .description('Search learnings across all squads')
   .option('-n, --limit <n>', 'Max results', '10')
-  .action(async (...args: any[]) => {
+  .action(async (query, options) => {
     const { learnSearchCommand } = await import('./commands/learn.js');
-    // @ts-expect-error Commander action args spread
-    return learnSearchCommand(...args);
+    return learnSearchCommand(query, options);
   });
 
 // Sync command (also available as `memory sync`)
@@ -939,9 +934,9 @@ const sessions = program
   .description('Show active Claude Code sessions across squads')
   .option('-v, --verbose', 'Show session details')
   .option('-j, --json', 'Output as JSON')
-  .action(async (...args: any[]) => {
+  .action(async (options) => {
     const { sessionsCommand } = await import('./commands/sessions.js');
-    return sessionsCommand(...args);
+    return sessionsCommand(options);
   });
 
 sessions
@@ -1104,7 +1099,7 @@ program
 
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
-program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed separately. Use: docker compose up -d'));
+program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));
 program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
 program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
 program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
@@ -1130,10 +1125,10 @@ function handleError(error: unknown): void {
   // Check for common error types and provide helpful messages
   if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
     console.error(chalk.red('\nConnection error:'), err.message);
-    console.error(chalk.dim('\nCore commands (init, run, status, eval) work without infrastructure.'));
+    console.error(chalk.dim('\nCore commands (init, run, status, eval) work without cloud services.'));
     console.error(chalk.dim('If you need scheduling or telemetry:'));
-    console.error(chalk.dim('  1. Check infrastructure: squads health'));
-    console.error(chalk.dim('  2. Start containers: docker compose up -d'));
+    console.error(chalk.dim('  1. Authenticate: squads login'));
+    console.error(chalk.dim('  2. Check services: squads health'));
     console.error(chalk.dim('  3. Check your network connection'));
   } else if (err.message.includes('ENOENT')) {
     console.error(chalk.red('\nFile not found:'), err.message);

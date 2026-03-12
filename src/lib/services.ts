@@ -1,9 +1,8 @@
 /**
  * Service availability checking utilities
- * Extracted from stack.ts for use across commands
+ * Checks API reachability for optional cloud features
  */
 
-import { execSync } from 'child_process';
 import {
   colors,
   bold,
@@ -11,150 +10,102 @@ import {
   icons,
   writeLine,
 } from './terminal.js';
-
-interface ContainerStatus {
-  name: string;
-  running: boolean;
-  healthy: boolean;
-  port?: string;
-}
+import { getEnv } from './env-config.js';
 
 interface ServiceInfo {
   name: string;
   description: string;
   required: boolean;
-  healthUrl?: string;
+  getHealthUrl: () => string;
   envVars: string[];
   setupGuide: string[];
 }
 
-const SERVICES: Record<string, ServiceInfo> = {
-  bridge: {
-    name: 'Bridge API',
-    description: 'Optional: captures conversations and telemetry',
-    required: false,
-    healthUrl: 'http://localhost:8088/health',
-    envVars: ['SQUADS_BRIDGE_URL'],
-    setupGuide: [
-      'Not required for basic usage (init, run, status, eval).',
-      'To enable telemetry:',
-      '  squads stack up',
-      '  Or: docker compose up -d bridge',
-    ],
-  },
-  postgres: {
-    name: 'PostgreSQL',
-    description: 'Optional: enables scheduling, telemetry, and persistent storage',
-    required: false,
-    envVars: ['SQUADS_DATABASE_URL'],
-    setupGuide: [
-      'Not required for basic usage (init, run, status, eval).',
-      'To enable scheduling and telemetry:',
-      '  squads stack up',
-      '  Or: docker compose up -d postgres',
-    ],
-  },
-  mem0: {
-    name: 'Mem0',
-    description: 'Memory extraction and search',
-    required: false,
-    healthUrl: 'http://localhost:8000/health',
-    envVars: ['MEM0_API_URL'],
-    setupGuide: [
-      'Run: squads stack up',
-      'Or manually: docker compose -f docker-compose.engram.yml up -d mem0',
-      '',
-      'Mem0 requires an LLM provider. Configure in docker/.env:',
-      '  LLM_PROVIDER=ollama   # For local (free)',
-      '  LLM_PROVIDER=openai   # Requires OPENAI_API_KEY',
-    ],
-  },
-  scheduler: {
-    name: 'Scheduler API',
-    description: 'Trigger evaluation and agent execution',
-    required: false,
-    healthUrl: 'http://localhost:8090/health',
-    envVars: [],
-    setupGuide: [
-      'Run: docker compose -f docker-compose.engram.yml up -d scheduler-api scheduler-worker',
-      '',
-      'Scheduler runs agents on triggers defined in SQUAD.md',
-    ],
-  },
-  langfuse: {
-    name: 'Langfuse',
-    description: 'Telemetry dashboard and cost tracking',
-    required: false,
-    healthUrl: 'http://localhost:3100/api/public/health',
-    envVars: ['LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'],
-    setupGuide: [
-      'Run: squads stack up',
-      'Then get API keys from: http://localhost:3100',
-      '  1. Create account / login',
-      '  2. Create project',
-      '  3. Copy API keys to docker/.env',
-    ],
-  },
-  redis: {
-    name: 'Redis',
-    description: 'Caching and rate limiting',
-    required: false,
-    envVars: ['REDIS_URL'],
-    setupGuide: [
-      'Run: squads stack up',
-    ],
-  },
-};
+function buildServices(): Record<string, ServiceInfo> {
+  const env = getEnv();
 
-function getContainerStatus(name: string): ContainerStatus {
-  try {
-    const runningOutput = execSync(
-      `docker inspect ${name} --format '{{.State.Running}}'`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
-    ).trim();
-
-    const running = runningOutput === 'true';
-
-    if (!running) {
-      return { name, running: false, healthy: false };
-    }
-
-    let port: string | undefined;
-    try {
-      const portOutput = execSync(
-        `docker inspect ${name} --format '{{range .NetworkSettings.Ports}}{{range .}}{{.HostPort}}{{end}}{{end}}'`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
-      ).trim();
-      port = portOutput || undefined;
-    } catch {
-      // Ignore port errors
-    }
-
-    let healthy = true;
-    try {
-      const healthOutput = execSync(
-        `docker inspect ${name} --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
-      ).trim();
-
-      if (healthOutput === 'healthy' || healthOutput === 'none') {
-        healthy = true;
-      } else if (healthOutput === 'starting') {
-        healthy = false;
-      } else {
-        healthy = false;
-      }
-    } catch {
-      healthy = true;
-    }
-
-    return { name, running, healthy, port };
-  } catch {
-    return { name, running: false, healthy: false };
-  }
+  return {
+    bridge: {
+      name: 'API',
+      description: 'Optional: captures conversations and telemetry',
+      required: false,
+      getHealthUrl: () => env.bridge_url ? `${env.bridge_url}/health` : '',
+      envVars: ['SQUADS_BRIDGE_URL'],
+      setupGuide: [
+        'Not required for basic usage (init, run, status, eval).',
+        'To enable telemetry, authenticate:',
+        '  squads login',
+      ],
+    },
+    postgres: {
+      name: 'Database',
+      description: 'Optional: enables scheduling, telemetry, and persistent storage',
+      required: false,
+      getHealthUrl: () => '',
+      envVars: ['SQUADS_DATABASE_URL'],
+      setupGuide: [
+        'Not required for basic usage (init, run, status, eval).',
+        'Available with a Squads account:',
+        '  squads login',
+      ],
+    },
+    mem0: {
+      name: 'Memory Service',
+      description: 'Memory extraction and search',
+      required: false,
+      getHealthUrl: () => {
+        const url = process.env.MEM0_API_URL;
+        return url ? `${url}/health` : '';
+      },
+      envVars: ['MEM0_API_URL'],
+      setupGuide: [
+        'Memory extraction requires the memory service.',
+        'Authenticate to enable:',
+        '  squads login',
+      ],
+    },
+    scheduler: {
+      name: 'Scheduler',
+      description: 'Trigger evaluation and agent execution',
+      required: false,
+      getHealthUrl: () => env.api_url ? `${env.api_url}/health` : '',
+      envVars: [],
+      setupGuide: [
+        'Scheduling requires authentication.',
+        '  squads login',
+      ],
+    },
+    langfuse: {
+      name: 'Traces',
+      description: 'Telemetry dashboard and cost tracking',
+      required: false,
+      getHealthUrl: () => {
+        const host = process.env.LANGFUSE_HOST;
+        return host ? `${host}/api/public/health` : '';
+      },
+      envVars: ['LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'],
+      setupGuide: [
+        'Traces are available with a Squads account.',
+        '  squads login',
+      ],
+    },
+    redis: {
+      name: 'Cache',
+      description: 'Caching and rate limiting',
+      required: false,
+      getHealthUrl: () => '',
+      envVars: ['REDIS_URL'],
+      setupGuide: [
+        'Caching is available with a Squads account.',
+        '  squads login',
+      ],
+    },
+  };
 }
 
 async function checkService(url: string, timeout = 2000): Promise<boolean> {
+  if (!url) return false;
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -171,30 +122,27 @@ async function checkService(url: string, timeout = 2000): Promise<boolean> {
  * Check if a service is available and show guidance if not
  */
 export async function checkServiceAvailable(
-  serviceName: keyof typeof SERVICES,
+  serviceName: string,
   showGuidance = true
 ): Promise<boolean> {
-  const service = SERVICES[serviceName];
+  const services = buildServices();
+  const service = services[serviceName];
   if (!service) return false;
 
-  const containerName = `squads-${serviceName === 'mem0' ? 'mem0' : serviceName}`;
-  const status = getContainerStatus(containerName);
-
-  if (!status.running) {
+  const healthUrl = service.getHealthUrl();
+  if (!healthUrl) {
     if (showGuidance) {
-      showServiceSetupGuide(serviceName, 'not running');
+      showServiceSetupGuide(serviceName, 'not configured');
     }
     return false;
   }
 
-  if (service.healthUrl) {
-    const healthy = await checkService(service.healthUrl);
-    if (!healthy) {
-      if (showGuidance) {
-        showServiceSetupGuide(serviceName, 'not responding');
-      }
-      return false;
+  const healthy = await checkService(healthUrl);
+  if (!healthy) {
+    if (showGuidance) {
+      showServiceSetupGuide(serviceName, 'not responding');
     }
+    return false;
   }
 
   return true;
@@ -204,10 +152,11 @@ export async function checkServiceAvailable(
  * Show setup guide for a service
  */
 export function showServiceSetupGuide(
-  serviceName: keyof typeof SERVICES,
+  serviceName: string,
   issue: string
 ): void {
-  const service = SERVICES[serviceName];
+  const services = buildServices();
+  const service = services[serviceName];
   if (!service) return;
 
   writeLine();

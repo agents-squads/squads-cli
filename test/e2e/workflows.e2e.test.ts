@@ -42,7 +42,9 @@ function runCli(
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: opts.timeout ?? 15000,
-      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      // Override HOME so ~/.squads/ config writes land in cwd, not the real home.
+      // This prevents parallel test files from sharing daemon/config state.
+      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', HOME: cwd },
     });
     return { stdout, stderr: '', exitCode: 0 };
   } catch (error: unknown) {
@@ -69,7 +71,7 @@ describe('E2E: squads init workflow', () => {
   let testDir: string;
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `squads-e2e-init-${Date.now()}`);
+    testDir = join(tmpdir(), `squads-e2e-init-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     mkdirSync(testDir, { recursive: true });
     // init requires a git repo
     execSync('git init -q', { cwd: testDir });
@@ -149,7 +151,7 @@ describe('E2E: squads status workflow', () => {
   let squads: string[];
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `squads-e2e-status-${Date.now()}`);
+    testDir = join(tmpdir(), `squads-e2e-status-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     mkdirSync(testDir, { recursive: true });
     execSync('git init -q', { cwd: testDir });
     // Set up a project via init
@@ -196,7 +198,7 @@ describe('E2E: squads status workflow', () => {
   });
 
   it('exits with error when no squads directory exists', () => {
-    const emptyDir = join(tmpdir(), `squads-e2e-empty-${Date.now()}`);
+    const emptyDir = join(tmpdir(), `squads-e2e-empty-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     mkdirSync(emptyDir, { recursive: true });
     try {
       const result = runCli('status', emptyDir);
@@ -222,7 +224,7 @@ describe('E2E: squads run workflow', () => {
   let squads: string[];
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `squads-e2e-run-${Date.now()}`);
+    testDir = join(tmpdir(), `squads-e2e-run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     mkdirSync(testDir, { recursive: true });
     execSync('git init -q', { cwd: testDir });
     runCli('init --yes --provider none --force', testDir);
@@ -276,7 +278,7 @@ describe('E2E: squads run workflow', () => {
   });
 
   it('exits with error when no squads directory exists', () => {
-    const emptyDir = join(tmpdir(), `squads-e2e-run-empty-${Date.now()}`);
+    const emptyDir = join(tmpdir(), `squads-e2e-run-empty-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     mkdirSync(emptyDir, { recursive: true });
     try {
       const result = runCli('run demo --dry-run', emptyDir);

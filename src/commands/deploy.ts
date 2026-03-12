@@ -229,6 +229,7 @@ export async function deployStatusCommand(): Promise<void> {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!response.ok) {
@@ -271,6 +272,7 @@ export async function deployStatusCommand(): Promise<void> {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
+      signal: AbortSignal.timeout(5000),
     });
 
     if (execResponse.ok) {
@@ -291,7 +293,12 @@ export async function deployStatusCommand(): Promise<void> {
 
   } catch (error) {
     spinner.fail('Failed to fetch status');
-    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED') || msg.includes('abort')) {
+      writeLine(chalk.yellow('\nAPI unavailable. Check connection or run `squads login`.'));
+    } else {
+      console.error(chalk.red(msg));
+    }
   }
 }
 
@@ -310,6 +317,7 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!response.ok) {
@@ -361,6 +369,7 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
+      signal: AbortSignal.timeout(5000),
     });
 
     if (learningsResponse.ok) {
@@ -383,7 +392,12 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
 
   } catch (error) {
     spinner.fail('Failed to pull data');
-    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED') || msg.includes('abort')) {
+      writeLine(chalk.yellow('\nAPI unavailable. Check connection or run `squads login`.'));
+    } else {
+      console.error(chalk.red(msg));
+    }
   }
 }
 
@@ -483,6 +497,7 @@ async function pushToplatform(manifest: DeployManifest, token: string): Promise<
       'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify(manifest.triggers),
+    signal: AbortSignal.timeout(10000),
   });
 
   if (!response.ok) {

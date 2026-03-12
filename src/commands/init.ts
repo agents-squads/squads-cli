@@ -53,6 +53,7 @@ interface UseCaseConfig {
 
 interface SquadConfig {
   name: string;
+  description: string;
   agentCount: number;
   agentSummary: string;
   dirs: string[];
@@ -98,6 +99,7 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
 function getEngineeringSquad(): SquadConfig {
   return {
     name: 'engineering',
+    description: 'Solves GitHub issues, reviews code, writes tests',
     agentCount: 3,
     agentSummary: 'issue-solver, code-reviewer, test-writer',
     dirs: [
@@ -121,6 +123,7 @@ function getEngineeringSquad(): SquadConfig {
 function getMarketingSquad(): SquadConfig {
   return {
     name: 'marketing',
+    description: 'Creates content, grows audience, tracks growth',
     agentCount: 3,
     agentSummary: 'content-drafter, social-poster, growth-analyst',
     dirs: [
@@ -144,6 +147,7 @@ function getMarketingSquad(): SquadConfig {
 function getOperationsSquad(): SquadConfig {
   return {
     name: 'operations',
+    description: 'Runs daily ops, tracks finances and goals',
     agentCount: 3,
     agentSummary: 'ops-lead, finance-tracker, goal-tracker',
     dirs: [
@@ -352,17 +356,20 @@ export async function initCommand(options: InitOptions): Promise<void> {
   let businessName: string;
   let businessDescription: string;
   let businessFocus: string;
+  let businessCompetitors: string;
   let selectedUseCase: UseCase;
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
     businessDescription = 'General business operations';
     businessFocus = 'Our market, competitors, and growth opportunities';
+    businessCompetitors = '';
     selectedUseCase = 'full-company';
   } else {
     const dirName = path.basename(cwd);
 
     writeLine(chalk.bold('  Tell us about your business:'));
+    writeLine(chalk.dim('  (Agents read this to produce useful output — be specific)'));
     writeLine();
 
     businessName = await prompt(
@@ -370,16 +377,29 @@ export async function initCommand(options: InitOptions): Promise<void> {
       dirName
     );
 
+    writeLine(chalk.dim('    e.g., "We sell handmade coffee mugs online" or "B2B SaaS for construction teams"'));
     businessDescription = await prompt(
       'What does it do? (one sentence)',
       ''
     );
+    // Require a non-empty description — empty = generic output on first run
+    if (!businessDescription) {
+      writeLine(chalk.dim(`    Tip: Without a description, agents produce generic output. You can edit .agents/BUSINESS_BRIEF.md later.`));
+      businessDescription = `${businessName} — add your business description to .agents/BUSINESS_BRIEF.md`;
+    }
 
     writeLine();
-
+    writeLine(chalk.dim('    e.g., "Identify our top 3 competitors and what they do better than us"'));
     businessFocus = await prompt(
-      'What should your first research squad investigate?',
-      'Our market, competitors, and growth opportunities'
+      'What should your agents research first?',
+      'Our market position, top competitors, and biggest growth opportunity'
+    );
+
+    writeLine();
+    writeLine(chalk.dim('    e.g., "BlueCart, MarketMan" — leave blank to skip'));
+    businessCompetitors = await prompt(
+      'Who are your main competitors? (optional)',
+      ''
     );
 
     // 4b. Use-case selection
@@ -399,6 +419,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.green('✓')} Business: ${chalk.cyan(businessName)}${businessDescription ? chalk.dim(` — ${businessDescription}`) : ''}`);
   writeLine(`  ${chalk.green('✓')} Provider: ${chalk.cyan(provider?.name || selectedProvider)}`);
   writeLine(`  ${chalk.green('✓')} Research focus: ${chalk.cyan(businessFocus)}`);
+  if (businessCompetitors) {
+    writeLine(`  ${chalk.green('✓')} Competitors: ${chalk.cyan(businessCompetitors)}`);
+  }
   writeLine(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
   writeLine();
 
@@ -410,6 +433,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       BUSINESS_NAME: businessName,
       BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
       BUSINESS_FOCUS: businessFocus,
+      COMPETITORS_SECTION: businessCompetitors
+        ? `## Competitors\n\n${businessCompetitors}\n\n`
+        : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
     };
@@ -522,6 +548,20 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const businessBrief = loadSeedTemplate('BUSINESS_BRIEF.md.template', variables);
     await writeFile(path.join(cwd, '.agents/BUSINESS_BRIEF.md'), businessBrief);
 
+    // README.md (only if it doesn't already exist or is the default single-line stub)
+    const readmePath = path.join(cwd, 'README.md');
+    let existingReadme = '';
+    try {
+      existingReadme = await fs.readFile(readmePath, 'utf-8');
+    } catch {
+      // File doesn't exist
+    }
+    const isStub = existingReadme.trim() === '' || /^# [^\n]+\s*$/.test(existingReadme.trim());
+    if (isStub) {
+      const readmeContent = loadSeedTemplate('README.md.template', variables);
+      await writeFile(readmePath, readmeContent);
+    }
+
     spinner.text = 'Setting up operating manual...';
 
     // CLAUDE.md (the operating manual — only if it doesn't exist)
@@ -551,7 +591,18 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   } catch (error) {
     spinner.fail('Failed to plant the seed');
-    console.error(chalk.red(`  ${error}`));
+    const err = error as NodeJS.ErrnoException;
+    if (err?.code === 'EACCES' || err?.code === 'EPERM') {
+      writeLine(chalk.red('  Permission denied — cannot write to this directory.'));
+      writeLine(chalk.dim('  Try running in a directory you own, or check folder permissions.'));
+    } else if (err?.code === 'ENOENT') {
+      writeLine(chalk.red(`  Could not find or create: ${err.path || 'unknown path'}`));
+      writeLine(chalk.dim('  Check that the directory exists and you have write access.'));
+    } else {
+      const msg = error instanceof Error ? error.message : String(error);
+      writeLine(chalk.red(`  ${msg}`));
+      writeLine(chalk.dim('  Run with --verbose for more details, or check squads doctor.'));
+    }
     process.exit(1);
   }
 
@@ -562,14 +613,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  writeLine(chalk.dim('  • .agents/squads/company/       5 agents (manager, dispatcher, tracker, eval, critic)'));
-  writeLine(chalk.dim('  • .agents/squads/research/      4 agents (researcher, analyst, eval, critic)'));
-  writeLine(chalk.dim('  • .agents/squads/intelligence/  3 agents (intel-lead, eval, critic)'));
+  writeLine(chalk.dim('  • research/    4 agents — Researches your market, competitors, and opportunities'));
+  writeLine(chalk.dim('  • company/     5 agents — Manages goals, events, and strategy'));
+  writeLine(chalk.dim('  • intelligence/ 3 agents — Monitors trends and competitive signals'));
 
   // Use-case specific squads
   for (const squad of useCaseConfig.squads) {
-    const padding = ' '.repeat(Math.max(0, 22 - squad.name.length));
-    writeLine(chalk.dim(`  • .agents/squads/${squad.name}/${padding}${squad.agentCount} agents (${squad.agentSummary})`));
+    const namePad = ' '.repeat(Math.max(0, 14 - squad.name.length));
+    writeLine(chalk.dim(`  • ${squad.name}/${namePad}${squad.agentCount} agents — ${squad.description}`));
   }
 
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
@@ -582,14 +633,15 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(chalk.bold('  Getting started:'));
   writeLine();
-  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('git add -A && git commit -m "feat: init AI workforce"')}`);
-  writeLine(chalk.dim('        Git is the coordination layer — commit first'));
+  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
+  writeLine(chalk.dim('        Set your business context — agents use this for every run'));
   writeLine();
-
   // Dynamic "first run" suggestion based on use case
   const firstRunCommand = getFirstRunCommand(selectedUseCase);
+  const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
   writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
+  writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
   writeLine();
   writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
   writeLine(chalk.dim('        See all your squads and agents at a glance'));
@@ -606,28 +658,28 @@ function getFirstRunCommand(useCase: UseCase): { command: string; description: s
     case 'engineering':
       return {
         command: 'squads run engineering/issue-solver',
-        description: 'Your first agent finds and solves GitHub issues',
+        description: 'Run a single agent — finds and solves GitHub issues (~2 min)',
       };
     case 'marketing':
       return {
         command: 'squads run marketing/content-drafter',
-        description: 'Your first agent drafts content for your business',
+        description: 'Run a single agent — drafts content for your business (~2 min)',
       };
     case 'operations':
       return {
         command: 'squads run operations/ops-lead',
-        description: 'Your first agent starts running daily operations',
+        description: 'Run a single agent — coordinates daily operations (~2 min)',
       };
     case 'full-company':
       return {
         command: 'squads run research/researcher',
-        description: 'Your first agent researches the topic you set',
+        description: 'Run a single agent — researches the topic you set (~2 min)',
       };
     case 'custom':
     default:
       return {
         command: 'squads run research/researcher',
-        description: 'Your first agent researches the topic you set',
+        description: 'Run a single agent — researches the topic you set (~2 min)',
       };
   }
 }
