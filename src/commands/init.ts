@@ -353,8 +353,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
-    businessDescription = 'General business operations';
-    businessFocus = 'Our market, competitors, and growth opportunities';
+    businessDescription = 'A startup using AI agents to automate business operations — marketing, research, finance, and engineering — so small teams can operate like large ones.';
+    businessFocus = 'The AI agent and automation market: who are the top players, what are teams actually using, and where is the biggest gap we could fill?';
     businessCompetitors = '';
     selectedUseCase = 'custom'; // Core 4 squads only; use --pack for more
   } else {
@@ -472,12 +472,17 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const spinner = ora('Planting the seed...').start();
 
   try {
+    // Only show PLACEHOLDER sentinel when user skipped the description in interactive mode
+    const isPlaceholder = businessDescription.includes('add your business description');
     const variables: TemplateVariables = {
       BUSINESS_NAME: businessName,
       BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
       BUSINESS_FOCUS: businessFocus,
       COMPETITORS_SECTION: businessCompetitors
         ? `## Competitors\n\n${businessCompetitors}\n\n`
+        : '',
+      PLACEHOLDER_SENTINEL: isPlaceholder
+        ? '<!-- STATUS: PLACEHOLDER — Edit this file before running agents. -->\n<!-- Agents that read "PLACEHOLDER" in this comment will ask you to fill it in. -->\n\n'
         : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',

@@ -1,9 +1,6 @@
 # Business Brief — {{BUSINESS_NAME}}
 
-<!-- STATUS: PLACEHOLDER — Edit this file before running agents. -->
-<!-- Agents that read "PLACEHOLDER" in this comment will ask you to fill it in. -->
-
-## About
+{{PLACEHOLDER_SENTINEL}}## About
 
 {{BUSINESS_DESCRIPTION}}
 

@@ -212,11 +212,12 @@ describe('E2E: First-Run User Journey (#488)', () => {
     expect(existsSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'))).toBe(true);
     expect(existsSync(join(testDir, '.agents', 'memory', 'company', 'directives.md'))).toBe(true);
 
-    // BUSINESS_BRIEF must have PLACEHOLDER sentinel
+    // BUSINESS_BRIEF with --yes should have real content (no PLACEHOLDER sentinel)
     const brief = readFileSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'), 'utf-8');
-    expect(brief).toContain('PLACEHOLDER');
+    expect(brief).toContain('AI agents');
+    expect(brief).not.toContain('PLACEHOLDER');
 
-    // SYSTEM.md must instruct agents to check for PLACEHOLDER
+    // SYSTEM.md must instruct agents to check for PLACEHOLDER (for interactive mode where user skips)
     const system = readFileSync(join(testDir, '.agents', 'config', 'SYSTEM.md'), 'utf-8');
     expect(system).toContain('PLACEHOLDER');
 
