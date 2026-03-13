@@ -154,10 +154,9 @@ export function checkGhCli(): CheckResult {
   if (!commandExists('gh')) {
     return {
       name: 'GitHub CLI',
-      status: 'missing',
-      message: 'Required for GitHub integration',
-      hint: 'Install: brew install gh',
-      fixCommand: 'brew install gh',
+      status: 'warning',
+      message: 'Recommended for GitHub integration',
+      hint: 'Install: https://cli.github.com',
     };
   }
 
@@ -305,13 +304,8 @@ export function runPrereqChecks(): CheckResult[] {
 export function runAuthChecks(providerId: string): CheckResult[] {
   const checks: CheckResult[] = [];
 
-  // Provider-specific auth
+  // Provider-specific auth (includes CLI check)
   checks.push(checkProviderAuth(providerId));
-
-  // Claude CLI check (only for claude provider)
-  if (providerId === 'claude') {
-    checks.push(checkClaudeCli());
-  }
 
   // GitHub permissions (for all providers that use GitHub)
   if (providerId !== 'none') {

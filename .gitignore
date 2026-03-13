@@ -6,9 +6,11 @@ dist/
 .env.local
 *.tgz
 
-# Generated files - never commit
+# Generated
 coverage/
-docker/.env
 
-# Local PII patterns — never commit
-.husky/.blocked-patterns
+# Local-only (not shared)
+scripts/
+docker/
+.changeset/
+.husky/

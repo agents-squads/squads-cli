@@ -15,6 +15,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
+import { execSync } from 'child_process';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
@@ -36,6 +37,7 @@ export interface InitOptions {
   force?: boolean;
   yes?: boolean;
   quick?: boolean;
+  pack?: string[];
 }
 
 type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
@@ -83,7 +85,7 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
     },
     'full-company': {
       label: 'Full Company',
-      description: 'Engineering + Marketing + Operations',
+      description: 'Enterprise — Engineering + Marketing + Operations',
       squads: [getEngineeringSquad(), getMarketingSquad(), getOperationsSquad()],
     },
     custom: {
@@ -94,6 +96,30 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
   };
 
   return configs[useCase];
+}
+
+function getProductSquad(): SquadConfig {
+  return {
+    name: 'product',
+    description: 'Roadmap, specs, user feedback synthesis',
+    agentCount: 3,
+    agentSummary: 'lead, scanner, worker',
+    dirs: [
+      '.agents/squads/product',
+      '.agents/memory/product/lead',
+      '.agents/memory/product/scanner',
+      '.agents/memory/product/worker',
+    ],
+    files: [
+      ['.agents/squads/product/SQUAD.md', 'squads/product/SQUAD.md'],
+      ['.agents/squads/product/lead.md', 'squads/product/lead.md'],
+      ['.agents/squads/product/scanner.md', 'squads/product/scanner.md'],
+      ['.agents/squads/product/worker.md', 'squads/product/worker.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/product/lead/state.md', 'memory/product/lead/state.md'],
+    ],
+  };
 }
 
 function getEngineeringSquad(): SquadConfig {
@@ -226,39 +252,6 @@ async function promptProvider(forceProvider?: string): Promise<Provider> {
   });
 }
 
-async function promptUseCase(): Promise<UseCase> {
-  if (!isInteractive()) return 'full-company';
-
-  writeLine();
-  writeLine(chalk.bold('  What does your AI workforce need to do?'));
-  writeLine();
-  writeLine(`  ${chalk.cyan('1)')} Engineering       ${chalk.dim('— ships code (issue-solver, code-reviewer, test-writer)')}`);
-  writeLine(`  ${chalk.cyan('2)')} Marketing          ${chalk.dim('— grows audience (content-drafter, social-poster, growth-analyst)')}`);
-  writeLine(`  ${chalk.cyan('3)')} Operations         ${chalk.dim('— runs the business (ops-lead, finance-tracker, goal-tracker)')}`);
-  writeLine(`  ${chalk.cyan('4)')} Full Company       ${chalk.dim('— all of the above')} ${chalk.green('(recommended)')}`);
-  writeLine(`  ${chalk.cyan('5)')} Custom             ${chalk.dim('— empty scaffold, you build from scratch')}`);
-  writeLine();
-
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`  ${chalk.dim('Enter choice [1-5]:')} `, (answer) => {
-      rl.close();
-      const choice = answer.trim() || '4';
-      switch (choice) {
-        case '1': resolve('engineering'); break;
-        case '2': resolve('marketing'); break;
-        case '3': resolve('operations'); break;
-        case '4': resolve('full-company'); break;
-        case '5': resolve('custom'); break;
-        default: resolve('full-company'); break;
-      }
-    });
-  });
-}
 
 async function fileExists(filePath: string): Promise<boolean> {
   try {
@@ -361,10 +354,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
-    businessDescription = 'General business operations';
-    businessFocus = 'Our market, competitors, and growth opportunities';
+    businessDescription = 'A startup building and integrating AI smart capabilities for autonomous execution.';
+    businessFocus = 'Track the big AI players — Anthropic, OpenAI, Google, Amazon, Meta, and xAI: latest model releases, API changes, pricing shifts, and strategic moves that affect builders.';
     businessCompetitors = '';
-    selectedUseCase = 'full-company';
+    selectedUseCase = 'custom'; // Core 4 squads only; use --pack for more
   } else {
     const dirName = path.basename(cwd);
 
@@ -402,15 +395,64 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ''
     );
 
-    // 4b. Use-case selection
-    selectedUseCase = await promptUseCase();
+    // 4b. Additional packs
+    if (!options.pack) {
+      writeLine();
+      writeLine(chalk.bold('  Add squad packs? (optional)'));
+      writeLine();
+      writeLine(`  ${chalk.cyan('1)')} Core only ${chalk.dim('— intelligence, research, product, company')} ${chalk.green('(recommended)')}`);
+      writeLine(`  ${chalk.cyan('2)')} + Engineering ${chalk.dim('— issue-solver, code-reviewer, test-writer')}`);
+      writeLine(`  ${chalk.cyan('3)')} + All packs ${chalk.dim('— engineering, marketing, operations')}`);
+      writeLine();
+
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      const packChoice = await new Promise<string>((resolve) => {
+        rl.question(`  ${chalk.dim('Enter choice [1-3]:')} `, (answer) => {
+          rl.close();
+          resolve(answer.trim() || '1');
+        });
+      });
+
+      if (packChoice === '2') {
+        options.pack = ['engineering'];
+      } else if (packChoice === '3') {
+        options.pack = ['all'];
+      }
+    }
+
+    selectedUseCase = 'custom'; // Core 4 squads; packs handled separately
   }
 
   const useCaseConfig = getUseCaseConfig(selectedUseCase);
 
+  // 4c. Pack support
+  if (options.pack && options.pack.length > 0) {
+    const additionalSquads: SquadConfig[] = [];
+    for (const pack of options.pack) {
+      if (pack === 'engineering') additionalSquads.push(getEngineeringSquad());
+      if (pack === 'marketing') additionalSquads.push(getMarketingSquad());
+      if (pack === 'operations') additionalSquads.push(getOperationsSquad());
+      if (pack === 'all') {
+        additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getOperationsSquad());
+      }
+    }
+    // De-duplicate squads by name
+    const existingNames = new Set(useCaseConfig.squads.map(s => s.name));
+    for (const squad of additionalSquads) {
+      if (!existingNames.has(squad.name)) {
+        useCaseConfig.squads.push(squad);
+        existingNames.add(squad.name);
+      }
+    }
+  }
+
   // Calculate totals (core squads + use-case squads)
-  const coreAgentCount = 12; // company(5) + research(4) + intelligence(3)
-  const coreSquadCount = 3;
+  const coreAgentCount = 14; // company(5) + research(3) + intelligence(3) + product(3)
+  const coreSquadCount = 4;
   const useCaseAgentCount = useCaseConfig.squads.reduce((sum, s) => sum + s.agentCount, 0);
   const totalAgentCount = coreAgentCount + useCaseAgentCount;
   const totalSquadCount = coreSquadCount + useCaseConfig.squads.length;
@@ -422,19 +464,26 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (businessCompetitors) {
     writeLine(`  ${chalk.green('✓')} Competitors: ${chalk.cyan(businessCompetitors)}`);
   }
-  writeLine(`  ${chalk.green('✓')} Use case: ${chalk.cyan(useCaseConfig.label)} ${chalk.dim(`— ${useCaseConfig.description}`)}`);
+  if (options.pack && options.pack.length > 0) {
+    writeLine(`  ${chalk.green('✓')} Packs: ${chalk.cyan(options.pack.join(', '))}`);
+  }
   writeLine();
 
   // 5. Create the seed
   const spinner = ora('Planting the seed...').start();
 
   try {
+    // Only show PLACEHOLDER sentinel when user skipped the description in interactive mode
+    const isPlaceholder = businessDescription.includes('add your business description');
     const variables: TemplateVariables = {
       BUSINESS_NAME: businessName,
       BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
       BUSINESS_FOCUS: businessFocus,
       COMPETITORS_SECTION: businessCompetitors
         ? `## Competitors\n\n${businessCompetitors}\n\n`
+        : '',
+      PLACEHOLDER_SENTINEL: isPlaceholder
+        ? '<!-- STATUS: PLACEHOLDER — Edit this file before running agents. -->\n<!-- Agents that read "PLACEHOLDER" in this comment will ask you to fill it in. -->\n\n'
         : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
@@ -445,18 +494,19 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/squads/company',
       '.agents/squads/research',
       '.agents/squads/intelligence',
+      '.agents/squads/product',
       '.agents/memory/company/manager',
       '.agents/memory/company/event-dispatcher',
       '.agents/memory/company/goal-tracker',
       '.agents/memory/company/company-eval',
       '.agents/memory/company/company-critic',
-      '.agents/memory/research/researcher',
+      '.agents/memory/research/lead',
       '.agents/memory/research/analyst',
-      '.agents/memory/research/research-eval',
-      '.agents/memory/research/research-critic',
+      '.agents/memory/research/synthesizer',
       '.agents/memory/intelligence/intel-lead',
       '.agents/memory/intelligence/intel-eval',
       '.agents/memory/intelligence/intel-critic',
+      '.agents/memory/product/lead',
       '.agents/skills/squads-cli',
       '.agents/skills/gh',
       '.agents/config',
@@ -489,10 +539,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     const researchFiles: [string, string][] = [
       ['.agents/squads/research/SQUAD.md', 'squads/research/SQUAD.md'],
-      ['.agents/squads/research/researcher.md', 'squads/research/researcher.md'],
+      ['.agents/squads/research/lead.md', 'squads/research/lead.md'],
       ['.agents/squads/research/analyst.md', 'squads/research/analyst.md'],
-      ['.agents/squads/research/research-eval.md', 'squads/research/research-eval.md'],
-      ['.agents/squads/research/research-critic.md', 'squads/research/research-critic.md'],
+      ['.agents/squads/research/synthesizer.md', 'squads/research/synthesizer.md'],
     ];
 
     const intelligenceFiles: [string, string][] = [
@@ -502,6 +551,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
       ['.agents/squads/intelligence/intel-critic.md', 'squads/intelligence/intel-critic.md'],
     ];
 
+    const productFiles: [string, string][] = getProductSquad().files;
+
     // Collect all use-case squad files
     const useCaseFiles: [string, string][] = [];
     for (const squad of useCaseConfig.squads) {
@@ -509,7 +560,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
 
     // Write all squad files
-    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles, ...useCaseFiles]) {
+    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles, ...productFiles, ...useCaseFiles]) {
       const content = loadSeedTemplate(template, variables);
       await writeFile(path.join(cwd, dest), content);
     }
@@ -519,8 +570,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     // Core memory state files
     const coreMemoryFiles: [string, string][] = [
       ['.agents/memory/company/manager/state.md', 'memory/company/manager/state.md'],
-      ['.agents/memory/research/researcher/state.md', 'memory/research/researcher/state.md'],
+      ['.agents/memory/research/lead/state.md', 'memory/research/lead/state.md'],
       ['.agents/memory/intelligence/intel-lead/state.md', 'memory/intelligence/intel-lead/state.md'],
+      ['.agents/memory/product/lead/state.md', 'memory/product/lead/state.md'],
     ];
 
     // Use-case memory state files
@@ -544,9 +596,21 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const providerConfig = loadSeedTemplate('config/provider.yaml', variables);
     await writeFile(path.join(cwd, '.agents/config/provider.yaml'), providerConfig);
 
+    // System protocol (Layer 0 of context cascade)
+    const systemMd = loadSeedTemplate('config/SYSTEM.md', variables);
+    await writeFile(path.join(cwd, '.agents/config/SYSTEM.md'), systemMd);
+
+    // Directives (Layer 3 of context cascade)
+    const directivesMd = loadSeedTemplate('memory/company/directives.md', variables);
+    await writeIfNew(path.join(cwd, '.agents/memory/company/directives.md'), directivesMd);
+
     // Business brief
     const businessBrief = loadSeedTemplate('BUSINESS_BRIEF.md.template', variables);
     await writeFile(path.join(cwd, '.agents/BUSINESS_BRIEF.md'), businessBrief);
+
+    // AGENTS.md (repo root — vendor-neutral agent instructions)
+    const agentsMd = loadTemplate('core/AGENTS.md.template', variables);
+    await writeIfNew(path.join(cwd, 'AGENTS.md'), agentsMd);
 
     // README.md (only if it doesn't already exist or is the default single-line stub)
     const readmePath = path.join(cwd, 'README.md');
@@ -606,6 +670,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
     process.exit(1);
   }
 
+  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees)
+  try {
+    execSync('git add -A && git commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"', {
+      cwd,
+      stdio: 'ignore',
+    });
+  } catch {
+    // Commit may fail if nothing to add or git not configured — non-fatal
+  }
+
   // 6. Success message
   writeLine();
   writeLine(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
@@ -613,11 +687,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  writeLine(chalk.dim('  • research/    4 agents — Researches your market, competitors, and opportunities'));
+  writeLine(chalk.dim('  • research/    3 agents — Researches your market, competitors, and opportunities'));
   writeLine(chalk.dim('  • company/     5 agents — Manages goals, events, and strategy'));
   writeLine(chalk.dim('  • intelligence/ 3 agents — Monitors trends and competitive signals'));
+  writeLine(chalk.dim('  • product/      3 agents — Roadmap, specs, user feedback synthesis'));
 
-  // Use-case specific squads
+  // Additional pack squads
   for (const squad of useCaseConfig.squads) {
     const namePad = ' '.repeat(Math.max(0, 14 - squad.name.length));
     writeLine(chalk.dim(`  • ${squad.name}/${namePad}${squad.agentCount} agents — ${squad.description}`));
@@ -626,6 +701,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
   writeLine(chalk.dim('  • .agents/memory/               Persistent state'));
   writeLine(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
+  writeLine(chalk.dim('  • AGENTS.md                     Agent instructions (vendor-neutral)'));
   if (selectedProvider === 'claude') {
     writeLine(chalk.dim('  • CLAUDE.md                     Operating manual'));
     writeLine(chalk.dim('  • .claude/settings.json         Session hooks'));
@@ -643,15 +719,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
   writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
   writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
-  writeLine(chalk.dim('        See all your squads and agents at a glance'));
+  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads run`)}`);
+  writeLine(chalk.dim('        Autopilot — runs all squads on schedule, learns between cycles'));
+  writeLine(chalk.dim(`        Options: squads run --once (single cycle), squads run -i 15 --budget 50`));
   writeLine();
   writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   writeLine();
-}
+  }
 
 /**
- * Get the suggested first command based on use case
+ * Get the suggested first command based on installed packs
  */
 function getFirstRunCommand(useCase: UseCase): { command: string; description: string } {
   switch (useCase) {
@@ -671,15 +748,12 @@ function getFirstRunCommand(useCase: UseCase): { command: string; description: s
         description: 'Run a single agent — coordinates daily operations (~2 min)',
       };
     case 'full-company':
-      return {
-        command: 'squads run research/researcher',
-        description: 'Run a single agent — researches the topic you set (~2 min)',
-      };
     case 'custom':
     default:
       return {
-        command: 'squads run research/researcher',
+        command: 'squads run research/lead',
         description: 'Run a single agent — researches the topic you set (~2 min)',
       };
   }
 }
+

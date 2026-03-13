@@ -1,6 +1,6 @@
 # Business Brief — {{BUSINESS_NAME}}
 
-## About
+{{PLACEHOLDER_SENTINEL}}## About
 
 {{BUSINESS_DESCRIPTION}}
 
@@ -24,4 +24,4 @@ LOW — Learning phase. Explore, experiment, report findings.
 
 ---
 
-*Read by `squads context` for business alignment. Updated by the manager agent as understanding deepens.*
+*Read by all agents before every run. Edit this file to change what your workforce focuses on.*

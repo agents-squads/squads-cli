@@ -267,7 +267,7 @@ async function showSquadStatus(
     if (similar.length > 0) {
       writeLine(`${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
     }
-    writeLine(`${colors.dim}Run \`squads list\` to see available squads.${RESET}`);
+    writeLine(`${colors.dim}Run \`squads status\` to see available squads.${RESET}`);
     process.exit(1);
   }
 

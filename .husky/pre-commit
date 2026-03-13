@@ -1,4 +1,0 @@
-#!/bin/sh
-# Pre-commit hook — disabled
-# TODO: re-enable quality gate after branch consolidation
-exit 0

@@ -42,23 +42,17 @@ step() { echo ""; echo "=== STEP: $1 ==="; }
 step "squads --version"
 squads --version
 
-step "squads list (empty project)"
-squads list || true
-
 step "squads init --yes"
-squads init --yes 2>/dev/null || squads init --skip-infra --force <<< ""
+squads init --yes
 
-step "squads list (after init)"
-squads list
-
-step "squads status"
-squads status || true
+step "squads status (after init)"
+squads status
 
 step "squads doctor"
 squads doctor || true
 
 step "squads run --dry-run (first squad found)"
-SQUAD=$(squads list 2>/dev/null | grep -v "^$" | head -1 | awk '{print $1}' || true)
+SQUAD=$(squads status 2>/dev/null | grep -E "^\s+\w+" | head -1 | awk '{print $1}' || echo "company")
 if [ -n "$SQUAD" ]; then
   squads run "$SQUAD" --dry-run || true
 else

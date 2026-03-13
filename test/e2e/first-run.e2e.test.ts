@@ -18,7 +18,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdirSync, existsSync, rmSync, readdirSync } from 'fs';
+import { mkdirSync, existsSync, rmSync, readdirSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -185,13 +185,55 @@ describe('E2E: First-Run User Journey (#488)', () => {
   });
 
   /**
-   * Step 4: List
+   * Step 3b: Verify init scaffolding content
+   * The 4 core squads, cascade files, sentinel, and agent count.
+   */
+  it('Step 3b — init content: 4 squads, 14 agents, cascade files, placeholder sentinel', () => {
+    const squadsDir = join(testDir, '.agents', 'squads');
+    const squads = readdirSync(squadsDir).filter(
+      (f) => existsSync(join(squadsDir, f, 'SQUAD.md'))
+    );
+
+    // Must create exactly 4 core squads
+    expect(squads.sort()).toEqual(['company', 'intelligence', 'product', 'research']);
+
+    // Must create 14 agent files total (excluding SQUAD.md)
+    let agentCount = 0;
+    for (const squad of squads) {
+      const files = readdirSync(join(squadsDir, squad)).filter(
+        (f) => f.endsWith('.md') && f !== 'SQUAD.md'
+      );
+      agentCount += files.length;
+    }
+    expect(agentCount).toBe(14);
+
+    // Context cascade files must exist
+    expect(existsSync(join(testDir, '.agents', 'config', 'SYSTEM.md'))).toBe(true);
+    expect(existsSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'))).toBe(true);
+    expect(existsSync(join(testDir, '.agents', 'memory', 'company', 'directives.md'))).toBe(true);
+
+    // BUSINESS_BRIEF with --yes should have real content (no PLACEHOLDER sentinel)
+    const brief = readFileSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'), 'utf-8');
+    expect(brief).toContain('autonomous execution');
+    expect(brief).not.toContain('PLACEHOLDER');
+
+    // SYSTEM.md must instruct agents to check for PLACEHOLDER (for interactive mode where user skips)
+    const system = readFileSync(join(testDir, '.agents', 'config', 'SYSTEM.md'), 'utf-8');
+    expect(system).toContain('PLACEHOLDER');
+
+    // Root files must exist
+    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(join(testDir, 'AGENTS.md'))).toBe(true);
+  });
+
+  /**
+   * Step 4: Status
    * User wants to see what squads are available.
    * Threshold: <2s
    */
-  it('Step 4 — list: shows available squads', () => {
-    const result = runCli('list', testDir, { timeout: 10000 });
-    logStep({ step: 4, name: 'list', ...result });
+  it('Step 4 — status: shows available squads', () => {
+    const result = runCli('status', testDir, { timeout: 10000 });
+    logStep({ step: 4, name: 'status', ...result });
 
     // P0: Must not crash
     expect(result.exitCode).toBe(0);

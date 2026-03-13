@@ -32,7 +32,7 @@ squads goal set <squad> "X"   # Add a goal
 # Running Agents
 squads run <squad>            # Run all agents in squad
 squads run <squad>/<agent>    # Run specific agent
-squads list                   # List all agents
+squads status                   # List all agents
 ```
 
 ## Workflow
@@ -56,7 +56,7 @@ feat: add user auth [goal:engineering/1]
 ## Agent Execution
 
 When a task could be automated:
-1. Check if agent exists: `squads list | grep <keyword>`
+1. Check if agent exists: `squads status | grep <keyword>`
 2. If yes: `squads run <squad>/<agent>`
 3. If no: Create agent in `.agents/squads/<squad>/<name>.md`
 

@@ -360,7 +360,7 @@ describe('runCommand', () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it('suggests squads list command when target not found', async () => {
+    it('suggests squads status command when target not found', async () => {
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
       mockLoadSquad.mockReturnValue(null);
       mockListAgents.mockReturnValue([]);
@@ -369,7 +369,7 @@ describe('runCommand', () => {
       await expect(runCommand('missing', { dryRun: true })).rejects.toThrow('process.exit');
 
       const calls = mockWriteLine.mock.calls.map(c => c[0]);
-      expect(calls.some(msg => msg?.toString().includes('squads list'))).toBe(true);
+      expect(calls.some(msg => msg?.toString().includes('squads status'))).toBe(true);
     });
   });
 
