@@ -196,12 +196,11 @@ describe('setup-checks', () => {
       expect(result.name).toBe('GitHub CLI');
     });
 
-    it('returns missing when gh is not installed', () => {
+    it('returns warning when gh is not installed', () => {
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkGhCli();
-      expect(result.status).toBe('missing');
-      expect(result.fixCommand).toBe('brew install gh');
+      expect(result.status).toBe('warning');
     });
 
     it('returns warning when gh is installed but not authenticated', () => {

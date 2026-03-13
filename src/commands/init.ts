@@ -15,6 +15,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
+import { execSync } from 'child_process';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
@@ -353,8 +354,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   if (options.yes || options.quick || !isInteractive()) {
     businessName = path.basename(cwd);
-    businessDescription = 'A startup using AI agents to automate business operations — marketing, research, finance, and engineering — so small teams can operate like large ones.';
-    businessFocus = 'The AI agent and automation market: who are the top players, what are teams actually using, and where is the biggest gap we could fill?';
+    businessDescription = 'A startup building and integrating AI smart capabilities for autonomous execution.';
+    businessFocus = 'Track the big AI players — Anthropic, OpenAI, Google, Amazon, Meta, and xAI: latest model releases, API changes, pricing shifts, and strategic moves that affect builders.';
     businessCompetitors = '';
     selectedUseCase = 'custom'; // Core 4 squads only; use --pack for more
   } else {
@@ -669,6 +670,16 @@ export async function initCommand(options: InitOptions): Promise<void> {
     process.exit(1);
   }
 
+  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees)
+  try {
+    execSync('git add -A && git commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"', {
+      cwd,
+      stdio: 'ignore',
+    });
+  } catch {
+    // Commit may fail if nothing to add or git not configured — non-fatal
+  }
+
   // 6. Success message
   writeLine();
   writeLine(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
@@ -708,8 +719,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim(`        ${firstRunCommand.description}`));
   writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
   writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads dash`)}`);
-  writeLine(chalk.dim('        See all your squads and agents at a glance'));
+  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads run`)}`);
+  writeLine(chalk.dim('        Autopilot — runs all squads on schedule, learns between cycles'));
+  writeLine(chalk.dim(`        Options: squads run --once (single cycle), squads run -i 15 --budget 50`));
   writeLine();
   writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
   writeLine();

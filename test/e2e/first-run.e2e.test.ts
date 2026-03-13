@@ -214,7 +214,7 @@ describe('E2E: First-Run User Journey (#488)', () => {
 
     // BUSINESS_BRIEF with --yes should have real content (no PLACEHOLDER sentinel)
     const brief = readFileSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'), 'utf-8');
-    expect(brief).toContain('AI agents');
+    expect(brief).toContain('autonomous execution');
     expect(brief).not.toContain('PLACEHOLDER');
 
     // SYSTEM.md must instruct agents to check for PLACEHOLDER (for interactive mode where user skips)
