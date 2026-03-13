@@ -427,7 +427,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     selectedUseCase = 'custom'; // Core 4 squads; packs handled separately
   }
 
-  let useCaseConfig = getUseCaseConfig(selectedUseCase);
+  const useCaseConfig = getUseCaseConfig(selectedUseCase);
 
   // 4c. Pack support
   if (options.pack && options.pack.length > 0) {
