@@ -1,5 +1,5 @@
 /**
- * squads create <name> — Create a new squad with directory structure and starter files.
+ * squads add <name> — Add a new squad with directory structure and starter files.
  *
  * Creates:
  *   .agents/squads/<name>/SQUAD.md
@@ -7,7 +7,7 @@
  *   .agents/memory/<name>/lead/  (empty, ready for state)
  *
  * Squad discovery is filesystem-based (squad-parser.ts), so creating the
- * directory + SQUAD.md is all that's needed for `squads list` to find it.
+ * directory + SQUAD.md is all that's needed for `squads status` to find it.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
@@ -184,6 +184,6 @@ export async function createCommand(name: string, options: CreateOptions): Promi
   console.log(chalk.dim('  Next steps:'));
   console.log(`    ${chalk.cyan('$')} squads run ${squadId}              ${chalk.dim('# run the squad')}`);
   console.log(`    ${chalk.cyan('$')} squads status ${squadId}           ${chalk.dim('# check status')}`);
-  console.log(`    ${chalk.cyan('$')} squads list                       ${chalk.dim(`# ${existing.length} squads total`)}`);
+  console.log(`    ${chalk.cyan('$')} squads status                     ${chalk.dim(`# ${existing.length} squads total`)}`);
   console.log();
 }

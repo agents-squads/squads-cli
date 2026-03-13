@@ -1055,7 +1055,7 @@ export async function runCommand(
       if (similar.length > 0) {
         writeLine(`  ${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
       }
-      writeLine(`  ${colors.dim}Run \`squads list\` to see available squads and agents.${RESET}`);
+      writeLine(`  ${colors.dim}Run \`squads status\` to see available squads and agents.${RESET}`);
       process.exit(1);
     }
   }
@@ -1855,12 +1855,26 @@ Instruct each Task agent: "Work autonomously. Output findings to GitHub issues. 
 
 Begin by assessing pending work, then delegate to agents via Task tool.`;
 
-  // Execute via Claude
-  const claudeAvailable = await checkClaudeCliAvailable();
-  if (!claudeAvailable) {
-    writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
-    writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
-    return;
+  // Determine provider
+  const provider = options.provider || squad?.providers?.default || 'anthropic';
+  const isAnthropic = provider === 'anthropic';
+
+  if (isAnthropic) {
+    const claudeAvailable = await checkClaudeCliAvailable();
+    if (!claudeAvailable) {
+      writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
+      writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
+      return;
+    }
+  } else {
+    if (!isProviderCLIAvailable(provider)) {
+      const cliConfig = getCLIConfig(provider);
+      writeLine(`  ${colors.yellow}${cliConfig?.displayName || provider} CLI not found${RESET}`);
+      if (cliConfig?.install) {
+        writeLine(`  ${colors.dim}Install: ${cliConfig.install}${RESET}`);
+      }
+      return;
+    }
   }
 
   // Determine execution mode (foreground is default, background is opt-in)
@@ -1869,27 +1883,38 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   const isForeground = !isBackground && !isWatch;
 
   const modeText = isBackground ? ' (background)' : isWatch ? ' (watch)' : '';
-  writeLine(`  ${gradient('Launching')} lead session${modeText}...`);
+  const providerDisplay = isAnthropic ? 'Claude' : (getCLIConfig(provider)?.displayName || provider);
+  writeLine(`  ${gradient('Launching')} lead session${modeText} with ${providerDisplay}...`);
   writeLine();
 
   try {
     // Find lead agent name from agent files or use default
     const leadAgentName = agentFiles.find(a => a.name.includes('lead'))?.name || `${squad.dir}-lead`;
 
-    const result = await executeWithClaude(prompt, {
-      verbose: options.verbose,
-      timeoutMinutes: timeoutMins,
-      foreground: options.foreground,
-      background: options.background,
-      watch: options.watch,
-      useApi: options.useApi,
-      effort: options.effort,
-      skills: options.skills,
-      trigger: options.trigger || 'manual',
-      squadName: squad.dir,
-      agentName: leadAgentName,
-      model: options.model,
-    });
+    let result: string;
+    if (isAnthropic) {
+      result = await executeWithClaude(prompt, {
+        verbose: options.verbose,
+        timeoutMinutes: timeoutMins,
+        foreground: options.foreground,
+        background: options.background,
+        watch: options.watch,
+        useApi: options.useApi,
+        effort: options.effort,
+        skills: options.skills,
+        trigger: options.trigger || 'manual',
+        squadName: squad.dir,
+        agentName: leadAgentName,
+        model: options.model,
+      });
+    } else {
+      result = await executeWithProvider(provider, prompt, {
+        verbose: options.verbose,
+        foreground: isForeground || isWatch,
+        squadName: squad.dir,
+        agentName: leadAgentName,
+      });
+    }
 
     if (isForeground || isWatch) {
       writeLine();

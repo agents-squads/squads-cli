@@ -1,6 +1,6 @@
 ---
 name: Research
-lead: researcher
+lead: lead
 channel: "#research"
 model: sonnet
 effort: high
@@ -16,23 +16,23 @@ approvals:
 
 # Research Squad
 
-Market, competitor, and trend research. Produces actionable intelligence.
+Deep research on the market, competitors, and opportunities described in `BUSINESS_BRIEF.md`. Produces sourced findings, not summaries.
 
 ## Goals
 
-- [ ] Identify market landscape and key competitors
-- [ ] Produce initial research report
+- [ ] Research the competitive landscape for our business (see `BUSINESS_BRIEF.md`)
+- [ ] Produce a research report with sourced findings and confidence levels
+- [ ] Identify the top 3 opportunities and top 3 threats, ranked by impact
 - [ ] Establish research rhythm (3x per week)
 
 ## Agents
 
 | Agent | Role | Purpose |
 |-------|------|---------|
-| researcher | lead | Market, competitor, trend research |
-| analyst | doer | Synthesizes research into actionable insights |
-| research-eval | evaluator | Evaluates research quality and relevance |
-| research-critic | critic | Critiques methodology and coverage gaps |
+| lead | lead | Defines research agenda and coordinates focus |
+| analyst | doer | Conducts deep research and domain analysis |
+| synthesizer | doer | Synthesizes findings into cohesive reports |
 
 ## Pipeline
 
-`researcher` gathers → `analyst` synthesizes → `research-eval` scores → `research-critic` improves
+`lead` defines → `analyst` researches → `synthesizer` reports

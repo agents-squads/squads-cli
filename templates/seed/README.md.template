@@ -10,24 +10,22 @@ This project uses [Agents Squads](https://agents-squads.com) — an AI workforce
 
 | Squad | Purpose |
 |-------|---------|
-| research/ | Researches your market, competitors, and opportunities |
-| company/ | Manages goals, events, and strategy |
 | intelligence/ | Monitors trends and competitive signals |
+| research/ | Researches your market, competitors, and opportunities |
+| product/ | Roadmap, specs, user feedback synthesis |
+| company/ | Manages goals, events, and strategy |
 
 ### Key Commands
 
 ```bash
 # Run a single agent
-squads run research/researcher
+squads run research/lead
 
 # See all squads and recent activity
 squads dash
 
-# Check system health
-squads doctor
-
-# View agent output
-squads results
+# Check system status
+squads status
 ```
 
 ## Setup

@@ -28,7 +28,7 @@ Monitors business objectives, tracks progress, and flags at-risk goals before th
 
 4. **Update tracking**:
    ```bash
-   squads goal progress <squad> <index> "<status update>"
+   squads goal list <squad>
    squads memory write operations "Goal check: [summary of at-risk items]"
    ```
 

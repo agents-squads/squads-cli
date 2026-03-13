@@ -93,9 +93,9 @@ function removedCommand(name: string, alternative: string): () => void {
 // Maps command paths to user-friendly hints when required arguments are missing.
 // Each entry: { message: plain-language explanation, example: usage example }
 const friendlyArgErrors: Record<string, { message: string; example: string }> = {
-  'create': {
+  'add': {
     message: 'Specify a name for the new squad.',
-    example: 'squads create marketing             # create with interactive prompts\n  squads create marketing -d "Drive growth" -y  # non-interactive',
+    example: 'squads add marketing             # add with interactive prompts\n  squads add marketing -d "Drive growth" -y  # non-interactive',
   },
   'run': {
     message: 'Specify which squad or agent to run.',
@@ -235,6 +235,7 @@ program
   .command('init')
   .description('Plant the seed: create manager agent, CLI skill, and starter squads')
   .option('-p, --provider <provider>', 'LLM provider (claude, gemini, openai, ollama, none)')
+  .option('--pack <packs...>', 'Additional squad packs to install (engineering, marketing, operations, all)')
   .option('--skip-infra', 'Skip infrastructure setup prompt')
   .option('--force', 'Skip requirement checks (for CI/testing)')
   .option('-y, --yes', 'Accept all defaults (non-interactive mode)')
@@ -244,10 +245,10 @@ program
     return initCommand(options);
   });
 
-// Create command - add a new squad to your workforce
+// Add command - add a new squad to your workforce
 program
-  .command('create <name>')
-  .description('Create a new squad with directory structure and starter files')
+  .command('add <name>')
+  .description('Add a new squad with directory structure and starter files')
   .option('-d, --description <text>', 'Squad mission (one sentence)')
   .option('-g, --goal <text>', 'First goal for the squad')
   .option('-m, --model <model>', 'Default model (default: sonnet)')
@@ -257,16 +258,19 @@ program
   .option('-o, --org <org>', 'GitHub organization for --repo (default: detected from git remote)')
   .addHelpText('after', `
 Examples:
-  $ squads create marketing                          Create with interactive prompts
-  $ squads create marketing -d "Drive growth" -y     Create non-interactively
-  $ squads create marketing --force                  Overwrite existing squad
-  $ squads create marketing --repo                   Create with GitHub repo
-  $ squads create marketing --repo --org myorg       Create with GitHub repo in specific org
+  $ squads add marketing                          Add with interactive prompts
+  $ squads add marketing -d "Drive growth" -y     Add non-interactively
+  $ squads add marketing --force                  Overwrite existing squad
+  $ squads add marketing --repo                   Add with GitHub repo
+  $ squads add marketing --repo --org myorg       Add with GitHub repo in specific org
 `)
   .action(async (name, options) => {
     const { createCommand } = await import('./commands/create.js');
     return createCommand(name, options);
   });
+
+// Hidden alias: create → add (backward compat)
+program.command('create <name>', { hidden: true }).description('[renamed]').action(removedCommand('create', 'Renamed to: squads add <name>'));
 
 // Run command - execute squads or individual agents
 program
@@ -291,6 +295,7 @@ program
   .option('--max-turns <n>', 'Max conversation turns (default: 20)', '20')
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
   .option('--no-verify', 'Skip post-execution verification (Ralph loop)')
+  .option('--execute', 'Explicitly execute agents (default for run <target>)')
   .option('-j, --json', 'Output as JSON')
   .option('-i, --interval <minutes>', 'Autopilot: minutes between cycles', '30')
   .option('--max-parallel <count>', 'Autopilot: max parallel squad loops', '2')
@@ -320,18 +325,8 @@ Examples:
     return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
   });
 
-// List command
-program
-  .command('list')
-  .description('List agents and squads')
-  .option('-s, --squads', 'List squads only')
-  .option('-a, --agents', 'List agents only')
-  .option('-v, --verbose', 'Show additional details')
-  .option('-j, --json', 'Output as JSON')
-  .action(async (options) => {
-    const { listCommand } = await import('./commands/list.js');
-    return listCommand(options);
-  });
+// List command (removed — use status instead)
+program.command('list', { hidden: true }).description('[removed]').action(removedCommand('list', 'Use: squads status'));
 
 // Orchestrate command - lead-coordinated squad execution
 registerOrchestrateCommand(program);
@@ -349,26 +344,6 @@ env
   .action(async (squad, options) => {
     const { contextShowCommand } = await import('./commands/context.js');
     return contextShowCommand(squad, options);
-  });
-
-env
-  .command('list')
-  .description('List execution environment for all squads')
-  .option('--json', 'Output as JSON')
-  .action(async (options) => {
-    const { contextListCommand } = await import('./commands/context.js');
-    return contextListCommand(options);
-  });
-
-env
-  .command('activate <squad>')
-  .description('Activate execution context for a squad (generates scoped MCP config)')
-  .option('-d, --dry-run', 'Show what would be generated without writing files')
-  .option('-f, --force', 'Force regeneration even if config exists')
-  .option('--json', 'Output as JSON')
-  .action(async (squad, options) => {
-    const { contextActivateCommand } = await import('./commands/context.js');
-    return contextActivateCommand(squad, options);
   });
 
 env

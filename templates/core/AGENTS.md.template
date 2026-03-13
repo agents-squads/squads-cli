@@ -1,64 +1,51 @@
-# AGENTS.md
-# Project guidance for AI coding agents (vendor-neutral)
+# Agent Instructions
 
-This project uses AI agent squads for development and operations.
+Guidance for AI coding agents working on this project.
 
-## Getting Started
+## This Project Uses Squads
 
-If this project is not yet set up, run:
-```bash
-squads setup    # Guided onboarding (recommended)
-squads init     # Quick init (non-interactive)
-```
-
-## Provider: {{PROVIDER_NAME}}
-
-Configure in: `.agents/config/provider.yaml`
-
-## Repository Structure
+AI agents are organized into squads — domain-aligned teams defined in `.agents/squads/`.
 
 ```
 .agents/
-├── squads/           # Agent team definitions
+├── config/
+│   └── SYSTEM.md            # Rules every agent follows
+├── squads/
 │   └── <squad>/
-│       ├── SQUAD.md  # Squad definition
-│       └── *.md      # Agent files
-├── memory/           # Persistent context
-├── config/           # Provider and model configuration
-└── outputs/          # Agent outputs
+│       ├── SQUAD.md          # Squad identity, goals, output format
+│       └── <agent>.md        # Agent definition
+└── memory/
+    └── <squad>/<agent>/      # Persistent state
 ```
 
-## Agent Guidelines
-
-### Before Starting Work
-1. Run `squads status` to understand current state
-2. Check `squads memory query "<topic>"` for existing knowledge
-3. Read relevant SQUAD.md files
-
-### During Work
-- Update todo list frequently for visibility
-- Prefer editing existing files over creating new ones
-- Keep changes focused - one task per commit/PR
-
-### After Work
-- Update memory in `.agents/memory/<squad>/<agent>/state.md`
-- Create GitHub issues for follow-up work
-
-## Quick Reference
+## Before Starting Work
 
 ```bash
-squads setup           # Guided onboarding (new projects)
-squads status          # Overview
-squads dash            # Full dashboard
-squads run <squad>     # Run a squad
-squads list            # All agents
-squads memory query X  # Search memory
-squads goal list       # View goals
+squads status                     # See all squads, milestones, open PRs
+squads status <squad>             # Squad detail
+squads memory read <squad>        # What the squad already knows
 ```
 
-## Model Aliases
+## During Work
 
-Agents can use semantic model names that resolve per provider:
-- `leader` - Most capable (complex tasks)
-- `worker` - Balanced (standard tasks)
-- `simple` - Fast (simple tasks)
+- Check for existing PRs and issues before creating new ones
+- Prefer editing existing files over creating new ones
+- Keep changes focused — one task per commit/PR
+- Use `--json` on any squads command for machine-readable output
+
+## After Work
+
+- Persist learnings: `squads memory write <squad> "insight"`
+- Update state in `.agents/memory/<squad>/<agent>/state.md`
+- Create GitHub issues for follow-up work
+
+## Commands
+
+```bash
+squads run <squad/agent>          # Run an agent
+squads status                     # Overview
+squads memory read <squad>        # Recall squad knowledge
+squads memory write <squad> "x"   # Persist a learning
+squads env show <squad> --json    # Execution context
+squads goal list                  # View squad goals
+```

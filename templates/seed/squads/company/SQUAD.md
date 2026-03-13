@@ -1,10 +1,11 @@
 ---
-name: Company Operations
+name: Company
 lead: manager
 channel: "#company"
 model: sonnet
 effort: high
 schedule: "0 9 * * 1-5"
+depends_on: ["*"]
 approvals:
   policy:
     auto:
@@ -24,15 +25,16 @@ approvals:
     files_changed: 20
 ---
 
-# Company Operations
+# Company Squad
 
-Manages the AI workforce. The manager agent orchestrates all squads, coordinates leads, and runs daily operations.
+Orchestrates all squads, evaluates outputs, and closes the feedback loop. Reads `BUSINESS_BRIEF.md` and `directives.md` to ensure all work advances business goals.
 
 ## Goals
 
-- [ ] Understand business context and set up initial squads
-- [ ] Establish daily operational rhythm
-- [ ] Track and report on business objectives
+- [ ] Evaluate squad outputs against the business focus in `BUSINESS_BRIEF.md`
+- [ ] Write feedback per squad: what was valuable, what was noise, what to prioritize next
+- [ ] Ensure no duplicate work across squads (check active-work.md)
+- [ ] Track progress toward directives and flag when goals need updating
 
 ## Agents
 

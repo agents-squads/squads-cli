@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main, develop, 'sprint/**', 'release/**']
@@ -95,30 +98,29 @@ jobs:
           mkdir -p /tmp/test-init
           cd /tmp/test-init
           git init
-          node $GITHUB_WORKSPACE/dist/cli.js init --skip-infra --force <<< ""
+          git config user.email "smoke@test.local"
+          git config user.name "Smoke Test"
+          node $GITHUB_WORKSPACE/dist/cli.js init --yes --force
 
-          # Verify core files created by new seed-based init
+          # Verify core files created by seed-based init
           test -f CLAUDE.md || (echo "CLAUDE.md missing" && exit 1)
           test -f .claude/settings.json || (echo ".claude/settings.json missing" && exit 1)
           test -f .agents/BUSINESS_BRIEF.md || (echo ".agents/BUSINESS_BRIEF.md missing" && exit 1)
+          test -f AGENTS.md || (echo "AGENTS.md missing" && exit 1)
 
-          # Core squads (always created)
+          # Core 4 squads (created by --yes)
           test -f .agents/squads/company/SQUAD.md || (echo "company SQUAD.md missing" && exit 1)
           test -f .agents/squads/research/SQUAD.md || (echo "research SQUAD.md missing" && exit 1)
           test -f .agents/squads/intelligence/SQUAD.md || (echo "intelligence SQUAD.md missing" && exit 1)
+          test -f .agents/squads/product/SQUAD.md || (echo "product SQUAD.md missing" && exit 1)
 
-          # Use-case squads (full-company default in non-interactive mode)
-          test -f .agents/squads/engineering/SQUAD.md || (echo "engineering SQUAD.md missing" && exit 1)
-          test -f .agents/squads/marketing/SQUAD.md || (echo "marketing SQUAD.md missing" && exit 1)
-          test -f .agents/squads/operations/SQUAD.md || (echo "operations SQUAD.md missing" && exit 1)
-
-          # Skills
-          test -f .agents/skills/squads-cli/SKILL.md || (echo "squads-cli skill missing" && exit 1)
-          test -f .agents/skills/gh/SKILL.md || (echo "gh skill missing" && exit 1)
+          # Context cascade files
+          test -f .agents/config/SYSTEM.md || (echo "SYSTEM.md missing" && exit 1)
+          test -f .agents/memory/company/directives.md || (echo "directives.md missing" && exit 1)
 
           # Memory state files
           test -f .agents/memory/company/manager/state.md || (echo "company manager state missing" && exit 1)
-          test -f .agents/memory/research/researcher/state.md || (echo "research state missing" && exit 1)
+          test -f .agents/memory/research/lead/state.md || (echo "research lead state missing" && exit 1)
           test -f .agents/memory/intelligence/intel-lead/state.md || (echo "intelligence state missing" && exit 1)
 
           echo "✓ squads init smoke test passed"

@@ -1,0 +1,32 @@
+# Test our branch as a new user would experience it
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y curl git && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root developer
+RUN useradd -m -s /bin/bash dev
+USER dev
+WORKDIR /home/dev
+
+# npm global without sudo
+RUN mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global
+ENV PATH="/home/dev/.npm-global/bin:${PATH}"
+
+# Git config
+RUN git config --global user.name "Test User" && \
+    git config --global user.email "test@example.com" && \
+    git config --global init.defaultBranch main
+
+# Install our branch from local tarball (instead of npm registry)
+COPY --chown=dev:dev squads-cli-0.2.1.tgz /home/dev/squads-cli-0.2.1.tgz
+RUN npm install -g /home/dev/squads-cli-0.2.1.tgz
+
+# Install Claude Code
+RUN npm install -g @anthropic-ai/claude-code@latest
+
+CMD ["bash"]
