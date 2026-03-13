@@ -1,0 +1,23 @@
+name: Deprecate old versions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Deprecate broken versions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for v in 0.3.0 0.4.0 0.4.4 0.4.5 0.4.6 0.4.7 0.4.8 0.4.9 0.4.10 0.4.11 0.4.13 0.5.0 0.6.0 0.6.1 0.6.2; do
+            echo "Deprecating $v..."
+            npm deprecate "squads-cli@$v" "Old pre-release. Use 0.2.1+" || true
+          done
+          echo "Done"
