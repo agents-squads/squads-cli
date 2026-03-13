@@ -23,9 +23,7 @@ squads status [squad]             # Quick status snapshot
 squads context --json             # Business context feed
 squads cost                       # Cost tracking
 squads budget <squad>             # Budget check
-squads health                     # Infrastructure health
-squads history                    # Execution patterns
-squads results [squad]            # Squad output + KPIs
+squads history                    # Execution history
 ```
 
 ## Track (Objectives + Metrics)
@@ -33,11 +31,9 @@ squads results [squad]            # Squad output + KPIs
 ```bash
 squads goal set <squad> "<goal>"  # Set a business objective
 squads goal list [squad]          # List goals
-squads goal progress <squad> <n> "<update>"  # Update progress
 squads goal complete <squad> <n>  # Mark goal done
 squads kpi list                   # List all KPIs
 squads kpi show <squad>           # Squad KPIs
-squads kpi record <squad> <kpi> <value>  # Record metric
 squads kpi trend <squad> <kpi>    # Show trend
 squads feedback add <squad> <1-5> "<feedback>"  # Rate output
 squads autonomy                   # Self-assessment

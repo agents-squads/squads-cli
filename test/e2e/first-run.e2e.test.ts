@@ -185,13 +185,13 @@ describe('E2E: First-Run User Journey (#488)', () => {
   });
 
   /**
-   * Step 4: List
+   * Step 4: Status
    * User wants to see what squads are available.
    * Threshold: <2s
    */
-  it('Step 4 — list: shows available squads', () => {
-    const result = runCli('list', testDir, { timeout: 10000 });
-    logStep({ step: 4, name: 'list', ...result });
+  it('Step 4 — status: shows available squads', () => {
+    const result = runCli('status', testDir, { timeout: 10000 });
+    logStep({ step: 4, name: 'status', ...result });
 
     // P0: Must not crash
     expect(result.exitCode).toBe(0);

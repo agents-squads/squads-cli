@@ -1,5 +1,8 @@
 # Business Brief — {{BUSINESS_NAME}}
 
+<!-- STATUS: PLACEHOLDER — Edit this file before running agents. -->
+<!-- Agents that read "PLACEHOLDER" in this comment will ask you to fill it in. -->
+
 ## About
 
 {{BUSINESS_DESCRIPTION}}
@@ -24,4 +27,4 @@ LOW — Learning phase. Explore, experiment, report findings.
 
 ---
 
-*Read by `squads context` for business alignment. Updated by the manager agent as understanding deepens.*
+*Read by all agents before every run. Edit this file to change what your workforce focuses on.*

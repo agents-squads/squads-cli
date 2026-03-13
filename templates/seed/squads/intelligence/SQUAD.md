@@ -16,12 +16,13 @@ approvals:
 
 # Intelligence Squad
 
-Strategic synthesis. Turns raw information into what you know, what you don't know, and what to do next.
+Strategic synthesis. Turns raw information into what you know, what you don't know, and what to do next — for the business described in `BUSINESS_BRIEF.md`.
 
 ## Goals
 
-- [ ] Produce first Know / Don't Know / Playbook brief
-- [ ] Identify top 3 blind spots in current strategy
+- [ ] Produce a Know / Don't Know / Playbook brief for the business focus in `BUSINESS_BRIEF.md`
+- [ ] Identify the top 3 blind spots — what we're assuming without evidence
+- [ ] Map the competitive landscape with sourced facts, not opinions
 - [ ] Establish intelligence rhythm (daily weekdays)
 
 ## Agents
