@@ -1,0 +1,21 @@
+name: Deprecate old versions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Deprecate broken versions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm deprecate squads-cli@0.7.0 "Broken release — crashes on 'squads run'. Use 0.2.1+" || true
+          npm deprecate squads-cli@0.7.1 "Broken release. Use 0.2.1+" || true
+          echo "Done"
