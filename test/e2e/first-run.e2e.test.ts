@@ -18,7 +18,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdirSync, existsSync, rmSync, readdirSync } from 'fs';
+import { mkdirSync, existsSync, rmSync, readdirSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -182,6 +182,47 @@ describe('E2E: First-Run User Journey (#488)', () => {
     );
     expect(squads.length).toBeGreaterThan(0);
     firstSquad = squads[0];
+  });
+
+  /**
+   * Step 3b: Verify init scaffolding content
+   * The 4 core squads, cascade files, sentinel, and agent count.
+   */
+  it('Step 3b — init content: 4 squads, 14 agents, cascade files, placeholder sentinel', () => {
+    const squadsDir = join(testDir, '.agents', 'squads');
+    const squads = readdirSync(squadsDir).filter(
+      (f) => existsSync(join(squadsDir, f, 'SQUAD.md'))
+    );
+
+    // Must create exactly 4 core squads
+    expect(squads.sort()).toEqual(['company', 'intelligence', 'product', 'research']);
+
+    // Must create 14 agent files total (excluding SQUAD.md)
+    let agentCount = 0;
+    for (const squad of squads) {
+      const files = readdirSync(join(squadsDir, squad)).filter(
+        (f) => f.endsWith('.md') && f !== 'SQUAD.md'
+      );
+      agentCount += files.length;
+    }
+    expect(agentCount).toBe(14);
+
+    // Context cascade files must exist
+    expect(existsSync(join(testDir, '.agents', 'config', 'SYSTEM.md'))).toBe(true);
+    expect(existsSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'))).toBe(true);
+    expect(existsSync(join(testDir, '.agents', 'memory', 'company', 'directives.md'))).toBe(true);
+
+    // BUSINESS_BRIEF must have PLACEHOLDER sentinel
+    const brief = readFileSync(join(testDir, '.agents', 'BUSINESS_BRIEF.md'), 'utf-8');
+    expect(brief).toContain('PLACEHOLDER');
+
+    // SYSTEM.md must instruct agents to check for PLACEHOLDER
+    const system = readFileSync(join(testDir, '.agents', 'config', 'SYSTEM.md'), 'utf-8');
+    expect(system).toContain('PLACEHOLDER');
+
+    // Root files must exist
+    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(join(testDir, 'AGENTS.md'))).toBe(true);
   });
 
   /**
