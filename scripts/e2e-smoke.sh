@@ -42,8 +42,8 @@ step() { echo ""; echo "=== STEP: $1 ==="; }
 step "squads --version"
 squads --version
 
-step "squads init --yes"
-squads init --yes
+step "squads init --yes --force"
+squads init --yes --force
 
 step "squads status (after init)"
 squads status
