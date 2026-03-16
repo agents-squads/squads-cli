@@ -589,6 +589,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const skillContent = loadSeedTemplate('skills/squads-cli/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/squads-cli/SKILL.md'), skillContent);
 
+    const skillRefContent = loadSeedTemplate('skills/squads-cli/references/commands.md', variables);
+    await writeFile(path.join(cwd, '.agents/skills/squads-cli/references/commands.md'), skillRefContent);
+
     const ghSkillContent = loadSeedTemplate('skills/gh/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/gh/SKILL.md'), ghSkillContent);
 
