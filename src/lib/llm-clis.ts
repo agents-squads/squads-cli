@@ -24,6 +24,9 @@ export interface CLIConfig {
 
   /** Build non-interactive args for execution */
   buildArgs: (prompt: string, options?: RunOptions) => string[];
+
+  /** If true, pipe prompt via stdin instead of CLI arg (avoids shell arg length limits) */
+  stdinPrompt?: boolean;
 }
 
 export interface RunOptions {
@@ -107,7 +110,8 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     displayName: 'Ollama (Local)',
     command: 'ollama',
     install: 'brew install ollama',
-    buildArgs: (prompt, opts) => ['run', opts?.model || 'llama3.1', prompt],
+    buildArgs: (_prompt, opts) => ['run', opts?.model || 'llama3.1'],
+    stdinPrompt: true,
   },
 };
 

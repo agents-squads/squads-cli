@@ -72,6 +72,10 @@ import {
 import { classifyAgent } from '../lib/conversation.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
+
+/** Providers that support tool use (sub-agent spawning, conversation orchestration) */
+const TOOL_USE_PROVIDERS = new Set(['anthropic', 'google']);
+
 const CLOUD_POLL_INTERVAL_MS = 3000;
 const CLOUD_POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes max poll
 const DEFAULT_LEARNINGS_LIMIT = 5;
@@ -1167,74 +1171,91 @@ async function runSquad(
         return;
       }
     } else {
-      // Default: Run squad as multi-agent conversation
-      // Lead briefs → scanners discover → workers execute → lead reviews → converge
+      // Default: Run squad as multi-agent conversation (or sequential for non-tool-use providers)
+      const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+
       if (options.execute) {
-        writeLine(`  ${bold}Conversation mode${RESET} ${colors.dim}(lead → scan → work → review → verify)${RESET}`);
-        writeLine();
+        if (TOOL_USE_PROVIDERS.has(squadProvider)) {
+          // Conversation mode for tool-use providers (Claude, Gemini)
+          writeLine(`  ${bold}Conversation mode${RESET} ${colors.dim}(lead → scan → work → review → verify)${RESET}`);
+          writeLine();
 
-        const convOptions: ConversationOptions = {
-          task: options.task,
-          maxTurns: options.maxTurns,
-          costCeiling: options.costCeiling,
-          verbose: options.verbose,
-          model: options.model,
-        };
+          const convOptions: ConversationOptions = {
+            task: options.task,
+            maxTurns: options.maxTurns,
+            costCeiling: options.costCeiling,
+            verbose: options.verbose,
+            model: options.model,
+          };
 
-        // Report execution start to API (fire-and-forget on failure)
-        const apiExecId = await reportExecutionStart(squad.name, 'conversation', `conv-${Date.now()}`);
+          // Report execution start to API (fire-and-forget on failure)
+          const apiExecId = await reportExecutionStart(squad.name, 'conversation', `conv-${Date.now()}`);
 
-        const result = await runConversation(squad, convOptions);
+          const result = await runConversation(squad, convOptions);
 
-        // Save transcript
-        const transcriptPath = saveTranscript(result.transcript);
+          // Save transcript
+          const transcriptPath = saveTranscript(result.transcript);
 
-        // Report conversation result to API (fire-and-forget)
-        if (apiExecId) {
-          reportConversationResult(apiExecId, {
-            turnCount: result.turnCount,
-            totalCost: result.totalCost,
-            converged: result.converged,
-            reason: result.reason,
-            agentsInvolved: [...new Set(result.transcript.turns.map(t => t.agent))],
+          // Report conversation result to API (fire-and-forget)
+          if (apiExecId) {
+            reportConversationResult(apiExecId, {
+              turnCount: result.turnCount,
+              totalCost: result.totalCost,
+              converged: result.converged,
+              reason: result.reason,
+              agentsInvolved: [...new Set(result.transcript.turns.map(t => t.agent))],
+            });
+          }
+
+          // Push conversation signal to cognition engine (fire-and-forget)
+          pushCognitionSignal({
+            source: 'execution',
+            signal_type: result.converged ? 'conversation_converged' : 'conversation_stopped',
+            value: result.totalCost,
+            unit: 'usd',
+            data: {
+              turn_count: result.turnCount,
+              converged: result.converged,
+              reason: result.reason,
+              agents_involved: [...new Set(result.transcript.turns.map(t => t.agent))],
+            },
+            entity_type: 'squad',
+            entity_id: squad.name,
+            confidence: 0.9,
           });
-        }
 
-        // Push conversation signal to cognition engine (fire-and-forget)
-        pushCognitionSignal({
-          source: 'execution',
-          signal_type: result.converged ? 'conversation_converged' : 'conversation_stopped',
-          value: result.totalCost,
-          unit: 'usd',
-          data: {
-            turn_count: result.turnCount,
-            converged: result.converged,
-            reason: result.reason,
-            agents_involved: [...new Set(result.transcript.turns.map(t => t.agent))],
-          },
-          entity_type: 'squad',
-          entity_id: squad.name,
-          confidence: 0.9,
-        });
-
-        writeLine();
-        writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
-        writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
-        if (transcriptPath) {
-          writeLine(`  ${colors.dim}Transcript: ${transcriptPath}${RESET}`);
+          writeLine();
+          writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
+          writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
+          if (transcriptPath) {
+            writeLine(`  ${colors.dim}Transcript: ${transcriptPath}${RESET}`);
+          }
+          writeLine();
+        } else {
+          // Sequential mode for providers without tool use (Ollama, etc.)
+          await runSequentialMode(squad, squadsDir, squadProvider, options);
         }
-        writeLine();
       } else {
         // Dry-run: show what would happen
-        writeLine(`  ${colors.dim}Default mode: conversation (lead → scan → work → review → verify)${RESET}`);
+        if (TOOL_USE_PROVIDERS.has(squadProvider)) {
+          writeLine(`  ${colors.dim}Default mode: conversation (lead → scan → work → review → verify)${RESET}`);
+        } else {
+          const cliConfig = getCLIConfig(squadProvider);
+          const providerName = cliConfig?.displayName || squadProvider;
+          writeLine(`  ${colors.dim}Default mode: sequential (${providerName} — agents run one at a time)${RESET}`);
+        }
         writeLine();
         for (const agent of squad.agents) {
           writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
         }
         writeLine();
-        writeLine(`  ${colors.dim}Run conversation:${RESET}`);
+        writeLine(`  ${colors.dim}Run squad:${RESET}`);
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
+        if (!TOOL_USE_PROVIDERS.has(squadProvider)) {
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --provider ${squadProvider}`);
+        } else {
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
+        }
         writeLine();
         writeLine(`  ${colors.dim}Run single agent:${RESET}`);
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} -a ${colors.cyan}<agent>${RESET}`);
@@ -1859,6 +1880,20 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
   const provider = options.provider || squad?.providers?.default || 'anthropic';
   const isAnthropic = provider === 'anthropic';
 
+  // Block lead mode for providers without tool use support
+  if (!TOOL_USE_PROVIDERS.has(provider)) {
+    const cliConfig = getCLIConfig(provider);
+    const providerName = cliConfig?.displayName || provider;
+    writeLine(`  ${colors.yellow}${icons.warning} Lead mode requires tool-use support (Claude, Gemini)${RESET}`);
+    writeLine(`  ${colors.dim}${providerName} cannot spawn sub-agents via Task tool.${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.dim}Options:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}              ${colors.dim}<- sequential mode (recommended)${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}/${agentFiles[0]?.name || 'worker'}${RESET}  ${colors.dim}<- single agent${RESET}`);
+    writeLine();
+    return;
+  }
+
   if (isAnthropic) {
     const claudeAvailable = await checkClaudeCliAvailable();
     if (!claudeAvailable) {
@@ -1913,6 +1948,7 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
         foreground: isForeground || isWatch,
         squadName: squad.dir,
         agentName: leadAgentName,
+        model: options.model,
       });
     }
 
@@ -1936,6 +1972,115 @@ Begin by assessing pending work, then delegate to agents via Task tool.`;
     writeLine(`  ${colors.dim}${msg}${RESET}`);
     writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup.${RESET}`);
   }
+}
+
+/**
+ * Sequential mode: run each agent one at a time through executeWithProvider.
+ * Used for providers without tool-use support (Ollama, etc.) that cannot
+ * orchestrate sub-agents or participate in conversation mode.
+ */
+async function runSequentialMode(
+  squad: ReturnType<typeof loadSquad>,
+  squadsDir: string,
+  provider: string,
+  options: RunOptions
+): Promise<void> {
+  if (!squad) return;
+
+  const agentFiles = squad.agents
+    .map(a => ({
+      name: a.name,
+      path: join(squadsDir, squad.dir, `${a.name}.md`),
+      role: a.role || '',
+    }))
+    .filter(a => existsSync(a.path));
+
+  if (agentFiles.length === 0) {
+    writeLine(`  ${icons.error} ${colors.red}No agent files found${RESET}`);
+    return;
+  }
+
+  const cliConfig = getCLIConfig(provider);
+  const providerName = cliConfig?.displayName || provider;
+
+  writeLine(`  ${bold}Sequential mode${RESET} ${colors.dim}(${providerName} — agents run one at a time)${RESET}`);
+  writeLine();
+
+  for (const agent of agentFiles) {
+    writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
+  }
+  writeLine();
+
+  // Check CLI availability
+  if (!isProviderCLIAvailable(provider)) {
+    writeLine(`  ${colors.yellow}${cliConfig?.command || provider} CLI not found${RESET}`);
+    if (cliConfig?.install) {
+      writeLine(`  ${colors.dim}Install: ${cliConfig.install}${RESET}`);
+    }
+    return;
+  }
+
+  const startMs = Date.now();
+  let completed = 0;
+  let failed = 0;
+
+  for (let i = 0; i < agentFiles.length; i++) {
+    const agent = agentFiles[i];
+    const agentDef = loadAgentDefinition(agent.path);
+
+    // Derive context role from agent name
+    const agentRole = classifyAgent(agent.name);
+    const contextRole: ContextRole = agent.name.includes('lead') ? 'coo'
+      : (agentRole as ContextRole | null) ?? 'worker';
+
+    // Gather squad context (role-based)
+    const squadContext = gatherSquadContext(squad.name, agent.name, {
+      verbose: options.verbose,
+      agentPath: agent.path,
+      role: contextRole,
+    });
+
+    // Resolve per-agent model (from frontmatter or --model flag)
+    const frontmatter = parseAgentFrontmatter(agent.path);
+    const agentModel = frontmatter.model || options.model;
+
+    // Build prompt: agent definition + squad context
+    const prompt = `Execute the ${agent.name} agent from squad ${squad.name}.
+
+## Agent Definition
+${agentDef}
+
+${squadContext ? `## Squad Context\n${squadContext}\n` : ''}
+## Instructions
+Follow the agent definition above. Work autonomously. Output results directly.
+${options.task ? `\n## Task Directive\n${options.task}\n` : ''}`;
+
+    writeLine(`  ${colors.dim}[${i + 1}/${agentFiles.length}]${RESET} Running ${colors.cyan}${agent.name}${RESET}...`);
+
+    try {
+      await executeWithProvider(provider, prompt, {
+        verbose: options.verbose,
+        foreground: true,
+        squadName: squad.name,
+        agentName: agent.name,
+        model: agentModel,
+      });
+      completed++;
+      writeLine(`  ${icons.success} ${colors.cyan}${agent.name}${RESET} complete`);
+    } catch (error) {
+      failed++;
+      const msg = error instanceof Error ? error.message : String(error);
+      writeLine(`  ${icons.error} ${colors.red}${agent.name} failed: ${msg}${RESET}`);
+    }
+    writeLine();
+  }
+
+  const elapsed = Math.round((Date.now() - startMs) / 1000);
+  writeLine(`  ${icons.success} Sequential run complete (${completed}/${agentFiles.length} agents, ${elapsed}s)`);
+  if (failed > 0) {
+    writeLine(`  ${colors.yellow}${failed} agent(s) failed${RESET}`);
+  }
+  writeLine();
 }
 
 async function runAgent(
@@ -2223,6 +2368,7 @@ TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
             foreground: !isBackground,
             squadName,
             agentName,
+            model: options.model,
           });
         }
 
@@ -2796,6 +2942,7 @@ async function executeWithProvider(
     cwd?: string;
     squadName?: string;
     agentName?: string;
+    model?: string;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -2852,7 +2999,7 @@ async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const args = cliConfig.buildArgs(effectivePrompt);
+  const args = cliConfig.buildArgs(effectivePrompt, { model: options.model });
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -2866,11 +3013,19 @@ async function executeWithProvider(
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
+      // For stdinPrompt providers (e.g. Ollama), pipe prompt via stdin
+      // to avoid shell arg length limits with multi-KB prompts
+      const useStdin = cliConfig.stdinPrompt === true;
       const proc = spawn(cliConfig.command, args, {
-        stdio: 'inherit',
+        stdio: useStdin ? ['pipe', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
       });
+
+      if (useStdin && proc.stdin) {
+        proc.stdin.write(effectivePrompt);
+        proc.stdin.end();
+      }
 
       proc.on('close', (code) => {
         cleanupWorktree(workDir, projectRoot);
@@ -2898,11 +3053,13 @@ async function executeWithProvider(
   }
 
   const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
-  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
+  const providerArgs = cliConfig.buildArgs(escapedPrompt, { model: options.model }).map(a => `'${a}'`).join(' ');
+  // For stdinPrompt providers in background, pipe prompt via heredoc
+  const stdinRedirect = cliConfig.stdinPrompt ? ` <<'SQUADS_PROMPT_EOF'\n${effectivePrompt}\nSQUADS_PROMPT_EOF` : '';
   const cleanupCmd = workDir !== projectRoot
     ? `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null; git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null`
     : '';
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs}${stdinRedirect} > '${logFile}' 2>&1${cleanupCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
