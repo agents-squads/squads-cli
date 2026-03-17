@@ -487,6 +487,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
+      CURRENT_DATE: new Date().toISOString().split('T')[0],
     };
 
     // Core directories (always created)
@@ -588,6 +589,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     // Skills
     const skillContent = loadSeedTemplate('skills/squads-cli/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/squads-cli/SKILL.md'), skillContent);
+
+    const skillRefContent = loadSeedTemplate('skills/squads-cli/references/commands.md', variables);
+    await writeFile(path.join(cwd, '.agents/skills/squads-cli/references/commands.md'), skillRefContent);
 
     const ghSkillContent = loadSeedTemplate('skills/gh/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/gh/SKILL.md'), ghSkillContent);
