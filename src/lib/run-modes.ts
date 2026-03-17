@@ -1,0 +1,764 @@
+/**
+ * Squad execution modes: autopilot, squad loop, lead mode, and post-evaluation.
+ * Extracted from commands/run.ts to reduce its size.
+ */
+
+import { spawn } from 'child_process';
+import { join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import {
+  type RunOptions,
+  DEFAULT_TIMEOUT_MINUTES,
+} from './run-types.js';
+import {
+  checkClaudeCliAvailable,
+  getProjectRoot,
+} from './run-utils.js';
+import {
+  executeWithClaude,
+  executeWithProvider,
+} from './execution-engine.js';
+import {
+  checkLocalCooldown,
+  DEFAULT_SCHEDULED_COOLDOWN_MS,
+} from './execution-log.js';
+import { runAgent } from './agent-runner.js';
+import {
+  findSquadsDir,
+  loadSquad,
+} from './squad-parser.js';
+import {
+  type LoopState,
+  loadLoopState,
+  saveLoopState,
+  getSquadRepos,
+  scoreSquads,
+  checkCooldown,
+  classifyRunOutcome,
+  pushMemorySignals,
+  slackNotify,
+  computePhases,
+  scoreSquadsForPhase,
+} from './squad-loop.js';
+import {
+  loadCognitionState,
+  saveCognitionState,
+  seedBeliefsIfEmpty,
+  runCognitionCycle,
+} from './cognition.js';
+import {
+  runConversation,
+  saveTranscript,
+  type ConversationOptions,
+} from './workflow.js';
+import {
+  reportExecutionStart,
+  reportConversationResult,
+  pushCognitionSignal,
+} from './api-client.js';
+import { getBotGhEnv } from './github.js';
+import {
+  colors,
+  bold,
+  RESET,
+  gradient,
+  icons,
+  writeLine,
+} from './terminal.js';
+import {
+  getCLIConfig,
+  isProviderCLIAvailable,
+} from './llm-clis.js';
+import { getBridgeUrl } from './env-config.js';
+import { classifyAgent } from './conversation.js';
+import ora from 'ora';
+
+// ── Post-run evaluation ─────────────────────────────────────────────
+// After any squad run, dispatch the COO (company-lead) to evaluate outputs.
+// This is the feedback loop that makes the system learn.
+
+const EVAL_TIMEOUT_MINUTES = 15;
+
+/**
+ * Run the COO evaluation after squad execution.
+ * Dispatches company-lead with a scoped evaluation task for the squads that just ran.
+ * Generates feedback.md and active-work.md per squad.
+ */
+export async function runPostEvaluation(
+  squadsRun: string[],
+  options: RunOptions,
+): Promise<void> {
+  // Skip if running company squad itself (prevent recursion)
+  if (squadsRun.length === 1 && squadsRun[0] === 'company') return;
+  // Skip if evaluation disabled
+  if (options.eval === false) return;
+  // Skip dry-run
+  if (options.dryRun) return;
+  // Skip background runs — evaluation needs foreground context
+  if (options.background) return;
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return;
+
+  // Find company-lead agent
+  const cooPath = join(squadsDir, 'company', 'company-lead.md');
+  if (!existsSync(cooPath)) {
+    if (options.verbose) {
+      writeLine(`  ${colors.dim}Skipping evaluation: company-lead.md not found${RESET}`);
+    }
+    return;
+  }
+
+  const squadList = squadsRun.join(', ');
+  writeLine();
+  writeLine(`  ${gradient('eval')} ${colors.dim}COO evaluating: ${squadList}${RESET}`);
+
+  const evalTask = `Post-run evaluation for: ${squadList}.
+
+## Evaluation Process
+
+For each squad (${squadList}):
+
+### 1. Read previous feedback FIRST
+Read \`.agents/memory/{squad}/feedback.md\` if it exists. Note the previous grade, identified patterns, and priorities. This is your baseline — you are measuring CHANGE, not just current state.
+
+### 2. Gather current evidence
+- PRs (last 7 days): \`gh pr list --state all --limit 20 --json number,title,state,mergedAt,createdAt\`
+- Recent commits (last 7 days): \`gh api repos/{owner}/{repo}/commits?since=YYYY-MM-DDT00:00:00Z&per_page=20 --jq '.[].commit.message'\`
+- Open issues: \`gh issue list --state open --limit 15 --json number,title,labels\`
+- Read \`.agents/memory/{squad}/priorities.md\` and \`.agents/memory/company/directives.md\`
+- Read \`.agents/memory/{squad}/active-work.md\` (previous cycle's work tracking)
+
+### 3. Write feedback.md (APPEND history, don't overwrite)
+\`\`\`markdown
+# Feedback — {squad}
+
+## Current Assessment (YYYY-MM-DD): [A-F]
+Merge rate: X% | Noise ratio: Y% | Priority alignment: Z%
+
+## Trajectory: [improving | stable | declining | new]
+Previous grade: [grade] → Current: [grade]. [1-line explanation of why]
+
+## Valuable (continue)
+- [specific PR/issue that advanced priorities]
+
+## Noise (stop)
+- [specific anti-pattern observed]
+
+## Next Cycle Priorities
+1. [specific actionable item]
+
+## History
+| Date | Grade | Key Signal |
+|------|-------|------------|
+| YYYY-MM-DD | X | [what drove this grade] |
+[keep last 10 entries, append new row]
+\`\`\`
+
+### 4. Write active-work.md
+\`\`\`markdown
+# Active Work — {squad} (YYYY-MM-DD)
+## Continue (open PRs)
+- #{number}: {title} — {status/next action}
+## Backlog (assigned issues)
+- #{number}: {title} — {priority}
+## Do NOT Create
+- {description of known duplicate patterns from feedback history}
+\`\`\`
+
+### 5. Commit to hq main
+${squadsRun.length > 1 ? `
+### 6. Cross-squad assessment
+Evaluate how outputs from ${squadList} connect:
+- Duplicated efforts across squads?
+- Missing handoffs (one squad's output should feed another)?
+- Coordination gaps (conflicting PRs, redundant issues)?
+- Combined trajectory: is the org getting more effective or more noisy?
+Write cross-squad findings to \`.agents/memory/company/cross-squad-review.md\`.
+` : ''}
+CRITICAL: You are measuring DIRECTION not just position. A C-grade squad improving from F is better than a B-grade squad declining from A. The history table IS the feedback loop — agents read it next cycle.`;
+
+  await runAgent('company-lead', cooPath, 'company', {
+    ...options,
+    task: evalTask,
+    timeout: EVAL_TIMEOUT_MINUTES,
+    eval: false, // prevent recursion
+    trigger: 'manual',
+  });
+}
+
+// ── Autopilot mode ──────────────────────────────────────────────────
+// When `squads run` is called with no target, it becomes the daemon:
+// score all squads, dispatch the full loop (scanner→lead→worker→verifier)
+// for top-priority squads, push cognition signals, repeat.
+
+// Default cooldowns per agent role (ms)
+const ROLE_COOLDOWNS: Record<string, number> = {
+  scanner: 60 * 60 * 1000,         // 1h — fast, cheap
+  lead: 4 * 60 * 60 * 1000,        // 4h — orchestration
+  worker: 30 * 60 * 1000,          // 30m — if work exists
+  verifier: 30 * 60 * 1000,        // 30m — follows workers
+  'issue-solver': 30 * 60 * 1000,  // 30m — default worker
+};
+
+/**
+ * Classify an agent's role from its name.
+ * Uses classifyAgent from conversation.ts, falls back to 'worker'.
+ */
+function classifyAgentRole(name: string): string {
+  return classifyAgent(name) ?? 'worker';
+}
+
+/**
+ * Autopilot: continuous loop that scores squads and dispatches full squad loops.
+ * Replaces the daemon command — same state file, same scoring, but dispatches
+ * the full agent roster instead of just issue-solver.
+ */
+export async function runAutopilot(
+  squadsDir: string,
+  options: RunOptions,
+): Promise<void> {
+  const interval = parseInt(String(options.interval || '30'), 10);
+  const maxParallel = parseInt(String(options.maxParallel || '2'), 10);
+  const budget = parseFloat(String(options.budget || '0'));
+  const once = !!options.once;
+
+  // Seed cognition beliefs on first run
+  const cognitionState = loadCognitionState();
+  seedBeliefsIfEmpty(cognitionState);
+  saveCognitionState(cognitionState);
+
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}autopilot${RESET}`);
+  writeLine(`  ${colors.dim}Interval: ${interval}m | Parallel: ${maxParallel} | Budget: ${budget > 0 ? '$' + budget + '/day' : 'unlimited'}${RESET}`);
+  writeLine(`  ${colors.dim}Cognition: ${cognitionState.beliefs.length} beliefs, ${cognitionState.signals.length} signals${RESET}`);
+  writeLine();
+
+  let running = true;
+  const handleSignal = () => { running = false; };
+  process.on('SIGINT', handleSignal);
+  process.on('SIGTERM', handleSignal);
+
+  while (running) {
+    const cycleStart = Date.now();
+    const state = loadLoopState();
+
+    // Reset daily cost at midnight
+    const today = new Date().toISOString().slice(0, 10);
+    if (state.dailyCostDate !== today) {
+      state.dailyCost = 0;
+      state.dailyCostDate = today;
+    }
+
+    // Budget check
+    if (budget > 0 && state.dailyCost >= budget) {
+      writeLine(`  ${icons.warning} ${colors.yellow}Daily budget reached ($${state.dailyCost.toFixed(2)}/$${budget})${RESET}`);
+      saveLoopState(state);
+      if (once) break;
+      await sleep(interval * 60 * 1000);
+      continue;
+    }
+
+    writeLine(`  ${colors.dim}── Cycle ${new Date().toLocaleTimeString()} ──${RESET}`);
+
+    // Get bot env for GitHub API calls
+    let ghEnv: Record<string, string> = {};
+    try { ghEnv = await getBotGhEnv(); } catch { /* use default */ }
+
+    // Score squads
+    const squadRepos = getSquadRepos();
+
+    let dispatchedSquadNames: string[];
+    const failed: string[] = [];
+    const completed: string[] = [];
+
+    if (options.phased) {
+      // ── Phased dispatch: execute squads in dependency order ──
+      const phases = computePhases();
+      const phaseCount = phases.size;
+      writeLine(`  ${colors.dim}Phased mode: ${phaseCount} phase(s)${RESET}`);
+
+      dispatchedSquadNames = [];
+
+      for (const [phaseNum, phaseSquads] of phases) {
+        writeLine(`  ${colors.dim}── Phase ${phaseNum} (${phaseSquads.join(', ')}) ──${RESET}`);
+
+        // Score only squads in this phase
+        const phaseSignals = scoreSquadsForPhase(phaseSquads, state, squadRepos, ghEnv);
+        const phaseDispatch = phaseSignals
+          .filter(s => s.score > 0)
+          .slice(0, maxParallel);
+
+        if (phaseDispatch.length === 0) {
+          writeLine(`    ${colors.dim}No squads need attention in this phase${RESET}`);
+          continue;
+        }
+
+        for (const sig of phaseDispatch) {
+          writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
+        }
+
+        if (options.dryRun) {
+          continue;
+        }
+
+        // Dispatch phase squads in parallel, wait for all before next phase
+        const phaseResults = await Promise.allSettled(
+          phaseDispatch.map(sig => {
+            const squad = loadSquad(sig.squad);
+            if (!squad) return Promise.resolve();
+            return runSquadLoop(squad, squadsDir, state, ghEnv, options);
+          })
+        );
+
+        for (let i = 0; i < phaseResults.length; i++) {
+          const name = phaseDispatch[i].squad;
+          dispatchedSquadNames.push(name);
+          if (phaseResults[i].status === 'rejected') {
+            failed.push(name);
+            state.failCounts[name] = (state.failCounts[name] || 0) + 1;
+          } else {
+            completed.push(name);
+            delete state.failCounts[name];
+          }
+        }
+      }
+
+      if (options.dryRun) {
+        writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads in phase order${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+    } else {
+      // ── Flat dispatch: score-based, no phase ordering ──
+      const signals = scoreSquads(state, squadRepos, ghEnv);
+
+      if (signals.length === 0 || signals.every(s => s.score <= 0)) {
+        writeLine(`  ${colors.dim}No squads need attention${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+
+      // Pick top N squads to dispatch
+      const toDispatch = signals
+        .filter(s => s.score > 0)
+        .slice(0, maxParallel);
+
+      writeLine(`  ${colors.dim}Dispatching ${toDispatch.length} squad(s):${RESET}`);
+      for (const sig of toDispatch) {
+        writeLine(`    ${colors.cyan}${sig.squad}${RESET} (score: ${sig.score}) — ${sig.reason}`);
+      }
+
+      if (options.dryRun) {
+        writeLine(`  ${colors.yellow}[DRY RUN] Would dispatch above squads${RESET}`);
+        saveLoopState(state);
+        if (once) break;
+        await sleep(interval * 60 * 1000);
+        continue;
+      }
+
+      // Dispatch squad loops in parallel
+      const results = await Promise.allSettled(
+        toDispatch.map(sig => {
+          const squad = loadSquad(sig.squad);
+          if (!squad) return Promise.resolve();
+          return runSquadLoop(squad, squadsDir, state, ghEnv, options);
+        })
+      );
+
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        const name = toDispatch[i].squad;
+        if (r.status === 'rejected') {
+          failed.push(name);
+          state.failCounts[name] = (state.failCounts[name] || 0) + 1;
+        } else {
+          completed.push(name);
+          delete state.failCounts[name];
+        }
+      }
+
+      dispatchedSquadNames = toDispatch.map(s => s.squad);
+    }
+
+    // Estimate cost (rough: $1 per squad loop)
+    const cycleCost = dispatchedSquadNames.length * 1.0;
+    state.dailyCost += cycleCost;
+
+    // Push memory signals for dispatched squads
+    await pushMemorySignals(dispatchedSquadNames, state, !!options.verbose);
+
+    // Trim and save state
+    state.recentRuns = state.recentRuns.slice(-100);
+    state.lastCycle = new Date().toISOString();
+    saveLoopState(state);
+
+    // Slack: only on failures
+    if (failed.length > 0) {
+      slackNotify([
+        `*Autopilot cycle — failures*`,
+        `Failed: ${failed.join(', ')}`,
+        `Completed: ${completed.join(', ')}`,
+        `Daily: $${state.dailyCost.toFixed(2)}${budget > 0 ? '/$' + budget : ''}`,
+      ].join('\n'));
+    }
+
+    // Escalate persistent failures
+    for (const [key, count] of Object.entries(state.failCounts)) {
+      if (count >= 3) {
+        slackNotify(`🚨 *Escalation*: ${key} has failed ${count} times consecutively.`);
+      }
+    }
+
+    // ── Post-run COO evaluation ──
+    // Evaluate outputs from all dispatched squads (skips if company was the only one)
+    if (dispatchedSquadNames.length > 0) {
+      await runPostEvaluation(dispatchedSquadNames, options);
+    }
+
+    // ── Cognition: learn from this cycle ──
+    // Ingest memory → synthesize signals → evaluate decisions → reflect
+    writeLine(`  ${colors.dim}Cognition cycle...${RESET}`);
+    const cognitionResult = await runCognitionCycle(dispatchedSquadNames, !!options.verbose);
+    if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0 || cognitionResult.reflected) {
+      writeLine(`  ${colors.dim}🧠 ${cognitionResult.signalsIngested} signals → ${cognitionResult.beliefsUpdated} beliefs updated${cognitionResult.reflected ? ' → reflected' : ''}${RESET}`);
+    }
+
+    const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(0);
+    writeLine(`  ${colors.dim}Cycle done in ${elapsed}s | Daily: $${state.dailyCost.toFixed(2)}${RESET}`);
+    writeLine();
+
+    if (once) break;
+    await sleep(interval * 60 * 1000);
+  }
+
+  process.off('SIGINT', handleSignal);
+  process.off('SIGTERM', handleSignal);
+}
+
+/**
+ * Run the full squad loop: scanner → lead → worker → verifier.
+ * Each step checks cooldowns and pushes cognition signals.
+ * This is the core intelligence loop.
+ */
+async function runSquadLoop(
+  squad: NonNullable<ReturnType<typeof loadSquad>>,
+  squadsDir: string,
+  state: LoopState,
+  ghEnv: Record<string, string>,
+  options: RunOptions,
+): Promise<void> {
+  writeLine(`  ${gradient('▸')} ${colors.cyan}${squad.name}${RESET} — full loop`);
+
+  // Discover agents and classify by role
+  const agentsByRole: Record<string, Array<{ name: string; path: string }>> = {
+    scanner: [],
+    lead: [],
+    worker: [],
+    verifier: [],
+  };
+
+  for (const agent of squad.agents) {
+    const role = classifyAgentRole(agent.name);
+    const agentPath = join(squadsDir, squad.dir, `${agent.name}.md`);
+    if (existsSync(agentPath)) {
+      agentsByRole[role].push({ name: agent.name, path: agentPath });
+    }
+  }
+
+  const loopSteps: Array<{ role: string; agents: Array<{ name: string; path: string }> }> = [
+    { role: 'scanner', agents: agentsByRole.scanner },
+    { role: 'lead', agents: agentsByRole.lead },
+    { role: 'worker', agents: agentsByRole.worker },
+    { role: 'verifier', agents: agentsByRole.verifier },
+  ];
+
+  for (const step of loopSteps) {
+    if (step.agents.length === 0) continue;
+
+    for (const agent of step.agents) {
+      const cooldownMs = ROLE_COOLDOWNS[step.role] || ROLE_COOLDOWNS.worker;
+      if (!checkCooldown(state, squad.name, agent.name, cooldownMs)) {
+        if (options.verbose) {
+          writeLine(`    ${colors.dim}↳ ${agent.name} (${step.role}) — in cooldown, skip${RESET}`);
+        }
+        continue;
+      }
+
+      writeLine(`    ${colors.dim}↳ ${agent.name} (${step.role})${RESET}`);
+
+      const startMs = Date.now();
+      try {
+        // For workers with no specific agent flag, use conversation mode
+        // For scanners/leads/verifiers, run as direct agent
+        if (step.role === 'worker' && step.agents.length > 1) {
+          // Multiple workers → conversation mode coordinates them
+          const convOptions: ConversationOptions = {
+            task: options.task,
+            maxTurns: options.maxTurns || 20,
+            costCeiling: options.costCeiling || 25,
+            verbose: options.verbose,
+            model: options.model,
+          };
+          await runConversation(squad, convOptions);
+        } else {
+          await runAgent(agent.name, agent.path, squad.dir, {
+            ...options,
+            background: false,
+            watch: false,
+            execute: true,
+          });
+        }
+
+        const durationMs = Date.now() - startMs;
+        const outcome = classifyRunOutcome(0, durationMs);
+
+        // Update cooldown
+        state.cooldowns[`${squad.name}:${agent.name}`] = Date.now();
+
+        // Record run
+        state.recentRuns.push({
+          squad: squad.name,
+          agent: agent.name,
+          at: new Date().toISOString(),
+          result: outcome === 'skipped' ? 'completed' : outcome,
+          durationMs,
+        });
+
+        // Push cognition signal
+        pushCognitionSignal({
+          source: 'execution',
+          signal_type: `${step.role}_${outcome}`,
+          value: durationMs / 1000,
+          unit: 'seconds',
+          data: {
+            squad: squad.name,
+            agent: agent.name,
+            role: step.role,
+            duration_ms: durationMs,
+          },
+          entity_type: 'agent',
+          entity_id: `${squad.name}/${agent.name}`,
+          confidence: 0.9,
+        });
+
+        if (outcome === 'skipped') {
+          writeLine(`    ${colors.dim}↳ ${agent.name} — phantom (${(durationMs / 1000).toFixed(0)}s), skipped${RESET}`);
+        }
+
+        // If this was a worker step, break after first conversation
+        if (step.role === 'worker' && step.agents.length > 1) break;
+
+      } catch (err) {
+        const durationMs = Date.now() - startMs;
+        state.cooldowns[`${squad.name}:${agent.name}`] = Date.now();
+        state.recentRuns.push({
+          squad: squad.name,
+          agent: agent.name,
+          at: new Date().toISOString(),
+          result: 'failed',
+          durationMs,
+        });
+
+        writeLine(`    ${colors.red}↳ ${agent.name} failed: ${err instanceof Error ? err.message : 'unknown'}${RESET}`);
+      }
+    }
+  }
+
+  writeLine(`  ${colors.dim}↳ ${squad.name} loop complete${RESET}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Lead mode: Single orchestrator session that uses Task tool for parallel work.
+ * Benefits over --parallel:
+ * - Single session overhead vs N sessions
+ * - Lead coordinates and routes work intelligently
+ * - Task agents share context when needed
+ * - Better parallelization (Claude's native Task tool)
+ */
+export async function runLeadMode(
+  squad: ReturnType<typeof loadSquad>,
+  squadsDir: string,
+  options: RunOptions
+): Promise<void> {
+  if (!squad) return;
+
+  const agentFiles = squad.agents
+    .map(a => ({
+      name: a.name,
+      path: join(squadsDir, squad.dir, `${a.name}.md`),
+      role: a.role || '',
+    }))
+    .filter(a => existsSync(a.path));
+
+  if (agentFiles.length === 0) {
+    writeLine(`  ${icons.error} ${colors.red}No agent files found${RESET}`);
+    return;
+  }
+
+  writeLine(`  ${bold}Lead mode${RESET} ${colors.dim}orchestrating ${agentFiles.length} agents${RESET}`);
+  writeLine();
+
+  // List available agents
+  for (const agent of agentFiles) {
+    writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
+  }
+  writeLine();
+
+  if (!options.execute) {
+    writeLine(`  ${colors.dim}Launch lead session:${RESET}`);
+    writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --lead`);
+    writeLine();
+    return;
+  }
+
+  // Build the lead prompt
+  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
+  const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
+  const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
+
+  const prompt = `You are the Lead of the ${squad.name} squad.
+
+## Mission
+${squad.mission || 'Execute squad operations efficiently.'}
+
+## Available Agents
+${agentList}
+
+## Agent Definition Files
+${agentPaths}
+
+## Your Role as Lead
+
+1. **Assess the situation**: Check for pending work:
+   - Run \`gh issue list --repo agents-squads/hq --label squad:${squad.name}\` for assigned issues
+   - Check .agents/memory/${squad.dir}/ for squad state and pending tasks
+   - Review recent activity with \`git log --oneline -10\`
+
+2. **Delegate work using Task tool**: For each piece of work:
+   - Use the Task tool with subagent_type="general-purpose"
+   - Include the agent definition file path in the prompt
+   - Spawn multiple Task agents IN PARALLEL when work is independent
+   - Example: "Read ${agentFiles[0]?.path || 'agent.md'} and execute its instructions for [specific task]"
+
+3. **Coordinate parallel execution**:
+   - Independent tasks → spawn Task agents in parallel (single message, multiple tool calls)
+   - Dependent tasks → run sequentially
+   - Monitor progress and handle failures
+
+4. **Report and update memory**:
+   - Update .agents/memory/${squad.dir}/state.md with completed work
+   - Log learnings to learnings.md
+   - Create issues for follow-up work if needed
+
+## Time Budget
+You have ${timeoutMins} minutes. Prioritize high-impact work.
+
+## Critical Instructions
+- Use Task tool for delegation, NOT direct execution of agent work
+- Spawn parallel Task agents when work is independent
+- When done, type /exit to end the session
+- Do NOT wait for user input - work autonomously
+
+## Async Mode (CRITICAL)
+This is ASYNC execution - Task agents must be fully autonomous:
+- **Findings** → Create GitHub issues (gh issue create)
+- **Code changes** → Create PRs (gh pr create)
+- **Analysis results** → Write to .agents/outputs/ or memory files
+- **NEVER wait for human review** - complete the work and move on
+- **NEVER ask clarifying questions** - make reasonable decisions
+
+Instruct each Task agent: "Work autonomously. Output findings to GitHub issues. Output code changes as PRs. Do not wait for review."
+
+Begin by assessing pending work, then delegate to agents via Task tool.`;
+
+  // Determine provider
+  const provider = options.provider || squad?.providers?.default || 'anthropic';
+  const isAnthropic = provider === 'anthropic';
+
+  if (isAnthropic) {
+    const claudeAvailable = await checkClaudeCliAvailable();
+    if (!claudeAvailable) {
+      writeLine(`  ${colors.yellow}Claude CLI not found${RESET}`);
+      writeLine(`  ${colors.dim}Install: npm install -g @anthropic-ai/claude-code${RESET}`);
+      return;
+    }
+  } else {
+    if (!isProviderCLIAvailable(provider)) {
+      const cliConfig = getCLIConfig(provider);
+      writeLine(`  ${colors.yellow}${cliConfig?.displayName || provider} CLI not found${RESET}`);
+      if (cliConfig?.install) {
+        writeLine(`  ${colors.dim}Install: ${cliConfig.install}${RESET}`);
+      }
+      return;
+    }
+  }
+
+  // Determine execution mode (foreground is default, background is opt-in)
+  const isBackground = options.background === true && !options.watch;
+  const isWatch = options.watch === true;
+  const isForeground = !isBackground && !isWatch;
+
+  const modeText = isBackground ? ' (background)' : isWatch ? ' (watch)' : '';
+  const providerDisplay = isAnthropic ? 'Claude' : (getCLIConfig(provider)?.displayName || provider);
+  writeLine(`  ${gradient('Launching')} lead session${modeText} with ${providerDisplay}...`);
+  writeLine();
+
+  try {
+    // Find lead agent name from agent files or use default
+    const leadAgentName = agentFiles.find(a => a.name.includes('lead'))?.name || `${squad.dir}-lead`;
+
+    let result: string;
+    if (isAnthropic) {
+      result = await executeWithClaude(prompt, {
+        verbose: options.verbose,
+        timeoutMinutes: timeoutMins,
+        foreground: options.foreground,
+        background: options.background,
+        watch: options.watch,
+        useApi: options.useApi,
+        effort: options.effort,
+        skills: options.skills,
+        trigger: options.trigger || 'manual',
+        squadName: squad.dir,
+        agentName: leadAgentName,
+        model: options.model,
+      });
+    } else {
+      result = await executeWithProvider(provider, prompt, {
+        verbose: options.verbose,
+        foreground: isForeground || isWatch,
+        squadName: squad.dir,
+        agentName: leadAgentName,
+      });
+    }
+
+    if (isForeground || isWatch) {
+      writeLine();
+      writeLine(`  ${icons.success} Lead session completed`);
+    } else {
+      writeLine(`  ${icons.success} Lead session launched in background`);
+      writeLine(`  ${colors.dim}${result}${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}The lead will:${RESET}`);
+      writeLine(`  ${colors.dim}  1. Assess pending work (issues, memory)${RESET}`);
+      writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
+      writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
+      writeLine();
+      writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    writeLine(`  ${icons.error} ${colors.red}Failed to launch agent${RESET}`);
+    writeLine(`  ${colors.dim}${msg}${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup.${RESET}`);
+  }
+}
