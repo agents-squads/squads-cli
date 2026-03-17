@@ -6,7 +6,7 @@ import {
   templateExists,
 } from '../src/lib/templates';
 import { formatLocalStatus } from '../src/lib/local';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -97,6 +97,24 @@ describe('templates utilities', () => {
       expect(source).toHaveProperty('path');
       expect(source).toHaveProperty('description');
       expect(['repo', 'global', 'bundled']).toContain(source.type);
+    });
+  });
+
+  describe('CURRENT_DATE template variable substitution', () => {
+    it('state.md seed templates contain {{CURRENT_DATE}} placeholder', () => {
+      const templatePath = join(__dirname, '..', 'templates', 'seed', 'memory', 'research', 'lead', 'state.md');
+      const content = readFileSync(templatePath, 'utf-8');
+      expect(content).toContain('{{CURRENT_DATE}}');
+    });
+
+    it('{{CURRENT_DATE}} is replaced when substitution is applied', () => {
+      const templatePath = join(__dirname, '..', 'templates', 'seed', 'memory', 'research', 'lead', 'state.md');
+      let content = readFileSync(templatePath, 'utf-8');
+      const today = new Date().toISOString().split('T')[0];
+      // Replicate the substitution logic from loadTemplateFromPath
+      content = content.replace(/\{\{CURRENT_DATE\}\}/g, today);
+      expect(content).toContain(`Last update: ${today}`);
+      expect(content).not.toContain('{{CURRENT_DATE}}');
     });
   });
 });

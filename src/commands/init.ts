@@ -487,6 +487,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
+      CURRENT_DATE: new Date().toISOString().split('T')[0],
     };
 
     // Core directories (always created)
