@@ -13,7 +13,24 @@ import {
   EffortLevel,
   Squad,
 } from '../lib/squad-parser.js';
-import { resolveMcpConfigPath } from '../lib/mcp-config.js';
+import {
+  type RunOptions,
+  type ExecutionContext,
+  DEFAULT_TIMEOUT_MINUTES,
+  SOFT_DEADLINE_RATIO,
+} from '../lib/run-types.js';
+import {
+  generateExecutionId,
+  selectMcpConfig,
+  detectTaskType,
+  type ClaudeModelAlias,
+  getClaudeModelAlias,
+  resolveModel,
+  ensureProjectTrusted,
+  getProjectRoot,
+  formatDuration,
+  checkClaudeCliAvailable,
+} from '../lib/run-utils.js';
 import {
   buildContextFromSquad,
   validateExecution,
@@ -81,53 +98,8 @@ const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 const DRYRUN_DEF_MAX_CHARS = 500;
 const DRYRUN_CONTEXT_MAX_CHARS = 800;
 const DEFAULT_SCHEDULED_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
-const DEFAULT_TIMEOUT_MINUTES = 30;
-const SOFT_DEADLINE_RATIO = 0.7;
 const LOG_FILE_INIT_DELAY_MS = 500;
 const VERBOSE_COMMAND_MAX_CHARS = 50;
-
-interface RunOptions {
-  verbose?: boolean;
-  dryRun?: boolean;
-  agent?: string;
-  timeout?: number; // minutes, default 30
-  execute?: boolean;
-  parallel?: boolean; // Run all agents in parallel
-  lead?: boolean; // Run as lead session using Task tool for parallelization
-  foreground?: boolean; // Run in foreground (deprecated, now default)
-  background?: boolean; // Run in background (detached process)
-  watch?: boolean; // Run in background but tail the log
-  useApi?: boolean; // Use API credits instead of subscription
-  effort?: EffortLevel; // Effort level: high, medium, low
-  skills?: string[]; // Skills to load (skill IDs or local paths)
-  trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
-  provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
-  model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
-  verify?: boolean; // Post-execution verification (default true, --no-verify to skip)
-  cloud?: boolean; // Dispatch to cloud worker via API instead of local execution
-  conversation?: boolean; // Run squad as multi-agent conversation (default for squad runs)
-  task?: string; // Founder directive — replaces lead briefing in conversation mode
-  maxTurns?: number; // Max conversation turns (default: 20)
-  costCeiling?: number; // Cost ceiling in USD (default: 25)
-  interval?: number | string; // Autopilot: minutes between cycles
-  maxParallel?: number | string; // Autopilot: max parallel squad loops
-  budget?: number | string; // Autopilot: daily budget cap ($)
-  once?: boolean; // Autopilot: run one cycle then exit
-  phased?: boolean; // Autopilot: use dependency-based phase ordering
-  eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
-}
-
-/**
- * Execution context for telemetry tagging
- * Passed to Claude via environment variables for per-agent cost tracking
- */
-interface ExecutionContext {
-  squad: string;
-  agent: string;
-  taskType: 'evaluation' | 'execution' | 'research' | 'lead';
-  trigger: 'manual' | 'scheduled' | 'event' | 'smart';
-  executionId: string;
-}
 
 /**
  * Register execution context with the API for telemetry
@@ -233,192 +205,12 @@ async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): P
 
 // gatherSquadContext → moved to src/lib/run-context.ts
 
-/**
- * Generate a unique execution ID for telemetry tracking
- */
-function generateExecutionId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 8);
-  return `exec_${timestamp}_${random}`;
-}
+// generateExecutionId → moved to src/lib/run-utils.ts
 
-/**
- * Select MCP config based on squad name and context
- * Uses three-tier resolution:
- * 1. Squad context.mcp from SQUAD.md frontmatter (dynamic)
- * 2. User override at ~/.claude/mcp-configs/{squad}.json
- * 3. Legacy hardcoded mapping (backward compatibility)
- * 4. Fallback to ~/.claude.json
- */
-function selectMcpConfig(squadName: string, squad?: Squad | null): string {
-  // Tier 1 & 2: Use new context-based resolution if squad has context.mcp
-  if (squad?.context?.mcp && squad.context.mcp.length > 0) {
-    return resolveMcpConfigPath(squadName, squad.context.mcp);
-  }
+// selectMcpConfig → moved to src/lib/run-utils.ts
 
-  // Tier 3: Legacy hardcoded mapping (for squads without context block)
-  const home = process.env.HOME || '';
-  const configsDir = join(home, '.claude', 'mcp-configs');
-
-  const squadConfigs: Record<string, string> = {
-    website: 'website.json',
-    research: 'research.json',
-    intelligence: 'research.json',
-    analytics: 'data.json',
-    engineering: 'data.json',
-  };
-
-  const configFile = squadConfigs[squadName.toLowerCase()];
-  if (configFile) {
-    const configPath = join(configsDir, configFile);
-    if (existsSync(configPath)) {
-      return configPath;
-    }
-  }
-
-  // Tier 4: No MCP config — return empty string to skip --mcp-config flag.
-  // Previously fell back to ~/.claude.json but that's Claude's settings file,
-  // not an MCP config, and causes claude to exit silently with no output.
-  return '';
-}
-
-/**
- * Detect task type from agent name patterns
- * - *-eval, *-critic, *-review → evaluation
- * - *-lead, *-orchestrator → lead
- * - *-research, *-analyst → research
- * - everything else → execution
- */
-function detectTaskType(agentName: string): ExecutionContext['taskType'] {
-  const name = agentName.toLowerCase();
-  if (name.includes('eval') || name.includes('critic') || name.includes('review') || name.includes('test')) {
-    return 'evaluation';
-  }
-  if (name.includes('lead') || name.includes('orchestrator')) {
-    return 'lead';
-  }
-  if (name.includes('research') || name.includes('analyst') || name.includes('intel')) {
-    return 'research';
-  }
-  return 'execution';
-}
-
-/** Claude Code --model flag aliases */
-type ClaudeModelAlias = 'opus' | 'sonnet' | 'haiku';
-
-/**
- * Map full model names to Claude Code --model aliases.
- * Claude Code only accepts: opus, sonnet, haiku (not full model IDs)
- */
-function getClaudeModelAlias(model: string): ClaudeModelAlias | undefined {
-  const lower = model.toLowerCase();
-
-  // Direct aliases
-  if (lower === 'opus' || lower === 'sonnet' || lower === 'haiku') {
-    return lower as ClaudeModelAlias;
-  }
-
-  // Full model name mapping
-  if (lower.includes('opus')) return 'opus';
-  if (lower.includes('sonnet')) return 'sonnet';
-  if (lower.includes('haiku')) return 'haiku';
-
-  // Unknown Claude model - let Claude Code handle it
-  return undefined;
-}
-
-/**
- * Resolve model based on squad context and task type.
- * Priority: explicit --model flag > squad context routing > undefined (provider default)
- *
- * Supports multi-provider models:
- * - Anthropic: claude-opus-4-5, claude-sonnet-4, claude-3-5-haiku, opus, sonnet, haiku
- * - Google: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash
- * - Others: model names passed through to provider CLI
- *
- * Routing logic:
- * - evaluation (critics, tests) → cheap model - simple validation
- * - research (analysts, intel) → default model - balanced
- * - execution (builders, fixers) → default model - balanced
- * - lead (orchestrators) → expensive model - complex coordination
- */
-function resolveModel(
-  explicitModel: string | undefined,
-  squad: Squad | null,
-  taskType: ExecutionContext['taskType']
-): string | undefined {
-  // Explicit --model flag always wins
-  if (explicitModel) {
-    return explicitModel;
-  }
-
-  // No squad context = let provider decide
-  const modelConfig = squad?.context?.model;
-  if (!modelConfig) {
-    return undefined;
-  }
-
-  // Route by task type
-  switch (taskType) {
-    case 'evaluation':
-      // Critics/evals are simple - use cheap model
-      return modelConfig.cheap || modelConfig.default;
-    case 'lead':
-      // Leads need complex reasoning - use expensive model
-      return modelConfig.expensive || modelConfig.default;
-    case 'research':
-    case 'execution':
-    default:
-      // Default for most tasks
-      return modelConfig.default;
-  }
-}
-
-/**
- * Ensure the project directory is trusted in Claude's config.
- * This prevents the workspace trust dialog from blocking autonomous execution.
- */
-function ensureProjectTrusted(projectPath: string): void {
-  const configPath = join(process.env.HOME || '', '.claude.json');
-
-  if (!existsSync(configPath)) {
-    // No Claude config yet - will be created on first interactive run
-    return;
-  }
-
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-
-    if (!config.projects) {
-      config.projects = {};
-    }
-
-    if (!config.projects[projectPath]) {
-      config.projects[projectPath] = {};
-    }
-
-    // Mark as trusted for autonomous execution
-    if (!config.projects[projectPath].hasTrustDialogAccepted) {
-      config.projects[projectPath].hasTrustDialogAccepted = true;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
-    }
-  } catch (e) {
-    // Don't fail execution if we can't update config — the trust dialog will just appear
-    writeLine(`  ${colors.dim}warn: config update failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-  }
-}
-
-/**
- * Get the project root directory (where .agents/ lives)
- */
-function getProjectRoot(): string {
-  const squadsDir = findSquadsDir();
-  if (squadsDir) {
-    // .agents/squads -> .agents -> project root
-    return dirname(dirname(squadsDir));
-  }
-  return process.cwd();
-}
+// detectTaskType, ClaudeModelAlias, getClaudeModelAlias, resolveModel,
+// ensureProjectTrusted, getProjectRoot → moved to src/lib/run-utils.ts
 
 interface ExecutionRecord {
   squadName: string;
@@ -637,23 +429,7 @@ function checkLocalCooldown(
   return { ok: true, elapsedMs, cooldownMs };
 }
 
-/**
- * Format milliseconds as human-readable duration
- */
-function formatDuration(ms: number): string {
-  const hours = Math.floor(ms / (60 * 60 * 1000));
-  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
-
-  if (hours >= 24) {
-    const days = Math.floor(hours / 24);
-    const remainingHours = hours % 24;
-    return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
-  }
-  if (hours > 0) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  return `${minutes}m`;
-}
+// formatDuration → moved to src/lib/run-utils.ts
 
 // extractMcpServersFromDefinition, AgentFrontmatter, parseAgentFrontmatter → moved to src/lib/run-context.ts
 
