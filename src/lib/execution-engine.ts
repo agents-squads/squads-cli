@@ -701,6 +701,7 @@ export async function executeWithProvider(
     cwd?: string;
     squadName?: string;
     agentName?: string;
+    model?: string;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -757,7 +758,8 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const args = cliConfig.buildArgs(effectivePrompt);
+  const buildOpts = options.model ? { model: options.model } : undefined;
+  const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -766,16 +768,25 @@ export async function executeWithProvider(
     if (workDir !== projectRoot) {
       writeLine(`  ${colors.dim}Worktree: ${branchName}${RESET}`);
     }
+    if (cliConfig.stdinPrompt) {
+      writeLine(`  ${colors.dim}Prompt delivery: stdin${RESET}`);
+    }
   }
 
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
       const proc = spawn(cliConfig.command, args, {
-        stdio: 'inherit',
+        stdio: cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
       });
+
+      // For stdinPrompt providers (e.g. Ollama), pipe the prompt via stdin
+      if (cliConfig.stdinPrompt && proc.stdin) {
+        proc.stdin.write(effectivePrompt);
+        proc.stdin.end();
+      }
 
       proc.on('close', (code) => {
         cleanupWorktree(workDir, projectRoot);

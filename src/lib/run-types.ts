@@ -8,6 +8,9 @@ import type { EffortLevel } from './squad-parser.js';
 export const DEFAULT_TIMEOUT_MINUTES = 30;
 export const SOFT_DEADLINE_RATIO = 0.7;
 
+/** Providers that support tool use (sub-agent spawning, conversation orchestration) */
+export const TOOL_USE_PROVIDERS = new Set(['anthropic', 'google']);
+
 // ── Interfaces ───────────────────────────────────────────────────────
 
 export interface RunOptions {

@@ -9,6 +9,7 @@ import {
 } from '../lib/squad-parser.js';
 import {
   type RunOptions,
+  TOOL_USE_PROVIDERS,
 } from '../lib/run-types.js';
 import {
   preflightExecutorCheck,
@@ -26,7 +27,7 @@ import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
-import { runPostEvaluation, runAutopilot, runLeadMode } from '../lib/run-modes.js';
+import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
 
 export async function runCommand(
   target: string | null,
@@ -231,9 +232,15 @@ async function runSquad(
         return;
       }
     } else {
-      // Default: Run squad as multi-agent conversation
-      // Lead briefs → scanners discover → workers execute → lead reviews → converge
-      if (options.execute) {
+      // Determine provider for mode selection
+      const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+
+      if (options.execute && !TOOL_USE_PROVIDERS.has(squadProvider)) {
+        // Sequential mode for providers without tool use (Ollama, Codex, etc.)
+        await runSequentialMode(squad, squadsDir, squadProvider, options);
+      } else if (options.execute) {
+        // Default: Run squad as multi-agent conversation
+        // Lead briefs → scanners discover → workers execute → lead reviews → converge
         writeLine(`  ${bold}Conversation mode${RESET} ${colors.dim}(lead → scan → work → review → verify)${RESET}`);
         writeLine();
 
@@ -290,13 +297,17 @@ async function runSquad(
         writeLine();
       } else {
         // Dry-run: show what would happen
-        writeLine(`  ${colors.dim}Default mode: conversation (lead → scan → work → review → verify)${RESET}`);
+        const squadProvider2 = options.provider || squad?.providers?.default || 'anthropic';
+        const modeLabel = TOOL_USE_PROVIDERS.has(squadProvider2)
+          ? 'conversation (lead → scan → work → review → verify)'
+          : `sequential (${squadProvider2} — agents run one at a time)`;
+        writeLine(`  ${colors.dim}Default mode: ${modeLabel}${RESET}`);
         writeLine();
         for (const agent of squad.agents) {
           writeLine(`  ${icons.empty} ${colors.cyan}${agent.name}${RESET} ${colors.dim}${agent.role}${RESET}`);
         }
         writeLine();
-        writeLine(`  ${colors.dim}Run conversation:${RESET}`);
+        writeLine(`  ${colors.dim}Run:${RESET}`);
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
         writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
         writeLine();
