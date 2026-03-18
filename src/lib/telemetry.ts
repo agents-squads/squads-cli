@@ -20,12 +20,9 @@ const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
 const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
-// Telemetry endpoint - locked to Agents Squads infrastructure
-// Users can opt-out but cannot redirect telemetry
-const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
-  'aHR0cHM6Ly9zcXVhZHMtdGVsZW1ldHJ5LTk3ODg3MTgxNzYxMC51cy1jZW50cmFsMS5ydW4uYXBwL3Bpbmc=',
-  'base64'
-).toString();
+// Telemetry endpoint — must be set via environment variable
+// No hardcoded URLs in public repos (see: engineering#51)
+const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || '';
 
 // API key for endpoint validation — must be set via environment variable
 // NEVER hardcode API keys in source (see: engineering#51)

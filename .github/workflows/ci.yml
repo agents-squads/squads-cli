@@ -180,3 +180,22 @@ jobs:
 
       - name: Run npm-install smoke test
         run: bash scripts/e2e-smoke.sh
+
+  docker-e2e:
+    name: Docker E2E (clean env gate)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Docker E2E test
+        run: bash scripts/e2e-docker.sh

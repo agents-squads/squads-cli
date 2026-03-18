@@ -27,6 +27,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:docker": "bash scripts/e2e-docker.sh",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

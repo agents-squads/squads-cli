@@ -1,7 +1,134 @@
 /**
- * Zero-dependency cron evaluator utilities
- * Extracted from autonomous.ts for reusability and testing
+ * Zero-dependency cron evaluator utilities + routine collection from SQUAD.md files.
+ * Cron logic extracted from autonomous.ts; routine parsing consolidated here.
  */
+
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { findSquadsDir, listSquads, type Routine } from './squad-parser.js';
+
+// Persistent cooldown state file
+const COOLDOWN_FILE = join(homedir(), '.squads', 'autonomous.cooldowns.json');
+
+// ── Routine with squad name ──────────────────────────────────────────
+
+export interface RoutineWithSquad extends Routine {
+  squad: string;
+}
+
+// ── Routine parsing from SQUAD.md files ──────────────────────────────
+
+/**
+ * Parse routines from a SQUAD.md file's YAML block.
+ */
+export function parseRoutinesFromFile(filePath: string): Routine[] {
+  if (!existsSync(filePath)) return [];
+
+  const content = readFileSync(filePath, 'utf-8');
+  const routines: Routine[] = [];
+
+  const routinesMatch = content.match(
+    /##+ \w*\s*Routines[\s\S]*?```yaml\s*\n([\s\S]*?)```/i
+  );
+  if (!routinesMatch) return [];
+
+  let yamlContent = routinesMatch[1];
+  yamlContent = yamlContent.replace(/^\s*routines:\s*\n?/, '');
+  yamlContent = '\n' + yamlContent.trim();
+
+  const routineBlocks = yamlContent.split(/\n\s*- name:\s*/);
+
+  for (const block of routineBlocks) {
+    if (!block.trim()) continue;
+
+    const lines = block.split('\n');
+    const name = lines[0].trim();
+    if (!name) continue;
+
+    const scheduleMatch = block.match(/schedule:\s*["']?([^"'\n#]+)/);
+    const agentsMatch = block.match(/agents:\s*\[(.*?)\]/);
+    const modelMatch = block.match(/model:\s*(\w+)/);
+    const enabledMatch = block.match(/enabled:\s*(true|false)/);
+    const priorityMatch = block.match(/priority:\s*(\d+)/);
+    const cooldownMatch = block.match(
+      /cooldown:\s*["']?([^"'\n]+)["']?/
+    );
+
+    if (scheduleMatch && agentsMatch) {
+      const agents = agentsMatch[1]
+        .split(',')
+        .map((a) => a.trim().replace(/["']/g, ''))
+        .filter(Boolean);
+
+      routines.push({
+        name,
+        schedule: scheduleMatch[1].trim().replace(/["']/g, ''),
+        agents,
+        model: modelMatch
+          ? (modelMatch[1] as 'opus' | 'sonnet' | 'haiku')
+          : undefined,
+        enabled: enabledMatch ? enabledMatch[1] === 'true' : true,
+        priority: priorityMatch ? parseInt(priorityMatch[1]) : undefined,
+        cooldown: cooldownMatch ? cooldownMatch[1].trim() : undefined,
+      });
+    }
+  }
+
+  return routines;
+}
+
+/**
+ * Collect all routines from all squads.
+ */
+export function collectRoutines(): RoutineWithSquad[] {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return [];
+
+  const routines: RoutineWithSquad[] = [];
+  const squadNames = listSquads(squadsDir);
+
+  for (const name of squadNames) {
+    const squadFile = join(squadsDir, name, 'SQUAD.md');
+    const squadRoutines = parseRoutinesFromFile(squadFile);
+
+    for (const routine of squadRoutines) {
+      routines.push({ ...routine, squad: name });
+    }
+  }
+
+  return routines;
+}
+
+// ── Persistent cooldowns ─────────────────────────────────────────────
+
+export function loadCooldowns(): Map<string, number> {
+  const map = new Map<string, number>();
+  if (!existsSync(COOLDOWN_FILE)) return map;
+  try {
+    const data = JSON.parse(readFileSync(COOLDOWN_FILE, 'utf-8'));
+    for (const [key, ts] of Object.entries(data)) {
+      if (typeof ts === 'number') map.set(key, ts);
+    }
+  } catch {
+    /* corrupt file — start fresh */
+  }
+  return map;
+}
+
+export function saveCooldowns(map: Map<string, number>): void {
+  try {
+    const obj: Record<string, number> = {};
+    for (const [key, ts] of map) {
+      obj[key] = ts;
+    }
+    writeFileSync(COOLDOWN_FILE, JSON.stringify(obj));
+  } catch {
+    /* best effort */
+  }
+}
+
+// ── Cron evaluation ──────────────────────────────────────────────────
 
 /**
  * Check if a cron expression matches a given date

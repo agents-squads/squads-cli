@@ -39,6 +39,10 @@ export interface RunOptions {
   once?: boolean; // Autopilot: run one cycle then exit
   phased?: boolean; // Autopilot: use dependency-based phase ordering
   eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
+  stop?: boolean; // Daemon: stop running daemon
+  status?: boolean; // Daemon: show daemon status
+  pause?: boolean | string; // Daemon: pause (optional reason)
+  resume?: boolean; // Daemon: resume after pause
 }
 
 /**

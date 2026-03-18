@@ -26,12 +26,51 @@ import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
-import { runPostEvaluation, runAutopilot, runLeadMode } from '../lib/run-modes.js';
+import {
+  runPostEvaluation,
+  runAutopilot,
+  runLeadMode,
+  isDaemonRunning,
+  stopDaemon,
+  showDaemonStatus,
+  pauseDaemon,
+  resumeDaemon,
+  startDaemon,
+} from '../lib/run-modes.js';
 
 export async function runCommand(
   target: string | null,
   options: RunOptions
 ): Promise<void> {
+  // ── Daemon lifecycle commands (handle before anything else) ──
+  if (options.stop) {
+    const stopped = stopDaemon();
+    if (stopped) {
+      writeLine(`  ${colors.green}Daemon stopped${RESET}`);
+    } else {
+      writeLine(`  ${colors.dim}Daemon not running${RESET}`);
+    }
+    return;
+  }
+
+  if (options.status) {
+    await showDaemonStatus();
+    return;
+  }
+
+  if (options.pause) {
+    const reason = typeof options.pause === 'string' ? options.pause : 'Manual pause';
+    pauseDaemon(reason);
+    writeLine(`  ${colors.yellow}Daemon paused: ${reason}${RESET}`);
+    return;
+  }
+
+  if (options.resume) {
+    resumeDaemon();
+    writeLine(`  ${colors.green}Daemon resumed${RESET}`);
+    return;
+  }
+
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
@@ -48,6 +87,11 @@ export async function runCommand(
 
   // MODE 1: Autopilot — no target means run all squads continuously
   if (!target) {
+    // If SQUADS_DAEMON env is set, start as detached daemon
+    if (process.env.SQUADS_DAEMON === '1') {
+      await startDaemon();
+      return;
+    }
     await runAutopilot(squadsDir, options);
     return;
   }

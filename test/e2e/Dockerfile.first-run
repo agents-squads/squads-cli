@@ -23,10 +23,8 @@ RUN git config --global user.name "Test User" && \
     git config --global init.defaultBranch main
 
 # Install our branch from local tarball (instead of npm registry)
-COPY --chown=dev:dev squads-cli-0.2.1.tgz /home/dev/squads-cli-0.2.1.tgz
-RUN npm install -g /home/dev/squads-cli-0.2.1.tgz
-
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code@latest
+ARG TARBALL=squads-cli-0.2.1.tgz
+COPY --chown=dev:dev ${TARBALL} /home/dev/squads-cli.tgz
+RUN npm install -g /home/dev/squads-cli.tgz
 
 CMD ["bash"]

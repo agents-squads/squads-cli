@@ -1,11 +1,22 @@
 /**
- * Squad execution modes: autopilot, squad loop, lead mode, and post-evaluation.
- * Extracted from commands/run.ts to reduce its size.
+ * Squad execution modes: autopilot (daemon), squad loop, lead mode, and post-evaluation.
+ * The autopilot mode is the unified daemon: cron routines + intelligence scoring + outcome tracking.
+ * Consolidated from commands/daemon.ts, commands/autonomous.ts, and the original runAutopilot().
  */
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  readdirSync,
+  mkdirSync,
+  appendFileSync,
+  openSync,
+} from 'fs';
+import { homedir } from 'os';
 import {
   type RunOptions,
   DEFAULT_TIMEOUT_MINUTES,
@@ -29,17 +40,27 @@ import {
 } from './squad-parser.js';
 import {
   type LoopState,
+  MIN_PHANTOM_DURATION_MS,
   loadLoopState,
   saveLoopState,
   getSquadRepos,
   scoreSquads,
   checkCooldown,
   classifyRunOutcome,
+  checkNewPRs,
+  getPRsWithReviewFeedback,
+  buildReviewTask,
   pushMemorySignals,
   slackNotify,
   computePhases,
   scoreSquadsForPhase,
 } from './squad-loop.js';
+import {
+  recordArtifacts,
+  gradeExecution,
+  pollOutcomes,
+  computeAllScorecards,
+} from './outcomes.js';
 import {
   loadCognitionState,
   saveCognitionState,
@@ -71,7 +92,455 @@ import {
 } from './llm-clis.js';
 import { getBridgeUrl } from './env-config.js';
 import { classifyAgent } from './conversation.js';
+import {
+  cronMatches,
+  getNextCronRun,
+  parseCooldown,
+  collectRoutines,
+  loadCooldowns,
+  saveCooldowns,
+} from './cron.js';
 import ora from 'ora';
+
+// ── Daemon state directory (from autonomous.ts) ─────────────────────
+
+const DAEMON_DIR = join(homedir(), '.squads');
+const PID_FILE = join(DAEMON_DIR, 'autonomous.pid');
+const DAEMON_LOG = join(DAEMON_DIR, 'autonomous.log');
+const PAUSE_FILE = join(DAEMON_DIR, 'autonomous.paused');
+
+// Configuration from env vars
+const MAX_CONCURRENT = parseInt(process.env.SQUADS_MAX_CONCURRENT || '5');
+const AGENT_TIMEOUT_MIN = parseInt(process.env.SQUADS_AGENT_TIMEOUT || '30');
+const EVAL_INTERVAL_SEC = parseInt(process.env.SQUADS_EVAL_INTERVAL || '60');
+const AUTO_PAUSE_THRESHOLD = 5;
+
+// ── Daemon lifecycle (from autonomous.ts) ────────────────────────────
+
+function daemonLog(msg: string): void {
+  const ts = new Date().toISOString();
+  try {
+    appendFileSync(DAEMON_LOG, `[${ts}] ${msg}\n`);
+  } catch {
+    /* Can't log — ignore */
+  }
+}
+
+/**
+ * Check if the daemon is paused.
+ */
+export function isDaemonPaused(): { paused: boolean; reason?: string; since?: string } {
+  if (!existsSync(PAUSE_FILE)) return { paused: false };
+  try {
+    const data = JSON.parse(readFileSync(PAUSE_FILE, 'utf-8'));
+    return { paused: true, reason: data.reason, since: data.since };
+  } catch {
+    return { paused: true, reason: 'unknown' };
+  }
+}
+
+/**
+ * Pause the daemon. It stays running but won't spawn new agents.
+ */
+export function pauseDaemon(reason: string): void {
+  if (!existsSync(DAEMON_DIR)) {
+    mkdirSync(DAEMON_DIR, { recursive: true });
+  }
+  writeFileSync(PAUSE_FILE, JSON.stringify({
+    reason,
+    since: new Date().toISOString(),
+  }));
+  daemonLog(`PAUSED: ${reason}`);
+}
+
+/**
+ * Resume the daemon after a pause.
+ */
+export function resumeDaemon(): void {
+  try {
+    unlinkSync(PAUSE_FILE);
+  } catch {
+    /* not paused */
+  }
+  daemonLog('RESUMED');
+}
+
+/**
+ * Check if the daemon process is running.
+ */
+export function isDaemonRunning(): { running: boolean; pid?: number } {
+  if (!existsSync(PID_FILE)) return { running: false };
+
+  const pid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
+  if (isNaN(pid)) return { running: false };
+
+  try {
+    process.kill(pid, 0);
+    return { running: true, pid };
+  } catch {
+    // Stale PID file
+    try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+    return { running: false };
+  }
+}
+
+/**
+ * Stop the running daemon.
+ */
+export function stopDaemon(): boolean {
+  const status = isDaemonRunning();
+  if (!status.running || !status.pid) return false;
+
+  try {
+    process.kill(status.pid, 'SIGTERM');
+    try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find the .agents/logs directory for running agent tracking.
+ */
+function getLogsDir(): string | null {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+  return join(squadsDir, '..', 'logs');
+}
+
+/**
+ * Count currently running agents by checking PID files.
+ */
+export function getRunningAgents(): {
+  squad: string;
+  agent: string;
+  pid: number;
+  startedAt: number;
+  logFile: string;
+}[] {
+  const logsDir = getLogsDir();
+  if (!logsDir || !existsSync(logsDir)) return [];
+
+  const running: {
+    squad: string;
+    agent: string;
+    pid: number;
+    startedAt: number;
+    logFile: string;
+  }[] = [];
+
+  let squadDirs: string[];
+  try {
+    squadDirs = readdirSync(logsDir);
+  } catch {
+    return [];
+  }
+
+  for (const squadDir of squadDirs) {
+    const squadPath = join(logsDir, squadDir);
+    let files: string[];
+    try {
+      files = readdirSync(squadPath);
+    } catch {
+      continue;
+    }
+
+    for (const file of files) {
+      if (!file.endsWith('.pid')) continue;
+
+      const pidPath = join(squadPath, file);
+      try {
+        const pid = parseInt(readFileSync(pidPath, 'utf-8').trim());
+        if (isNaN(pid)) continue;
+
+        // Check if process is alive
+        try {
+          process.kill(pid, 0);
+        } catch {
+          // Process dead — clean up orphan PID file
+          try { unlinkSync(pidPath); } catch { /* ignore */ }
+          continue;
+        }
+
+        const match = file.match(/^(.+)-(\d+)\.pid$/);
+        if (!match) continue;
+
+        running.push({
+          squad: squadDir,
+          agent: match[1],
+          pid,
+          startedAt: parseInt(match[2]),
+          logFile: pidPath.replace('.pid', '.log'),
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return running;
+}
+
+/**
+ * Show daemon status: running state, agents, next routines.
+ */
+export async function showDaemonStatus(): Promise<void> {
+  const daemon = isDaemonRunning();
+  const routines = collectRoutines();
+  const enabled = routines.filter(r => r.enabled !== false);
+  const running = getRunningAgents();
+
+  writeLine(`\n  ${bold}Daemon Status${RESET}\n`);
+
+  // Daemon status
+  const pauseStatus = isDaemonPaused();
+  if (daemon.running) {
+    if (pauseStatus.paused) {
+      writeLine(`  ${colors.yellow}●${RESET} Daemon paused ${colors.dim}(PID ${daemon.pid})${RESET}`);
+      writeLine(`    ${colors.yellow}${pauseStatus.reason || 'No reason given'}${RESET} ${colors.dim}since ${pauseStatus.since || 'unknown'}${RESET}`);
+    } else {
+      writeLine(`  ${colors.green}●${RESET} Daemon running ${colors.dim}(PID ${daemon.pid})${RESET}`);
+    }
+  } else {
+    writeLine(`  ${colors.red}●${RESET} Daemon not running`);
+  }
+  writeLine();
+
+  // Running agents
+  if (running.length > 0) {
+    writeLine(`  ${colors.cyan}Running Agents${RESET}`);
+    for (const agent of running) {
+      const runtimeMin = Math.round((Date.now() - agent.startedAt) / 60000);
+      const timeoutWarning = runtimeMin > AGENT_TIMEOUT_MIN * 0.8 ? ` ${colors.yellow}!${RESET}` : '';
+      writeLine(`  ${colors.green}●${RESET} ${colors.cyan}${agent.squad}${RESET}/${agent.agent} ${colors.dim}${runtimeMin}min${RESET}${timeoutWarning} ${colors.dim}PID ${agent.pid}${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Routine summary
+  writeLine(`  ${colors.cyan}Routines${RESET}`);
+  writeLine(`  ${enabled.length} enabled / ${routines.length} total, ${running.length}/${MAX_CONCURRENT} running`);
+  writeLine();
+
+  // Next upcoming runs
+  if (enabled.length > 0) {
+    writeLine(`  ${colors.cyan}Next Runs${RESET}`);
+
+    const now = new Date();
+    const nextRuns: { squad: string; routine: string; agent: string; nextRun: Date }[] = [];
+
+    for (const r of enabled) {
+      const next = getNextCronRun(r.schedule, now);
+      for (const agent of r.agents) {
+        nextRuns.push({ squad: r.squad, routine: r.name, agent, nextRun: next });
+      }
+    }
+
+    nextRuns
+      .sort((a, b) => a.nextRun.getTime() - b.nextRun.getTime())
+      .slice(0, 10)
+      .forEach(run => {
+        const timeStr = run.nextRun.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const dateStr = run.nextRun.toDateString() === now.toDateString()
+          ? 'today'
+          : run.nextRun.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        writeLine(`  ${colors.dim}${timeStr} ${dateStr}${RESET} ${colors.cyan}${run.squad}${RESET}/${run.agent}`);
+      });
+  }
+
+  writeLine();
+  writeLine(`  ${colors.dim}Commands:${RESET}`);
+  writeLine(`  ${colors.dim}$ squads run                Start daemon${RESET}`);
+  writeLine(`  ${colors.dim}$ squads run --stop         Stop daemon${RESET}`);
+  writeLine(`  ${colors.dim}$ squads run --pause        Pause (quota/manual)${RESET}`);
+  writeLine(`  ${colors.dim}$ squads run --resume       Resume after pause${RESET}`);
+  writeLine(`  ${colors.dim}$ tail -f ${DAEMON_LOG}${RESET}`);
+  writeLine();
+}
+
+/**
+ * Start the daemon as a detached background process.
+ */
+export async function startDaemon(): Promise<void> {
+  const status = isDaemonRunning();
+  if (status.running) {
+    writeLine(`  ${colors.yellow}Daemon already running (PID ${status.pid})${RESET}`);
+    writeLine(`  ${colors.dim}Log: ${DAEMON_LOG}${RESET}`);
+    return;
+  }
+
+  if (!existsSync(DAEMON_DIR)) {
+    mkdirSync(DAEMON_DIR, { recursive: true });
+  }
+
+  const routines = collectRoutines().filter(r => r.enabled !== false);
+  if (routines.length === 0) {
+    writeLine(`  ${colors.yellow}No enabled routines found.${RESET}`);
+    writeLine(`  ${colors.dim}Add routines to SQUAD.md files under ### Routines section.${RESET}`);
+    // Continue anyway — daemon also does scoring-based dispatch
+  }
+
+  // If we're being invoked as the daemon itself (via env var)
+  if (process.env.SQUADS_DAEMON === '1') {
+    writeFileSync(PID_FILE, process.pid.toString());
+    await daemonLoop();
+    await new Promise(() => {}); // Keep alive
+    return;
+  }
+
+  // Spawn a detached daemon process
+  if (!existsSync(DAEMON_LOG)) {
+    writeFileSync(DAEMON_LOG, '');
+  }
+  const logFd = openSync(DAEMON_LOG, 'a');
+
+  const child = spawn(
+    process.execPath,
+    [process.argv[1], 'run'],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env, SQUADS_DAEMON: '1' },
+    }
+  );
+  child.unref();
+
+  // Wait for PID file to appear
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  const check = isDaemonRunning();
+  if (check.running) {
+    writeLine(`\n  ${colors.green}Daemon started (PID ${check.pid})${RESET}`);
+  } else {
+    writeLine(`\n  ${colors.red}Daemon failed to start. Check log:${RESET}`);
+    writeLine(`  ${colors.dim}$ tail -20 ${DAEMON_LOG}${RESET}`);
+  }
+
+  writeLine(`  ${colors.dim}Log: ${DAEMON_LOG}${RESET}`);
+
+  // Show scheduled routines
+  if (routines.length > 0) {
+    writeLine(`\n  ${colors.cyan}Routines${RESET}`);
+    for (const r of routines) {
+      const next = getNextCronRun(r.schedule);
+      const timeStr = next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      writeLine(`  ${colors.green}●${RESET} ${colors.cyan}${r.squad}${RESET}/${r.name} ${colors.dim}${r.schedule} → ${timeStr}${RESET}`);
+    }
+    writeLine(`\n  ${colors.dim}${routines.length} routines, max ${MAX_CONCURRENT} concurrent${RESET}`);
+  }
+
+  writeLine(`  ${colors.dim}Stop: squads run --stop${RESET}`);
+  writeLine(`  ${colors.dim}Monitor: tail -f ${DAEMON_LOG}${RESET}\n`);
+}
+
+/**
+ * The daemon loop: evaluates cron routines + enforces timeouts.
+ * Runs as a long-lived detached process.
+ */
+async function daemonLoop(): Promise<void> {
+  daemonLog('Daemon started');
+
+  const lastSpawned = loadCooldowns();
+  let consecutiveFailures = 0;
+
+  const tick = async () => {
+    try {
+      const pauseStatus = isDaemonPaused();
+      const running = getRunningAgents();
+
+      // Enforce timeouts on running agents (even when paused)
+      for (const agent of running) {
+        const runtimeMin = (Date.now() - agent.startedAt) / 60000;
+        if (runtimeMin > AGENT_TIMEOUT_MIN) {
+          daemonLog(`TIMEOUT: ${agent.squad}/${agent.agent} (PID ${agent.pid}, ${Math.round(runtimeMin)}min)`);
+          const pidFile = agent.logFile.replace('.log', '.pid');
+          try {
+            process.kill(agent.pid, 'SIGTERM');
+            try { unlinkSync(pidFile); } catch { /* ignore */ }
+          } catch { /* already dead */ }
+        }
+      }
+
+      if (pauseStatus.paused) return; // Don't spawn while paused
+
+      const now = new Date();
+      now.setSeconds(0, 0);
+
+      const routines = collectRoutines().filter(r => r.enabled !== false);
+
+      for (const routine of routines) {
+        if (!cronMatches(routine.schedule, now)) continue;
+
+        for (const agentName of routine.agents) {
+          const key = `${routine.squad}/${agentName}`;
+
+          // Cooldown check
+          if (routine.cooldown) {
+            const last = lastSpawned.get(key);
+            const cooldownMs = parseCooldown(routine.cooldown);
+            if (last && Date.now() - last < cooldownMs) continue;
+          }
+
+          // Already running check
+          const alreadyRunning = running.some(
+            r => r.squad === routine.squad && r.agent === agentName
+          );
+          if (alreadyRunning) continue;
+
+          // Concurrency check
+          if (getRunningAgents().length >= MAX_CONCURRENT) {
+            daemonLog(`SKIP: ${key} — concurrency limit (${MAX_CONCURRENT})`);
+            continue;
+          }
+
+          // Spawn
+          daemonLog(`SPAWN: ${key} (routine: ${routine.name})`);
+          try {
+            const modelFlag = routine.model ? `--model ${routine.model}` : '';
+            execSync(
+              `squads run ${routine.squad}/${agentName} --background ${modelFlag} --trigger scheduled`,
+              {
+                cwd: process.cwd(),
+                stdio: 'ignore',
+                timeout: 10000,
+                env: { ...process.env, CLAUDECODE: '' },
+              }
+            );
+            lastSpawned.set(key, Date.now());
+            saveCooldowns(lastSpawned);
+            consecutiveFailures = 0;
+            daemonLog(`SPAWNED: ${key}`);
+          } catch (err) {
+            consecutiveFailures++;
+            daemonLog(`ERROR: Failed to spawn ${key} (${consecutiveFailures}/${AUTO_PAUSE_THRESHOLD}): ${err}`);
+
+            if (consecutiveFailures >= AUTO_PAUSE_THRESHOLD) {
+              pauseDaemon(`Auto-paused: ${consecutiveFailures} consecutive spawn failures (likely quota exhausted)`);
+              daemonLog(`AUTO-PAUSED: ${consecutiveFailures} consecutive failures. Run 'squads run --resume' when quota resets.`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      daemonLog(`TICK ERROR: ${err}`);
+    }
+  };
+
+  await tick();
+  setInterval(tick, EVAL_INTERVAL_SEC * 1000);
+
+  const cleanup = (signal: string) => {
+    daemonLog(`Received ${signal}, shutting down`);
+    saveCooldowns(lastSpawned);
+    try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => cleanup('SIGTERM'));
+  process.on('SIGINT', () => cleanup('SIGINT'));
+}
 
 // ── Post-run evaluation ─────────────────────────────────────────────
 // After any squad run, dispatch the COO (company-lead) to evaluate outputs.
@@ -389,6 +858,93 @@ export async function runAutopilot(
     const cycleCost = dispatchedSquadNames.length * 1.0;
     state.dailyCost += cycleCost;
 
+    // ── Outcome tracking (from daemon.ts) ──
+    // Poll outcomes for unsettled records, recompute scorecards
+    const pollResult = pollOutcomes(ghEnv);
+    if (pollResult.polled > 0 && options.verbose) {
+      writeLine(`  ${colors.dim}Polled ${pollResult.polled} artifact(s), ${pollResult.settled} newly settled${RESET}`);
+    }
+    computeAllScorecards('7d');
+
+    // Grade completed squad loops and push quality signals
+    for (const name of completed) {
+      const repo = squadRepos[name];
+      if (!repo) continue;
+
+      const record = recordArtifacts({
+        executionId: `autopilot_${name}_${cycleStart}`,
+        squad: name,
+        agent: 'squad-loop',
+        completedAt: new Date().toISOString(),
+        costUsd: 1.0,
+        repo,
+      }, ghEnv);
+
+      if (record) {
+        const { grade, reason } = gradeExecution(record);
+        pushCognitionSignal({
+          source: 'execution',
+          signal_type: 'execution_quality',
+          value: { A: 4, B: 3, C: 2, D: 1, F: 0 }[grade] ?? 0,
+          unit: 'quality_score',
+          data: { grade, reason, cost_usd: 1.0 },
+          entity_type: 'squad',
+          entity_id: name,
+          confidence: 0.9,
+        });
+
+        if (options.verbose) {
+          const gradeColor = grade <= 'B' ? colors.green : grade >= 'D' ? colors.red : colors.yellow;
+          writeLine(`    ${gradeColor}${name} Grade: ${grade}${RESET} ${colors.dim}${reason}${RESET}`);
+        }
+      }
+
+      // Check for new PRs from this squad
+      const newPRs = checkNewPRs(repo, 30, ghEnv);
+      if (newPRs.length > 0) {
+        writeLine(`  ${icons.success} ${colors.cyan}${name}${RESET} created ${newPRs.length} PR(s):`);
+        for (const pr of newPRs) {
+          writeLine(`    ${colors.dim}#${pr.number} ${pr.title}${RESET}`);
+        }
+      }
+    }
+
+    // ── PR review reaction (from daemon.ts) ──
+    // Dispatch agents to address review feedback on bot PRs
+    if (!options.dryRun) {
+      for (const repo of Object.values(squadRepos)) {
+        if (budget > 0 && state.dailyCost >= budget) break;
+
+        const prsWithFeedback = getPRsWithReviewFeedback(repo, ghEnv);
+        for (const pr of prsWithFeedback) {
+          const squad = Object.entries(squadRepos).find(([, r]) => r === repo)?.[0];
+          if (!squad) continue;
+          if (budget > 0 && state.dailyCost >= budget) break;
+
+          const task = buildReviewTask(pr);
+          writeLine(`  ${icons.running} Addressing ${pr.comments.length} review comment(s) on ${colors.cyan}${squad}${RESET} PR #${pr.number}`);
+
+          try {
+            const squadsDir2 = findSquadsDir();
+            if (squadsDir2) {
+              const solverPath = join(squadsDir2, squad, 'issue-solver.md');
+              if (existsSync(solverPath)) {
+                await runAgent('issue-solver', solverPath, squad, {
+                  ...options,
+                  task,
+                  background: false,
+                  eval: false,
+                });
+              }
+            }
+            state.dailyCost += 0.50;
+          } catch (err) {
+            writeLine(`  ${icons.error} ${colors.red}Review-fix failed for ${squad} PR #${pr.number}${RESET}`);
+          }
+        }
+      }
+    }
+
     // Push memory signals for dispatched squads
     await pushMemorySignals(dispatchedSquadNames, state, !!options.verbose);
 
@@ -415,13 +971,11 @@ export async function runAutopilot(
     }
 
     // ── Post-run COO evaluation ──
-    // Evaluate outputs from all dispatched squads (skips if company was the only one)
     if (dispatchedSquadNames.length > 0) {
       await runPostEvaluation(dispatchedSquadNames, options);
     }
 
     // ── Cognition: learn from this cycle ──
-    // Ingest memory → synthesize signals → evaluate decisions → reflect
     writeLine(`  ${colors.dim}Cognition cycle...${RESET}`);
     const cognitionResult = await runCognitionCycle(dispatchedSquadNames, !!options.verbose);
     if (cognitionResult.signalsIngested > 0 || cognitionResult.beliefsUpdated > 0 || cognitionResult.reflected) {

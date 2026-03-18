@@ -53,7 +53,7 @@ import { applyStackConfig } from './lib/stack-config.js';
 // Register-pattern commands (must define subcommand structure before parseAsync)
 import { registerOrchestrateCommand } from './commands/orchestrate.js';
 import { registerTriggerCommand } from './commands/trigger.js';
-import { registerAutonomousCommand } from './commands/autonomous.js';
+// autonomous.ts removed — daemon lifecycle consolidated into run-modes.ts
 import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
@@ -303,6 +303,10 @@ program
   .option('--once', 'Autopilot: run one cycle then exit')
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
+  .option('--stop', 'Stop running daemon')
+  .option('--status', 'Show daemon status, running agents, next routines')
+  .option('--pause [reason]', 'Pause daemon without stopping')
+  .option('--resume', 'Resume daemon after pause')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -316,9 +320,13 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
   $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
-  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
-  $ squads run --once --dry-run         Preview one autopilot cycle
-  $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
+  $ squads run                          Daemon mode (cron routines + scoring + dispatch)
+  $ squads run --once --dry-run         Preview one cycle then exit
+  $ squads run -i 15 --budget 50       Custom: 15min cycles, $50/day cap
+  $ squads run --status                 Show daemon status and next routines
+  $ squads run --stop                   Stop running daemon
+  $ squads run --pause "quota"          Pause daemon without stopping
+  $ squads run --resume                 Resume after pause
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
@@ -711,7 +719,7 @@ program
 program
   .command('autopilot')
   .alias('daemon')
-  .description('[deprecated] Use "squads run" instead — autopilot mode when no target given')
+  .description('[deprecated] Use "squads run" instead — unified daemon mode')
   .option('-i, --interval <minutes>', 'Minutes between cycles', '30')
   .option('-p, --parallel <count>', 'Max parallel agent runs', '2')
   .option('-b, --budget <dollars>', 'Max daily spend in dollars (0 = unlimited/subscription)', '0')
@@ -898,8 +906,41 @@ registerTriggerCommand(program);
 // Approval command group - human-in-the-loop for agents
 registerApprovalCommand(program);
 
-// Autonomous command group - scheduled routines
-registerAutonomousCommand(program);
+// Autonomous command — deprecated, now `squads run --status/--stop/--pause/--resume`
+program
+  .command('autonomous')
+  .alias('auto')
+  .description('[deprecated] Daemon lifecycle moved to squads run flags')
+  .argument('[action]', 'start|stop|status|pause|resume')
+  .argument('[reason]', 'Pause reason (optional)')
+  .action(async (action?: string, reason?: string) => {
+    const colors = termColors;
+    const mapping: Record<string, string> = {
+      start: 'squads run',
+      stop: 'squads run --stop',
+      status: 'squads run --status',
+      pause: 'squads run --pause',
+      resume: 'squads run --resume',
+    };
+    const newCmd = mapping[action || 'status'] || 'squads run --status';
+    writeLine(`  ${colors.yellow}Note: "squads autonomous ${action || ''}" is now "${newCmd}"${termReset}`);
+    writeLine();
+
+    const { runCommand } = await import('./commands/run.js');
+    switch (action) {
+      case 'start':
+        return runCommand(null, {});
+      case 'stop':
+        return runCommand(null, { stop: true });
+      case 'pause':
+        return runCommand(null, { pause: reason || 'Manual pause' });
+      case 'resume':
+        return runCommand(null, { resume: true });
+      case 'status':
+      default:
+        return runCommand(null, { status: true });
+    }
+  });
 
 // ─── System ──────────────────────────────────────────────────────────────────
 
@@ -1076,7 +1117,7 @@ program
 
 program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));
 program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
-program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
+program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use: squads run (daemon mode, no arguments)'));
 program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
 program.command('top', { hidden: true }).description('[removed]').action(removedCommand('top', 'Use: squads sessions'));
 program.command('watch', { hidden: true }).description('[removed]').action(removedCommand('watch', 'Use: watch -n 2 squads status'));
