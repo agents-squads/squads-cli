@@ -10,6 +10,7 @@ import { Command } from 'commander';
 import { loadCatalog, loadService, loadScorecard } from '../lib/idp/catalog-loader.js';
 import { evaluateService } from '../lib/idp/scorecard-engine.js';
 import { findIdpDir } from '../lib/idp/resolver.js';
+import type { CatalogEntry } from '../lib/idp/types.js';
 import { colors, bold, RESET, writeLine } from '../lib/terminal.js';
 
 function noIdp(): boolean {
