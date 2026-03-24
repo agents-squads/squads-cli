@@ -260,12 +260,13 @@ export function checkProviderAuth(providerId: string): CheckResult {
     return { name: provider.name, status: 'ok' };
   }
 
-  // Check CLI if required
+  // Check CLI if required — missing CLI is a warning (not an error) during init
+  // Users can scaffold first and install the provider CLI later
   if (provider.cliCheck) {
     if (!commandExists(provider.cliCheck)) {
       return {
         name: provider.name,
-        status: 'missing',
+        status: 'warning',
         message: `CLI not installed`,
         hint: provider.installCmd ? `Install: ${provider.installCmd}` : undefined,
         fixCommand: provider.installCmd,

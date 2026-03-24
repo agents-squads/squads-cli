@@ -327,8 +327,11 @@ Examples:
     return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
   });
 
-// List command (removed — use status instead)
-program.command('list', { hidden: true }).description('[removed]').action(removedCommand('list', 'Use: squads status'));
+// List command — alias for status
+program.command('list').description('List squads (alias for: squads status)').action(async () => {
+  const { statusCommand } = await import('./commands/status.js');
+  return statusCommand();
+});
 
 // Orchestrate command - lead-coordinated squad execution
 registerOrchestrateCommand(program);
