@@ -1,12 +1,16 @@
 # Simulates a brand new user installing squads-cli for the first time.
 # No config, no .agents dir, no history — completely clean environment.
+# Builds from local source so tests exercise the current codebase.
 
 FROM node:22-slim
 
 RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
-# Install squads-cli globally (as root, like sudo npm install -g)
-RUN npm install -g squads-cli 2>&1 || echo "INSTALL FAILED"
+# Build squads-cli from local source and install globally
+WORKDIR /app
+COPY . .
+RUN npm ci && npm run build && npm pack
+RUN npm install -g squads-cli-*.tgz
 
 # Verify it's installed
 RUN which squads && squads --version || echo "squads not found after install"
