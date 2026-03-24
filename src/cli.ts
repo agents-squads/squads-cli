@@ -58,6 +58,8 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
 import { registerCognitionCommand } from './commands/cognition.js';
+import { registerCatalogCommands } from './commands/catalog.js';
+import { registerReleaseCommands } from './commands/release-check.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1042,6 +1044,10 @@ registerDeployCommand(program);
 
 // Cognition command group - business cognition engine
 registerCognitionCommand(program);
+
+// IDP — service catalog, scorecards, release checks
+registerCatalogCommands(program);
+registerReleaseCommands(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program

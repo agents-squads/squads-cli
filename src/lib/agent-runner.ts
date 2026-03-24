@@ -44,8 +44,8 @@ import {
   extractMcpServersFromDefinition,
   loadSystemProtocol,
   gatherSquadContext,
+  resolveContextRoleFromAgent,
 } from './run-context.js';
-import { classifyAgent } from './conversation.js';
 import {
   buildContextFromSquad,
   validateExecution,
@@ -72,7 +72,7 @@ import { findMemoryDir } from './memory.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const DRYRUN_DEF_MAX_CHARS = 500;
-export const DRYRUN_CONTEXT_MAX_CHARS = 800;
+export const DRYRUN_CONTEXT_MAX_CHARS = parseInt(process.env.SQUADS_DRYRUN_MAX_CHARS || '800', 10);
 
 export async function runAgent(
   agentName: string,
@@ -97,9 +97,9 @@ export async function runAgent(
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     // Show context that would be injected (with role-based gating)
-    const dryRunAgentRole = classifyAgent(agentName);
-    const dryRunContextRole: ContextRole = agentName.includes('company-lead') ? 'coo'
-      : (dryRunAgentRole as ContextRole | null) ?? 'worker';
+    const dryRunContextRole: ContextRole = agentName.includes('company-lead')
+      ? 'coo'
+      : resolveContextRoleFromAgent(agentPath, agentName);
     const dryRunContext = gatherSquadContext(squadName, agentName, {
       verbose: options.verbose, agentPath, role: dryRunContextRole
     });
@@ -225,10 +225,11 @@ export async function runAgent(
   const systemProtocol = loadSystemProtocol();
   const systemContext = systemProtocol ? `\n${systemProtocol}\n` : '';
 
-  // Derive context role from agent name for role-based context gating
-  const agentRole = classifyAgent(agentName);
-  const contextRole: ContextRole = agentName.includes('company-lead') ? 'coo'
-    : (agentRole as ContextRole | null) ?? 'worker';
+  // Derive context role from the agent's own YAML frontmatter `role:` free-text.
+  // Company COO override remains explicit.
+  const contextRole: ContextRole = agentName.includes('company-lead')
+    ? 'coo'
+    : resolveContextRoleFromAgent(agentPath, agentName);
 
   // Gather squad context (role-based: scanners get minimal, leads get everything)
   const squadContext = gatherSquadContext(squadName, agentName, {
@@ -264,27 +265,17 @@ export async function runAgent(
   const taskDirective = options.task
     ? `\n## TASK DIRECTIVE (overrides default behavior)\n${options.task}\n`
     : '';
-  const prompt = `Execute the ${agentName} agent from squad ${squadName}.
-
-Read the agent definition at ${agentPath} and follow its instructions exactly.
+  const prompt = `You are ${agentName} from squad ${squadName}.
 ${taskDirective}
-The agent definition contains:
-- Purpose/role
-- Tools it can use (MCP servers, skills)
-- Step-by-step instructions
-- Expected output format
-
-TOOL PREFERENCE: Always prefer CLI tools over MCP servers when both can accomplish the task:
-- Use \`squads\` CLI for squad operations (run, memory, status, feedback)
-- Use \`gh\` CLI for GitHub (issues, PRs, repos)
-- Use \`git\` CLI for version control
-- Use Bash for file operations, builds, tests
-- Only use MCP tools when CLI cannot do it or MCP is significantly better
+Your full context follows — read it top-to-bottom. Each layer builds on the previous:
+- SYSTEM.md: how the system works (already loaded)
+- Company: who we are and why
+- Priorities: where to focus now
+- Goals: what to achieve (measurable targets)
+- Agent: your specific role and instructions
+- State: where you left off
 ${systemContext}${squadContext}${cognitionContext}${learningContext}
-TIME LIMIT: You have ${timeoutMins} minutes. Work efficiently:
-- Focus on the most important tasks first
-- If a task is taking too long, move on and note it for next run
-- Aim to complete within ${Math.floor(timeoutMins * SOFT_DEADLINE_RATIO)} minutes`;
+TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note it in state.md and move on.`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
