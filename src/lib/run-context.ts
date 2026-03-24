@@ -1,54 +1,54 @@
 /**
  * run-context.ts
  *
- * Helpers for building agent execution context and parsing agent definitions.
- * Extracted from src/commands/run.ts to reduce its size.
+ * Squad Context System — context assembly for agent execution.
  *
- * Context cascade (role-based, priority-ordered):
- *   SYSTEM.md (immutable, outside budget)
- *   1. SQUAD.md — mission + goals + output format
- *   2. priorities.md — current operational priorities
- *   3. directives.md — company-wide strategic overlay
- *   4. feedback.md — last cycle evaluation
- *   5. state.md — agent's memory from last execution
- *   6. active-work.md — open PRs and issues
- *   7. Agent briefs — agent-level briefing files
- *   8. Squad briefs — squad-level briefing files
- *   9. Daily briefing — org-wide daily briefing
- *  10. Cross-squad learnings — shared learnings from other squads
+ * Layers flow from general to particular (no overrides, each answers a different question):
+ *   L0: SYSTEM.md      — How    (system, tools, principles — immutable, outside budget)
+ *   L1: company.md     — Why    (company identity, alignment)
+ *   L2: priorities.md  — Where  (current focus, urgency)
+ *   L3: goals.md       — What   (measurable targets)
+ *   L4: agent.md       — You    (agent role, specific instructions)
+ *   L5: state.md       — Memory (continuity from last run)
+ *   L6+: Supporting    — feedback, daily-briefing, cross-squad learnings
  *
- * Sections load in priority order. When budget is exhausted, later sections drop.
- * Role determines which sections are included and the total token budget.
+ * SQUAD.md is metadata only (repo, agents, config) — NOT injected into prompt.
+ * Each layer adds a unique dimension. No layer contradicts another.
+ * Role determines which layers are included and the total token budget.
  */
 
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, readdirSync } from 'fs';
+import { execSync } from 'child_process';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo';
+export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
 const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 4000,   // ~1000 tokens — identity + priorities + state
-  worker: 12000,   // ~3000 tokens — + directives, feedback, active-work
-  lead: 24000,     // ~6000 tokens — all sections
-  coo: 32000,      // ~8000 tokens — all sections + expanded
+  scanner: 4000,   // ~1000 tokens — company + priorities + goals + agent + state
+  worker: 12000,   // ~3000 tokens — + feedback
+  lead: 24000,     // ~6000 tokens — all layers
+  coo: 32000,      // ~8000 tokens — all layers + expanded
+  verifier: 12000, // similar needs to worker
 };
 
 /**
- * Which sections each role gets access to.
- * Numbers correspond to section order in the cascade.
+ * Which layers each role gets access to.
+ * Numbers correspond to layer order in the Squad Context System:
+ *   1=company, 2=priorities, 3=goals, 4=agent, 5=state, 6=feedback, 7=daily-briefing, 8=cross-squad
  */
 const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
-  scanner: new Set([1, 2, 5]),                        // SQUAD.md, priorities, state
-  worker:  new Set([1, 2, 3, 4, 5, 6]),               // + directives, feedback, active-work
-  lead:    new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),  // all sections
-  coo:     new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),  // all sections + expanded budget
+  scanner:  new Set([1, 2, 3, 4, 5]),           // identity + focus + role + memory
+  worker:   new Set([1, 2, 3, 4, 5, 6]),        // + feedback
+  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8]),  // + daily briefing + cross-squad
+  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8]),  // all layers + expanded budget
+  verifier: new Set([1, 2, 3, 4, 5, 6]),        // same as worker
 };
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
@@ -61,6 +61,11 @@ export interface AgentFrontmatter {
   acceptance_criteria?: string;
   max_retries?: number;
   cooldown?: string;
+  /**
+   * `role:` field from agent YAML frontmatter (free text).
+   * Used as the primary signal for context-role selection.
+   */
+  agent_role?: string;
 }
 
 /**
@@ -119,6 +124,25 @@ export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
   const cooldownMatch = yaml.match(/cooldown:\s*["']?([^"'\n]+)["']?/);
   if (cooldownMatch) {
     result.cooldown = cooldownMatch[1].trim();
+  }
+
+  // role: <free-text>
+  // Primary signal for mapping to context role (scanner/worker/lead/verifier).
+  for (const line of yamlLines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('role:')) continue;
+    let value = trimmed.slice('role:'.length).trim();
+    // Strip wrapping quotes if present.
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith('\'') && value.endsWith('\''))
+    ) {
+      value = value.slice(1, -1).trim();
+    }
+    if (value) {
+      result.agent_role = value;
+    }
+    break;
   }
 
   return result;
@@ -187,16 +211,41 @@ function readAgentsFile(relativePath: string, warnLabel: string): string {
 // ── System Protocol ───────────────────────────────────────────────────
 
 /**
- * Load SYSTEM.md — the single base protocol for all agents.
- * Replaces the old approval-instructions.md + post-execution.md split.
- * Falls back to legacy approval-instructions.md if SYSTEM.md doesn't exist.
+ * Load SYSTEM.md (L0) — the immutable base protocol for all agents.
+ * Path: .agents/SYSTEM.md (top-level, next to squads/ and memory/)
+ * Falls back to legacy config/SYSTEM.md, then approval-instructions.md.
  */
 export function loadSystemProtocol(): string {
-  const systemMd = readAgentsFile('config/SYSTEM.md', 'SYSTEM.md');
+  // Primary: .agents/SYSTEM.md
+  const systemMd = readAgentsFile('SYSTEM.md', 'SYSTEM.md');
   if (systemMd) return systemMd;
 
-  // Fallback to legacy approval-instructions.md
+  // Fallback: legacy path
+  const legacyMd = readAgentsFile('config/SYSTEM.md', 'SYSTEM.md (legacy)');
+  if (legacyMd) return legacyMd;
+
   return loadApprovalInstructions();
+}
+
+/**
+ * Load company.md (L1) — company context and strategic direction.
+ * Path: .agents/company.md
+ * This is the "why" layer — frames everything that follows.
+ */
+export function loadCompanyContext(): string {
+  // Primary: .agents/company.md
+  const companyMd = readAgentsFile('company.md', 'company.md');
+  if (companyMd) return companyMd;
+
+  // Fallback: legacy directives.md (for backward compat during migration)
+  const memoryDir = findMemoryDir();
+  if (memoryDir) {
+    const directivesFile = join(memoryDir, 'company', 'directives.md');
+    const content = safeRead(directivesFile);
+    if (content) return content;
+  }
+
+  return '';
 }
 
 /**
@@ -232,6 +281,112 @@ function safeRead(path: string): string {
   }
 }
 
+function stripYamlFrontmatter(markdown: string): string {
+  const lines = markdown.split('\n');
+  let dashCount = 0;
+  let endIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      dashCount++;
+      if (dashCount === 2) {
+        endIdx = i;
+        break;
+      }
+    }
+  }
+  if (endIdx >= 0) return lines.slice(endIdx + 1).join('\n').trim();
+  return markdown.trim();
+}
+
+function scoreByTokens(text: string, tokens: string[]): number {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const t of tokens) {
+    if (!t) continue;
+    if (lower.includes(t)) score += 1;
+  }
+  return score;
+}
+
+/**
+ * Primary context-role resolver.
+ *
+ * Uses the agent YAML frontmatter `role:` free-text as the signal.
+ * Only when ambiguous and enabled (env var) will it ask an LLM to pick
+ * one of: scanner | worker | lead | verifier.
+ */
+export function resolveContextRoleFromAgent(agentPath: string, agentName: string): ContextRole {
+  const fm = parseAgentFrontmatter(agentPath);
+  const roleText = fm.agent_role || '';
+  const normalized = roleText.trim().toLowerCase();
+
+  // Direct match — new structured schema uses exact role values
+  const directRoles: ContextRole[] = ['scanner', 'worker', 'lead', 'verifier'];
+  for (const r of directRoles) {
+    if (normalized === r) return r;
+  }
+  // COO is a lead with expanded budget
+  if (normalized === 'coo') return 'coo';
+
+  // Deterministic mapping from role text. Avoids brittle regex coupling.
+  const scannerTokens = ['scan', 'monitor', 'detect', 'find', 'opportun', 'scout', 'gap', 'bottleneck'];
+  const workerTokens = ['execute', 'implement', 'write', 'create', 'build', 'prototype', 'file', 'issue', 'worker'];
+  const leadTokens = ['lead', 'orchestrate', 'own', 'strategy', 'roadmap', 'coordinate', 'triage', 'review', 'mvp'];
+  const verifierTokens = ['verify', 'validation', 'compliance', 'audit', 'approve', 'reject', 'check', 'test', 'critic', 'verifier'];
+
+  const scored: Array<[ContextRole, number]> = [
+    ['scanner', scoreByTokens(normalized, scannerTokens)],
+    ['worker', scoreByTokens(normalized, workerTokens)],
+    ['lead', scoreByTokens(normalized, leadTokens)],
+    ['verifier', scoreByTokens(normalized, verifierTokens)],
+  ];
+
+  scored.sort((a, b) => b[1] - a[1]);
+  const best = scored[0];
+  const second = scored[1];
+
+  // Clean mapping => unique non-zero best score.
+  const clean = best[1] > 0 && (!second || second[1] === 0);
+  if (clean) return best[0];
+
+  const llmEnabled = process.env.SQUADS_CONTEXT_ROLE_LLM === '1';
+  if (!llmEnabled) return 'worker';
+
+  // LLM fallback: best-effort classification. If it fails, return worker.
+  try {
+    const raw = safeRead(agentPath);
+    const body = stripYamlFrontmatter(raw);
+    const excerpt = body.slice(0, 1600);
+
+    const prompt = [
+      'Classify the agent into exactly ONE Agents Squads context role.',
+      'Return EXACTLY one token from: scanner, worker, lead, verifier.',
+      '',
+      `Agent name: ${agentName}`,
+      `Agent frontmatter role: ${roleText || '(missing)'}`,
+      '',
+      'Agent definition excerpt:',
+      excerpt,
+    ].join('\n');
+
+    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const model = process.env.SQUADS_CONTEXT_ROLE_LLM_MODEL || 'claude-haiku-4-5';
+    const out = execSync(
+      `claude --print --dangerously-skip-permissions --disable-slash-commands --model ${model} -- '${escapedPrompt}'`,
+      { encoding: 'utf-8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }
+    ).trim().toLowerCase();
+
+    const tokens: ContextRole[] = ['scanner', 'worker', 'lead', 'verifier'];
+    for (const t of tokens) {
+      if (out === t || out.includes(t)) return t;
+    }
+
+    return 'worker';
+  } catch {
+    return 'worker';
+  }
+}
+
 /** Read all .md files from a directory, concatenated */
 function readDirMd(dirPath: string, maxChars: number): string {
   if (!existsSync(dirPath)) return '';
@@ -252,13 +407,22 @@ function readDirMd(dirPath: string, maxChars: number): string {
   }
 }
 
-// ── Squad Context Assembly ────────────────────────────────────────────
+// ── Squad Context System Assembly ─────────────────────────────────────
 
 /**
- * Gather squad context for prompt injection.
+ * Gather context for agent execution.
  *
- * Role-based context cascade (10 sections, priority-ordered):
- * Sections load in order until the token budget is exhausted.
+ * Layers flow general → particular (each adds a unique dimension):
+ *   1. company.md     — Why    (company identity, alignment)
+ *   2. priorities.md  — Where  (current focus, urgency)
+ *   3. goals.md       — What   (measurable targets)
+ *   4. agent.md       — You    (agent role, instructions)
+ *   5. state.md       — Memory (continuity from last run)
+ *   6. feedback.md    — Supporting (squad feedback)
+ *   7. daily-briefing — Supporting (org pulse, leads+coo only)
+ *   8. cross-squad    — Supporting (learnings from other squads)
+ *
+ * SQUAD.md is NOT injected — it's metadata for the CLI (repo, agents, config).
  * Missing files are skipped gracefully — no crashes on first run or new squads.
  */
 export function gatherSquadContext(
@@ -271,26 +435,26 @@ export function gatherSquadContext(
 
   const memoryDir = findMemoryDir();
   const role = options.role || 'worker';
-  const budget = options.maxTokens ? options.maxTokens * 4 : ROLE_BUDGETS[role];
-  const allowedSections = ROLE_SECTIONS[role];
+  const budget = options.maxTokens ? options.maxTokens * 4 : (ROLE_BUDGETS[role] ?? ROLE_BUDGETS.worker);
+  const allowedSections = ROLE_SECTIONS[role] ?? ROLE_SECTIONS.worker;
   const sections: string[] = [];
   let usedChars = 0;
 
-  /** Try to add a section. Returns true if added, false if budget exceeded or not allowed. */
-  function addSection(sectionNum: number, header: string, content: string, maxChars?: number): boolean {
-    if (!allowedSections.has(sectionNum)) return false;
+  /** Try to add a layer. Returns true if added, false if budget exceeded or not allowed. */
+  function addLayer(layerNum: number, header: string, content: string, maxChars?: number): boolean {
+    if (!allowedSections.has(layerNum)) return false;
     if (!content) return false;
 
     let text = content;
-    const cap = maxChars || (budget - usedChars);
+    const remaining = Math.max(0, budget - usedChars);
+    const cap = maxChars !== undefined ? Math.min(maxChars, remaining) : remaining;
     if (text.length > cap) {
       text = text.substring(0, cap) + '\n...';
     }
 
     if (usedChars + text.length > budget) {
-      // Budget exhausted — drop this and all later sections
       if (options.verbose) {
-        writeLine(`  ${colors.dim}Context budget exhausted at section ${sectionNum} (${header})${RESET}`);
+        writeLine(`  ${colors.dim}Context budget exhausted at layer ${layerNum} (${header})${RESET}`);
       }
       return false;
     }
@@ -300,99 +464,72 @@ export function gatherSquadContext(
     return true;
   }
 
-  // ── Section 1: SQUAD.md ──
-  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
-  if (existsSync(squadFile)) {
-    try {
-      const content = readFileSync(squadFile, 'utf-8');
-      // Extract mission section; fall back to first N chars
-      const missionMatch = content.match(/## Mission[\s\S]*?(?=\n## |$)/i);
-      const squad = missionMatch ? missionMatch[0] : content.substring(0, 2000);
-      addSection(1, `Squad: ${squadName}`, squad.trim());
-    } catch (e) {
-      if (options.verbose) writeLine(`  ${colors.dim}warn: failed reading SQUAD.md: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-    }
+  // ── L1: company.md — Why (company identity, alignment) ──
+  const companyContext = loadCompanyContext();
+  if (companyContext) {
+    addLayer(1, 'Company', companyContext);
   }
 
-  // ── Section 2: priorities.md (fallback to goals.md for backward compat) ──
+  // ── L2: priorities.md — Where (current focus, urgency) ──
   if (memoryDir) {
     const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
+    const content = safeRead(prioritiesFile);
+    if (content) {
+      addLayer(2, 'Priorities', content);
+    }
+  }
+
+  // ── L3: goals.md — What (measurable targets) ──
+  if (memoryDir) {
     const goalsFile = join(memoryDir, squadName, 'goals.md');
-    const file = existsSync(prioritiesFile) ? prioritiesFile : goalsFile;
-    const content = safeRead(file);
+    const content = safeRead(goalsFile);
     if (content) {
-      addSection(2, 'Priorities', content);
+      addLayer(3, 'Goals', content);
     }
   }
 
-  // ── Section 3: directives.md ──
-  if (memoryDir) {
-    const directivesFile = join(memoryDir, 'company', 'directives.md');
-    const content = safeRead(directivesFile);
-    if (content) {
-      addSection(3, 'Directives', content);
+  // ── L4: agent.md — You (agent role, instructions) ──
+  if (options.agentPath) {
+    const agentContent = safeRead(options.agentPath);
+    if (agentContent) {
+      // Strip YAML frontmatter — inject the markdown body only
+      const body = stripYamlFrontmatter(agentContent);
+      addLayer(4, `Agent: ${agentName}`, body);
     }
   }
 
-  // ── Section 4: feedback.md ──
-  if (memoryDir) {
-    const feedbackFile = join(memoryDir, squadName, 'feedback.md');
-    const content = safeRead(feedbackFile);
-    if (content) {
-      addSection(4, 'Feedback', content);
-    }
-  }
-
-  // ── Section 5: state.md ──
+  // ── L5: state.md — Memory (continuity from last run) ──
   if (memoryDir) {
     const stateFile = join(memoryDir, squadName, agentName, 'state.md');
     const content = safeRead(stateFile);
     if (content) {
-      // Scanner gets capped state, lead/coo get full
-      const stateCap = role === 'scanner' ? 2000 : undefined;
-      addSection(5, 'Previous State', content, stateCap);
+      // Strip frontmatter — LLM gets the body (Current/Blockers/Carry Forward)
+      const body = stripYamlFrontmatter(content);
+      const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
+      addLayer(5, 'Previous State', body, stateCap);
     }
   }
 
-  // ── Section 6: active-work.md ──
+  // ── L6: feedback.md — Supporting (squad-level feedback) ──
   if (memoryDir) {
-    const activeWorkFile = join(memoryDir, squadName, 'active-work.md');
-    const content = safeRead(activeWorkFile);
+    const feedbackFile = join(memoryDir, squadName, 'feedback.md');
+    const content = safeRead(feedbackFile);
     if (content) {
-      addSection(6, 'Active Work', content);
+      addLayer(6, 'Feedback', content);
     }
   }
 
-  // ── Section 7: Agent briefs ──
-  if (memoryDir) {
-    const briefsDir = join(memoryDir, squadName, agentName, 'briefs');
-    const content = readDirMd(briefsDir, 3000);
-    if (content) {
-      addSection(7, 'Agent Briefs', content);
-    }
-  }
-
-  // ── Section 8: Squad briefs ──
-  if (memoryDir) {
-    const briefsDir = join(memoryDir, squadName, '_briefs');
-    const content = readDirMd(briefsDir, 3000);
-    if (content) {
-      addSection(8, 'Squad Briefs', content);
-    }
-  }
-
-  // ── Section 9: Daily briefing ──
+  // ── L7: Daily briefing — Supporting (org pulse, leads+coo only) ──
   if (memoryDir) {
     const dailyFile = join(memoryDir, 'daily-briefing.md');
     const content = safeRead(dailyFile);
     if (content) {
-      addSection(9, 'Daily Briefing', content);
+      addLayer(7, 'Daily Briefing', content);
     }
   }
 
-  // ── Section 10: Cross-squad learnings ──
+  // ── L8: Cross-squad learnings — Supporting (from context_from agents) ──
   if (memoryDir) {
-    // Load from context_from squads if defined in agent frontmatter
     const frontmatter = options.agentPath ? parseAgentFrontmatter(options.agentPath) : {};
     const contextSquads = frontmatter.context_from || [];
     const learningParts: string[] = [];
@@ -404,14 +541,14 @@ export function gatherSquadContext(
       }
     }
     if (learningParts.length > 0) {
-      addSection(10, 'Cross-Squad Learnings', learningParts.join('\n\n'));
+      addLayer(8, 'Cross-Squad Learnings', learningParts.join('\n\n'));
     }
   }
 
   if (sections.length === 0) return '';
 
   if (options.verbose) {
-    writeLine(`  ${colors.dim}Context: ${sections.length} sections, ~${Math.ceil(usedChars / 4)} tokens (${role} role, budget: ~${Math.ceil(budget / 4)})${RESET}`);
+    writeLine(`  ${colors.dim}Context: ${sections.length} layers, ~${Math.ceil(usedChars / 4)} tokens (${role} role, budget: ~${Math.ceil(budget / 4)})${RESET}`);
   }
 
   return `\n# CONTEXT\n${sections.join('\n\n')}\n`;
