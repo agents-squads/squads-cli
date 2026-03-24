@@ -296,12 +296,12 @@ describe('setup-checks', () => {
       expect(result.message).toContain('Unknown provider');
     });
 
-    it('returns missing when provider CLI not installed', () => {
-      // commandExists('claude') -> false
+    it('returns warning when provider CLI not installed', () => {
+      // commandExists('claude') -> false — treated as warning, not error
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkProviderAuth('claude');
-      expect(result.status).toBe('missing');
+      expect(result.status).toBe('warning');
       expect(result.fixCommand).toBeDefined();
     });
 
@@ -338,11 +338,11 @@ describe('setup-checks', () => {
       }
     });
 
-    it('returns missing when ollama CLI not installed', () => {
+    it('returns warning when ollama CLI not installed', () => {
       mockedExecSync.mockImplementationOnce(() => { throw new Error(); });
 
       const result = checkProviderAuth('ollama');
-      expect(result.status).toBe('missing');
+      expect(result.status).toBe('warning');
     });
   });
 
