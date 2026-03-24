@@ -467,7 +467,7 @@ export function gatherSquadContext(
   // ── L1: company.md — Why (company identity, alignment) ──
   const companyContext = loadCompanyContext();
   if (companyContext) {
-    addLayer(1, 'Company', companyContext);
+    addLayer(1, 'Company', stripYamlFrontmatter(companyContext));
   }
 
   // ── L2: priorities.md — Where (current focus, urgency) ──
@@ -475,7 +475,7 @@ export function gatherSquadContext(
     const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
     const content = safeRead(prioritiesFile);
     if (content) {
-      addLayer(2, 'Priorities', content);
+      addLayer(2, 'Priorities', stripYamlFrontmatter(content));
     }
   }
 
@@ -484,7 +484,7 @@ export function gatherSquadContext(
     const goalsFile = join(memoryDir, squadName, 'goals.md');
     const content = safeRead(goalsFile);
     if (content) {
-      addLayer(3, 'Goals', content);
+      addLayer(3, 'Goals', stripYamlFrontmatter(content));
     }
   }
 

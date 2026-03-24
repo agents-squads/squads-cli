@@ -72,7 +72,7 @@ import { findMemoryDir } from './memory.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const DRYRUN_DEF_MAX_CHARS = 500;
-export const DRYRUN_CONTEXT_MAX_CHARS = 800;
+export const DRYRUN_CONTEXT_MAX_CHARS = parseInt(process.env.SQUADS_DRYRUN_MAX_CHARS || '800', 10);
 
 export async function runAgent(
   agentName: string,
