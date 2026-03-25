@@ -1,6 +1,9 @@
 ---
 name: Intel Eval
 role: evaluator
+squad: intelligence
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 tools:

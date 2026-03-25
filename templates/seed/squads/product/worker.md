@@ -1,6 +1,9 @@
 ---
 name: Product Worker
 role: doer
+squad: product
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 tools:

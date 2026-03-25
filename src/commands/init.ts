@@ -263,6 +263,44 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Detect the primary technology stack from project files.
+ */
+async function detectStack(cwd: string): Promise<string> {
+  const checks: Array<[string, string]> = [
+    ['package.json', 'node'],
+    ['requirements.txt', 'python'],
+    ['pyproject.toml', 'python'],
+    ['setup.py', 'python'],
+    ['go.mod', 'go'],
+    ['Cargo.toml', 'rust'],
+    ['pom.xml', 'java'],
+    ['build.gradle', 'java'],
+    ['Gemfile', 'ruby'],
+    ['composer.json', 'php'],
+  ];
+
+  for (const [file, stack] of checks) {
+    try {
+      await fs.access(path.join(cwd, file));
+      return stack;
+    } catch {
+      // not present
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * Slugify a name for use as a file/service identifier.
+ */
+function toServiceSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'service';
+}
+
+/**
  * Load a seed template from templates/seed/
  * Falls back to bundled templates in dist/templates/seed/
  */
@@ -471,10 +509,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 5. Create the seed
   const spinner = ora('Planting the seed...').start();
+  const serviceSlug = toServiceSlug(businessName);
 
   try {
     // Only show PLACEHOLDER sentinel when user skipped the description in interactive mode
     const isPlaceholder = businessDescription.includes('add your business description');
+    const detectedStack = await detectStack(cwd);
+    const repoUrl = gitStatus.remoteUrl || '';
     const variables: TemplateVariables = {
       BUSINESS_NAME: businessName,
       BUSINESS_DESCRIPTION: businessDescription || `${businessName} — details to be added by the manager agent.`,
@@ -488,6 +529,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
       CURRENT_DATE: new Date().toISOString().split('T')[0],
+      SERVICE_NAME: serviceSlug,
+      SERVICE_STACK: detectedStack,
+      REPO_URL: repoUrl,
     };
 
     // Core directories (always created)
@@ -511,6 +555,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/skills/squads-cli',
       '.agents/skills/gh',
       '.agents/config',
+      '.agents/idp/catalog',
     ];
 
     // Add use-case specific directories
@@ -612,6 +657,51 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const businessBrief = loadSeedTemplate('BUSINESS_BRIEF.md.template', variables);
     await writeFile(path.join(cwd, '.agents/BUSINESS_BRIEF.md'), businessBrief);
 
+    // company.md (L1 context layer — "Why" for all agents)
+    const companyMd = loadSeedTemplate('company.md', variables);
+    await writeIfNew(path.join(cwd, '.agents/company.md'), companyMd);
+
+    // IDP service catalog entry (only if .agents/idp/ doesn't already exist)
+    const idpCatalogFile = path.join(cwd, `.agents/idp/catalog/${serviceSlug}.yaml`);
+    const idpAlreadyExists = await fileExists(path.join(cwd, '.agents/idp/catalog'));
+    // Check if ANY yaml already exists — skip catalog generation if so
+    let existingCatalog = false;
+    if (idpAlreadyExists) {
+      try {
+        const entries = await fs.readdir(path.join(cwd, '.agents/idp/catalog'));
+        existingCatalog = entries.some(f => f.endsWith('.yaml'));
+      } catch {
+        // ignore
+      }
+    }
+    if (!existingCatalog) {
+      const catalogContent = loadSeedTemplate('idp/catalog/service.yaml', variables);
+      await writeFile(idpCatalogFile, catalogContent);
+    }
+
+    // priorities.md + goals.md — one per squad (writeIfNew so re-runs don't clobber)
+    const coreSquadNames = [
+      { name: 'company', title: 'Company' },
+      { name: 'research', title: 'Research' },
+      { name: 'intelligence', title: 'Intelligence' },
+      { name: 'product', title: 'Product' },
+    ];
+    const useCaseSquadNames = useCaseConfig.squads.map(s => ({
+      name: s.name,
+      title: s.name.charAt(0).toUpperCase() + s.name.slice(1),
+    }));
+    for (const squad of [...coreSquadNames, ...useCaseSquadNames]) {
+      const squadVars = { ...variables, SQUAD_NAME: squad.name, SQUAD_NAME_TITLE: squad.title };
+      await writeIfNew(
+        path.join(cwd, `.agents/memory/${squad.name}/priorities.md`),
+        loadSeedTemplate('memory/squad-priorities.md', squadVars)
+      );
+      await writeIfNew(
+        path.join(cwd, `.agents/memory/${squad.name}/goals.md`),
+        loadSeedTemplate('memory/squad-goals.md', squadVars)
+      );
+    }
+
     // AGENTS.md (repo root — vendor-neutral agent instructions)
     const agentsMd = loadTemplate('core/AGENTS.md.template', variables);
     await writeIfNew(path.join(cwd, 'AGENTS.md'), agentsMd);
@@ -703,7 +793,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
-  writeLine(chalk.dim('  • .agents/memory/               Persistent state'));
+  writeLine(chalk.dim('  • .agents/memory/               Persistent state (goals, priorities per squad)'));
+  writeLine(chalk.dim('  • .agents/company.md            Company context (L1 — the "why")'));
+  writeLine(chalk.dim(`  • .agents/idp/catalog/          Service catalog — ${serviceSlug}.yaml`));
   writeLine(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
   writeLine(chalk.dim('  • AGENTS.md                     Agent instructions (vendor-neutral)'));
   if (selectedProvider === 'claude') {

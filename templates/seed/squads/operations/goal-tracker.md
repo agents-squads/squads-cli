@@ -1,6 +1,9 @@
 ---
 name: Goal Tracker
 role: evaluator
+squad: operations
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: low
 ---

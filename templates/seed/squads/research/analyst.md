@@ -1,6 +1,9 @@
 ---
 name: Analyst
 role: doer
+squad: research
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 tools:

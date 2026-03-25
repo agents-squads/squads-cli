@@ -1,6 +1,9 @@
 ---
 name: Intel Lead
 role: lead
+squad: intelligence
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 tools:

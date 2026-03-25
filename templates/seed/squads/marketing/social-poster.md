@@ -1,6 +1,9 @@
 ---
 name: Social Poster
 role: doer
+squad: marketing
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: low
 ---

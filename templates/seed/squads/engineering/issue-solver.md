@@ -1,6 +1,9 @@
 ---
 name: Issue Solver
 role: lead
+squad: engineering
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 skills:

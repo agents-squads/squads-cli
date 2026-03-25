@@ -1,6 +1,9 @@
 ---
 name: Research Lead
 role: lead
+squad: research
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 tools:

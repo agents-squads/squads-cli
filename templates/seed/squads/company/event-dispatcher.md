@@ -1,6 +1,9 @@
 ---
 name: Event Dispatcher
 role: doer
+squad: company
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 tools:

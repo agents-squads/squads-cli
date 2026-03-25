@@ -1,6 +1,9 @@
 ---
 name: Growth Analyst
 role: evaluator
+squad: marketing
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: low
 ---

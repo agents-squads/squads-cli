@@ -1,6 +1,9 @@
 ---
 name: Content Drafter
 role: lead
+squad: marketing
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 skills:

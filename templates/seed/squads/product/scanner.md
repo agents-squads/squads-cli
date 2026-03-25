@@ -1,6 +1,9 @@
 ---
 name: Product Scanner
 role: doer
+squad: product
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 tools:

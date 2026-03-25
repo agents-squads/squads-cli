@@ -1,3 +1,9 @@
+---
+scope: all-agents
+authority: immutable
+version: "1.0"
+---
+
 # System Protocol
 
 Immutable rules for all agent executions. Every agent reads this before starting work.

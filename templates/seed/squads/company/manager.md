@@ -1,6 +1,9 @@
 ---
 name: Manager
 role: lead
+squad: company
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 skills:

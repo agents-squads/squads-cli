@@ -1,6 +1,9 @@
 ---
 name: Finance Tracker
 role: doer
+squad: operations
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: low
 ---

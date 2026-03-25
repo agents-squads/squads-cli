@@ -1,6 +1,9 @@
 ---
 name: Ops Lead
 role: lead
+squad: operations
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 skills:

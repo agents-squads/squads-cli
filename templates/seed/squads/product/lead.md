@@ -1,6 +1,9 @@
 ---
 name: Product Lead
 role: lead
+squad: product
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: high
 tools:

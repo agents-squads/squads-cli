@@ -1,6 +1,9 @@
 ---
 name: Company Evaluator
 role: evaluator
+squad: company
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: medium
 tools:

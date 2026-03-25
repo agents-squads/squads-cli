@@ -1,6 +1,9 @@
 ---
 name: Intel Critic
 role: critic
+squad: intelligence
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 tools:

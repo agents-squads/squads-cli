@@ -1,6 +1,9 @@
 ---
 name: Code Reviewer
 role: evaluator
+squad: engineering
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: medium
 ---

@@ -1,6 +1,9 @@
 ---
 name: Company Critic
 role: critic
+squad: company
+provider: {{PROVIDER}}
+trigger: manual
 model: sonnet
 effort: medium
 tools:

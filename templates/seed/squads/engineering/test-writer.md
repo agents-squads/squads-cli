@@ -1,6 +1,9 @@
 ---
 name: Test Writer
 role: doer
+squad: engineering
+provider: {{PROVIDER}}
+trigger: manual
 model: haiku
 effort: medium
 ---
