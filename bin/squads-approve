@@ -1,0 +1,278 @@
+#!/bin/bash
+#
+# squads-approve - Check approval policy and request if needed
+#
+# Usage:
+#   squads approve check <squad> <action> [description]
+#   squads approve wait <approval_id>
+#
+# Exit codes:
+#   0 - Approved (or auto-approved)
+#   1 - Rejected
+#   2 - Error (policy not found, Slack error, etc.)
+#
+# Environment:
+#   BRIDGE_API         - Bridge API URL (default: http://localhost:8088)
+#   SQUADS_AGENT       - Agent name (optional)
+#   SQUADS_EXECUTION_ID - Execution ID (optional)
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BRIDGE_API="${BRIDGE_API:-http://localhost:8088}"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[APPROVAL]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[APPROVED]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[NOTIFY]${NC} $1" >&2; }
+log_reject() { echo -e "${RED}[REJECTED]${NC} $1" >&2; }
+
+show_help() {
+    cat << 'EOF'
+squads approve - Check approval policies and request approval
+
+USAGE:
+  squads approve check <squad> <action> [description]
+  squads approve wait <approval_id>
+
+COMMANDS:
+  check   Check policy and request approval if needed
+  wait    Wait for an existing approval to be decided
+
+ACTIONS (examples):
+  pr.merge      Merge a pull request
+  deploy.prod   Deploy to production
+  deploy.staging Deploy to staging
+  content.publish Publish content
+  outreach.send Send outreach emails
+
+APPROVAL TIERS (from SQUAD.md):
+  auto      Proceed automatically
+  notify    Post to Slack, proceed immediately
+  approve   Post to Slack with buttons, wait for response
+  confirm   Same as approve but more urgent
+
+OPTIONS:
+  --no-wait   Post approval request but don't wait for response
+  --timeout   Wait timeout in seconds (default: 300)
+
+EXAMPLES:
+  squads approve check engineering pr.merge "Merge PR #50: Fix nav"
+  squads approve check customer outreach.send "Send 5 cold emails"
+  squads approve wait appr_abc123
+
+EXIT CODES:
+  0  Approved
+  1  Rejected or timed out
+  2  Error
+EOF
+}
+
+# Check command
+cmd_check() {
+    local squad="$1"
+    local action="$2"
+    local description="${3:-$action}"
+    local wait="${4:-true}"
+    local timeout="${5:-300}"
+
+    if [ -z "$squad" ] || [ -z "$action" ]; then
+        log_reject "Usage: squads approve check <squad> <action> [description]"
+        exit 2
+    fi
+
+    log_info "Checking approval for '$action' in squad '$squad'"
+
+    # Build query params
+    local agent="${SQUADS_AGENT:-}"
+    local execution_id="${SQUADS_EXECUTION_ID:-}"
+    local wait_param="false"
+    [ "$wait" = "true" ] && wait_param="true"
+
+    # Call the API
+    local response
+    response=$(curl -s -X POST "$BRIDGE_API/approvals/check" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "squad=$squad" \
+        --data-urlencode "action=$action" \
+        --data-urlencode "description=$description" \
+        --data-urlencode "agent=${agent:-}" \
+        --data-urlencode "execution_id=${execution_id:-}" \
+        --data-urlencode "wait=$wait_param" \
+        --data-urlencode "timeout=$timeout")
+
+    # Check for curl/API errors
+    if [ -z "$response" ]; then
+        log_warn "API unavailable, defaulting to auto-approve"
+        exit 0
+    fi
+
+    if ! echo "$response" | jq -e '.tier' > /dev/null 2>&1; then
+        log_warn "Invalid API response, defaulting to auto-approve"
+        exit 0
+    fi
+
+    local tier=$(echo "$response" | jq -r '.tier')
+    local approved=$(echo "$response" | jq -r '.approved')
+    local message=$(echo "$response" | jq -r '.message // empty')
+    local approval_id=$(echo "$response" | jq -r '.approval_id // empty')
+
+    log_info "Tier: $tier"
+
+    case "$tier" in
+        auto)
+            log_success "Auto-approved"
+            exit 0
+            ;;
+        notify)
+            log_warn "Posted notification, proceeding..."
+            exit 0
+            ;;
+        approve|confirm)
+            if [ "$approved" = "true" ]; then
+                log_success "Approved"
+                exit 0
+            elif [ "$approved" = "false" ]; then
+                log_reject "${message:-Rejected}"
+                exit 1
+            elif [ "$approved" = "null" ] && [ "$wait" = "false" ]; then
+                # Posted but not waiting
+                log_info "Approval requested: $approval_id"
+                echo "$approval_id"
+                exit 0
+            else
+                # Waiting but timed out
+                log_reject "Timed out waiting for approval"
+                exit 1
+            fi
+            ;;
+        *)
+            log_warn "Unknown tier '$tier', defaulting to approved"
+            exit 0
+            ;;
+    esac
+}
+
+# Wait command
+cmd_wait() {
+    local approval_id="$1"
+    local timeout="${2:-300}"
+
+    if [ -z "$approval_id" ]; then
+        log_reject "Usage: squads approve wait <approval_id>"
+        exit 2
+    fi
+
+    log_info "Waiting for approval $approval_id (timeout: ${timeout}s)..."
+
+    local response
+    response=$(curl -s "$BRIDGE_API/approvals/$approval_id/wait?timeout=$timeout")
+
+    if [ -z "$response" ]; then
+        log_warn "API unavailable"
+        exit 2
+    fi
+
+    local approved=$(echo "$response" | jq -r '.approved')
+    local status=$(echo "$response" | jq -r '.status')
+
+    if [ "$approved" = "true" ]; then
+        log_success "Approved by $(echo "$response" | jq -r '.decided_by // "human"')"
+        exit 0
+    elif [ "$status" = "timeout" ]; then
+        log_reject "Timed out"
+        exit 1
+    else
+        log_reject "$status"
+        exit 1
+    fi
+}
+
+# Main
+CMD="${1:-}"
+shift 2>/dev/null || true
+
+# Parse global options
+WAIT=true
+TIMEOUT=300
+
+case "$CMD" in
+    check)
+        SQUAD=""
+        ACTION=""
+        DESC=""
+
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --no-wait)
+                    WAIT=false
+                    shift
+                    ;;
+                --timeout)
+                    TIMEOUT="$2"
+                    shift 2
+                    ;;
+                *)
+                    if [ -z "$SQUAD" ]; then
+                        SQUAD="$1"
+                    elif [ -z "$ACTION" ]; then
+                        ACTION="$1"
+                    else
+                        DESC="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+
+        cmd_check "$SQUAD" "$ACTION" "$DESC" "$WAIT" "$TIMEOUT"
+        ;;
+    wait)
+        APPROVAL_ID="$1"
+        shift 2>/dev/null || true
+
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --timeout)
+                    TIMEOUT="$2"
+                    shift 2
+                    ;;
+                *)
+                    shift
+                    ;;
+            esac
+        done
+
+        cmd_wait "$APPROVAL_ID" "$TIMEOUT"
+        ;;
+    -h|--help|help)
+        show_help
+        exit 0
+        ;;
+    *)
+        echo "squads approve - Check approval policies"
+        echo ""
+        echo "Commands:"
+        echo "  check <squad> <action> [description]  Check policy and request approval"
+        echo "  wait <approval_id>                    Wait for existing approval"
+        echo ""
+        echo "Exit codes:"
+        echo "  0 = Approved"
+        echo "  1 = Rejected"
+        echo "  2 = Error"
+        echo ""
+        echo "Examples:"
+        echo "  squads approve check engineering pr.merge \"Merge PR #50\""
+        echo "  squads approve check customer outreach.send \"Send 5 emails\""
+        echo ""
+        echo "Run 'squads approve --help' for more information"
+        exit 1
+        ;;
+esac

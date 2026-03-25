@@ -1,0 +1,138 @@
+#!/bin/bash
+#
+# squads - Unified CLI for managing agent squads
+#
+# Usage:
+#   squads run <squad> <agent> [brief]     Run an agent
+#   squads status [squad] [agent]          Check agent status
+#   squads output <squad> <agent>          Get agent output
+#   squads feedback <squad> <agent> "msg"  Submit feedback
+#   squads list [squad]                    List available agents
+#   squads brief <squad> <agent> "text"    Quick inline brief
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+HQ_DIR="$AGENTS_SQUADS_HOME/hq"
+
+usage() {
+    echo "squads - Manage agent squads"
+    echo ""
+    echo "Commands:"
+    echo "  run <squad> <agent> [brief-file]   Run an agent with optional brief"
+    echo "  status [squad] [agent]             Check agent status"
+    echo "  output <squad> <agent>             Get latest agent output"
+    echo "  feedback <squad> <agent> \"msg\"     Submit feedback to agent"
+    echo "  list [squad]                       List available agents"
+    echo "  brief <squad> <agent> \"text\"       Run agent with inline brief"
+    echo "  slack <cmd>                        Manage Slack integration"
+    echo "  approve check <squad> <action>     Check approval policy"
+    echo "  events <cmd>                       Read events from buffer"
+    echo "  daemon <cmd>                       Manage background daemon"
+    echo ""
+    echo "Examples:"
+    echo "  squads run intelligence intel-lead"
+    echo "  squads run website web-lead drafts/homepage-v3.md"
+    echo "  squads status"
+    echo "  squads output intelligence intel-lead"
+    echo "  squads feedback intel-lead \"Focus on facts, not recommendations\""
+    echo "  squads list website"
+    echo "  squads brief intelligence intel-lead \"Create free report summary\""
+    exit 1
+}
+
+list_agents() {
+    local squad="${1:-}"
+
+    if [ -n "$squad" ]; then
+        echo "Agents in $squad squad:"
+        for f in "$HQ_DIR/.agents/squads/$squad"/*.md; do
+            [ -f "$f" ] || continue
+            NAME=$(basename "$f" .md)
+            [ "$NAME" = "SQUAD" ] && continue
+            echo "  - $NAME"
+        done
+    else
+        echo "Available squads and agents:"
+        for squad_dir in "$HQ_DIR/.agents/squads"/*/; do
+            [ -d "$squad_dir" ] || continue
+            SQUAD_NAME=$(basename "$squad_dir")
+            [ "$SQUAD_NAME" = "_template" ] && continue
+            echo ""
+            echo "$SQUAD_NAME:"
+            for f in "$squad_dir"*.md; do
+                [ -f "$f" ] || continue
+                NAME=$(basename "$f" .md)
+                [ "$NAME" = "SQUAD" ] && continue
+                echo "  - $NAME"
+            done
+        done
+    fi
+}
+
+# Parse command
+CMD="${1:-}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    run)
+        exec "$SCRIPT_DIR/run-agent" "$@"
+        ;;
+    status)
+        exec "$SCRIPT_DIR/agent-status" "$@"
+        ;;
+    output)
+        exec "$SCRIPT_DIR/agent-output" "$@"
+        ;;
+    feedback)
+        exec "$SCRIPT_DIR/agent-feedback" "$@"
+        ;;
+    list)
+        list_agents "$@"
+        ;;
+    slack)
+        exec "$SCRIPT_DIR/squads-slack" "$@"
+        ;;
+    approve)
+        exec "$SCRIPT_DIR/squads-approve" "$@"
+        ;;
+    events)
+        exec "$SCRIPT_DIR/squads-events" "$@"
+        ;;
+    daemon)
+        exec "$SCRIPT_DIR/squads-daemon" "$@"
+        ;;
+    brief)
+        # Quick inline brief - create temp file and run
+        SQUAD="$1"
+        AGENT="$2"
+        BRIEF_TEXT="$3"
+
+        if [ -z "$SQUAD" ] || [ -z "$AGENT" ] || [ -z "$BRIEF_TEXT" ]; then
+            echo "Usage: squads brief <squad> <agent> \"brief text\""
+            exit 1
+        fi
+
+        TEMP_BRIEF=$(mktemp)
+        echo "# Inline Brief" > "$TEMP_BRIEF"
+        echo "" >> "$TEMP_BRIEF"
+        echo "$BRIEF_TEXT" >> "$TEMP_BRIEF"
+
+        # Run agent with temp brief
+        "$SCRIPT_DIR/run-agent" "$SQUAD" "$AGENT" "$TEMP_BRIEF"
+        rm -f "$TEMP_BRIEF"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    "")
+        usage
+        ;;
+    *)
+        echo "Unknown command: $CMD"
+        echo ""
+        usage
+        ;;
+esac

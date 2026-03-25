@@ -1,0 +1,470 @@
+#!/bin/bash
+#
+# squads-events - Read events from the event buffer
+#
+# Usage:
+#   squads events list              List recent events
+#   squads events consume <id>      Consume events for a consumer
+#   squads events peek <id>         Check pending event count
+#   squads events stats             Show buffer statistics
+#   squads events summary           Human-readable event summary
+#
+# This command reads from the squads-api event buffer API.
+# Events come from GitHub, Stripe, Slack, and other webhook sources.
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# API configuration (from environment)
+API_BASE="${SQUADS_API_URL:-}"
+if [ -z "$API_BASE" ]; then
+    echo "Error: SQUADS_API_URL not set"
+    echo "Set it in your environment or run: source /etc/squads-worker.env"
+    exit 1
+fi
+
+# Colors
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+GRAY='\033[0;90m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+usage() {
+    echo -e "${BOLD}squads-events${NC} - Event buffer management"
+    echo ""
+    echo "Commands:"
+    echo "  list [--since=<ts>] [--source=<src>] [--limit=<n>]"
+    echo "                              List recent events (Redis buffer)"
+    echo "  search [options]            Search events (PostgreSQL, durable)"
+    echo "  entity <type> <id>          Get events for an entity"
+    echo "  summary [--since=1h]        Aggregated event summary"
+    echo "  consume <consumer-id>       Consume events (marks as read)"
+    echo "  peek <consumer-id>          Check pending count"
+    echo "  stats                       Show buffer statistics"
+    echo ""
+    echo "Search options:"
+    echo "  --source=<src>        Filter by source (github, stripe, slack)"
+    echo "  --type=<type>         Filter by event type"
+    echo "  --entity=<type>       Filter by entity type (repo, customer, team)"
+    echo "  --since=<time>        Time filter (1h, 24h, 7d, or ISO timestamp)"
+    echo "  --q=<text>            Text search in event data"
+    echo "  --limit=<n>           Max results (default: 50)"
+    echo "  --json                Output raw JSON"
+    echo ""
+    echo "Examples:"
+    echo "  squads events search --source=github --since=24h"
+    echo "  squads events entity repo agents-squads/hq"
+    echo "  squads events entity customer cus_123"
+    echo "  squads events summary --since=7d"
+    exit 1
+}
+
+# Parse arguments
+CMD="${1:-}"
+shift 2>/dev/null || true
+
+SINCE=""
+SOURCE=""
+LIMIT="50"
+JSON_OUTPUT=""
+CONSUMER_ID=""
+EVENT_TYPE=""
+ENTITY_TYPE=""
+ENTITY_ID=""
+SEARCH_Q=""
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --since=*)
+            SINCE="${1#*=}"
+            shift
+            ;;
+        --source=*)
+            SOURCE="${1#*=}"
+            shift
+            ;;
+        --type=*)
+            EVENT_TYPE="${1#*=}"
+            shift
+            ;;
+        --entity=*)
+            ENTITY_TYPE="${1#*=}"
+            shift
+            ;;
+        --q=*)
+            SEARCH_Q="${1#*=}"
+            shift
+            ;;
+        --limit=*)
+            LIMIT="${1#*=}"
+            shift
+            ;;
+        --json)
+            JSON_OUTPUT="1"
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Handle positional args
+if [ ${#POSITIONAL_ARGS[@]} -gt 0 ]; then
+    CONSUMER_ID="${POSITIONAL_ARGS[0]}"
+fi
+if [ ${#POSITIONAL_ARGS[@]} -gt 1 ]; then
+    ENTITY_ID="${POSITIONAL_ARGS[1]}"
+fi
+
+# Default since to 1 hour ago if not specified
+if [ -z "$SINCE" ]; then
+    SINCE=$(( $(date +%s) - 3600 ))
+fi
+
+format_timestamp() {
+    local ts="$1"
+    # Handle float timestamps by taking integer part
+    ts="${ts%.*}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date -r "$ts" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$ts"
+    else
+        date -d "@$ts" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$ts"
+    fi
+}
+
+format_event() {
+    local event="$1"
+    local source=$(echo "$event" | jq -r '.source')
+    local event_type=$(echo "$event" | jq -r '.event_type')
+    local ts=$(echo "$event" | jq -r '.timestamp')
+    local data=$(echo "$event" | jq -c '.data')
+
+    local time_str=$(format_timestamp "$ts")
+
+    # Color by source
+    local source_color="$GRAY"
+    case "$source" in
+        github) source_color="$CYAN" ;;
+        stripe) source_color="$GREEN" ;;
+        slack) source_color="$YELLOW" ;;
+    esac
+
+    echo -e "${GRAY}${time_str}${NC} ${source_color}[${source}]${NC} ${BOLD}${event_type}${NC}"
+
+    # Show relevant data based on event type
+    case "$event_type" in
+        push)
+            local repo=$(echo "$data" | jq -r '.repo // "unknown"')
+            local branch=$(echo "$data" | jq -r '.branch // "unknown"')
+            local commits=$(echo "$data" | jq -r '.commits // 0')
+            echo -e "  ${GRAY}repo:${NC} $repo ${GRAY}branch:${NC} $branch ${GRAY}commits:${NC} $commits"
+            ;;
+        pull_request)
+            local repo=$(echo "$data" | jq -r '.repo // "unknown"')
+            local action=$(echo "$data" | jq -r '.action // "unknown"')
+            local pr_num=$(echo "$data" | jq -r '.pr_number // "?"')
+            local pr_title=$(echo "$data" | jq -r '.pr_title // ""' | head -c 60)
+            echo -e "  ${GRAY}repo:${NC} $repo ${GRAY}#${pr_num}${NC} ${action}: ${pr_title}"
+            ;;
+        issues)
+            local repo=$(echo "$data" | jq -r '.repo // "unknown"')
+            local action=$(echo "$data" | jq -r '.action // "unknown"')
+            local issue_num=$(echo "$data" | jq -r '.issue_number // "?"')
+            local issue_title=$(echo "$data" | jq -r '.issue_title // ""' | head -c 60)
+            echo -e "  ${GRAY}repo:${NC} $repo ${GRAY}#${issue_num}${NC} ${action}: ${issue_title}"
+            ;;
+        invoice.*)
+            local amount=$(echo "$data" | jq -r '.amount // 0')
+            local currency=$(echo "$data" | jq -r '.currency // "usd"')
+            local status=$(echo "$data" | jq -r '.status // "unknown"')
+            # Convert cents to dollars for display
+            local dollars=$(echo "scale=2; $amount / 100" | bc 2>/dev/null || echo "$amount")
+            echo -e "  ${GRAY}amount:${NC} \$${dollars} ${currency} ${GRAY}status:${NC} ${status}"
+            ;;
+        message|app_mention)
+            local channel=$(echo "$data" | jq -r '.channel // "unknown"')
+            local text=$(echo "$data" | jq -r '.text // ""' | head -c 80)
+            echo -e "  ${GRAY}channel:${NC} $channel"
+            echo -e "  ${GRAY}text:${NC} $text"
+            ;;
+        *)
+            # Generic data display (first 3 keys)
+            echo "$data" | jq -r 'to_entries | .[0:3] | .[] | "  \(.key): \(.value)"' 2>/dev/null || true
+            ;;
+    esac
+}
+
+case "$CMD" in
+    list)
+        QUERY="since=${SINCE}&limit=${LIMIT}"
+        [ -n "$SOURCE" ] && QUERY="${QUERY}&source=${SOURCE}"
+
+        RESPONSE=$(curl -s "${API_BASE}/events?${QUERY}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        COUNT=$(echo "$RESPONSE" | jq -r '.count')
+        echo -e "${BOLD}Events${NC} (${COUNT} found, since $(format_timestamp $SINCE))"
+        echo ""
+
+        if [ "$COUNT" = "0" ]; then
+            echo -e "${GRAY}No events found${NC}"
+            exit 0
+        fi
+
+        echo "$RESPONSE" | jq -c '.events[]' | while read -r event; do
+            format_event "$event"
+            echo ""
+        done
+        ;;
+
+    search)
+        # Build query params for PostgreSQL search
+        QUERY="limit=${LIMIT}"
+        [ -n "$SOURCE" ] && QUERY="${QUERY}&source=${SOURCE}"
+        [ -n "$EVENT_TYPE" ] && QUERY="${QUERY}&event_type=${EVENT_TYPE}"
+        [ -n "$ENTITY_TYPE" ] && QUERY="${QUERY}&entity_type=${ENTITY_TYPE}"
+        [ -n "$SINCE" ] && QUERY="${QUERY}&since=${SINCE}"
+        [ -n "$SEARCH_Q" ] && QUERY="${QUERY}&q=${SEARCH_Q}"
+
+        RESPONSE=$(curl -s "${API_BASE}/events/search?${QUERY}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        COUNT=$(echo "$RESPONSE" | jq -r '.count')
+        echo -e "${BOLD}Search Results${NC} (${COUNT} found)"
+        echo ""
+
+        if [ "$COUNT" = "0" ]; then
+            echo -e "${GRAY}No events found${NC}"
+            exit 0
+        fi
+
+        echo "$RESPONSE" | jq -c '.events[]' | while read -r event; do
+            # Format DB event (slightly different structure)
+            evt_source=$(echo "$event" | jq -r '.source')
+            evt_type=$(echo "$event" | jq -r '.event_type')
+            evt_created=$(echo "$event" | jq -r '.created_at')
+            evt_entity_type=$(echo "$event" | jq -r '.entity_type // "-"')
+            evt_entity_id=$(echo "$event" | jq -r '.entity_id // "-"')
+            evt_data=$(echo "$event" | jq -c '.data')
+
+            # Color by source
+            evt_source_color="$GRAY"
+            case "$evt_source" in
+                github) evt_source_color="$CYAN" ;;
+                stripe) evt_source_color="$GREEN" ;;
+                slack) evt_source_color="$YELLOW" ;;
+            esac
+
+            echo -e "${GRAY}${evt_created}${NC} ${evt_source_color}[${evt_source}]${NC} ${BOLD}${evt_type}${NC}"
+            echo -e "  ${GRAY}entity:${NC} ${evt_entity_type}/${evt_entity_id}"
+            echo "$evt_data" | jq -r 'to_entries | .[0:3] | .[] | "  \(.key): \(.value)"' 2>/dev/null || true
+            echo ""
+        done
+        ;;
+
+    entity)
+        # Get entity type and ID from positional args
+        ENTITY_TYPE="${POSITIONAL_ARGS[0]:-}"
+        ENTITY_ID="${POSITIONAL_ARGS[1]:-}"
+
+        if [ -z "$ENTITY_TYPE" ] || [ -z "$ENTITY_ID" ]; then
+            echo "Error: entity type and id required"
+            echo "Usage: squads events entity <type> <id>"
+            echo "Examples:"
+            echo "  squads events entity repo agents-squads/hq"
+            echo "  squads events entity customer cus_123"
+            exit 1
+        fi
+
+        RESPONSE=$(curl -s "${API_BASE}/events/entity/${ENTITY_TYPE}/${ENTITY_ID}?limit=${LIMIT}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        COUNT=$(echo "$RESPONSE" | jq -r '.count')
+        echo -e "${BOLD}Events for ${ENTITY_TYPE}/${ENTITY_ID}${NC} (${COUNT} found)"
+        echo ""
+
+        if [ "$COUNT" = "0" ]; then
+            echo -e "${GRAY}No events found${NC}"
+            exit 0
+        fi
+
+        echo "$RESPONSE" | jq -c '.events[]' | while read -r event; do
+            evt_source=$(echo "$event" | jq -r '.source')
+            evt_type=$(echo "$event" | jq -r '.event_type')
+            evt_created=$(echo "$event" | jq -r '.created_at')
+
+            evt_source_color="$GRAY"
+            case "$evt_source" in
+                github) evt_source_color="$CYAN" ;;
+                stripe) evt_source_color="$GREEN" ;;
+                slack) evt_source_color="$YELLOW" ;;
+            esac
+
+            echo -e "${GRAY}${evt_created}${NC} ${evt_source_color}[${evt_source}]${NC} ${BOLD}${evt_type}${NC}"
+        done
+        ;;
+
+    consume)
+        if [ -z "$CONSUMER_ID" ]; then
+            echo "Error: consumer-id required"
+            echo "Usage: squads events consume <consumer-id>"
+            exit 1
+        fi
+
+        QUERY="consumer_id=${CONSUMER_ID}&limit=${LIMIT}"
+        [ -n "$SOURCE" ] && QUERY="${QUERY}&source=${SOURCE}"
+
+        RESPONSE=$(curl -s -X POST "${API_BASE}/events/consume?${QUERY}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        COUNT=$(echo "$RESPONSE" | jq -r '.count')
+        echo -e "${BOLD}Consumed${NC} ${COUNT} events for consumer: ${CONSUMER_ID}"
+        echo ""
+
+        if [ "$COUNT" = "0" ]; then
+            echo -e "${GRAY}No new events${NC}"
+            exit 0
+        fi
+
+        echo "$RESPONSE" | jq -c '.events[]' | while read -r event; do
+            format_event "$event"
+            echo ""
+        done
+        ;;
+
+    peek)
+        if [ -z "$CONSUMER_ID" ]; then
+            echo "Error: consumer-id required"
+            echo "Usage: squads events peek <consumer-id>"
+            exit 1
+        fi
+
+        RESPONSE=$(curl -s "${API_BASE}/events/peek?consumer_id=${CONSUMER_ID}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        COUNT=$(echo "$RESPONSE" | jq -r '.pending_count')
+        echo -e "${BOLD}Pending events:${NC} ${COUNT}"
+        ;;
+
+    stats)
+        RESPONSE=$(curl -s "${API_BASE}/events/stats")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        TOTAL=$(echo "$RESPONSE" | jq -r '.total_events')
+        LAST_HOUR=$(echo "$RESPONSE" | jq -r '.events_last_hour')
+        OLDEST=$(echo "$RESPONSE" | jq -r '.oldest_timestamp // "null"')
+        NEWEST=$(echo "$RESPONSE" | jq -r '.newest_timestamp // "null"')
+
+        echo -e "${BOLD}Event Buffer Stats${NC}"
+        echo ""
+        echo -e "  ${GRAY}Total events:${NC}     ${TOTAL}"
+        echo -e "  ${GRAY}Last hour:${NC}        ${LAST_HOUR}"
+
+        if [ "$OLDEST" != "null" ]; then
+            echo -e "  ${GRAY}Oldest:${NC}           $(format_timestamp ${OLDEST%.*})"
+        fi
+        if [ "$NEWEST" != "null" ]; then
+            echo -e "  ${GRAY}Newest:${NC}           $(format_timestamp ${NEWEST%.*})"
+        fi
+
+        echo ""
+        echo -e "${GRAY}By source (last hour):${NC}"
+        echo "$RESPONSE" | jq -r '.by_source_last_hour | to_entries[] | "  \(.key): \(.value)"'
+        ;;
+
+    summary)
+        # Use PostgreSQL-based summary endpoint
+        SINCE_PARAM="${SINCE:-24h}"
+        RESPONSE=$(curl -s "${API_BASE}/events/summary?since=${SINCE_PARAM}")
+
+        if [ -n "$JSON_OUTPUT" ]; then
+            echo "$RESPONSE" | jq .
+            exit 0
+        fi
+
+        TOTAL=$(echo "$RESPONSE" | jq -r '.total_events')
+        PERIOD=$(echo "$RESPONSE" | jq -r '.period')
+
+        echo -e "${BOLD}Event Summary${NC} (${PERIOD})"
+        echo ""
+        echo -e "  ${GRAY}Total events:${NC} ${TOTAL}"
+        echo ""
+
+        if [ "$TOTAL" = "0" ]; then
+            echo -e "${GRAY}No events in this period${NC}"
+            exit 0
+        fi
+
+        # By source
+        echo -e "${BOLD}By Source:${NC}"
+        echo "$RESPONSE" | jq -r '.by_source | to_entries[] | "  \(.key): \(.value)"'
+        echo ""
+
+        # By type (top events)
+        echo -e "${BOLD}Top Event Types:${NC}"
+        echo "$RESPONSE" | jq -r '.by_type[] | "  [\(.source)] \(.type): \(.count)"'
+        echo ""
+
+        # Recent events
+        echo -e "${BOLD}Recent Events:${NC}"
+        echo "$RESPONSE" | jq -c '.recent[]' | head -5 | while read -r event; do
+            evt_source=$(echo "$event" | jq -r '.source')
+            evt_type=$(echo "$event" | jq -r '.event_type')
+            evt_created=$(echo "$event" | jq -r '.created_at')
+
+            evt_source_color="$GRAY"
+            case "$evt_source" in
+                github) evt_source_color="$CYAN" ;;
+                stripe) evt_source_color="$GREEN" ;;
+                slack) evt_source_color="$YELLOW" ;;
+            esac
+
+            echo -e "  ${GRAY}${evt_created}${NC} ${evt_source_color}[${evt_source}]${NC} ${evt_type}"
+        done
+        ;;
+
+    help|--help|-h)
+        usage
+        ;;
+
+    "")
+        usage
+        ;;
+
+    *)
+        echo "Unknown command: $CMD"
+        echo ""
+        usage
+        ;;
+esac

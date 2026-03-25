@@ -1,0 +1,60 @@
+#!/bin/bash
+#
+# agent-feedback - Submit feedback to an agent
+#
+# Usage:
+#   agent-feedback <squad> <agent> "feedback message"
+#   agent-feedback <squad> <agent> --read   # Read current feedback
+#
+
+set -e
+
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+MEMORY_DIR="$AGENTS_SQUADS_HOME/hq/.agents/memory"
+
+if [ $# -lt 2 ]; then
+    echo "Usage: agent-feedback <squad> <agent> \"feedback message\""
+    echo "       agent-feedback <squad> <agent> --read"
+    exit 1
+fi
+
+SQUAD="$1"
+AGENT="$2"
+FEEDBACK="${3:-}"
+
+FEEDBACK_FILE="$MEMORY_DIR/$SQUAD/$AGENT/feedback.md"
+
+# Ensure directory exists
+mkdir -p "$(dirname "$FEEDBACK_FILE")"
+
+# Create file if it doesn't exist
+if [ ! -f "$FEEDBACK_FILE" ]; then
+    cat > "$FEEDBACK_FILE" << 'EOF'
+# Agent Feedback
+
+> Feedback from manager to improve agent behavior
+
+## Feedback Log
+
+EOF
+fi
+
+case "$FEEDBACK" in
+    --read|-r)
+        cat "$FEEDBACK_FILE"
+        ;;
+    "")
+        echo "Error: Provide feedback message or --read flag"
+        exit 1
+        ;;
+    *)
+        # Append feedback with timestamp
+        TIMESTAMP=$(date +"%Y-%m-%d %H:%M")
+        echo "" >> "$FEEDBACK_FILE"
+        echo "### $TIMESTAMP" >> "$FEEDBACK_FILE"
+        echo "" >> "$FEEDBACK_FILE"
+        echo "$FEEDBACK" >> "$FEEDBACK_FILE"
+        echo "" >> "$FEEDBACK_FILE"
+        echo "Feedback added for $SQUAD/$AGENT"
+        ;;
+esac

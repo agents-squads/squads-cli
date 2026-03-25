@@ -1,0 +1,371 @@
+#!/bin/bash
+#
+# run-agent - Execute an agent with full tool access
+#
+# Usage:
+#   run-agent <squad> <agent> [brief-file]
+#
+# Examples:
+#   run-agent website web-lead drafts/website-post-v2-brief.md
+#   run-agent intelligence intel-lead
+#   run-agent website design-eval  # Run without brief (uses agent's default trigger)
+#
+# Environment:
+#   AGENTS_SQUADS_HOME - Base directory (default: ~/agents-squads)
+#   AGENT_OUTPUT_DIR   - Where to write outputs (default: $AGENTS_SQUADS_HOME/hq/.agents/outputs)
+#   AGENT_MODEL        - Model to use (default: from agent def or sonnet)
+#   AGENT_BACKGROUND   - Run in background (default: false)
+#   SQUADS_PROVIDER    - LLM provider to use (default: claude)
+#
+
+set -e
+
+# Configuration
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+HQ_DIR="$AGENTS_SQUADS_HOME/hq"
+AGENT_OUTPUT_DIR="${AGENT_OUTPUT_DIR:-$HQ_DIR/.agents/outputs}"
+AGENT_MODEL="${AGENT_MODEL:-sonnet}"
+AGENT_BACKGROUND="${AGENT_BACKGROUND:-false}"
+SQUADS_PROVIDER="${SQUADS_PROVIDER:-}"
+ADAPTERS_DIR="$HQ_DIR/bin/adapters"
+PROVIDERS_CONFIG="$HQ_DIR/.agents/config/providers.yaml"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Functions
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Detect provider from config or environment
+detect_provider() {
+    # 1. Environment variable takes precedence
+    if [ -n "$SQUADS_PROVIDER" ]; then
+        echo "$SQUADS_PROVIDER"
+        return
+    fi
+
+    # 2. Check project-level provider.yaml
+    local project_config="$HQ_DIR/.agents/config/provider.yaml"
+    if [ -f "$project_config" ] && command -v yq &> /dev/null; then
+        local provider=$(yq '.provider // ""' "$project_config" 2>/dev/null)
+        if [ -n "$provider" ] && [ "$provider" != "null" ]; then
+            echo "$provider"
+            return
+        fi
+    fi
+
+    # 3. Default to claude
+    echo "claude"
+}
+
+# Map semantic model names to provider-specific names
+map_semantic_model() {
+    local model="$1"
+    local provider="$2"
+
+    # If it's already a provider-specific name, use it directly
+    case "$model" in
+        claude-*|gpt-*|gemini-*|llama*|opus|sonnet|haiku)
+            echo "$model"
+            return
+            ;;
+    esac
+
+    # Map semantic names (leader, worker, simple) to provider-specific
+    case "$provider" in
+        claude)
+            case "$model" in
+                leader) echo "opus" ;;
+                worker) echo "sonnet" ;;
+                simple) echo "haiku" ;;
+                *) echo "sonnet" ;;
+            esac
+            ;;
+        gemini)
+            case "$model" in
+                leader) echo "gemini-2.0-pro" ;;
+                worker) echo "gemini-2.0-flash" ;;
+                simple) echo "gemini-2.0-flash" ;;
+                *) echo "gemini-2.0-flash" ;;
+            esac
+            ;;
+        openai)
+            case "$model" in
+                leader) echo "gpt-4o" ;;
+                worker) echo "gpt-4o-mini" ;;
+                simple) echo "gpt-4o-mini" ;;
+                *) echo "gpt-4o-mini" ;;
+            esac
+            ;;
+        ollama)
+            case "$model" in
+                leader) echo "llama3.2:70b" ;;
+                worker) echo "llama3.2:8b" ;;
+                simple) echo "llama3.2:3b" ;;
+                *) echo "llama3.2:8b" ;;
+            esac
+            ;;
+        *)
+            echo "$model"
+            ;;
+    esac
+}
+
+# Get the execution command for a provider
+get_provider_cmd() {
+    local provider="$1"
+    local model="$2"
+    local prompt_file="$3"
+    local add_dirs="$4"
+
+    case "$provider" in
+        claude)
+            # Use native Claude CLI
+            local cmd="claude --print --model $model"
+            if [ -n "$add_dirs" ]; then
+                IFS=',' read -ra DIRS <<< "$add_dirs"
+                for dir in "${DIRS[@]}"; do
+                    cmd="$cmd --add-dir $dir"
+                done
+            fi
+            echo "$cmd"
+            ;;
+        gemini)
+            echo "$ADAPTERS_DIR/gemini.sh $model $prompt_file"
+            ;;
+        openai)
+            echo "$ADAPTERS_DIR/openai.sh $model $prompt_file"
+            ;;
+        ollama)
+            echo "$ADAPTERS_DIR/ollama.sh $model $prompt_file"
+            ;;
+        none)
+            log_error "No provider configured. Use 'squads init --provider <name>' or set SQUADS_PROVIDER."
+            exit 1
+            ;;
+        *)
+            log_error "Unknown provider: $provider"
+            echo "Supported providers: claude, gemini, openai, ollama"
+            exit 1
+            ;;
+    esac
+}
+
+usage() {
+    echo "Usage: run-agent <squad> <agent> [brief-file]"
+    echo ""
+    echo "Arguments:"
+    echo "  squad       Squad name (e.g., website, intelligence, research)"
+    echo "  agent       Agent name (e.g., web-lead, design-eval, intel-lead)"
+    echo "  brief-file  Optional path to brief file (relative to hq/)"
+    echo ""
+    echo "Environment Variables:"
+    echo "  AGENT_MODEL       Model to use (default: sonnet, or: leader, worker, simple)"
+    echo "  AGENT_BACKGROUND  Run in background (default: false)"
+    echo "  SQUADS_PROVIDER   LLM provider (default: claude, or: gemini, openai, ollama)"
+    echo ""
+    echo "Examples:"
+    echo "  run-agent website web-lead drafts/website-brief.md"
+    echo "  AGENT_BACKGROUND=true run-agent website design-eval"
+    exit 1
+}
+
+# Validate arguments
+if [ $# -lt 2 ]; then
+    usage
+fi
+
+SQUAD="$1"
+AGENT="$2"
+BRIEF_FILE="${3:-}"
+
+# Paths
+AGENT_DEF="$HQ_DIR/.agents/squads/$SQUAD/$AGENT.md"
+SQUAD_DEF="$HQ_DIR/.agents/squads/$SQUAD/SQUAD.md"
+
+# Validate agent exists
+if [ ! -f "$AGENT_DEF" ]; then
+    log_error "Agent not found: $AGENT_DEF"
+    echo "Available agents in $SQUAD squad:"
+    ls -1 "$HQ_DIR/.agents/squads/$SQUAD/"*.md 2>/dev/null | xargs -n1 basename | sed 's/.md$//'
+    exit 1
+fi
+
+log_info "Loading agent: $SQUAD/$AGENT"
+
+# Extract agent metadata from frontmatter
+extract_frontmatter() {
+    local file="$1"
+    local key="$2"
+    sed -n '/^---$/,/^---$/p' "$file" | grep "^$key:" | head -1 | sed "s/^$key: *//"
+}
+
+# Get agent configuration
+AGENT_NAME=$(extract_frontmatter "$AGENT_DEF" "name")
+AGENT_ROLE=$(extract_frontmatter "$AGENT_DEF" "role")
+AGENT_DEF_MODEL=$(extract_frontmatter "$AGENT_DEF" "model")
+
+# Detect provider
+PROVIDER=$(detect_provider)
+
+# Map model names (supports semantic names: leader, worker, simple)
+map_model_name() {
+    local model="$1"
+    local provider="$2"
+
+    # First try semantic mapping
+    local mapped=$(map_semantic_model "$model" "$provider")
+
+    # For Claude, also normalize provider-specific names
+    if [ "$provider" = "claude" ]; then
+        case "$mapped" in
+            claude-sonnet-4|claude-sonnet-4-*|sonnet-4|sonnet)
+                echo "sonnet"
+                ;;
+            claude-opus-4|claude-opus-4-*|opus-4|opus)
+                echo "opus"
+                ;;
+            claude-haiku-3|claude-haiku-3-*|haiku-3|haiku|claude-haiku-3.5|claude-haiku-3-5)
+                echo "haiku"
+                ;;
+            *)
+                echo "$mapped"
+                ;;
+        esac
+    else
+        echo "$mapped"
+    fi
+}
+
+# Use agent-defined model if available
+if [ -n "$AGENT_DEF_MODEL" ]; then
+    AGENT_MODEL=$(map_model_name "$AGENT_DEF_MODEL" "$PROVIDER")
+else
+    AGENT_MODEL=$(map_model_name "$AGENT_MODEL" "$PROVIDER")
+fi
+
+log_info "Agent: $AGENT_NAME"
+log_info "Role: $AGENT_ROLE"
+log_info "Provider: $PROVIDER"
+log_info "Model: $AGENT_MODEL"
+
+# Extract instructions section from agent definition
+AGENT_INSTRUCTIONS=$(sed -n '/^## Instructions$/,/^## [A-Z]/p' "$AGENT_DEF" | sed '1d;$d' | sed 's/^```$//' | sed '/^```/d')
+
+# Build the prompt
+PROMPT="You are $AGENT_NAME, an agent in the $SQUAD squad.
+
+## Your Role
+$AGENT_ROLE
+
+## Agent Definition
+$(cat "$AGENT_DEF")
+
+## Squad Context
+$(cat "$SQUAD_DEF" 2>/dev/null || echo "No squad definition found.")
+
+"
+
+# Add brief if provided
+if [ -n "$BRIEF_FILE" ]; then
+    BRIEF_PATH="$HQ_DIR/$BRIEF_FILE"
+    if [ ! -f "$BRIEF_PATH" ]; then
+        log_error "Brief not found: $BRIEF_PATH"
+        exit 1
+    fi
+    log_info "Brief: $BRIEF_FILE"
+    PROMPT="$PROMPT
+## Brief to Execute
+$(cat "$BRIEF_PATH")
+
+Execute this brief according to your agent definition.
+"
+else
+    PROMPT="$PROMPT
+Execute your default function as defined in your agent definition.
+"
+fi
+
+# Setup output
+mkdir -p "$AGENT_OUTPUT_DIR"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+OUTPUT_FILE="$AGENT_OUTPUT_DIR/${SQUAD}-${AGENT}-${TIMESTAMP}.md"
+
+log_info "Output: $OUTPUT_FILE"
+
+# Create temp file for prompt (avoids pipe issues with large prompts)
+PROMPT_FILE=$(mktemp)
+echo "$PROMPT" > "$PROMPT_FILE"
+
+# Build working directories list
+ADD_DIRS="$AGENTS_SQUADS_HOME/hq,$AGENTS_SQUADS_HOME/agents-squads-web,$AGENTS_SQUADS_HOME/intelligence,$AGENTS_SQUADS_HOME/research"
+
+# Get provider-specific command
+EXEC_CMD=$(get_provider_cmd "$PROVIDER" "$AGENT_MODEL" "$PROMPT_FILE" "$ADD_DIRS")
+
+# Execute
+log_info "Starting agent execution..."
+echo ""
+
+if [ "$AGENT_BACKGROUND" = "true" ]; then
+    # Background execution
+    (
+        echo "# Agent Execution: $SQUAD/$AGENT"
+        echo "**Started**: $(date)"
+        echo "**Provider**: $PROVIDER"
+        echo "**Model**: $AGENT_MODEL"
+        echo "**Brief**: ${BRIEF_FILE:-none}"
+        echo ""
+        echo "---"
+        echo ""
+        if [ "$PROVIDER" = "claude" ]; then
+            cat "$PROMPT_FILE" | $EXEC_CMD 2>&1
+        else
+            $EXEC_CMD 2>&1
+        fi
+        echo ""
+        echo "---"
+        echo "**Completed**: $(date)"
+        rm -f "$PROMPT_FILE"
+    ) > "$OUTPUT_FILE" 2>&1 &
+
+    PID=$!
+    log_success "Agent running in background (PID: $PID)"
+    log_info "Monitor with: tail -f $OUTPUT_FILE"
+    echo $PID > "$AGENT_OUTPUT_DIR/.${SQUAD}-${AGENT}.pid"
+else
+    # Foreground execution with live output
+    (
+        echo "# Agent Execution: $SQUAD/$AGENT"
+        echo "**Started**: $(date)"
+        echo "**Provider**: $PROVIDER"
+        echo "**Model**: $AGENT_MODEL"
+        echo "**Brief**: ${BRIEF_FILE:-none}"
+        echo ""
+        echo "---"
+        echo ""
+    ) > "$OUTPUT_FILE"
+
+    if [ "$PROVIDER" = "claude" ]; then
+        cat "$PROMPT_FILE" | $EXEC_CMD 2>&1 | tee -a "$OUTPUT_FILE"
+    else
+        $EXEC_CMD 2>&1 | tee -a "$OUTPUT_FILE"
+    fi
+
+    (
+        echo ""
+        echo "---"
+        echo "**Completed**: $(date)"
+    ) >> "$OUTPUT_FILE"
+
+    rm -f "$PROMPT_FILE"
+    log_success "Agent execution complete"
+    log_info "Output saved to: $OUTPUT_FILE"
+fi

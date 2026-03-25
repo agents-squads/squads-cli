@@ -1,0 +1,58 @@
+#!/bin/bash
+#
+# agent-output - Get output from an agent
+#
+# Usage:
+#   agent-output <squad> <agent>          # Show latest output
+#   agent-output <squad> <agent> --list   # List all outputs
+#   agent-output <squad> <agent> --tail   # Follow latest output
+#
+
+set -e
+
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+OUTPUT_DIR="$AGENTS_SQUADS_HOME/hq/.agents/outputs"
+
+if [ $# -lt 2 ]; then
+    echo "Usage: agent-output <squad> <agent> [--list|--tail]"
+    echo ""
+    echo "Examples:"
+    echo "  agent-output intelligence intel-lead"
+    echo "  agent-output website web-lead --list"
+    echo "  agent-output website design-eval --tail"
+    exit 1
+fi
+
+SQUAD="$1"
+AGENT="$2"
+FLAG="${3:-}"
+
+# Find outputs
+PATTERN="${SQUAD}-${AGENT}-*.md"
+OUTPUTS=$(find "$OUTPUT_DIR" -name "$PATTERN" 2>/dev/null | sort -r)
+
+if [ -z "$OUTPUTS" ]; then
+    echo "No outputs found for $SQUAD/$AGENT"
+    exit 1
+fi
+
+LATEST=$(echo "$OUTPUTS" | head -1)
+
+case "$FLAG" in
+    --list|-l)
+        echo "Outputs for $SQUAD/$AGENT:"
+        echo "$OUTPUTS" | while read -r file; do
+            NAME=$(basename "$file")
+            TIME=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file")
+            SIZE=$(wc -l < "$file" | tr -d ' ')
+            echo "  $NAME ($TIME, ${SIZE} lines)"
+        done
+        ;;
+    --tail|-t)
+        echo "Following: $LATEST"
+        tail -f "$LATEST"
+        ;;
+    *)
+        cat "$LATEST"
+        ;;
+esac

@@ -1,0 +1,255 @@
+#!/bin/bash
+#
+# squads-slack - Manage Slack integration for squads
+#
+# Usage:
+#   squads slack sync              Sync squad channels to Slack
+#   squads slack channels          List Slack channels
+#   squads slack post <squad> msg  Post to a squad channel
+#   squads slack approve <squad>   Post approval request
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+HQ_DIR="$AGENTS_SQUADS_HOME/hq"
+SQUADS_DIR="$HQ_DIR/.agents/squads"
+
+# Load env
+if [ -f "$HQ_DIR/.env" ]; then
+    export $(grep -E "^SLACK_BOT_TOKEN=" "$HQ_DIR/.env" | xargs 2>/dev/null) || true
+fi
+
+if [ -z "$SLACK_BOT_TOKEN" ]; then
+    echo "Error: SLACK_BOT_TOKEN not set in .env"
+    exit 1
+fi
+
+# Slack API helper
+slack_api() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+
+    if [ "$method" = "GET" ]; then
+        curl -s "https://slack.com/api/$endpoint" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN"
+    else
+        curl -s -X POST "https://slack.com/api/$endpoint" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$data"
+    fi
+}
+
+# Get all squad names
+get_squads() {
+    for squad_dir in "$SQUADS_DIR"/*/; do
+        [ -d "$squad_dir" ] || continue
+        SQUAD_NAME=$(basename "$squad_dir")
+        [ "$SQUAD_NAME" = "_template" ] && continue
+        echo "$SQUAD_NAME"
+    done
+}
+
+# Get channel name for a squad
+channel_name() {
+    local squad="$1"
+    echo "squad-$squad"
+}
+
+# Sync command - create channels for all squads
+cmd_sync() {
+    echo "Syncing squad channels to Slack..."
+    echo ""
+
+    local created=0
+    local existing=0
+    local failed=0
+
+    for squad in $(get_squads); do
+        local ch_name=$(channel_name "$squad")
+
+        # Try to create the channel
+        local result=$(slack_api POST "conversations.create" "{\"name\":\"$ch_name\"}")
+        local ok=$(echo "$result" | jq -r '.ok')
+        local error=$(echo "$result" | jq -r '.error // empty')
+
+        if [ "$ok" = "true" ]; then
+            local ch_id=$(echo "$result" | jq -r '.channel.id')
+            echo "  ✓ Created #$ch_name ($ch_id)"
+
+            # Set topic
+            local topic="$squad squad - Agent activity and approvals"
+            slack_api POST "conversations.setTopic" "{\"channel\":\"$ch_id\",\"topic\":\"$topic\"}" > /dev/null
+
+            # Post welcome message
+            slack_api POST "chat.postMessage" "{\"channel\":\"$ch_id\",\"text\":\"*#$ch_name is ready!*\\n\\nThis channel receives activity and approval requests for the *$squad* squad.\"}" > /dev/null
+
+            ((created++))
+        elif [ "$error" = "name_taken" ]; then
+            echo "  • #$ch_name (exists)"
+            ((existing++))
+        else
+            echo "  ✗ Failed #$ch_name: $error"
+            ((failed++))
+        fi
+    done
+
+    echo ""
+    echo "Done: $created created, $existing existing, $failed failed"
+}
+
+# Channels command - list channels
+cmd_channels() {
+    echo "Squad channels:"
+    echo ""
+
+    local result=$(slack_api GET "conversations.list?types=public_channel&limit=100")
+
+    echo "$result" | jq -r '.channels[] | select(.name | startswith("squad-")) | "  #\(.name) (\(.id))"'
+}
+
+# Post command - post message to squad channel
+cmd_post() {
+    local squad="$1"
+    shift
+    local message="$*"
+
+    if [ -z "$squad" ] || [ -z "$message" ]; then
+        echo "Usage: squads slack post <squad> <message>"
+        exit 1
+    fi
+
+    local ch_name=$(channel_name "$squad")
+
+    # Find channel ID
+    local result=$(slack_api GET "conversations.list?types=public_channel&limit=100")
+    local ch_id=$(echo "$result" | jq -r ".channels[] | select(.name == \"$ch_name\") | .id")
+
+    if [ -z "$ch_id" ]; then
+        echo "Error: Channel #$ch_name not found. Run 'squads slack sync' first."
+        exit 1
+    fi
+
+    # Post message
+    local post_result=$(slack_api POST "chat.postMessage" "{\"channel\":\"$ch_id\",\"text\":\"$message\"}")
+    local ok=$(echo "$post_result" | jq -r '.ok')
+
+    if [ "$ok" = "true" ]; then
+        echo "Posted to #$ch_name"
+    else
+        local error=$(echo "$post_result" | jq -r '.error')
+        echo "Failed: $error"
+        exit 1
+    fi
+}
+
+# Approve command - post approval request
+cmd_approve() {
+    local squad="$1"
+    local agent="$2"
+    local action="$3"
+    local description="$4"
+
+    if [ -z "$squad" ] || [ -z "$action" ]; then
+        echo "Usage: squads slack approve <squad> [agent] <action> <description>"
+        echo ""
+        echo "Example:"
+        echo "  squads slack approve engineering pr-reviewer pr.merge \"Merge PR #50: Add feature X\""
+        exit 1
+    fi
+
+    # If only 3 args, shift them
+    if [ -z "$description" ]; then
+        description="$action"
+        action="$agent"
+        agent=""
+    fi
+
+    local ch_name=$(channel_name "$squad")
+
+    # Find channel ID
+    local result=$(slack_api GET "conversations.list?types=public_channel&limit=100")
+    local ch_id=$(echo "$result" | jq -r ".channels[] | select(.name == \"$ch_name\") | .id")
+
+    if [ -z "$ch_id" ]; then
+        echo "Error: Channel #$ch_name not found. Run 'squads slack sync' first."
+        exit 1
+    fi
+
+    # Build approval message with buttons
+    local agent_field=""
+    if [ -n "$agent" ]; then
+        agent_field="{\"type\": \"mrkdwn\", \"text\": \"*Agent:*\\n$agent\"},"
+    fi
+
+    local blocks=$(cat <<EOF
+[
+    {"type": "header", "text": {"type": "plain_text", "text": ":rotating_light: Approval Required"}},
+    {"type": "section", "fields": [
+        {"type": "mrkdwn", "text": "*Squad:*\\n$squad"},
+        $agent_field
+        {"type": "mrkdwn", "text": "*Action:*\\n\`$action\`"}
+    ]},
+    {"type": "section", "text": {"type": "mrkdwn", "text": "$description"}},
+    {"type": "actions", "elements": [
+        {"type": "button", "text": {"type": "plain_text", "text": "Approve"}, "style": "primary", "value": "approve_${squad}_${action}", "action_id": "approve_action"},
+        {"type": "button", "text": {"type": "plain_text", "text": "Reject"}, "style": "danger", "value": "reject_${squad}_${action}", "action_id": "reject_action"}
+    ]}
+]
+EOF
+)
+
+    # Clean up JSON (remove trailing comma if agent_field empty)
+    blocks=$(echo "$blocks" | tr -d '\n' | sed 's/,]/]/g')
+
+    local payload="{\"channel\":\"$ch_id\",\"text\":\"Approval Required: $action\",\"blocks\":$blocks}"
+
+    local post_result=$(slack_api POST "chat.postMessage" "$payload")
+    local ok=$(echo "$post_result" | jq -r '.ok')
+
+    if [ "$ok" = "true" ]; then
+        local ts=$(echo "$post_result" | jq -r '.ts')
+        echo "Posted approval request to #$ch_name (ts: $ts)"
+    else
+        local error=$(echo "$post_result" | jq -r '.error')
+        echo "Failed: $error"
+        exit 1
+    fi
+}
+
+# Main
+CMD="${1:-}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    sync)
+        cmd_sync "$@"
+        ;;
+    channels)
+        cmd_channels "$@"
+        ;;
+    post)
+        cmd_post "$@"
+        ;;
+    approve)
+        cmd_approve "$@"
+        ;;
+    *)
+        echo "squads slack - Manage Slack integration"
+        echo ""
+        echo "Commands:"
+        echo "  sync                Create channels for all squads"
+        echo "  channels            List squad channels"
+        echo "  post <squad> <msg>  Post message to squad channel"
+        echo "  approve <squad> ... Post approval request"
+        echo ""
+        echo "Examples:"
+        echo "  squads slack sync"
+        echo "  squads slack post engineering \"Build completed successfully\""
+        echo "  squads slack approve engineering pr.merge \"Merge PR #50\""
+        exit 1
+        ;;
+esac

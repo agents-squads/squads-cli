@@ -1,0 +1,351 @@
+#!/bin/bash
+#
+# squads-memory - Agent memory operations (read/write/search)
+#
+# Usage:
+#   squads memory read <squad> [agent]         # Get state and learnings
+#   squads memory write <squad> [agent] <text> # Store memory
+#   squads memory search <query>               # Semantic search
+#   squads memory list <squad> [agent]         # List recent memories
+#
+# Environment:
+#   MEM0_API_URL    - Memory API URL (default: http://localhost:8000)
+#   SQUADS_SQUAD    - Default squad (auto-detected in agent context)
+#   SQUADS_AGENT    - Default agent (auto-detected in agent context)
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HQ_PATH="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}/hq"
+
+# Infrastructure endpoints (configure in .env or export)
+MEM0_API_URL="${MEM0_API_URL:-http://localhost:8000}"
+BRIDGE_API="${BRIDGE_API:-http://localhost:8088}"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[MEMORY]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+show_help() {
+    cat << 'EOF'
+squads memory - Agent memory operations
+
+USAGE:
+  squads memory read <squad> [agent]           Read state and learnings
+  squads memory write <squad> [agent] <text>   Store a memory
+  squads memory search <query>                 Semantic search across all memories
+  squads memory list <squad> [agent]           List recent memories
+  squads memory health                         Check memory service health
+
+COMMANDS:
+  read      Read current state.md and learnings.md for a squad/agent
+  write     Store a memory (auto-extracts facts and insights)
+  search    Search memories semantically (uses embeddings)
+  list      List recent memories for a squad/agent
+  health    Check mem0 API health
+
+ENVIRONMENT:
+  MEM0_API_URL     Memory API URL (default: http://localhost:8000)
+  SQUADS_SQUAD     Default squad name
+  SQUADS_AGENT     Default agent name
+
+EXAMPLES:
+  squads memory read website lead
+  squads memory write engineering "Learned that CI takes 5min on main branch"
+  squads memory search "deployment best practices"
+  squads memory list customer --limit 10
+
+EXIT CODES:
+  0  Success
+  1  Not found / empty
+  2  Error
+EOF
+}
+
+# Check if mem0 API is available
+check_mem0() {
+    if ! curl -s -f "${MEM0_API_URL}/health" > /dev/null 2>&1; then
+        log_warn "mem0 API not available at ${MEM0_API_URL}"
+        return 1
+    fi
+    return 0
+}
+
+# Read state and learnings from file system (primary) + mem0 (supplemental)
+cmd_read() {
+    local squad="$1"
+    local agent="$2"
+
+    if [ -z "$squad" ]; then
+        squad="${SQUADS_SQUAD:-}"
+    fi
+
+    if [ -z "$squad" ]; then
+        log_error "Usage: squads memory read <squad> [agent]"
+        exit 2
+    fi
+
+    local memory_path="$HQ_PATH/.agents/memory/$squad"
+    if [ -n "$agent" ]; then
+        memory_path="$memory_path/$agent"
+    fi
+
+    echo -e "${CYAN}=== Memory: ${squad}${agent:+/$agent} ===${NC}"
+    echo ""
+
+    # Read state.md
+    local state_file="$memory_path/state.md"
+    if [ -f "$state_file" ]; then
+        echo -e "${GREEN}## State${NC}"
+        cat "$state_file"
+        echo ""
+    fi
+
+    # Read learnings.md
+    local learnings_file="$memory_path/learnings.md"
+    if [ -f "$learnings_file" ]; then
+        echo -e "${GREEN}## Learnings${NC}"
+        cat "$learnings_file"
+        echo ""
+    fi
+
+    # Read from mem0 if available
+    if check_mem0 2>/dev/null; then
+        local user_id="${squad}${agent:+:$agent}"
+        local response
+        response=$(curl -s "${MEM0_API_URL}/v1/memories/?user_id=${user_id}&limit=5" 2>/dev/null || echo "[]")
+
+        if [ "$response" != "[]" ] && echo "$response" | jq -e '.[] | length > 0' > /dev/null 2>&1; then
+            echo -e "${GREEN}## Recent Memories (mem0)${NC}"
+            echo "$response" | jq -r '.[] | "- \(.memory)"' 2>/dev/null || true
+        fi
+    fi
+}
+
+# Write memory to mem0 API
+cmd_write() {
+    local squad="$1"
+    local agent_or_text="$2"
+    local text="$3"
+
+    # Handle: write <squad> <text> OR write <squad> <agent> <text>
+    if [ -z "$text" ]; then
+        text="$agent_or_text"
+        agent=""
+    else
+        agent="$agent_or_text"
+    fi
+
+    if [ -z "$squad" ]; then
+        squad="${SQUADS_SQUAD:-}"
+    fi
+
+    if [ -z "$squad" ] || [ -z "$text" ]; then
+        log_error "Usage: squads memory write <squad> [agent] <text>"
+        exit 2
+    fi
+
+    if ! check_mem0; then
+        log_error "mem0 API not available"
+        exit 2
+    fi
+
+    local user_id="${squad}${agent:+:$agent}"
+
+    log_info "Storing memory for $user_id..."
+
+    local response
+    response=$(curl -s -X POST "${MEM0_API_URL}/v1/memories/" \
+        -H "Content-Type: application/json" \
+        -d "{\"messages\": [{\"role\": \"user\", \"content\": \"$text\"}], \"user_id\": \"$user_id\"}")
+
+    if echo "$response" | jq -e '.id' > /dev/null 2>&1; then
+        local memory_id=$(echo "$response" | jq -r '.id')
+        log_success "Memory stored: $memory_id"
+        echo "$memory_id"
+    else
+        log_error "Failed to store memory: $response"
+        exit 2
+    fi
+}
+
+# Search memories semantically
+cmd_search() {
+    local query="$1"
+    local limit="${2:-10}"
+
+    if [ -z "$query" ]; then
+        log_error "Usage: squads memory search <query> [--limit N]"
+        exit 2
+    fi
+
+    if ! check_mem0; then
+        log_error "mem0 API not available"
+        exit 2
+    fi
+
+    log_info "Searching for: $query"
+
+    local response
+    response=$(curl -s -X POST "${MEM0_API_URL}/v1/memories/search/" \
+        -H "Content-Type: application/json" \
+        -d "{\"query\": \"$query\", \"limit\": $limit}")
+
+    if echo "$response" | jq -e '.[0]' > /dev/null 2>&1; then
+        echo -e "${CYAN}=== Search Results ===${NC}"
+        echo "$response" | jq -r '.[] | "[\(.user_id)] \(.memory)"'
+    else
+        log_warn "No memories found for: $query"
+        exit 1
+    fi
+}
+
+# List recent memories for a squad/agent
+cmd_list() {
+    local squad="$1"
+    local agent="$2"
+    local limit="${3:-20}"
+
+    if [ -z "$squad" ]; then
+        squad="${SQUADS_SQUAD:-}"
+    fi
+
+    if [ -z "$squad" ]; then
+        log_error "Usage: squads memory list <squad> [agent] [--limit N]"
+        exit 2
+    fi
+
+    if ! check_mem0; then
+        log_error "mem0 API not available"
+        exit 2
+    fi
+
+    local user_id="${squad}${agent:+:$agent}"
+
+    log_info "Listing memories for: $user_id"
+
+    local response
+    response=$(curl -s "${MEM0_API_URL}/v1/memories/?user_id=${user_id}&limit=${limit}")
+
+    if echo "$response" | jq -e '.[0]' > /dev/null 2>&1; then
+        echo -e "${CYAN}=== Memories: ${user_id} ===${NC}"
+        echo "$response" | jq -r '.[] | "[\(.created_at | split("T")[0])] \(.memory)"'
+    else
+        log_warn "No memories found for: $user_id"
+        exit 1
+    fi
+}
+
+# Health check
+cmd_health() {
+    echo -e "${CYAN}=== Memory Infrastructure ===${NC}"
+    echo ""
+
+    # Check mem0
+    echo -n "mem0 API ($MEM0_API_URL): "
+    if check_mem0; then
+        echo -e "${GREEN}healthy${NC}"
+    else
+        echo -e "${RED}unavailable${NC}"
+    fi
+
+    # Check bridge
+    echo -n "Bridge API ($BRIDGE_API): "
+    if curl -s -f "${BRIDGE_API}/health" > /dev/null 2>&1; then
+        echo -e "${GREEN}healthy${NC}"
+    else
+        echo -e "${RED}unavailable${NC}"
+    fi
+
+    # Check file-based memory
+    echo -n "File memory ($HQ_PATH/.agents/memory): "
+    if [ -d "$HQ_PATH/.agents/memory" ]; then
+        local count=$(find "$HQ_PATH/.agents/memory" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+        echo -e "${GREEN}$count files${NC}"
+    else
+        echo -e "${YELLOW}not found${NC}"
+    fi
+}
+
+# Main
+CMD="${1:-}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    read)
+        cmd_read "$@"
+        ;;
+    write)
+        cmd_write "$@"
+        ;;
+    search)
+        QUERY=""
+        LIMIT=10
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --limit)
+                    LIMIT="$2"
+                    shift 2
+                    ;;
+                *)
+                    QUERY="$QUERY $1"
+                    shift
+                    ;;
+            esac
+        done
+        cmd_search "$(echo $QUERY | xargs)" "$LIMIT"
+        ;;
+    list)
+        SQUAD=""
+        AGENT=""
+        LIMIT=20
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --limit)
+                    LIMIT="$2"
+                    shift 2
+                    ;;
+                *)
+                    if [ -z "$SQUAD" ]; then
+                        SQUAD="$1"
+                    else
+                        AGENT="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+        cmd_list "$SQUAD" "$AGENT" "$LIMIT"
+        ;;
+    health)
+        cmd_health
+        ;;
+    -h|--help|help)
+        show_help
+        exit 0
+        ;;
+    *)
+        echo "squads memory - Agent memory operations"
+        echo ""
+        echo "Commands:"
+        echo "  read <squad> [agent]         Read state and learnings"
+        echo "  write <squad> [agent] <text> Store a memory"
+        echo "  search <query>               Semantic search"
+        echo "  list <squad> [agent]         List recent memories"
+        echo "  health                       Check service health"
+        echo ""
+        echo "Run 'squads memory --help' for more information"
+        exit 1
+        ;;
+esac

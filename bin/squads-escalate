@@ -1,0 +1,228 @@
+#!/bin/bash
+#
+# squads-escalate - Escalate issues to humans when agent is stuck
+#
+# Usage:
+#   squads escalate <type> <title> [description]
+#
+# Types:
+#   env       - Missing environment variable or secret
+#   permission - Permission denied error
+#   requirement - Unclear requirement, need clarification
+#   blocked   - Waiting for external dependency
+#   rate      - Hit rate limits
+#   approval  - Need human approval for sensitive action
+#   error     - Generic error
+#
+# Exit codes:
+#   0 - Resolved (resolution text printed to stdout)
+#   1 - Cancelled
+#   2 - Error
+#
+# Environment:
+#   SQUADS_SQUAD       - Squad name (auto-detected if in agent context)
+#   SQUADS_AGENT       - Agent name (optional)
+#   SQUADS_EXECUTION_ID - Execution ID (optional)
+#   BRIDGE_API         - Bridge API URL (default: http://localhost:8088)
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BRIDGE_API="${BRIDGE_API:-http://localhost:8088}"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}[ESCALATE]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[RESOLVED]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+show_help() {
+    cat << 'EOF'
+squads escalate - Escalate issues to humans when agent is stuck
+
+USAGE:
+  squads escalate <type> <title> [description]
+
+TYPES:
+  env         Missing environment variable or secret
+  permission  Permission denied error
+  requirement Unclear requirement, need clarification
+  blocked     Waiting for external dependency
+  rate        Hit rate limits
+  approval    Need human approval
+  error       Generic error
+
+EXAMPLES:
+  squads escalate env STRIPE_API_KEY "Need API key for payment integration"
+  squads escalate permission "Cannot write to /etc/nginx/conf.d"
+  squads escalate requirement "Should I use REST or GraphQL for this API?"
+  squads escalate blocked "Waiting for DNS propagation"
+
+OPTIONS:
+  --no-wait   Post escalation but don't wait for resolution
+  --timeout   Wait timeout in seconds (default: 3600)
+
+ENVIRONMENT:
+  SQUADS_SQUAD         Squad name (required)
+  SQUADS_AGENT         Agent name (optional)
+  SQUADS_EXECUTION_ID  Execution ID (optional)
+  BRIDGE_API           API URL (default: http://localhost:8088)
+
+EXIT CODES:
+  0  Resolved (resolution text printed to stdout)
+  1  Cancelled or timed out
+  2  Error
+EOF
+}
+
+# Parse arguments
+TYPE=""
+TITLE=""
+DESCRIPTION=""
+WAIT=true
+TIMEOUT=3600
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        --no-wait)
+            WAIT=false
+            shift
+            ;;
+        --timeout)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        *)
+            if [ -z "$TYPE" ]; then
+                TYPE="$1"
+            elif [ -z "$TITLE" ]; then
+                TITLE="$1"
+            else
+                DESCRIPTION="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate inputs
+if [ -z "$TYPE" ] || [ -z "$TITLE" ]; then
+    log_error "Usage: squads escalate <type> <title> [description]"
+    echo ""
+    show_help
+    exit 2
+fi
+
+# Map short type names to full names
+case "$TYPE" in
+    env)
+        TYPE="env_missing"
+        ;;
+    permission)
+        TYPE="permission_error"
+        ;;
+    requirement)
+        TYPE="unclear_requirement"
+        ;;
+    rate)
+        TYPE="rate_limited"
+        ;;
+    approval)
+        TYPE="approval_needed"
+        ;;
+esac
+
+# Get squad from environment or try to detect
+SQUAD="${SQUADS_SQUAD:-}"
+if [ -z "$SQUAD" ]; then
+    # Try to detect from current directory
+    AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+    if [[ "$PWD" == *"/.agents/squads/"* ]]; then
+        SQUAD=$(echo "$PWD" | sed 's|.*/.agents/squads/||' | cut -d'/' -f1)
+    fi
+fi
+
+if [ -z "$SQUAD" ]; then
+    log_error "SQUADS_SQUAD not set and could not detect squad"
+    exit 2
+fi
+
+AGENT="${SQUADS_AGENT:-}"
+EXECUTION_ID="${SQUADS_EXECUTION_ID:-}"
+
+log_info "Escalating to squad-$SQUAD: $TITLE"
+
+# Create escalation via API
+RESPONSE=$(curl -s -X POST "$BRIDGE_API/escalations" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "squad=$SQUAD" \
+    --data-urlencode "type=$TYPE" \
+    --data-urlencode "title=$TITLE" \
+    --data-urlencode "description=${DESCRIPTION:-$TITLE}" \
+    --data-urlencode "agent=${AGENT:-}" \
+    --data-urlencode "execution_id=${EXECUTION_ID:-}")
+
+# Check if API call succeeded
+if ! echo "$RESPONSE" | grep -q "escalation_id"; then
+    log_error "Failed to create escalation: $RESPONSE"
+    exit 2
+fi
+
+ESCALATION_ID=$(echo "$RESPONSE" | jq -r '.escalation_id')
+SLACK_POSTED=$(echo "$RESPONSE" | jq -r '.slack_posted')
+
+log_info "Escalation ID: $ESCALATION_ID"
+
+if [ "$SLACK_POSTED" = "true" ]; then
+    log_info "Posted to Slack channel squad-$SQUAD"
+else
+    log_warn "Could not post to Slack (channel may not exist)"
+fi
+
+if [ "$WAIT" = "false" ]; then
+    log_info "Not waiting for resolution (--no-wait)"
+    echo "$ESCALATION_ID"
+    exit 0
+fi
+
+# Wait for resolution
+log_info "Waiting for human resolution (timeout: ${TIMEOUT}s)..."
+
+WAIT_RESPONSE=$(curl -s "$BRIDGE_API/escalations/$ESCALATION_ID/wait?timeout=$TIMEOUT")
+
+STATUS=$(echo "$WAIT_RESPONSE" | jq -r '.status')
+RESOLUTION=$(echo "$WAIT_RESPONSE" | jq -r '.resolution // empty')
+RESOLVED_BY=$(echo "$WAIT_RESPONSE" | jq -r '.resolved_by // empty')
+
+case "$STATUS" in
+    resolved)
+        log_success "Resolved by $RESOLVED_BY"
+        # Print resolution to stdout so agent can use it
+        echo "$RESOLUTION"
+        exit 0
+        ;;
+    cancelled)
+        log_warn "Escalation was cancelled"
+        exit 1
+        ;;
+    timeout)
+        log_warn "Timed out waiting for resolution"
+        exit 1
+        ;;
+    *)
+        log_error "Unexpected status: $STATUS"
+        exit 2
+        ;;
+esac

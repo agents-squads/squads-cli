@@ -1,0 +1,109 @@
+#!/bin/bash
+#
+# agent-status - Check status of agents
+#
+# Usage:
+#   agent-status              # Show all recent activity
+#   agent-status <squad>      # Show activity for a squad
+#   agent-status <squad> <agent>  # Show activity for specific agent
+#
+
+set -e
+
+AGENTS_SQUADS_HOME="${AGENTS_SQUADS_HOME:-$HOME/agents-squads}"
+HQ_DIR="$AGENTS_SQUADS_HOME/hq"
+OUTPUT_DIR="$HQ_DIR/.agents/outputs"
+MEMORY_DIR="$HQ_DIR/.agents/memory"
+
+# Colors
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+SQUAD="${1:-}"
+AGENT="${2:-}"
+
+echo -e "${BLUE}=== Agent Status ===${NC}"
+echo ""
+
+# Check for running agents (by PID files)
+echo -e "${YELLOW}Running Agents:${NC}"
+RUNNING=0
+for pidfile in "$OUTPUT_DIR"/.*.pid; do
+    [ -f "$pidfile" ] || continue
+    PID=$(cat "$pidfile")
+    NAME=$(basename "$pidfile" .pid | sed 's/^\.//')
+    if ps -p "$PID" > /dev/null 2>&1; then
+        echo "  - $NAME (PID: $PID)"
+        RUNNING=1
+    else
+        rm -f "$pidfile"
+    fi
+done
+[ $RUNNING -eq 0 ] && echo "  (none)"
+echo ""
+
+# Recent outputs
+echo -e "${YELLOW}Recent Outputs (last 24h):${NC}"
+if [ -n "$SQUAD" ] && [ -n "$AGENT" ]; then
+    PATTERN="$OUTPUT_DIR/${SQUAD}-${AGENT}-*.md"
+elif [ -n "$SQUAD" ]; then
+    PATTERN="$OUTPUT_DIR/${SQUAD}-*.md"
+else
+    PATTERN="$OUTPUT_DIR/*.md"
+fi
+
+find $OUTPUT_DIR -name "*.md" -mtime -1 2>/dev/null | while read -r file; do
+    if [[ "$file" == $PATTERN ]] || [ -z "$SQUAD" ]; then
+        NAME=$(basename "$file" .md)
+        TIME=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file")
+        SIZE=$(wc -l < "$file" | tr -d ' ')
+        echo "  - $NAME ($TIME, ${SIZE} lines)"
+    fi
+done | head -10
+
+if [ ! "$(find $OUTPUT_DIR -name "*.md" -mtime -1 2>/dev/null | head -1)" ]; then
+    echo "  (none)"
+fi
+echo ""
+
+# Memory state
+echo -e "${YELLOW}Agent Memory:${NC}"
+if [ -n "$SQUAD" ] && [ -n "$AGENT" ]; then
+    MEMPATH="$MEMORY_DIR/$SQUAD/$AGENT"
+    if [ -d "$MEMPATH" ]; then
+        echo "  $SQUAD/$AGENT:"
+        for f in "$MEMPATH"/*.md; do
+            [ -f "$f" ] || continue
+            NAME=$(basename "$f")
+            TIME=$(stat -f "%Sm" -t "%m-%d %H:%M" "$f")
+            echo "    - $NAME (updated $TIME)"
+        done
+    else
+        echo "  (no memory for $SQUAD/$AGENT)"
+    fi
+elif [ -n "$SQUAD" ]; then
+    if [ -d "$MEMORY_DIR/$SQUAD" ]; then
+        for agent_dir in "$MEMORY_DIR/$SQUAD"/*/; do
+            [ -d "$agent_dir" ] || continue
+            AGENT_NAME=$(basename "$agent_dir")
+            echo "  $SQUAD/$AGENT_NAME:"
+            for f in "$agent_dir"*.md; do
+                [ -f "$f" ] || continue
+                NAME=$(basename "$f")
+                echo "    - $NAME"
+            done
+        done
+    fi
+else
+    for squad_dir in "$MEMORY_DIR"/*/; do
+        [ -d "$squad_dir" ] || continue
+        SQUAD_NAME=$(basename "$squad_dir")
+        for agent_dir in "$squad_dir"*/; do
+            [ -d "$agent_dir" ] || continue
+            AGENT_NAME=$(basename "$agent_dir")
+            echo "  $SQUAD_NAME/$AGENT_NAME"
+        done
+    done
+fi

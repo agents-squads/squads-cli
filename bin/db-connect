@@ -1,0 +1,25 @@
+#!/bin/bash
+# Connect to Cloud SQL database (no proxy needed)
+#
+# Usage: db-connect [psql args...]
+# Example: db-connect -c "SELECT * FROM tenants"
+#          db-connect  # interactive shell
+
+set -e
+
+DB_HOST="34.121.219.0"
+DB_USER="squads"
+DB_NAME="squads"
+PROJECT="agents-squads-prod"
+
+# Fetch password from Secret Manager
+DB_PASS=$(gcloud secrets versions access latest --secret=database-password --project=$PROJECT 2>/dev/null)
+
+if [ -z "$DB_PASS" ]; then
+    echo "Error: Could not fetch database password from Secret Manager"
+    echo "Make sure you have 'gcloud auth login' credentials"
+    exit 1
+fi
+
+# Connect with any additional args passed
+PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" "$@"
