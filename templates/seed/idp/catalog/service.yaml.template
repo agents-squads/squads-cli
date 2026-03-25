@@ -1,0 +1,25 @@
+apiVersion: squads/v1
+kind: Service
+metadata:
+  name: "{{SERVICE_NAME}}"
+  description: "{{BUSINESS_DESCRIPTION}}"
+  owner: "{{OWNER_SQUAD}}"
+  repo: "{{REPO_NAME}}"
+  tags: []
+spec:
+  type: "{{SERVICE_TYPE}}"
+  stack: "{{SERVICE_STACK}}"
+  branches:
+    default: main
+    development: {{BRANCHES_DEVELOPMENT}}
+    workflow: "{{BRANCHES_WORKFLOW}}"
+  ci:
+    template: {{CI_TEMPLATE}}
+    required_checks: []
+    build_command: {{BUILD_COMMAND}}
+    test_command: {{TEST_COMMAND}}
+  deploy: null
+  health: []
+  dependencies:
+    runtime: []
+  scorecard: "{{SERVICE_SCORECARD}}"
