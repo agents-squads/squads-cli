@@ -28,6 +28,7 @@ import {
   registerContextWithBridge,
   updateExecutionStatus,
 } from './execution-log.js';
+import { logObservability, captureSessionUsage, type ObservabilityRecord } from './observability.js';
 import { findMemoryDir } from './memory.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
@@ -460,9 +461,32 @@ export function executeForeground(config: {
     claude.on('close', async (code) => {
       const durationMs = Date.now() - config.startMs;
 
+      // Capture token usage from Claude Code's session JSONL
+      const sessionUsage = captureSessionUsage(config.startMs);
+
+      const obsRecord: ObservabilityRecord = {
+        ts: new Date().toISOString(),
+        id: config.execContext.executionId,
+        squad: config.squadName,
+        agent: config.agentName,
+        provider: config.provider || 'anthropic',
+        model: sessionUsage?.model || config.agentEnv.SQUADS_MODEL || 'unknown',
+        trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
+        status: code === 0 ? 'completed' : 'failed',
+        duration_ms: durationMs,
+        input_tokens: sessionUsage?.input_tokens || 0,
+        output_tokens: sessionUsage?.output_tokens || 0,
+        cache_read_tokens: sessionUsage?.cache_read_tokens || 0,
+        cache_write_tokens: sessionUsage?.cache_write_tokens || 0,
+        cost_usd: sessionUsage?.cost_usd || 0,
+        context_tokens: 0,
+        error: code !== 0 ? `Claude exited with code ${code}` : undefined,
+      };
+      logObservability(obsRecord);
+
       if (code === 0) {
         updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'completed', {
-          outcome: 'Session completed successfully',
+          outcome: `Session completed (${sessionUsage?.input_tokens || 0} in / ${sessionUsage?.output_tokens || 0} out, $${(sessionUsage?.cost_usd || 0).toFixed(3)})`,
           durationMs,
         });
 
@@ -486,6 +510,22 @@ export function executeForeground(config: {
 
     claude.on('error', (err) => {
       const durationMs = Date.now() - config.startMs;
+
+      logObservability({
+        ts: new Date().toISOString(),
+        id: config.execContext.executionId,
+        squad: config.squadName,
+        agent: config.agentName,
+        provider: config.provider || 'anthropic',
+        model: 'unknown',
+        trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
+        status: 'failed',
+        duration_ms: durationMs,
+        input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+        cost_usd: 0, context_tokens: 0,
+        error: String(err),
+      });
+
       updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'failed', {
         error: String(err),
         durationMs,
