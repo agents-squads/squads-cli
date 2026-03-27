@@ -88,6 +88,13 @@ export async function runAgent(
 
   const definition = loadAgentDefinition(agentPath);
 
+  // Enforce repo layout before execution
+  const { checkAndReport } = await import('./repo-enforcement.js');
+  if (!checkAndReport(squadName, { verbose: options.verbose })) {
+    spinner.fail(`Repo enforcement failed for ${squadName} — fix errors above before running`);
+    return;
+  }
+
   // Fetch learnings from bridge (needed for both dry-run preview and real execution)
   const learnings = await fetchLearnings(squadName);
   const learningContext = learnings.length > 0
