@@ -538,6 +538,8 @@ export function gatherSquadContext(
       const content = safeRead(learningsFile);
       if (content) {
         learningParts.push(`### ${ctx}\n${content}`);
+      } else if (options.verbose) {
+        writeLine(`  ${colors.dim}context_from: no learnings found for squad '${ctx}'${RESET}`);
       }
     }
     if (learningParts.length > 0) {

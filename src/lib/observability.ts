@@ -201,6 +201,42 @@ export function captureSessionUsage(runStartedAt: number): SessionUsage | null {
 
 // ── Write ────────────────────────────────────────────────────────────
 
+/**
+ * Push record to API (Tier 2 only). Fire-and-forget.
+ */
+async function pushToApi(record: ObservabilityRecord): Promise<void> {
+  try {
+    const { isTier2, getTierSync } = await import('./tier-detect.js');
+    if (!isTier2()) return;
+
+    const apiUrl = getTierSync().urls.api;
+    if (!apiUrl) return;
+
+    await fetch(`${apiUrl}/agent-executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        execution_id: record.id,
+        squad: record.squad,
+        agent: record.agent,
+        model: record.model,
+        status: record.status,
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_read_tokens: record.cache_read_tokens,
+        cache_write_tokens: record.cache_write_tokens,
+        cost_usd: record.cost_usd,
+        duration_seconds: Math.round(record.duration_ms / 1000),
+        error_message: record.error || null,
+        metadata: { trigger: record.trigger, provider: record.provider },
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    // Silent — Tier 2 API down, JSONL is the fallback
+  }
+}
+
 export function logObservability(record: ObservabilityRecord): void {
   const logPath = getLogPath();
   if (!logPath) return;
@@ -211,6 +247,9 @@ export function logObservability(record: ObservabilityRecord): void {
   }
 
   appendFileSync(logPath, JSON.stringify(record) + '\n');
+
+  // Dual-write: also push to API when Tier 2 is active (fire-and-forget)
+  pushToApi(record).catch(() => {});
 }
 
 // ── Read ─────────────────────────────────────────────────────────────
