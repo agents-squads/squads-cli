@@ -661,7 +661,26 @@ export async function executeWithClaude(
     // Build claude args as array to avoid shell escaping issues with large prompts
     const claudeArgs: string[] = [];
     if (!process.stdin.isTTY) claudeArgs.push('--print');
-    claudeArgs.push('--dangerously-skip-permissions');
+
+    // Permission model: scoped allowed tools instead of blanket skip
+    // Agents can: read/write files, run git/gh/npm/bash, use tools
+    // Agents cannot: bypass to arbitrary system access
+    if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
+      // Explicit opt-in for sandboxed environments (Docker, CI)
+      claudeArgs.push('--dangerously-skip-permissions');
+    } else {
+      claudeArgs.push('--allowedTools',
+        'Read', 'Write', 'Edit', 'Glob', 'Grep',
+        'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
+        'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+        'Bash(docker:*)', 'Bash(duckdb:*)',
+        'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
+        'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
+        'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
+        'Bash(squads:*)',
+        'Agent', 'WebFetch', 'WebSearch',
+      );
+    }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
