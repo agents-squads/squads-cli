@@ -237,27 +237,31 @@ export async function runAgent(
   });
 
   // Fetch cognition beliefs for prompt injection (Reflexion pattern)
+  // Only attempts when API is available (Tier 2). Silent skip in Tier 1.
   let cognitionContext = '';
-  try {
-    const session = loadSession();
-    if (session?.accessToken && session.status === 'active') {
-      const safeSquadName = encodeURIComponent(squadName);
-      const res = await fetch(`${getApiUrl()}/cognition/context/squad:${safeSquadName}`, {
-        headers: { Authorization: `Bearer ${session.accessToken}` },
-        signal: AbortSignal.timeout(3000),
-      });
-      if (res.ok) {
-        const data = await res.json() as { markdown: string };
-        if (data.markdown && !data.markdown.includes('No cognition data')) {
-          cognitionContext = `\n${data.markdown}\n`;
-          if (options.verbose) {
-            writeLine(`  ${colors.dim}Injecting cognition beliefs${RESET}`);
+  const apiUrl = getApiUrl();
+  if (apiUrl) {
+    try {
+      const session = loadSession();
+      if (session?.accessToken && session.status === 'active') {
+        const safeSquadName = encodeURIComponent(squadName);
+        const res = await fetch(`${apiUrl}/cognition/context/squad:${safeSquadName}`, {
+          headers: { Authorization: `Bearer ${session.accessToken}` },
+          signal: AbortSignal.timeout(3000),
+        });
+        if (res.ok) {
+          const data = await res.json() as { markdown: string };
+          if (data.markdown && !data.markdown.includes('No cognition data')) {
+            cognitionContext = `\n${data.markdown}\n`;
+            if (options.verbose) {
+              writeLine(`  ${colors.dim}Injecting cognition beliefs${RESET}`);
+            }
           }
         }
       }
+    } catch {
+      // Silent — API not available or auth not configured
     }
-  } catch (e) {
-    if (options.verbose) writeLine(`  ${colors.dim}warn: cognition fetch failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
 
   // Generate the Claude Code prompt with timeout awareness

@@ -54,6 +54,7 @@ export interface ExecutionRecord {
  */
 export async function registerContextWithBridge(ctx: ExecutionContext): Promise<boolean> {
   const bridgeUrl = getBridgeUrl();
+  if (!bridgeUrl) return false; // Tier 1: no bridge, skip silently
 
   try {
     const response = await fetch(`${bridgeUrl}/api/context/register`, {
@@ -69,13 +70,10 @@ export async function registerContextWithBridge(ctx: ExecutionContext): Promise<
       signal: AbortSignal.timeout(3000),
     });
 
-    if (!response.ok) {
-      // Non-fatal - continue even if bridge is unavailable
-      return false;
-    }
+    if (!response.ok) return false;
     return true;
-  } catch (e) {
-    writeLine(`  ${colors.dim}warn: bridge registration failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+  } catch {
+    // Tier 2 bridge down — silent, non-fatal
     return false;
   }
 }
@@ -87,6 +85,7 @@ export async function registerContextWithBridge(ctx: ExecutionContext): Promise<
  */
 export async function checkPreflightGates(squad: string, agent: string): Promise<PreflightResult> {
   const bridgeUrl = getBridgeUrl();
+  if (!bridgeUrl) return { allowed: true, gates: {} }; // Tier 1: no gates, allow
 
   try {
     const response = await fetch(`${bridgeUrl}/api/execution/preflight`, {
@@ -96,15 +95,10 @@ export async function checkPreflightGates(squad: string, agent: string): Promise
       signal: AbortSignal.timeout(3000),
     });
 
-    if (!response.ok) {
-      // Fail open if bridge returns error
-      return { allowed: true, gates: {} };
-    }
-
+    if (!response.ok) return { allowed: true, gates: {} };
     return await response.json() as PreflightResult;
-  } catch (e) {
-    writeLine(`  ${colors.dim}warn: preflight gate check failed (allowing execution): ${e instanceof Error ? e.message : String(e)}${RESET}`);
-    return { allowed: true, gates: {} };
+  } catch {
+    return { allowed: true, gates: {} }; // Silent fail-open
   }
 }
 
