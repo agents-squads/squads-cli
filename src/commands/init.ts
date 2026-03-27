@@ -19,7 +19,6 @@ import { execSync } from 'child_process';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
-import { existsSync, readFileSync } from 'fs';
 import {
   loadTemplate,
   type TemplateVariables,
@@ -195,80 +194,6 @@ function getOperationsSquad(): SquadConfig {
   };
 }
 
-interface ProjectInfo {
-  name: string;
-  type: 'product' | 'domain';
-  stack: string;
-  repoName: string;
-  buildCommand: string | null;
-  testCommand: string | null;
-}
-
-/**
- * Auto-detect project metadata from the filesystem
- */
-function detectProjectInfo(cwd: string, gitStatus: { remoteUrl?: string }): ProjectInfo {
-  const dirName = path.basename(cwd);
-
-  // Name: from git remote (last segment) or directory name
-  let name = dirName;
-  let repoName = dirName;
-  if (gitStatus.remoteUrl) {
-    const full = getRepoName(gitStatus.remoteUrl);
-    if (full) {
-      repoName = full;
-      name = full.includes('/') ? full.split('/')[1] : full;
-    }
-  }
-
-  // Stack: detect from project files
-  let stack = 'unknown';
-  let type: 'product' | 'domain' = 'domain';
-  let buildCommand: string | null = null;
-  let testCommand: string | null = null;
-
-  if (existsSync(path.join(cwd, 'package.json'))) {
-    stack = 'node';
-    type = 'product';
-    buildCommand = 'npm run build';
-    testCommand = 'npm test';
-    // Check for specific frameworks
-    try {
-      const pkg = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf-8'));
-      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-      if (deps['next']) stack = 'next';
-      else if (deps['nuxt']) stack = 'nuxt';
-      else if (deps['astro']) stack = 'astro';
-      else if (deps['react']) stack = 'react';
-      else if (deps['vue']) stack = 'vue';
-    } catch { /* ignore */ }
-  } else if (existsSync(path.join(cwd, 'go.mod'))) {
-    stack = 'go';
-    type = 'product';
-    buildCommand = 'go build ./...';
-    testCommand = 'go test ./...';
-  } else if (
-    existsSync(path.join(cwd, 'requirements.txt')) ||
-    existsSync(path.join(cwd, 'pyproject.toml')) ||
-    existsSync(path.join(cwd, 'setup.py'))
-  ) {
-    stack = 'python';
-    type = 'product';
-    testCommand = 'pytest';
-  } else if (existsSync(path.join(cwd, 'Gemfile'))) {
-    stack = 'ruby';
-    type = 'product';
-    testCommand = 'bundle exec rspec';
-  } else if (existsSync(path.join(cwd, 'Cargo.toml'))) {
-    stack = 'rust';
-    type = 'product';
-    buildCommand = 'cargo build';
-    testCommand = 'cargo test';
-  }
-
-  return { name, type, stack, repoName, buildCommand, testCommand };
-}
-
 function isInteractive(): boolean {
   return process.stdin.isTTY === true && process.stdout.isTTY === true;
 }
@@ -420,10 +345,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   writeLine();
 
-  // 4. Detect project info (used for IDP catalog)
-  const projectInfo = detectProjectInfo(cwd, gitStatus);
-
-  // Ask about the business
+  // 4. Ask about the business
   let businessName: string;
   let businessDescription: string;
   let businessFocus: string;
@@ -565,7 +487,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
         : '',
       PROVIDER: selectedProvider,
       PROVIDER_NAME: provider?.name || 'Unknown',
-      CURRENT_DATE: new Date().toISOString().split('T')[0],
     };
 
     // Core directories (always created)
@@ -664,44 +585,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       await writeIfNew(path.join(cwd, dest), loadSeedTemplate(template, variables));
     }
 
-    // Squad-level priorities and goals (all squads including use-case squads)
-    const reviewDate = new Date();
-    reviewDate.setDate(reviewDate.getDate() + 14);
-    const allSquads = [
-      { name: 'company', label: 'Company', lead: 'manager' },
-      { name: 'research', label: 'Research', lead: 'lead' },
-      { name: 'intelligence', label: 'Intelligence', lead: 'intel-lead' },
-      { name: 'product', label: 'Product', lead: 'lead' },
-      ...useCaseConfig.squads.map(s => ({
-        name: s.name,
-        label: s.name.charAt(0).toUpperCase() + s.name.slice(1),
-        lead: s.agentSummary.split(',')[0].trim(),
-      })),
-    ];
-    for (const squad of allSquads) {
-      const squadVars: TemplateVariables = {
-        ...variables,
-        SQUAD_NAME: squad.name,
-        SQUAD_LABEL: squad.label,
-        SQUAD_LEAD: squad.lead,
-        REVIEW_DATE: reviewDate.toISOString().split('T')[0],
-      };
-      await writeIfNew(
-        path.join(cwd, `.agents/memory/${squad.name}/priorities.md`),
-        loadSeedTemplate('memory/_squad/priorities.md', squadVars),
-      );
-      await writeIfNew(
-        path.join(cwd, `.agents/memory/${squad.name}/goals.md`),
-        loadSeedTemplate('memory/_squad/goals.md', squadVars),
-      );
-    }
-
     // Skills
     const skillContent = loadSeedTemplate('skills/squads-cli/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/squads-cli/SKILL.md'), skillContent);
-
-    const skillRefContent = loadSeedTemplate('skills/squads-cli/references/commands.md', variables);
-    await writeFile(path.join(cwd, '.agents/skills/squads-cli/references/commands.md'), skillRefContent);
 
     const ghSkillContent = loadSeedTemplate('skills/gh/SKILL.md', variables);
     await writeFile(path.join(cwd, '.agents/skills/gh/SKILL.md'), ghSkillContent);
@@ -713,33 +599,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
     // System protocol (Layer 0 of context cascade)
     const systemMd = loadSeedTemplate('config/SYSTEM.md', variables);
     await writeFile(path.join(cwd, '.agents/config/SYSTEM.md'), systemMd);
-
-    // IDP catalog entry (only if .agents/idp/ doesn't already exist)
-    const idpCatalogDir = path.join(cwd, '.agents', 'idp', 'catalog');
-    if (!existsSync(idpCatalogDir)) {
-      const ownerSquad = useCaseConfig.squads[0]?.name || 'engineering';
-      const isProduct = projectInfo.type === 'product';
-      const idpVariables: TemplateVariables = {
-        ...variables,
-        SERVICE_NAME: projectInfo.name,
-        SERVICE_TYPE: projectInfo.type,
-        SERVICE_STACK: projectInfo.stack,
-        SERVICE_SCORECARD: isProduct ? 'product' : 'domain',
-        REPO_NAME: projectInfo.repoName,
-        OWNER_SQUAD: ownerSquad,
-        BRANCHES_WORKFLOW: isProduct ? 'pr-to-develop' : 'direct-to-main',
-        BRANCHES_DEVELOPMENT: isProduct ? 'develop' : '',
-        CI_TEMPLATE: isProduct ? projectInfo.stack : 'null',
-        BUILD_COMMAND: projectInfo.buildCommand ?? 'null',
-        TEST_COMMAND: projectInfo.testCommand ?? 'null',
-      };
-      const catalogContent = loadSeedTemplate('idp/catalog/service.yaml.template', idpVariables);
-      await writeFile(path.join(idpCatalogDir, `${projectInfo.name}.yaml`), catalogContent);
-    }
-
-    // Company context (Layer 1 of context cascade)
-    const companyMd = loadSeedTemplate('memory/company/company.md', variables);
-    await writeIfNew(path.join(cwd, '.agents/memory/company/company.md'), companyMd);
 
     // Directives (Layer 3 of context cascade)
     const directivesMd = loadSeedTemplate('memory/company/directives.md', variables);

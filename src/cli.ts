@@ -58,11 +58,6 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
 import { registerCognitionCommand } from './commands/cognition.js';
-import { registerCatalogCommands } from './commands/catalog.js';
-import { registerReleaseCommands } from './commands/release-check.js';
-import { registerObservabilityCommands } from './commands/observability.js';
-import { registerTierCommand } from './commands/tier.js';
-import { registerServicesCommands } from './commands/services.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -308,7 +303,6 @@ program
   .option('--once', 'Autopilot: run one cycle then exit')
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
-  .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -331,11 +325,8 @@ Examples:
     return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
   });
 
-// List command — alias for status
-program.command('list').description('List squads (alias for: squads status)').action(async () => {
-  const { statusCommand } = await import('./commands/status.js');
-  return statusCommand();
-});
+// List command (removed — use status instead)
+program.command('list', { hidden: true }).description('[removed]').action(removedCommand('list', 'Use: squads status'));
 
 // Orchestrate command - lead-coordinated squad execution
 registerOrchestrateCommand(program);
@@ -1051,13 +1042,6 @@ registerDeployCommand(program);
 
 // Cognition command group - business cognition engine
 registerCognitionCommand(program);
-
-// IDP — service catalog, scorecards, release checks
-registerCatalogCommands(program);
-registerReleaseCommands(program);
-registerObservabilityCommands(program);
-registerTierCommand(program);
-registerServicesCommands(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program

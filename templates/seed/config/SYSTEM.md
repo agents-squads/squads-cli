@@ -1,9 +1,3 @@
----
-version: "1.0"
-scope: "all-agents"
-authority: "squads-cli"
----
-
 # System Protocol
 
 Immutable rules for all agent executions. Every agent reads this before starting work.
