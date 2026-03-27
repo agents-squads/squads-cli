@@ -757,3 +757,42 @@ export function scoreSquadsForPhase(
   const allSignals = scoreSquads(state, squadRepos, ghEnv);
   return allSignals.filter(s => phaseSquads.includes(s.squad));
 }
+
+/**
+ * Tier 2: fetch pending triggers from the API.
+ * Falls back to local scoring if API unavailable.
+ */
+export async function fetchTriggersFromApi(): Promise<SquadSignal[] | null> {
+  try {
+    const { isTier2, getTierSync } = await import('./tier-detect.js');
+    if (!isTier2()) return null;
+
+    const apiUrl = getTierSync().urls.api;
+    if (!apiUrl) return null;
+
+    const response = await fetch(`${apiUrl}/triggers/pending`, {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) return null;
+
+    const triggers = await response.json() as Array<{
+      squad: string;
+      agent: string;
+      trigger_name: string;
+      priority: number;
+      context: Record<string, unknown>;
+    }>;
+
+    return triggers.map(t => ({
+      squad: t.squad,
+      score: t.priority * 10,
+      reason: `Trigger: ${t.trigger_name}`,
+      issues: [],
+      agent: t.agent,
+      context: t.context,
+    }));
+  } catch {
+    return null; // API unavailable — caller should fall back to local scoring
+  }
+}
