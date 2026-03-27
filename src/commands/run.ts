@@ -25,7 +25,7 @@ import {
 } from '../lib/terminal.js';
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
-import { reportExecutionStart, reportConversationResult } from '../lib/api-client.js';
+import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
 
