@@ -94,4 +94,75 @@ export function registerObservabilityCommands(program: Command): void {
         writeLine();
       }
     });
+
+  // ── obs sync ──
+  obs
+    .command('sync')
+    .description('Backfill JSONL execution data to Postgres (Tier 2)')
+    .option('--dry-run', 'Show what would be synced without sending')
+    .action(async (opts) => {
+      const { detectTier } = await import('../lib/tier-detect.js');
+      const { queryExecutions } = await import('../lib/observability.js');
+      const info = await detectTier();
+
+      if (info.tier < 2 || !info.urls.api) {
+        writeLine(`\n  ${colors.dim}Tier 2 not available. Run 'squads services up' first.${RESET}\n`);
+        return;
+      }
+
+      const records = queryExecutions({ limit: 10000 });
+      if (records.length === 0) {
+        writeLine(`\n  ${colors.dim}No JSONL records to sync.${RESET}\n`);
+        return;
+      }
+
+      writeLine(`\n  ${bold}Syncing ${records.length} records to Postgres...${RESET}\n`);
+
+      let synced = 0;
+      let skipped = 0;
+      let errors = 0;
+
+      for (const record of records) {
+        if (opts.dryRun) {
+          writeLine(`  ${colors.dim}[dry-run] ${record.ts} ${record.squad}/${record.agent} $${record.cost_usd.toFixed(3)}${RESET}`);
+          synced++;
+          continue;
+        }
+
+        try {
+          const res = await fetch(`${info.urls.api}/agent-executions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              execution_id: record.id,
+              squad: record.squad,
+              agent: record.agent,
+              model: record.model,
+              status: record.status,
+              input_tokens: record.input_tokens,
+              output_tokens: record.output_tokens,
+              cache_read_tokens: record.cache_read_tokens,
+              cache_write_tokens: record.cache_write_tokens,
+              cost_usd: record.cost_usd,
+              duration_seconds: Math.round(record.duration_ms / 1000),
+              error_message: record.error || null,
+              metadata: { trigger: record.trigger, provider: record.provider },
+            }),
+            signal: AbortSignal.timeout(5000),
+          });
+
+          if (res.ok) {
+            synced++;
+          } else if (res.status === 409) {
+            skipped++; // Already exists (dedup)
+          } else {
+            errors++;
+          }
+        } catch {
+          errors++;
+        }
+      }
+
+      writeLine(`  ${colors.green}Synced: ${synced}${RESET}  ${colors.dim}Skipped: ${skipped}  Errors: ${errors}${RESET}\n`);
+    });
 }
