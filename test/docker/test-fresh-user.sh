@@ -61,8 +61,26 @@ if [ "${1:-}" = "--auto" ]; then
     echo "--- Step 8: squads doctor ---"
     test_step "doctor" squads doctor
 
-    echo "--- Step 9: unknown command shows help ---"
-    test_step "unknown-cmd" bash -c "squads nonexistent 2>&1 | grep -qi help || squads nonexistent 2>&1 | grep -qi error"
+    echo "--- Step 9: squads tier (Tier 1 in Docker) ---"
+    test_step "tier" squads tier
+
+    echo "--- Step 10: squads obs history (empty, no crash) ---"
+    test_step "obs-history" squads obs history
+
+    echo "--- Step 11: squads obs cost (empty, no crash) ---"
+    test_step "obs-cost" squads obs cost
+
+    echo "--- Step 12: squads services status (graceful without Docker) ---"
+    test_step "services-status" squads services status
+
+    echo "--- Step 13: unknown command errors gracefully ---"
+    if squads nonexistent > /tmp/output.txt 2>&1; then
+      echo "  FAIL  unknown-cmd (should have errored)"
+      FAIL=$((FAIL + 1))
+    else
+      echo "  PASS  unknown-cmd"
+      PASS=$((PASS + 1))
+    fi
 
     echo ""
     echo "=== Results: $PASS passed, $FAIL failed ==="
