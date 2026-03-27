@@ -158,7 +158,7 @@ Squads are configured via YAML frontmatter in SQUAD.md:
 ```yaml
 ---
 name: engineering
-repo: agents-squads/engineering
+repo: my-org/engineering
 provider: anthropic
 model: opus
 effort: high

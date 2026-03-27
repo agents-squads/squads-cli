@@ -116,7 +116,7 @@ function fetchFromLocal(days: number, squad?: string): Execution[] {
   // Try multiple possible locations
   const historyPaths = [
     join(process.cwd(), '.agents/sessions/history.jsonl'),
-    join(process.env.HOME || '', 'agents-squads/hq/.agents/sessions/history.jsonl'),
+    join(process.env.HOME || '', '.squads-cli/history.jsonl'),
   ];
 
   let historyPath: string | undefined;

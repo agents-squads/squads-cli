@@ -69,7 +69,7 @@ export function registerServicesCommands(program: Command): void {
       const composeFile = findComposeFile();
       if (!composeFile) {
         writeLine(`\n  ${colors.red}docker-compose.yml not found.${RESET}`);
-        writeLine(`  ${colors.dim}Expected at: ~/agents-squads/engineering/docker/docker-compose.yml${RESET}\n`);
+        writeLine(`  ${colors.dim}Expected at: ../engineering/docker/docker-compose.yml (sibling repo)${RESET}\n`);
         return;
       }
 

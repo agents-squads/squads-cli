@@ -306,7 +306,7 @@ export function registerApprovalCommand(program: Command): void {
 Types: issue, pr, content, run, brief
 
 Examples:
-  $ squads approval send pr --title "Merge feature X" --json '{"repo":"agents-squads/hq","number":123}'
+  $ squads approval send pr --title "Merge feature X" --json '{"repo":"my-org/my-repo","number":123}'
   $ squads approval send content -t "LinkedIn post" -d "New blog announcement"
   $ echo '{"title":"Run overnight"}' | squads approval send run --json -
 `

@@ -655,7 +655,7 @@ ${agentPaths}
 ## Your Role as Lead
 
 1. **Assess the situation**: Check for pending work:
-   - Run \`gh issue list --repo agents-squads/hq --label squad:${squad.name}\` for assigned issues
+   - Run \`gh issue list --repo {org}/hq --label squad:${squad.name}\` for assigned issues
    - Check .agents/memory/${squad.dir}/ for squad state and pending tasks
    - Review recent activity with \`git log --oneline -10\`
 
