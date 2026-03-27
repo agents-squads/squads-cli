@@ -42,6 +42,7 @@ export interface RunOptions {
   once?: boolean; // Autopilot: run one cycle then exit
   phased?: boolean; // Autopilot: use dependency-based phase ordering
   eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
+  org?: boolean; // Org cycle: scan → plan → execute all leads → report
 }
 
 /**

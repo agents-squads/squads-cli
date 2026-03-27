@@ -47,6 +47,70 @@ export async function runCommand(
     options.execute = true;
   }
 
+  // MODE 0: Org cycle — run all squads as a coordinated system
+  if (target === '--org' || options.org) {
+    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan } = await import('../lib/org-cycle.js');
+
+    writeLine();
+    writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}`);
+    writeLine();
+
+    // Step 1: SCAN
+    const scan = scanOrg();
+    displayOrgScan(scan);
+
+    // Step 2: PLAN
+    const plan = planOrgCycle(scan);
+    if (plan.length === 0) {
+      writeLine(`  ${colors.dim}No squads to run.${RESET}\n`);
+      return;
+    }
+    displayPlan(plan);
+
+    if (options.dryRun) {
+      writeLine(`  ${colors.dim}[dry-run] Would run ${plan.length} squad leads in order above.${RESET}\n`);
+      return;
+    }
+
+    // Step 3: EXECUTE — run each lead sequentially
+    const cycleStart = Date.now();
+    const results: Array<{ squad: string; agent: string; status: string; durationMs: number }> = [];
+
+    for (const s of plan) {
+      if (!s.lead) continue;
+      const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
+      if (!existsSync(leadPath)) continue;
+
+      writeLine(`  ${colors.cyan}Running ${s.squad}/${s.lead}...${RESET}`);
+      const runStart = Date.now();
+      try {
+        await runAgent(leadPath, s.lead, s.squad, { ...options, execute: true });
+        results.push({ squad: s.squad, agent: s.lead, status: 'completed', durationMs: Date.now() - runStart });
+      } catch (e) {
+        results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart });
+        writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+      }
+    }
+
+    // Step 4: REPORT
+    const totalMs = Date.now() - cycleStart;
+    const completed = results.filter(r => r.status === 'completed').length;
+    const failed = results.filter(r => r.status === 'failed').length;
+
+    writeLine();
+    writeLine(`  ${bold}Org Cycle Complete${RESET}`);
+    writeLine(`  Duration: ${Math.round(totalMs / 60000)}m | Squads: ${completed} completed, ${failed} failed | Frozen: ${scan.filter(s => s.status === 'frozen').length} skipped`);
+    writeLine();
+
+    for (const r of results) {
+      const icon = r.status === 'completed' ? `${colors.green}pass${RESET}` : `${colors.red}fail${RESET}`;
+      writeLine(`  ${icon}  ${r.squad}/${r.agent}  ${colors.dim}${Math.round(r.durationMs / 1000)}s${RESET}`);
+    }
+    writeLine();
+
+    return;
+  }
+
   // MODE 1: Autopilot — no target means run all squads continuously
   if (!target) {
     await runAutopilot(squadsDir, options);
