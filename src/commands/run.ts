@@ -76,6 +76,13 @@ export async function runCommand(
     const cycleStart = Date.now();
     const results: Array<{ squad: string; agent: string; status: string; durationMs: number }> = [];
 
+    // Snapshot all goals before execution
+    const { snapshotGoals, diffGoals } = await import('../lib/observability.js');
+    const allGoalsBefore: Record<string, Record<string, string>> = {};
+    for (const s of plan) {
+      allGoalsBefore[s.squad] = snapshotGoals(s.squad);
+    }
+
     for (const s of plan) {
       if (!s.lead) continue;
       const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
@@ -92,7 +99,7 @@ export async function runCommand(
       }
     }
 
-    // Step 4: REPORT
+    // Step 4: REPORT — compare goals before and after
     const totalMs = Date.now() - cycleStart;
     const completed = results.filter(r => r.status === 'completed').length;
     const failed = results.filter(r => r.status === 'failed').length;
@@ -105,6 +112,29 @@ export async function runCommand(
     for (const r of results) {
       const icon = r.status === 'completed' ? `${colors.green}pass${RESET}` : `${colors.red}fail${RESET}`;
       writeLine(`  ${icon}  ${r.squad}/${r.agent}  ${colors.dim}${Math.round(r.durationMs / 1000)}s${RESET}`);
+    }
+
+    // Goal changes summary
+    let totalGoalChanges = 0;
+    const goalSummary: string[] = [];
+    for (const s of plan) {
+      const after = snapshotGoals(s.squad);
+      const changes = diffGoals(allGoalsBefore[s.squad] || {}, after);
+      if (changes.length > 0) {
+        totalGoalChanges += changes.length;
+        for (const c of changes) {
+          goalSummary.push(`  ${colors.green}${s.squad}${RESET}: ${c.name} ${colors.dim}${c.before} → ${c.after}${RESET}`);
+        }
+      }
+    }
+
+    if (goalSummary.length > 0) {
+      writeLine();
+      writeLine(`  ${bold}Goal Changes${RESET} (${totalGoalChanges})`);
+      for (const line of goalSummary) writeLine(line);
+    } else {
+      writeLine();
+      writeLine(`  ${colors.dim}No goal changes this cycle.${RESET}`);
     }
     writeLine();
 
