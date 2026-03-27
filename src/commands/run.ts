@@ -91,11 +91,32 @@ export async function runCommand(
       writeLine(`  ${colors.cyan}Running ${s.squad}/${s.lead}...${RESET}`);
       const runStart = Date.now();
       try {
-        await runAgent(leadPath, s.lead, s.squad, { ...options, execute: true });
+        await runAgent(s.lead, leadPath, s.squad, { ...options, execute: true });
         results.push({ squad: s.squad, agent: s.lead, status: 'completed', durationMs: Date.now() - runStart });
       } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
         results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart });
-        writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+
+        // Detect quota limit — if agent fails in <10s, likely quota/rate limit
+        const failDuration = Date.now() - runStart;
+        const isQuotaLikely = failDuration < 10000 && errMsg.includes('code 1');
+        const isExplicitQuota = errMsg.includes('hit your limit') || errMsg.includes('rate limit') || errMsg.includes('quota');
+
+        if (isExplicitQuota || isQuotaLikely) {
+          // Check if previous squad also failed fast — confirms it's quota, not a bug
+          const prevFailed = results.length >= 2 &&
+            results[results.length - 2]?.status === 'failed' &&
+            (results[results.length - 2]?.durationMs || 0) < 10000;
+
+          if (isExplicitQuota || prevFailed) {
+            writeLine(`  ${colors.red}Quota limit reached — stopping org cycle.${RESET}`);
+            writeLine(`  ${colors.dim}Completed ${results.filter(r => r.status === 'completed').length} squads before hitting limit.${RESET}`);
+            writeLine(`  ${colors.dim}Resume with 'squads run --org' when quota resets.${RESET}`);
+            break;
+          }
+        }
+
+        writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${errMsg}${RESET}`);
       }
     }
 
