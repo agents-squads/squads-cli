@@ -61,6 +61,7 @@ import { registerCognitionCommand } from './commands/cognition.js';
 import { registerCatalogCommands } from './commands/catalog.js';
 import { registerReleaseCommands } from './commands/release-check.js';
 import { registerObservabilityCommands } from './commands/observability.js';
+import { registerTierCommand } from './commands/tier.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1053,6 +1054,7 @@ registerCognitionCommand(program);
 registerCatalogCommands(program);
 registerReleaseCommands(program);
 registerObservabilityCommands(program);
+registerTierCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
