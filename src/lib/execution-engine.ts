@@ -28,7 +28,7 @@ import {
   registerContextWithBridge,
   updateExecutionStatus,
 } from './execution-log.js';
-import { logObservability, captureSessionUsage, type ObservabilityRecord } from './observability.js';
+import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
 import { findMemoryDir } from './memory.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
@@ -451,6 +451,9 @@ export function executeForeground(config: {
 }): Promise<string> {
   const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
 
+  // Snapshot goals before execution
+  const goalsBefore = snapshotGoals(config.squadName);
+
   return new Promise((resolve, reject) => {
     const claude = spawn('claude', config.claudeArgs, {
       stdio: 'inherit',
@@ -463,6 +466,10 @@ export function executeForeground(config: {
 
       // Capture token usage from Claude Code's session JSONL
       const sessionUsage = captureSessionUsage(config.startMs);
+
+      // Snapshot goals after execution and diff
+      const goalsAfter = snapshotGoals(config.squadName);
+      const goalsChanged = diffGoals(goalsBefore, goalsAfter);
 
       const obsRecord: ObservabilityRecord = {
         ts: new Date().toISOString(),
@@ -481,6 +488,9 @@ export function executeForeground(config: {
         cost_usd: sessionUsage?.cost_usd || 0,
         context_tokens: 0,
         error: code !== 0 ? `Claude exited with code ${code}` : undefined,
+        goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
+        goals_after: Object.keys(goalsAfter).length > 0 ? goalsAfter : undefined,
+        goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
       };
       logObservability(obsRecord);
 

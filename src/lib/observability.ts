@@ -13,6 +13,12 @@ import { findProjectRoot } from './squad-parser.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
+export interface GoalChange {
+  name: string;
+  before: string; // status before run
+  after: string;  // status after run
+}
+
 export interface ObservabilityRecord {
   ts: string;
   id: string;
@@ -31,6 +37,13 @@ export interface ObservabilityRecord {
   context_tokens: number;
   error?: string;
   task?: string;
+  // Goal tracking
+  goals_before?: Record<string, string>; // name → status before run
+  goals_after?: Record<string, string>;  // name → status after run
+  goals_changed?: GoalChange[];          // what moved
+  // Quality scoring (from COO eval)
+  grade?: string;                        // A/B/C/D/F
+  grade_score?: number;                  // 0-100
 }
 
 export interface QueryOptions {
@@ -187,6 +200,60 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
   } catch {
     return null;
   }
+}
+
+// ── Goal Tracking ────────────────────────────────────────────────────
+
+/**
+ * Parse goals from a squad's goals.md file.
+ * Returns a map of goal name → status.
+ */
+export function snapshotGoals(squadName: string): Record<string, string> {
+  const root = findProjectRoot();
+  if (!root) return {};
+
+  const goalsPath = join(root, '.agents', 'memory', squadName, 'goals.md');
+  if (!existsSync(goalsPath)) return {};
+
+  const content = readFileSync(goalsPath, 'utf-8');
+  const goals: Record<string, string> = {};
+
+  // Parse: **Goal name** — metric: X | ... | status: Y
+  const lines = content.split('\n');
+  for (const line of lines) {
+    const match = line.match(/\*\*([^*]+)\*\*.*status:\s*(\S+)/);
+    if (match) {
+      goals[match[1].trim()] = match[2].trim();
+    }
+  }
+
+  return goals;
+}
+
+/**
+ * Compare two goal snapshots and return what changed.
+ */
+export function diffGoals(
+  before: Record<string, string>,
+  after: Record<string, string>
+): GoalChange[] {
+  const changes: GoalChange[] = [];
+
+  for (const [name, afterStatus] of Object.entries(after)) {
+    const beforeStatus = before[name] || 'new';
+    if (beforeStatus !== afterStatus) {
+      changes.push({ name, before: beforeStatus, after: afterStatus });
+    }
+  }
+
+  // Goals that disappeared (moved to achieved/abandoned)
+  for (const [name, beforeStatus] of Object.entries(before)) {
+    if (!(name in after)) {
+      changes.push({ name, before: beforeStatus, after: 'removed' });
+    }
+  }
+
+  return changes;
 }
 
 /**

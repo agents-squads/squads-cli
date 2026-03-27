@@ -50,8 +50,14 @@ export function registerObservabilityCommands(program: Command): void {
         const tok = (r.input_tokens + r.output_tokens) > 0 ? `${(r.input_tokens + r.output_tokens).toLocaleString()} tok` : '— tok';
         const date = r.ts.slice(0, 16).replace('T', ' ');
 
-        writeLine(`  ${icon}  ${bold}${r.squad}/${r.agent}${RESET}  ${colors.dim}${date}  ${dur}  ${tok}  ${cost}  ${r.model}${RESET}`);
+        const grade = r.grade ? ` ${r.grade}` : '';
+        writeLine(`  ${icon}  ${bold}${r.squad}/${r.agent}${RESET}  ${colors.dim}${date}  ${dur}  ${tok}  ${cost}  ${r.model}${grade}${RESET}`);
         if (r.error) writeLine(`       ${colors.red}${r.error.slice(0, 80)}${RESET}`);
+        if (r.goals_changed && r.goals_changed.length > 0) {
+          for (const g of r.goals_changed) {
+            writeLine(`       ${colors.green}goal: ${g.name} ${g.before} → ${g.after}${RESET}`);
+          }
+        }
       }
       writeLine();
     });
