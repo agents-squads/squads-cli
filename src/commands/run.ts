@@ -77,46 +77,79 @@ export async function runCommand(
     const results: Array<{ squad: string; agent: string; status: string; durationMs: number }> = [];
 
     // Snapshot all goals before execution
-    const { snapshotGoals, diffGoals } = await import('../lib/observability.js');
+    const { snapshotGoals, diffGoals, queryExecutions } = await import('../lib/observability.js');
     const allGoalsBefore: Record<string, Record<string, string>> = {};
     for (const s of plan) {
       allGoalsBefore[s.squad] = snapshotGoals(s.squad);
     }
 
-    for (const s of plan) {
-      if (!s.lead) continue;
+    // Check which squads already completed today (for resume after quota)
+    const today = new Date().toISOString().slice(0, 10);
+    const todayExecs = queryExecutions({ since: `${today}T00:00:00Z`, limit: 100 });
+    const completedToday = new Set(
+      todayExecs
+        .filter(e => e.status === 'completed' && e.agent?.includes('lead'))
+        .map(e => e.squad)
+    );
+
+    let quotaHit = false;
+
+    let planIdx = 0;
+    let consecutiveQuotaFails = 0;
+
+    while (planIdx < plan.length) {
+      const s = plan[planIdx];
+      if (!s.lead) { planIdx++; continue; }
       const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
-      if (!existsSync(leadPath)) continue;
+      if (!existsSync(leadPath)) { planIdx++; continue; }
+
+      // Skip squads that already completed today (resume mode)
+      if (completedToday.has(s.squad)) {
+        writeLine(`  ${colors.dim}skip  ${s.squad}/${s.lead} (already completed today)${RESET}`);
+        results.push({ squad: s.squad, agent: s.lead, status: 'skipped', durationMs: 0 });
+        planIdx++;
+        continue;
+      }
 
       writeLine(`  ${colors.cyan}Running ${s.squad}/${s.lead}...${RESET}`);
       const runStart = Date.now();
       try {
         await runAgent(s.lead, leadPath, s.squad, { ...options, execute: true });
         results.push({ squad: s.squad, agent: s.lead, status: 'completed', durationMs: Date.now() - runStart });
+        consecutiveQuotaFails = 0;
+        planIdx++;
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart });
-
-        // Detect quota limit — if agent fails in <10s, likely quota/rate limit
         const failDuration = Date.now() - runStart;
-        const isQuotaLikely = failDuration < 10000 && errMsg.includes('code 1');
-        const isExplicitQuota = errMsg.includes('hit your limit') || errMsg.includes('rate limit') || errMsg.includes('quota');
+        const isQuotaLikely = (failDuration < 10000 && errMsg.includes('code 1')) ||
+          errMsg.includes('hit your limit') || errMsg.includes('rate limit') || errMsg.includes('quota');
 
-        if (isExplicitQuota || isQuotaLikely) {
-          // Check if previous squad also failed fast — confirms it's quota, not a bug
-          const prevFailed = results.length >= 2 &&
-            results[results.length - 2]?.status === 'failed' &&
-            (results[results.length - 2]?.durationMs || 0) < 10000;
+        if (isQuotaLikely) {
+          consecutiveQuotaFails++;
 
-          if (isExplicitQuota || prevFailed) {
-            writeLine(`  ${colors.red}Quota limit reached — stopping org cycle.${RESET}`);
-            writeLine(`  ${colors.dim}Completed ${results.filter(r => r.status === 'completed').length} squads before hitting limit.${RESET}`);
-            writeLine(`  ${colors.dim}Resume with 'squads run --org' when quota resets.${RESET}`);
-            break;
+          if (consecutiveQuotaFails >= 2) {
+            const completedCount = results.filter(r => r.status === 'completed').length;
+            const remainingCount = plan.length - planIdx;
+            writeLine(`  ${colors.red}Quota limit reached.${RESET} ${completedCount} done, ${remainingCount} remaining.`);
+            writeLine(`  ${colors.dim}Waiting 60 minutes for quota reset...${RESET}`);
+            writeLine(`  ${colors.dim}(Ctrl+C to stop)${RESET}`);
+            await new Promise(r => setTimeout(r, 60 * 60 * 1000));
+            consecutiveQuotaFails = 0;
+            writeLine(`  ${colors.green}Resuming org cycle...${RESET}`);
+            // Don't increment planIdx — retry the same squad
+            continue;
           }
-        }
 
-        writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${errMsg}${RESET}`);
+          // First quota fail — try next squad to confirm it's quota, not a bug
+          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: failDuration });
+          planIdx++;
+        } else {
+          // Non-quota failure — log and move on
+          consecutiveQuotaFails = 0;
+          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: failDuration });
+          writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${errMsg}${RESET}`);
+          planIdx++;
+        }
       }
     }
 
