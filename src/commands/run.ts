@@ -92,8 +92,6 @@ export async function runCommand(
         .map(e => e.squad)
     );
 
-    let quotaHit = false;
-
     let planIdx = 0;
     let consecutiveQuotaFails = 0;
 
