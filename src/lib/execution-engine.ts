@@ -684,6 +684,7 @@ export async function executeWithClaude(
         'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
         'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
         'Bash(docker:*)', 'Bash(duckdb:*)',
+        'Bash(gws:*)',
         'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
         'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
         'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
