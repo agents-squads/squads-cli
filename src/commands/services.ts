@@ -47,7 +47,8 @@ function dockerComposeAvailable(): boolean {
 export function registerServicesCommands(program: Command): void {
   const services = program
     .command('services')
-    .description('Manage Tier 2 local services (Postgres, Redis, API, Bridge)');
+    .description('Manage Tier 2 local services (Postgres, Redis, API, Bridge)')
+    .action(() => { services.outputHelp(); });
 
   // ── services up ──
   services
