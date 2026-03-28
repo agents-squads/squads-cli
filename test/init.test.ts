@@ -558,6 +558,168 @@ describe('initCommand', () => {
       expect(vars['REPO_NAME']).toBe('test-org/test-repo');
       expect(vars['SERVICE_NAME']).toBe('test-repo');
     });
+
+    it('detects Python stack from pyproject.toml', async () => {
+      writeFileSync(join(testDir, 'pyproject.toml'), '[project]\nname = "my-app"\n');
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('python');
+      expect(vars['SERVICE_TYPE']).toBe('product');
+      expect(vars['TEST_COMMAND']).toBe('pytest');
+    });
+
+    it('detects Python stack from setup.py', async () => {
+      writeFileSync(join(testDir, 'setup.py'), 'from setuptools import setup\nsetup(name="app")\n');
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('python');
+    });
+
+    it('detects Next.js framework from dependencies', async () => {
+      writeFileSync(join(testDir, 'package.json'), JSON.stringify({
+        name: 'next-app',
+        dependencies: { next: '^14.0.0', react: '^18.0.0' },
+      }));
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('next');
+    });
+
+    it('detects Nuxt framework from dependencies', async () => {
+      writeFileSync(join(testDir, 'package.json'), JSON.stringify({
+        name: 'nuxt-app',
+        dependencies: { nuxt: '^3.0.0' },
+      }));
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('nuxt');
+    });
+
+    it('detects Vue framework from dependencies', async () => {
+      writeFileSync(join(testDir, 'package.json'), JSON.stringify({
+        name: 'vue-app',
+        dependencies: { vue: '^3.0.0' },
+      }));
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('vue');
+    });
+
+    it('detects Astro framework from dependencies', async () => {
+      writeFileSync(join(testDir, 'package.json'), JSON.stringify({
+        name: 'astro-app',
+        dependencies: { astro: '^4.0.0' },
+      }));
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_STACK']).toBe('astro');
+    });
+
+    it('sets product-type IDP variables for product services', async () => {
+      writeFileSync(join(testDir, 'package.json'), JSON.stringify({ name: 'my-app' }));
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_TYPE']).toBe('product');
+      expect(vars['SERVICE_SCORECARD']).toBe('product');
+      expect(vars['BRANCHES_WORKFLOW']).toBe('pr-to-develop');
+      expect(vars['BRANCHES_DEVELOPMENT']).toBe('develop');
+      expect(vars['CI_TEMPLATE']).toBe('node');
+    });
+
+    it('sets domain-type IDP variables when no project files detected', async () => {
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['SERVICE_TYPE']).toBe('domain');
+      expect(vars['SERVICE_SCORECARD']).toBe('domain');
+      expect(vars['BRANCHES_WORKFLOW']).toBe('direct-to-main');
+      expect(vars['BRANCHES_DEVELOPMENT']).toBe('');
+      expect(vars['CI_TEMPLATE']).toBe('null');
+    });
+
+    it('sets BUILD_COMMAND to null when no build command detected', async () => {
+      writeFileSync(join(testDir, 'requirements.txt'), 'flask==2.0\n');
+
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      // Python has no build command
+      expect(vars['BUILD_COMMAND']).toBe('null');
+    });
+
+    it('writes IDP catalog file with project name as filename', async () => {
+      await initCommand({ yes: true, force: true });
+
+      const catalogFile = join(testDir, '.agents/idp/catalog/test-repo.yaml');
+      expect(existsSync(catalogFile)).toBe(true);
+    });
+
+    it('sets OWNER_SQUAD from first squad in use case config', async () => {
+      await initCommand({ yes: true, force: true });
+
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      expect(vars['OWNER_SQUAD']).toBeDefined();
+      expect(typeof vars['OWNER_SQUAD']).toBe('string');
+      expect(vars['OWNER_SQUAD'].length).toBeGreaterThan(0);
+    });
+
+    it('handles malformed package.json gracefully', async () => {
+      writeFileSync(join(testDir, 'package.json'), '{ invalid json }}}');
+
+      await initCommand({ yes: true, force: true });
+
+      // Should still complete and fall back to node stack
+      const idpCall = mockLoadTemplate.mock.calls.find(
+        (c: unknown[]) => c[0] === 'seed/idp/catalog/service.yaml.template',
+      );
+      const vars = idpCall![1] as Record<string, string>;
+      // When JSON.parse fails, catch block ignores error, stack stays 'node' (from package.json existing)
+      expect(vars['SERVICE_STACK']).toBe('node');
+    });
   });
 
   // ---------- Template variables ----------
