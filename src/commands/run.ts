@@ -27,6 +27,8 @@ import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
+import { findMemoryDir } from '../lib/memory.js';
+import { statSync } from 'fs';
 import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
 
 export async function runCommand(
@@ -83,14 +85,40 @@ export async function runCommand(
       allGoalsBefore[s.squad] = snapshotGoals(s.squad);
     }
 
-    // Check which squads already completed today (for resume after quota)
+    // Check which squads already completed today AND have unchanged goals
     const today = new Date().toISOString().slice(0, 10);
     const todayExecs = queryExecutions({ since: `${today}T00:00:00Z`, limit: 100 });
-    const completedToday = new Set(
-      todayExecs
-        .filter(e => e.status === 'completed' && e.agent?.includes('lead'))
-        .map(e => e.squad)
-    );
+    const completedTodayMap = new Map<string, string>(); // squad → last completion timestamp
+    for (const e of todayExecs) {
+      if (e.status === 'completed' && e.agent?.includes('lead')) {
+        if (!completedTodayMap.has(e.squad) || e.ts > completedTodayMap.get(e.squad)!) {
+          completedTodayMap.set(e.squad, e.ts);
+        }
+      }
+    }
+
+    // Check if goals were modified after last completion (mtime comparison)
+    function shouldSkip(squadName: string): boolean {
+      if (options.force) return false;
+      const lastRun = completedTodayMap.get(squadName);
+      if (!lastRun) return false; // never ran today → don't skip
+
+      // Check if goals.md was modified after the last run
+      const memoryDir = findMemoryDir();
+      if (memoryDir) {
+        const goalsPath = join(memoryDir, squadName, 'goals.md');
+        const priPath = join(memoryDir, squadName, 'priorities.md');
+        try {
+          const lastRunMs = new Date(lastRun).getTime();
+          const goalsMtime = existsSync(goalsPath) ? statSync(goalsPath).mtimeMs : 0;
+          const priMtime = existsSync(priPath) ? statSync(priPath).mtimeMs : 0;
+          if (goalsMtime > lastRunMs || priMtime > lastRunMs) {
+            return false; // goals or priorities changed since last run → re-run
+          }
+        } catch { /* can't stat → don't skip */ return false; }
+      }
+      return true; // completed today, goals unchanged → skip
+    }
 
     let planIdx = 0;
     let consecutiveQuotaFails = 0;
@@ -101,9 +129,9 @@ export async function runCommand(
       const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
       if (!existsSync(leadPath)) { planIdx++; continue; }
 
-      // Skip squads that already completed today (resume mode) — unless --force
-      if (!options.force && completedToday.has(s.squad)) {
-        writeLine(`  ${colors.dim}skip  ${s.squad}/${s.lead} (already completed today)${RESET}`);
+      // Skip only if completed today AND goals/priorities unchanged since
+      if (shouldSkip(s.squad)) {
+        writeLine(`  ${colors.dim}skip  ${s.squad}/${s.lead} (completed today, goals unchanged)${RESET}`);
         results.push({ squad: s.squad, agent: s.lead, status: 'skipped', durationMs: 0 });
         planIdx++;
         continue;
