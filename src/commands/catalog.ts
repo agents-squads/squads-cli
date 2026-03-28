@@ -25,7 +25,8 @@ function noIdp(): boolean {
 export function registerCatalogCommands(program: Command): void {
   const catalog = program
     .command('catalog')
-    .description('Service catalog — browse, inspect, and validate services');
+    .description('Service catalog — browse, inspect, and validate services')
+    .action(() => { catalog.outputHelp(); });
 
   // ── catalog list ──
   catalog
