@@ -4,7 +4,7 @@
  */
 
 import ora from 'ora';
-import { join } from 'path';
+import { join, basename, extname } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import {
   findSquadsDir,
@@ -80,6 +80,10 @@ export async function runAgent(
   squadName: string,
   options: RunOptions & { execute?: boolean }
 ): Promise<void> {
+  // Normalize: strip path prefix and extension if a full file path was passed
+  if (agentName.includes('/') || agentName.includes('\\')) {
+    agentName = basename(agentName, extname(agentName));
+  }
   const spinner = ora(`Running agent: ${agentName}`).start();
   const startMs = Date.now();
   const startTime = new Date(startMs).toISOString();
