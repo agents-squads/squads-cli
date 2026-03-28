@@ -43,6 +43,7 @@ export interface RunOptions {
   phased?: boolean; // Autopilot: use dependency-based phase ordering
   eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
   org?: boolean; // Org cycle: scan → plan → execute all leads → report
+  force?: boolean; // Force re-run squads that already completed today
 }
 
 /**

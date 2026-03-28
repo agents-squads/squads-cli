@@ -101,8 +101,8 @@ export async function runCommand(
       const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
       if (!existsSync(leadPath)) { planIdx++; continue; }
 
-      // Skip squads that already completed today (resume mode)
-      if (completedToday.has(s.squad)) {
+      // Skip squads that already completed today (resume mode) — unless --force
+      if (!options.force && completedToday.has(s.squad)) {
         writeLine(`  ${colors.dim}skip  ${s.squad}/${s.lead} (already completed today)${RESET}`);
         results.push({ squad: s.squad, agent: s.lead, status: 'skipped', durationMs: 0 });
         planIdx++;

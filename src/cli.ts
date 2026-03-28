@@ -309,6 +309,7 @@ program
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
+  .option('--force', 'Force re-run squads that already completed today')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
