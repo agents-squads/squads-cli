@@ -618,6 +618,10 @@ export async function executeWithClaude(
   // Priority: 1) CLI --model flag  2) agent frontmatter model:  3) SQUAD.md model routing
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
   const mcpConfigPath = selectMcpConfig(squadName, squad);
+
+  // Merge CLI --skills flag with SQUAD.md context.skills
+  const squadSkills = squad?.context?.skills || [];
+  const mergedSkills = [...new Set([...(skills || []), ...squadSkills])];
   const taskType = detectTaskType(agentName);
 
   // Read agent frontmatter model if no explicit CLI flag
@@ -683,7 +687,7 @@ export async function executeWithClaude(
     if (verbose) {
       logVerboseExecution({
         projectRoot, mode: 'foreground', useApi, execContext,
-        effort, skills, resolvedModel, claudeModelAlias, explicitModel: model,
+        effort, skills: mergedSkills, resolvedModel, claudeModelAlias, explicitModel: model,
       });
     }
 
@@ -718,7 +722,7 @@ export async function executeWithClaude(
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-      effort, skills, includeOtel: true, ghToken: botGhToken,
+      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken,
     });
 
     return executeForeground({
@@ -731,7 +735,7 @@ export async function executeWithClaude(
   const timestamp = Date.now();
   const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-    effort, skills, includeOtel: !runInWatch, ghToken: botGhToken,
+    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken,
   });
 
   const wrapperScript = buildDetachedShellScript({
@@ -754,7 +758,7 @@ export async function executeWithClaude(
   if (verbose) {
     logVerboseExecution({
       projectRoot, mode: 'background', useApi, execContext,
-      effort, skills, resolvedModel, claudeModelAlias,
+      effort, skills: mergedSkills, resolvedModel, claudeModelAlias,
       explicitModel: model, logFile, mcpConfigPath,
     });
   }
