@@ -8,6 +8,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
 import {
   loadSquad,
+  findSquadsDir,
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
@@ -614,10 +615,28 @@ export async function executeWithClaude(
   ensureProjectTrusted(projectRoot);
 
   // Resolve model and provider
+  // Priority: 1) CLI --model flag  2) agent frontmatter model:  3) SQUAD.md model routing
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
   const mcpConfigPath = selectMcpConfig(squadName, squad);
   const taskType = detectTaskType(agentName);
-  const resolvedModel = resolveModel(model, squad, taskType);
+
+  // Read agent frontmatter model if no explicit CLI flag
+  let effectiveModel = model;
+  if (!effectiveModel) {
+    const squadsDir = findSquadsDir();
+    if (squadsDir) {
+      const agentPath = join(squadsDir, squadName, `${agentName}.md`);
+      if (existsSync(agentPath)) {
+        const content = readFileSync(agentPath, 'utf-8');
+        const modelMatch = content.match(/^model:\s*["']?([^"'\n]+)["']?/m);
+        if (modelMatch) {
+          effectiveModel = modelMatch[1].trim();
+        }
+      }
+    }
+  }
+
+  const resolvedModel = resolveModel(effectiveModel, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
   // Resolve target repo for worktree creation (squad.repo → sibling dir)
