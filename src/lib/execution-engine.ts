@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync 
 import {
   loadSquad,
   findSquadsDir,
+  findProjectRoot,
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
@@ -182,9 +183,11 @@ export async function verifyExecution(
     recentCommits = '(no commits found)';
   }
 
-  const verifyPrompt = `You are verifying whether an agent completed its task successfully.
+  // Load verification protocol from markdown
+  const verifyProtocolPath = join(findProjectRoot() || '', '.agents', 'config', 'verification.md');
+  const verifyProtocol = existsSync(verifyProtocolPath) ? readFileSync(verifyProtocolPath, 'utf-8') : 'Respond: PASS: reason or FAIL: reason';
 
-Agent: ${squadName}/${agentName}
+  const verifyPrompt = `Agent: ${squadName}/${agentName}
 
 ## Acceptance Criteria
 ${criteria}
@@ -197,12 +200,7 @@ ${stateContent || '(empty or not found)'}
 ### Recent Git Commits
 ${recentCommits}
 
-## Instructions
-Evaluate whether the acceptance criteria are met based on the evidence.
-Respond with EXACTLY one line:
-PASS: <brief reason>
-or
-FAIL: <brief reason>`;
+${verifyProtocol}`;
 
   try {
     const escapedPrompt = verifyPrompt.replace(/'/g, "'\\''");

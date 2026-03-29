@@ -328,14 +328,19 @@ export async function synthesizeSignals(
       .map((s, i) => `${i + 1}. [${s.source}] ${s.signal_type}${s.value !== null ? ' = ' + s.value : ''}${s.unit ? ' ' + s.unit : ''}: ${(s.data.content as string || '').slice(0, 100)}`)
       .join('\n');
 
+    // Load classification prompt from markdown
+    const { findProjectRoot } = require('./squad-parser.js');
+    const classifyPath = join(findProjectRoot() || '', '.agents', 'config', 'cognition-prompts.md');
+    const classifyContent = existsSync(classifyPath) ? readFileSync(classifyPath, 'utf-8') : '';
+    const classifySection = classifyContent.match(/## Belief Classification\n([\s\S]*?)(?=\n## |$)/);
+    const classifyInstructions = classifySection ? classifySection[1].trim() : 'Classify each signal. Respond with JSON: {"supporting": [], "contradicting": [], "neutral": []}';
+
     const prompt = `Given this belief: "${belief.statement}"
 
-Classify each signal as SUPPORTING or CONTRADICTING or NEUTRAL.
+${classifyInstructions}
 
 Signals:
-${signalList}
-
-Respond with JSON only: {"supporting": [indexes], "contradicting": [indexes], "neutral": [indexes]}`;
+${signalList}`;
 
     try {
       // Call Haiku via claude CLI (uses subscription, no API key needed)
@@ -475,10 +480,14 @@ export async function reflect(
     ? state.reflections[state.reflections.length - 1]
     : null;
 
-  const prompt = `You are the cognition engine for an AI-native company called Agents Squads.
-Your job is to reflect on the current state of the business and produce actionable insights.
+  // Load reflection prompt from markdown
+  const { findProjectRoot: findRoot } = require('./squad-parser.js');
+  const reflectPath = join(findRoot() || '', '.agents', 'config', 'cognition-prompts.md');
+  const reflectContent = existsSync(reflectPath) ? readFileSync(reflectPath, 'utf-8') : '';
+  const reflectSection = reflectContent.match(/## Business Reflection\n([\s\S]*?)$/);
+  const reflectInstructions = reflectSection ? reflectSection[1].trim() : 'Produce a business reflection as JSON.';
 
-## Current Beliefs (world model)
+  const prompt = `## Current Beliefs (world model)
 ${beliefsText || '(none)'}
 
 ## Recent Signals (since last reflection)
@@ -489,15 +498,7 @@ ${decisionsText || '(none)'}
 
 ${lastReflection ? `Previous reflection (${lastReflection.created_at}):\n${lastReflection.assessment}\n` : ''}
 
-## Your Task
-Produce a business reflection. Respond as JSON only:
-{
-  "assessment": "2-3 sentence summary of business state",
-  "insights": [{"type": "highlight|warning|recommendation", "message": "..."}],
-  "belief_updates": [{"belief_key": "...", "suggested_confidence": 0.X, "reason": "..."}],
-  "priority_adjustments": [{"description": "...", "urgency": "high|medium|low"}],
-  "founder_escalations": [{"issue": "...", "why_human_needed": "...", "suggested_action": "...", "urgency": "immediate|today|this_week"}]
-}`;
+${reflectInstructions}`;
 
   try {
     const result = callClaude(prompt, 'sonnet', 60000);

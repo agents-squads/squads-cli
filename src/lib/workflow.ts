@@ -8,7 +8,8 @@
  */
 
 import { join } from 'path';
-import { existsSync, writeFileSync, mkdirSync } from 'fs';;
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 import { execSync, exec } from 'child_process';;
 
 import {
@@ -83,28 +84,23 @@ function executeAgentTurn(config: AgentTurnConfig): string {
     agentPath, role: contextRole
   });
 
+  // Load role instructions from markdown
+  const rolesPath = join(dirname(agentPath), '..', '..', 'config', 'conversation-roles.md');
+  const rolesContent = existsSync(rolesPath) ? readFileSync(rolesPath, 'utf-8') : '';
+
   let roleInstructions: string;
-  switch (role) {
-    case 'lead':
-      if (transcript.turns.length === 0 && task) {
-        // First turn with founder directive — replaces lead briefing
-        roleInstructions = `## Founder Directive\n\n${task}\n\nBrief the team on this directive. Set priorities and assign work.`;
-      } else if (transcript.turns.length === 0) {
-        roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do`;
-      } else {
-        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs using \`gh pr merge --squash --delete-branch --auto\` (waits for required checks)`;
-      }
-      break;
-    case 'scanner':
-      roleInstructions = `## Your Role: Scanner\n\nScan for issues, gaps, and opportunities. Report findings concisely. Do NOT fix anything — just discover and report.`;
-      break;
-    case 'worker':
-      roleInstructions = `## Your Role: Worker\n\nExecute the work assigned by the lead. Create branches, write code, open PRs to develop. Be focused and efficient.`;
-      break;
-    case 'verifier':
-      roleInstructions = `## Your Role: Verifier\n\nVerify that work meets quality standards. Check PRs, run tests, validate output. Report pass/fail with specifics.`;
-      break;
+  if (task && transcript.turns.length === 0) {
+    roleInstructions = `## Founder Directive\n\n${task}`;
+  } else {
+    const sectionName = role === 'lead'
+      ? (transcript.turns.length === 0 ? 'Lead (first turn)' : 'Lead (review turn)')
+      : role.charAt(0).toUpperCase() + role.slice(1);
+    const sectionMatch = rolesContent.match(new RegExp(`## ${sectionName}\\n([\\s\\S]*?)(?=\\n## |$)`));
+    roleInstructions = sectionMatch ? `## Your Role: ${role}\n\n${sectionMatch[1].trim()}` : `## Your Role: ${role}`;
   }
+
+  const formatMatch = rolesContent.match(/## Output Format[\s\S]*$/);
+  const outputFormat = formatMatch ? formatMatch[0] : '';
 
   const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
 
@@ -114,12 +110,7 @@ ${roleInstructions}
 ${squadContext}
 ${transcriptContext}
 
-IMPORTANT:
-- Be concise. Your output becomes part of a shared transcript.
-- Reference specific issue numbers, PR numbers, and file paths.
-- If you create a PR, include the PR number in your output.
-- If there's nothing to do, say "Nothing to do" clearly.
-- When done, summarize what you did in 2-3 sentences.`;
+${outputFormat}`;
 
   // Resolve model: CLI override > role default
   const resolvedModel = config.model || modelForRole(role);
@@ -158,23 +149,21 @@ IMPORTANT:
 function executeAgentTurnAsync(config: AgentTurnConfig): Promise<string> {
   const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
 
+  // Load role instructions from markdown (same source as sync version)
+  const asyncRolesPath = join(dirname(agentPath), '..', '..', 'config', 'conversation-roles.md');
+  const asyncRolesContent = existsSync(asyncRolesPath) ? readFileSync(asyncRolesPath, 'utf-8') : '';
+
   let roleInstructions = '';
-  switch (role) {
-    case 'lead':
-      roleInstructions = task
-        ? `FOUNDER DIRECTIVE: ${task}\n\nBrief the team on this directive. Assign specific tasks to scanners and workers.`
-        : 'Review the conversation so far. Assess worker output. Direct next actions or declare convergence.';
-      break;
-    case 'scanner':
-      roleInstructions = 'Scan for issues, data, or signals relevant to the lead\'s brief. Report findings concisely.';
-      break;
-    case 'worker':
-      roleInstructions = 'Execute the specific task assigned by the lead. Produce concrete output (PRs, issues, content, analysis).';
-      break;
-    case 'verifier':
-      roleInstructions = 'Verify the worker\'s output meets quality standards. Check for errors, omissions, and alignment with goals.';
-      break;
+  if (task) {
+    roleInstructions = `FOUNDER DIRECTIVE: ${task}`;
+  } else {
+    const sectionName = role.charAt(0).toUpperCase() + role.slice(1);
+    const sectionMatch = asyncRolesContent.match(new RegExp(`## ${sectionName}[^\\n]*\\n([\\s\\S]*?)(?=\\n## |$)`));
+    roleInstructions = sectionMatch ? sectionMatch[1].trim() : role;
   }
+
+  const asyncFormatMatch = asyncRolesContent.match(/## Output Format[\s\S]*$/);
+  const asyncOutputFormat = asyncFormatMatch ? asyncFormatMatch[0] : '';
 
   const transcriptContext = transcript.turns.length > 0
     ? `\n== CONVERSATION SO FAR ==\n${serializeTranscript(transcript)}\n== END CONVERSATION ==`
@@ -189,12 +178,7 @@ ${roleInstructions}
 
 ${transcriptContext}
 
-IMPORTANT:
-- Be concise. Your output becomes part of a shared transcript.
-- Reference specific issue numbers, PR numbers, and file paths.
-- If you create a PR, include the PR number in your output.
-- If there's nothing to do, say "Nothing to do" clearly.
-- When done, summarize what you did in 2-3 sentences.`;
+${asyncOutputFormat}`;
 
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
   const { CLAUDECODE: _cc2, ANTHROPIC_API_KEY: _ak2, ...cleanEnvAsync } = process.env;
