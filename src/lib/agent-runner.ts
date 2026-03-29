@@ -282,15 +282,8 @@ export async function runAgent(
     : '';
   const prompt = `You are ${agentName} from squad ${squadName}.
 ${taskDirective}
-Your full context follows — read it top-to-bottom. Each layer builds on the previous:
-- SYSTEM.md: how the system works (already loaded)
-- Company: who we are and why
-- Priorities: where to focus now
-- Goals: what to achieve (measurable targets)
-- Agent: your specific role and instructions
-- State: where you left off
-${systemContext}${squadContext}${cognitionContext}${learningContext}
-COMPLETE YOUR GOALS. Don't just scan and report — finish the work. If a goal says "publish a spreadsheet", create it. If it says "file issues", file them with full context. Mark goals as achieved only when the deliverable exists. If truly blocked, note it in state.md with the specific blocker.`;
+Your full context follows — read it top-to-bottom:
+${systemContext}${squadContext}${cognitionContext}${learningContext}`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
