@@ -4,8 +4,12 @@
  */
 
 import { spawn, execSync } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import {
   loadSquad,
   findSquadsDir,
@@ -51,6 +55,34 @@ export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+
+// ── Guardrail settings ────────────────────────────────────────────────
+
+/**
+ * Resolve the path to a guardrail settings JSON file for --settings injection.
+ *
+ * Resolution order:
+ *   1. `.claude/guardrail.json` in the project root (user-provided override)
+ *   2. Bundled default: `templates/guardrail.json` alongside the squads-cli package
+ *
+ * Returns undefined when neither exists (no guardrail applied).
+ */
+export function resolveGuardrailSettings(projectRoot: string): string | undefined {
+  // 1. Project-level override
+  const projectGuardrail = join(projectRoot, '.claude', 'guardrail.json');
+  if (existsSync(projectGuardrail)) return projectGuardrail;
+
+  // 2. Bundled default (dist/lib/ → dist/templates/ in compiled output;
+  //    src/lib/ → templates/ in source tree)
+  const bundledGuardrail = join(__dirname, '..', '..', 'templates', 'guardrail.json');
+  if (existsSync(bundledGuardrail)) return bundledGuardrail;
+
+  // Also check one level up (when running from dist/lib/)
+  const bundledGuardrailAlt = join(__dirname, '..', 'templates', 'guardrail.json');
+  if (existsSync(bundledGuardrailAlt)) return bundledGuardrailAlt;
+
+  return undefined;
+}
 
 // ── Interfaces ────────────────────────────────────────────────────────
 
@@ -716,6 +748,9 @@ export async function executeWithClaude(
     }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
+    // Inject guardrail PreToolUse hooks so spawned sessions inherit destructive-command guards
+    const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
+    if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
 
