@@ -359,6 +359,9 @@ export const Events = {
   // Cycle Sync
   CLI_SYNC_CYCLE: 'cli.sync.cycle',
 
+  // User outreach
+  CLI_EMAIL_CAPTURED: 'cli.email_captured',
+
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',
   CONDENSER_DEDUPE: 'condenser.dedupe',
