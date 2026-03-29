@@ -290,7 +290,7 @@ Your full context follows — read it top-to-bottom. Each layer builds on the pr
 - Agent: your specific role and instructions
 - State: where you left off
 ${systemContext}${squadContext}${cognitionContext}${learningContext}
-TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note it in state.md and move on.`;
+COMPLETE YOUR GOALS. Don't just scan and report — finish the work. If a goal says "publish a spreadsheet", create it. If it says "file issues", file them with full context. Mark goals as achieved only when the deliverable exists. If truly blocked, note it in state.md with the specific blocker.`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
