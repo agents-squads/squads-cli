@@ -63,6 +63,7 @@ import { registerReleaseCommands } from './commands/release-check.js';
 import { registerObservabilityCommands } from './commands/observability.js';
 import { registerTierCommand } from './commands/tier.js';
 import { registerServicesCommands } from './commands/services.js';
+import { registerGoalsCommand } from './commands/goals.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1059,6 +1060,7 @@ registerReleaseCommands(program);
 registerObservabilityCommands(program);
 registerTierCommand(program);
 registerServicesCommands(program);
+registerGoalsCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
