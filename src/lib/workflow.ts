@@ -86,7 +86,7 @@ function executeAgentTurn(config: AgentTurnConfig): string {
 
   // Load role instructions from markdown
   const rolesPath = join(dirname(agentPath), '..', '..', 'config', 'conversation-roles.md');
-  const rolesContent = existsSync(rolesPath) ? readFileSync(rolesPath, 'utf-8') : '';
+  const rolesContent = (existsSync(rolesPath) ? readFileSync(rolesPath, 'utf-8') : '') ?? '';
 
   let roleInstructions: string;
   if (task && transcript.turns.length === 0) {
