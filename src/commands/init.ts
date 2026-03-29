@@ -16,9 +16,11 @@ import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
+import { saveEmail } from '../lib/env-config.js';
 import { existsSync, readFileSync } from 'fs';
 import {
   loadTemplate,
@@ -848,53 +850,53 @@ export async function initCommand(options: InitOptions): Promise<void> {
     writeLine(chalk.dim('  • .claude/settings.json         Session hooks'));
   }
   writeLine();
-  writeLine(chalk.bold('  Getting started:'));
+  writeLine(chalk.bold('  What\'s next:'));
   writeLine();
-  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
-  writeLine(chalk.dim('        Set your business context — agents use this for every run'));
+  // Dynamic first-run suggestion based on use case
+  const firstRun = getFirstRunCommand(selectedUseCase);
+  const firstRunCmd = `squads run ${firstRun.squad} -a ${firstRun.agent}`;
+  writeLine(`  ${chalk.green('→')} Run your first agent:`);
+  writeLine(`     ${chalk.yellow(firstRunCmd)}`);
   writeLine();
-  // Dynamic "first run" suggestion based on use case
-  const firstRunCommand = getFirstRunCommand(selectedUseCase);
-  const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
-  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
-  writeLine(chalk.dim(`        ${firstRunCommand.description}`));
-  writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
+  writeLine(`  ${chalk.dim('See all squads:')} ${chalk.yellow('squads status')}`);
+  writeLine(`  ${chalk.dim('Docs:')} ${chalk.dim('https://agents-squads.com/docs/getting-started')}`);
   writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads run`)}`);
-  writeLine(chalk.dim('        Autopilot — runs all squads on schedule, learns between cycles'));
-  writeLine(chalk.dim(`        Options: squads run --once (single cycle), squads run -i 15 --budget 50`));
-  writeLine();
-  writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
-  writeLine();
+
+  // 7. Opt-in email capture for founder outreach
+  // Gracefully wrapped — never blocks init if prompt fails
+  try {
+    if (isInteractive()) {
+      const emailInput = await prompt('Email (optional, for updates):', '');
+      if (emailInput && emailInput.includes('@')) {
+        saveEmail(emailInput);
+        const emailHash = createHash('sha256').update(emailInput.toLowerCase().trim()).digest('hex');
+        await track(Events.CLI_EMAIL_CAPTURED, { emailHash });
+        writeLine(chalk.dim('  Email saved. We will reach out with updates.'));
+        writeLine();
+      }
+    }
+  } catch {
+    // Non-fatal — email capture failure must never break init
+  }
   }
 
 /**
- * Get the suggested first command based on installed packs
+ * Get the suggested first agent to run based on installed packs.
+ * Returns squad and agent names separately so the caller can format
+ * the command as: squads run {squad} -a {agent}
  */
-function getFirstRunCommand(useCase: UseCase): { command: string; description: string } {
+function getFirstRunCommand(useCase: UseCase): { squad: string; agent: string } {
   switch (useCase) {
     case 'engineering':
-      return {
-        command: 'squads run engineering/issue-solver',
-        description: 'Run a single agent — finds and solves GitHub issues (~2 min)',
-      };
+      return { squad: 'engineering', agent: 'issue-solver' };
     case 'marketing':
-      return {
-        command: 'squads run marketing/content-drafter',
-        description: 'Run a single agent — drafts content for your business (~2 min)',
-      };
+      return { squad: 'marketing', agent: 'content-drafter' };
     case 'operations':
-      return {
-        command: 'squads run operations/ops-lead',
-        description: 'Run a single agent — coordinates daily operations (~2 min)',
-      };
+      return { squad: 'operations', agent: 'ops-lead' };
     case 'full-company':
     case 'custom':
     default:
-      return {
-        command: 'squads run research/lead',
-        description: 'Run a single agent — researches the topic you set (~2 min)',
-      };
+      return { squad: 'research', agent: 'lead' };
   }
 }
 
