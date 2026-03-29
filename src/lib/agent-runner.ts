@@ -415,7 +415,8 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         } else {
           writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
         }
-        break; // Error — exit retry loop
+        // Re-throw so callers (org cycle) can detect the failure
+        throw error;
       }
     }
   } else {
