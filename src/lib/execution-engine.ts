@@ -7,6 +7,7 @@ import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -332,6 +333,11 @@ export function buildAgentEnv(
   // Inject bot GH_TOKEN so agents create PRs/issues as the bot identity,
   // not the user's personal gh auth. This enables founder to review/approve.
   if (options?.ghToken) env.GH_TOKEN = options.ghToken;
+
+  // Inject per-squad GCP credential if available
+  // Agents get GOOGLE_APPLICATION_CREDENTIALS pointing to their squad's service account key
+  const credPath = join(homedir(), '.squads', 'secrets', `${execContext.squad}-sa-key.json`);
+  if (existsSync(credPath)) env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
 
   if (options?.includeOtel) {
     env.OTEL_RESOURCE_ATTRIBUTES = `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`;
