@@ -37,7 +37,7 @@ interface SquadRow {
   squad: string;
   exec: ObservabilityRecord | null;
   goals: GoalInfo[];
-  stateStatus: string;
+  status: string;
   topAction: string;
   founderBlockers: string[];
   agentBlockers: string[];
