@@ -10,7 +10,7 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
@@ -115,7 +115,7 @@ function readLeadState(memoryDir: string, squad: string): {
     if (inActions && line.startsWith('## ')) break;
     if (inActions && line.trim()) {
       // Look for completed items first
-      const cleaned = line.replace(/\*\*/g, '').replace(/[🔴🟡🟢✅❌✓]/g, '').replace(/^[-*]\s*/, '').replace(/^\[x\]\s*/i, '').trim();
+      const cleaned = line.replace(/\*\*/g, '').replace(/[\u{1F534}\u{1F7E1}\u{1F7E2}\u{2705}\u{274C}\u2713]/gu, '').replace(/^[-*]\s*/, '').replace(/^\[x\]\s*/i, '').trim();
       if (cleaned.length > 10 && !cleaned.startsWith('---')) {
         topAction = cleaned.slice(0, 60);
         break;
