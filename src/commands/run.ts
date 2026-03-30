@@ -150,8 +150,8 @@ export async function runCommand(
 
         const convOptions: ConversationOptions = {
           task: options.task,
-          maxTurns: options.maxTurns || 12,
-          costCeiling: options.costCeiling || 10,
+          maxTurns: options.maxTurns,
+          costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
         };
