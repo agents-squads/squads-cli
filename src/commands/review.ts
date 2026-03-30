@@ -135,12 +135,15 @@ function readLeadState(memoryDir: string, squad: string): {
       const text = line.replace(/^-\s*/, '').replace(/\*\*/g, '').trim();
       if (!text || text.toLowerCase() === 'none' || text === '(none)') continue;
 
+      const link = extractLink(text);
+      const entry = link ? `${text.slice(0, 65)}\n         ${colors.dim}${link}${RESET}` : text.slice(0, 80);
+
       // Founder blockers: mention founder, kokevidaurre, needs:human, "enable", "login", "auth"
       const isFounder = /founder|kokevidaurre|needs:human|needs founder|assigned to founder|enable at|auth login|bank cartola|CPA/i.test(text);
       if (isFounder) {
-        founderBlockers.push(text.slice(0, 80));
+        founderBlockers.push(entry);
       } else {
-        agentBlockers.push(text.slice(0, 80));
+        agentBlockers.push(entry);
       }
     }
   }
@@ -163,6 +166,24 @@ function daysUntil(dateStr: string): number | null {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return null;
   return Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+}
+
+/** Extract a URL or GitHub issue link from text */
+function extractLink(text: string): string {
+  // Direct URL
+  const urlMatch = text.match(/(https?:\/\/[^\s)]+)/);
+  if (urlMatch) return urlMatch[1];
+
+  // Issue reference: "repo#N" or "#N" with repo context
+  const repoIssue = text.match(/([a-z][\w-]*)#(\d+)/i);
+  if (repoIssue) {
+    const repo = repoIssue[1];
+    const num = repoIssue[2];
+    return `https://github.com/agents-squads/${repo}/issues/${num}`;
+  }
+
+  // Bare #N — can't resolve without repo context
+  return '';
 }
 
 function parseSinceToISO(since: string): string {
@@ -282,7 +303,9 @@ function showOverview(squadsDir: string, memoryDir: string, since: string): void
     writeLine();
     writeLine(`  ${bold}Blocked Goals${RESET}`);
     for (const b of blockedGoals) {
+      const link = b.blocker ? extractLink(b.blocker) : '';
       writeLine(`  ${colors.red}block${RESET}  ${b.squad}: ${b.name}${b.blocker ? ` ${colors.dim}← ${b.blocker.slice(0, 45)}${RESET}` : ''}`);
+      if (link) writeLine(`         ${colors.dim}${link}${RESET}`);
     }
   }
 
