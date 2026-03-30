@@ -102,7 +102,8 @@ function ensureSecretsDir(): void {
 
 function gcloudExec(cmd: string, silent = false): string {
   try {
-    return execSync(cmd, { encoding: 'utf-8', stdio: silent ? 'pipe' : 'inherit' }).trim();
+    const result = execSync(cmd, { encoding: 'utf-8', stdio: silent ? 'pipe' : ['pipe', 'inherit', 'inherit'] });
+    return (result || '').trim();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes('Reauthentication')) {
