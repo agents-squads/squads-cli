@@ -199,7 +199,13 @@ export interface ConvergenceResult {
 
 /**
  * Detect if the conversation has converged.
- * Continuation signals beat convergence signals (bias toward more work).
+ *
+ * Uses explicit STATUS/VERDICT markers from conversation-roles.md:
+ * - Lead: `## STATUS: DONE` or `## STATUS: CONTINUE`
+ * - Verifier: `## VERDICT: APPROVED` or `## VERDICT: REJECTED`
+ * - Any role: `BLOCKED: [reason]`
+ *
+ * Falls back to keyword detection for agents that don't follow the format.
  */
 export function detectConvergence(
   transcript: Transcript,
@@ -214,47 +220,61 @@ export function detectConvergence(
     return { converged: true, reason: `Cost ceiling reached ($${transcript.totalCost.toFixed(2)}/$${costCeiling})` };
   }
 
-  // Check last turn content
   if (transcript.turns.length === 0) {
     return { converged: false, reason: 'No turns yet' };
   }
 
   const lastTurn = transcript.turns[transcript.turns.length - 1];
   const content = lastTurn.content;
-  const lower = content.toLowerCase();
 
-  // Verifier turns: check approval/rejection before generic signals
-  if (lastTurn.role === 'verifier') {
-    const rejected = VERIFIER_REJECTION_PHRASES.some(phrase => lower.includes(phrase));
-    if (rejected) {
-      return { converged: false, reason: 'Verifier rejected — continuing cycle' };
-    }
-    const approved = VERIFIER_APPROVAL_PHRASES.some(phrase => lower.includes(phrase));
-    if (approved) {
-      return { converged: true, reason: 'Verifier approved' };
-    }
+  // ── Explicit markers (preferred) ──────────────────────────────────
+
+  // Verifier verdict — strongest signal
+  if (/## VERDICT:\s*APPROVED/i.test(content)) {
+    return { converged: true, reason: 'Verifier approved' };
+  }
+  if (/## VERDICT:\s*REJECTED/i.test(content)) {
+    return { converged: false, reason: 'Verifier rejected — continuing cycle' };
   }
 
-  // Lead completion: hard stop when lead signals the session is done.
-  // Checked before continuation phrases — lead saying "done" overrides stale
-  // continuation signals (e.g. "will proceed to close" shouldn't keep running).
+  // Lead status — only from lead turns
   if (lastTurn.role === 'lead') {
-    const leadDone = LEAD_COMPLETION_PHRASES.some(phrase => lower.includes(phrase));
-    if (leadDone) {
+    if (/## STATUS:\s*DONE/i.test(content)) {
       return { converged: true, reason: 'Lead signaled completion' };
     }
+    if (/## STATUS:\s*CONTINUE/i.test(content)) {
+      return { converged: false, reason: 'Lead assigned more work' };
+    }
   }
 
-  // Continuation signals beat generic convergence (bias toward completing work)
-  const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
-  if (hasContinuation) {
-    return { converged: false, reason: 'Continuation signal detected' };
+  // Blocked — any role
+  if (/BLOCKED:/i.test(content)) {
+    return { converged: true, reason: 'Blocked — needs human action' };
   }
+
+  // ── Fallback: keyword detection ───────────────────────────────────
+  // For agents that don't follow the STATUS/VERDICT format
+
+  const lower = content.toLowerCase();
+
+  if (lastTurn.role === 'verifier') {
+    const rejected = VERIFIER_REJECTION_PHRASES.some(phrase => lower.includes(phrase));
+    if (rejected) return { converged: false, reason: 'Verifier rejected (keyword)' };
+    const approved = VERIFIER_APPROVAL_PHRASES.some(phrase => lower.includes(phrase));
+    if (approved) return { converged: true, reason: 'Verifier approved (keyword)' };
+  }
+
+  if (lastTurn.role === 'lead') {
+    const leadDone = LEAD_COMPLETION_PHRASES.some(phrase => lower.includes(phrase));
+    if (leadDone) return { converged: true, reason: 'Lead signaled completion (keyword)' };
+  }
+
+  // Continuation beats convergence
+  const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
+  if (hasContinuation) return { converged: false, reason: 'Continuation signal detected' };
 
   const hasConvergence = CONVERGENCE_PHRASES.some(phrase => lower.includes(phrase));
-  if (hasConvergence) {
-    return { converged: true, reason: 'Convergence signal detected' };
-  }
+  if (hasConvergence) return { converged: true, reason: 'Convergence signal detected' };
 
   return { converged: false, reason: 'No signals detected, continuing' };
 }
