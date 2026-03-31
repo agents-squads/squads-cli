@@ -18,22 +18,22 @@ export type AgentRole = 'lead' | 'scanner' | 'worker' | 'verifier';
  * Fallback: matches against agent name (for squads without role descriptions).
  */
 export function classifyAgent(agentName: string, roleDescription?: string): AgentRole | null {
-  // Primary: parse the role description from SQUAD.md
-  if (roleDescription) {
-    const lower = roleDescription.toLowerCase();
-    if (lower.includes('orchestrat') || lower.includes('triage') || lower.includes('coordinat')) return 'lead';
-    if (lower.includes('scan') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
-    if (lower.includes('verif') || lower.includes('review') || lower.includes('check') || lower.includes('critic')) return 'verifier';
-    // Any role description that doesn't match above = worker (the default doer)
-    return 'worker';
-  }
-
-  // Fallback: match against agent name (lead checked first to avoid substring collisions)
+  // Name-based classification FIRST — more reliable than parsing ambiguous
+  // role descriptions (e.g. "review PRs" in eng-lead ≠ verifier).
   const name = agentName.toLowerCase();
   if (name.includes('lead') || name.includes('orchestrator')) return 'lead';
   if (name.includes('scanner') || name.includes('scout') || name.includes('monitor')) return 'scanner';
   if (name.includes('verifier') || name.includes('critic') || name.includes('reviewer')) return 'verifier';
   if (name.includes('worker') || name.includes('solver') || name.includes('builder')) return 'worker';
+
+  // Fallback: parse role description from SQUAD.md
+  if (roleDescription) {
+    const lower = roleDescription.toLowerCase();
+    if (lower.includes('orchestrat') || lower.includes('triage') || lower.includes('coordinat') || lower.includes('lead')) return 'lead';
+    if (lower.includes('scan') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
+    if (lower.includes('verif') || lower.includes('critic')) return 'verifier';
+    return 'worker';
+  }
 
   return null; // Unclassified — excluded from conversation
 }
