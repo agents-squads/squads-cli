@@ -74,12 +74,10 @@ export async function runCommand(
       return;
     }
 
-    // Step 3: EXECUTE — run each squad lead sequentially
-    // NOTE: Conversation mode (workflow.ts) uses claude --print which is text-only (no tools).
-    // Until workflow.ts is rewritten to use executeWithClaude(), leads run solo with full tool access.
-    // Issue: https://github.com/agents-squads/squads-cli/issues/685
+    // Step 3: EXECUTE — run each squad as full conversation (lead → scan → work → verify)
+    // Agents run via `claude --print --allowedTools` = tool access + output capture
     const cycleStart = Date.now();
-    const results: Array<{ squad: string; agent: string; status: string; durationMs: number }> = [];
+    const results: Array<{ squad: string; agent: string; status: string; durationMs: number; turnCount?: number; totalCost?: number; converged?: boolean }> = [];
 
     // Snapshot all goals before execution
     const { snapshotGoals, diffGoals, queryExecutions } = await import('../lib/observability.js');
@@ -140,11 +138,35 @@ export async function runCommand(
         continue;
       }
 
-      writeLine(`  ${colors.cyan}Running ${s.squad}/${s.lead}...${RESET}`);
+      writeLine(`  ${colors.cyan}Running ${s.squad} conversation...${RESET}`);
       const runStart = Date.now();
       try {
-        await runAgent(s.lead, leadPath, s.squad, { ...options, execute: true });
-        results.push({ squad: s.squad, agent: s.lead, status: 'completed', durationMs: Date.now() - runStart });
+        const squad = loadSquad(s.squad);
+        if (!squad) {
+          writeLine(`  ${colors.red}${s.squad}: squad not found${RESET}`);
+          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: 0 });
+          planIdx++;
+          continue;
+        }
+
+        const convOptions: ConversationOptions = {
+          task: options.task,
+          maxTurns: options.maxTurns,
+          costCeiling: options.costCeiling,
+          verbose: options.verbose,
+          model: options.model,
+        };
+
+        const result = await runConversation(squad, convOptions);
+        saveTranscript(result.transcript);
+
+        const status = result.converged ? 'converged' : 'completed';
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${s.squad}: ${result.reason} ${colors.dim}(${result.turnCount} turns, ~$${result.totalCost.toFixed(2)})${RESET}`);
+        results.push({
+          squad: s.squad, agent: s.lead, status,
+          durationMs: Date.now() - runStart,
+          turnCount: result.turnCount, totalCost: result.totalCost, converged: result.converged,
+        });
         consecutiveQuotaFails = 0;
         planIdx++;
       } catch (e) {
@@ -187,16 +209,21 @@ export async function runCommand(
     const completed = results.filter(r => r.status === 'completed').length;
     const failed = results.filter(r => r.status === 'failed').length;
 
+    const totalCostAll = results.reduce((s, r) => s + (r.totalCost || 0), 0);
+    const totalTurns = results.reduce((s, r) => s + (r.turnCount || 0), 0);
+
     writeLine();
     writeLine(`  ${bold}Org Cycle Complete${RESET}`);
-    writeLine(`  Duration: ${Math.round(totalMs / 60000)}m | Squads: ${completed} completed, ${failed} failed | Frozen: ${scan.filter(s => s.status === 'frozen').length} skipped`);
+    writeLine(`  Duration: ${Math.round(totalMs / 60000)}m | Squads: ${completed} done, ${failed} failed | ~$${totalCostAll.toFixed(0)} | ${totalTurns} turns`);
     writeLine();
 
     for (const r of results) {
-      const icon = r.status === 'completed' ? `${colors.green}pass${RESET}`
+      const icon = r.status === 'converged' ? `${colors.green}conv${RESET}`
+        : r.status === 'completed' ? `${colors.green}done${RESET}`
         : r.status === 'skipped' ? `${colors.dim}skip${RESET}`
         : `${colors.red}fail${RESET}`;
-      writeLine(`  ${icon}  ${r.squad}/${r.agent}  ${colors.dim}${Math.round(r.durationMs / 1000)}s${RESET}`);
+      const meta = r.turnCount ? `${r.turnCount}t ~$${(r.totalCost || 0).toFixed(2)}` : '';
+      writeLine(`  ${icon}  ${r.squad.padEnd(18)} ${colors.dim}${Math.round(r.durationMs / 1000)}s  ${meta}${RESET}`);
     }
 
     // Goal changes summary
