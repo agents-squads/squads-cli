@@ -19,6 +19,7 @@ vi.mock('fs', () => ({
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   exec: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 // Mock squad-parser
@@ -41,7 +42,7 @@ vi.mock('../../src/lib/conversation.js', async () => {
 });
 
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
 import { runConversation, saveTranscript } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
@@ -51,7 +52,35 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
 const mockExecSync = vi.mocked(execSync);
+const mockSpawn = vi.mocked(spawn);
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
+
+/** Create a mock child process that emits output then closes. */
+function makeMockChild(output: string) {
+  const stdoutHandlers: Array<(chunk: Buffer) => void> = [];
+  const closeHandlers: Array<(code: number) => void> = [];
+  return {
+    stdin: {
+      write: vi.fn(),
+      end: vi.fn(() => {
+        process.nextTick(() => {
+          stdoutHandlers.forEach(l => l(Buffer.from(output)));
+          closeHandlers.forEach(l => l(0));
+        });
+      }),
+    },
+    stdout: {
+      on: vi.fn((event: string, handler: (chunk: Buffer) => void) => {
+        if (event === 'data') stdoutHandlers.push(handler);
+      }),
+    },
+    stderr: { on: vi.fn() },
+    on: vi.fn((event: string, handler: (code: number) => void) => {
+      if (event === 'close') closeHandlers.push(handler);
+    }),
+    kill: vi.fn(),
+  } as unknown as ReturnType<typeof spawn>;
+}
 
 // Minimal squad fixture
 function makeSquad(overrides: Partial<Squad> = {}): Squad {
@@ -105,7 +134,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true); // agent file exists
 
     // Lead outputs a convergence phrase immediately
-    mockExecSync.mockReturnValue('Session complete. All PRs merged.' as never);
+    mockSpawn.mockImplementation(() => makeMockChild('Session complete. All PRs merged.'));
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -121,7 +150,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     // Each lead turn produces non-convergent output but we set very low cost ceiling
-    mockExecSync.mockReturnValue('Still working on it.' as never);
+    mockSpawn.mockImplementation(() => makeMockChild('Still working on it.'));
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -142,7 +171,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     // Each turn produces non-convergent output with no cost (free)
-    mockExecSync.mockImplementation(() => 'Still working on it.' as never);
+    mockSpawn.mockImplementation(() => makeMockChild('Still working on it.'));
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -163,9 +192,24 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     const capturedPrompts: string[] = [];
-    mockExecSync.mockImplementation((cmd: string) => {
-      capturedPrompts.push(cmd);
-      return 'Session complete.' as never;
+    mockSpawn.mockImplementation(() => {
+      const stdoutHandlers: Array<(chunk: Buffer) => void> = [];
+      const closeHandlers: Array<(code: number) => void> = [];
+      return {
+        stdin: {
+          write: vi.fn((prompt: string) => { capturedPrompts.push(prompt); }),
+          end: vi.fn(() => {
+            process.nextTick(() => {
+              stdoutHandlers.forEach(l => l(Buffer.from('Session complete.')));
+              closeHandlers.forEach(l => l(0));
+            });
+          }),
+        },
+        stdout: { on: vi.fn((e: string, h: (c: Buffer) => void) => { if (e === 'data') stdoutHandlers.push(h); }) },
+        stderr: { on: vi.fn() },
+        on: vi.fn((e: string, h: (c: number) => void) => { if (e === 'close') closeHandlers.push(h); }),
+        kill: vi.fn(),
+      } as unknown as ReturnType<typeof spawn>;
     });
 
     const squad = makeSquad({
@@ -190,7 +234,7 @@ describe('runConversation', () => {
       return false;
     });
 
-    mockExecSync.mockReturnValue('Session complete.' as never);
+    mockSpawn.mockImplementation(() => makeMockChild('Session complete.'));
 
     const squad = makeSquad({
       repo: 'agents-squads/squads-cli',
@@ -206,7 +250,7 @@ describe('runConversation', () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);
 
-    mockExecSync.mockReturnValue('Session complete.' as never);
+    mockSpawn.mockImplementation(() => makeMockChild('Session complete.'));
 
     const squad = makeSquad({
       agents: [

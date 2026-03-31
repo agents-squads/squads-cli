@@ -221,6 +221,7 @@ export async function runConversation(
 
   const tokenBudget = options.tokenBudget || DEFAULT_TOKEN_BUDGET;
   const costCeiling = options.costCeiling || DEFAULT_COST_CEILING;
+  const maxTurns = options.maxTurns || 100;
   const transcript = createTranscript(squad.name);
 
   // Resolve squad's working directory
@@ -304,7 +305,7 @@ ${squadContext}`;
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Check if lead declared done immediately (nothing to do)
-  const conv = detectConvergence(transcript, 100, costCeiling);
+  const conv = detectConvergence(transcript, maxTurns, costCeiling);
   if (conv.converged) {
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
   }
@@ -399,7 +400,7 @@ or
   }
 
   // Determine final convergence
-  const finalConv = detectConvergence(transcript, 100, costCeiling);
+  const finalConv = detectConvergence(transcript, maxTurns, costCeiling);
   return {
     transcript,
     turnCount: transcript.turns.length,
