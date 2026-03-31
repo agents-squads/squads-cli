@@ -65,6 +65,8 @@ export interface SquadFrontmatter {
   providers?: SquadProviders;
   /** Squad names this squad must wait for before executing (phase ordering) */
   depends_on?: string[];
+  /** Agents that participate in conversations. Others run on schedules. */
+  conversation_agents?: string[];
 }
 
 export interface Agent {
@@ -139,6 +141,8 @@ export interface Squad {
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
   stack?: string;
+  /** Agents that participate in squad conversations. Others run on schedules. */
+  conversation_agents?: string[];
   /** Multi-LLM provider configuration */
   providers?: SquadProviders;
   /** Domain this squad operates in */
@@ -409,6 +413,7 @@ export function parseSquadFile(filePath: string): Squad {
     context: fm.context,
     repo: fm.repo,
     stack: fm.stack,
+    conversation_agents: Array.isArray(fm.conversation_agents) ? fm.conversation_agents : undefined,
     providers: fm.providers,
     // Preserve raw frontmatter for KPIs and other custom fields
     frontmatter: frontmatter as Record<string, unknown>,

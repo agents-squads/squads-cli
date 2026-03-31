@@ -192,8 +192,13 @@ interface ClassifiedAgent {
 }
 
 function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+  // If squad defines conversation_agents, only include those in the conversation.
+  // Other agents run on their own schedules, not in the squad conversation.
+  const conversationFilter = squad.conversation_agents;
+
   const agents: ClassifiedAgent[] = [];
   for (const agent of squad.agents) {
+    if (conversationFilter && !conversationFilter.includes(agent.name)) continue;
     const role = classifyAgent(agent.name, agent.role);
     if (!role) continue;
     const agentPath = join(squadsDir, squad.dir, `${agent.name}.md`);
