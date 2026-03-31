@@ -304,7 +304,7 @@ ${squadContext}`;
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Check if lead declared done immediately (nothing to do)
-  const conv = detectConvergence(transcript, 100, costCeiling);
+  const conv = detectConvergence(transcript, options.maxTurns || 100, costCeiling);
   if (conv.converged) {
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
   }
