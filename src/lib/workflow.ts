@@ -176,25 +176,30 @@ ${outputFormat}`;
   if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
 
   if (claudeModel) claudeArgs.push('--model', claudeModel);
-  claudeArgs.push('--', prompt);
+  // Prompt via stdin to avoid OS arg length limits
 
-  // Spawn and capture output
   return new Promise<string>((resolve) => {
     const chunks: Buffer[] = [];
     const child = spawn('claude', claudeArgs, {
       cwd,
       env: agentEnv,
-      stdio: ['pipe', 'pipe', 'inherit'], // capture stdout, show stderr
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    child.stdin.write(prompt);
+    child.stdin.end();
+
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const stderrChunks: Buffer[] = [];
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on('close', (code) => {
       const output = Buffer.concat(chunks).toString('utf-8').trim();
+      const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
       if (output.length > 0) {
         resolve(output);
       } else if (code !== 0) {
-        resolve(`[ERROR] Agent ${agentName} exited with code ${code}`);
+        resolve(`[ERROR] Agent ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`);
       } else {
         resolve(`[${agentName} completed with no output]`);
       }
