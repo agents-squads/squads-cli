@@ -572,6 +572,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     // Core directories (always created)
     const dirs = [
+      '.agents/squads/demo',
       '.agents/squads/company',
       '.agents/squads/research',
       '.agents/squads/intelligence',
@@ -580,6 +581,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/memory/company/event-dispatcher',
       '.agents/memory/company/goal-tracker',
       '.agents/memory/company/company-eval',
+      '.agents/memory/demo/hello-world',
       '.agents/memory/company/company-critic',
       '.agents/memory/research/lead',
       '.agents/memory/research/analyst',
@@ -607,6 +609,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
 
     spinner.text = 'Creating squad definitions...';
+
+    // Demo squad (always created — starter agent so `squads run demo hello-world` works)
+    const demoFiles: [string, string][] = [
+      ['.agents/squads/demo/SQUAD.md', 'squads/demo/SQUAD.md'],
+      ['.agents/squads/demo/hello-world.md', 'squads/demo/hello-world.md'],
+    ];
 
     // Core squad files (always created)
     const companyFiles: [string, string][] = [
@@ -641,7 +649,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
 
     // Write all squad files
-    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles, ...productFiles, ...useCaseFiles]) {
+    for (const [dest, template] of [...demoFiles, ...companyFiles, ...researchFiles, ...intelligenceFiles, ...productFiles, ...useCaseFiles]) {
       const content = loadSeedTemplate(template, variables);
       await writeFile(path.join(cwd, dest), content);
     }
@@ -830,8 +838,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  writeLine(chalk.dim('  • research/    3 agents — Researches your market, competitors, and opportunities'));
-  writeLine(chalk.dim('  • company/     5 agents — Manages goals, events, and strategy'));
+  writeLine(chalk.dim('  • demo/         1 agent  — Starter agent to verify your setup'));
+  writeLine(chalk.dim('  • research/     3 agents — Researches your market, competitors, and opportunities'));
+  writeLine(chalk.dim('  • company/      5 agents — Manages goals, events, and strategy'));
   writeLine(chalk.dim('  • intelligence/ 3 agents — Monitors trends and competitive signals'));
   writeLine(chalk.dim('  • product/      3 agents — Roadmap, specs, user feedback synthesis'));
 
@@ -852,10 +861,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(chalk.bold('  What\'s next:'));
   writeLine();
+  writeLine(`  ${chalk.green('→')} Verify your setup works:`);
+  writeLine(`     ${chalk.yellow('squads run demo hello-world')}`);
+  writeLine();
   // Dynamic first-run suggestion based on use case
   const firstRun = getFirstRunCommand(selectedUseCase);
   const firstRunCmd = `squads run ${firstRun.squad} -a ${firstRun.agent}`;
-  writeLine(`  ${chalk.green('→')} Run your first agent:`);
+  writeLine(`  ${chalk.green('→')} Run your first real agent:`);
   writeLine(`     ${chalk.yellow(firstRunCmd)}`);
   writeLine();
   writeLine(`  ${chalk.dim('See all squads:')} ${chalk.yellow('squads status')}`);
