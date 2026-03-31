@@ -82,39 +82,134 @@ export function createTranscript(squad: string): Transcript {
   };
 }
 
-/** Serialize transcript for prompt injection.
- * Compacts after 5 turns: keeps first brief + last lead review (natural summary)
- * + turns since that review. The lead review already summarizes prior work,
- * so it acts as a compaction point — no information lost, just compressed.
+/** Max total chars for serialized transcript. Triggers aggressive compaction. */
+const MAX_TRANSCRIPT_CHARS = 20000;
+
+/**
+ * Serialize transcript for prompt injection with auto-compaction.
+ *
+ * Strategy (inspired by Claude Code's auto-compact):
+ * - Recent turns (current cycle): kept in full
+ * - Older cycles: compressed into a structured digest
+ * - Digest format: what was done, what was decided, what's pending
+ *
+ * This lets conversations go 20+ turns without blowing context.
  */
 export function serializeTranscript(transcript: Transcript): string {
   if (transcript.turns.length === 0) return '';
 
-  let turns = transcript.turns;
-  if (turns.length > 5) {
-    const firstBrief = turns[0];
+  const turns = transcript.turns;
 
-    // Find last lead review (any lead turn after the first brief)
-    let lastReviewIdx = -1;
-    for (let i = turns.length - 1; i > 0; i--) {
-      if (turns[i].role === 'lead') {
-        lastReviewIdx = i;
-        break;
+  // Find cycle boundaries (each lead turn after the first starts a new cycle)
+  const cycleBoundaries: number[] = [0];
+  for (let i = 1; i < turns.length; i++) {
+    if (turns[i].role === 'lead' && i > 0) {
+      // A lead turn that follows a verifier or is the first lead after workers = new cycle
+      const prevRole = turns[i - 1]?.role;
+      if (prevRole === 'verifier' || prevRole === 'worker') {
+        cycleBoundaries.push(i);
       }
-    }
-
-    if (lastReviewIdx > 0) {
-      // First brief + last lead review + everything after it
-      turns = [firstBrief, ...turns.slice(lastReviewIdx)];
-    } else {
-      // No lead review yet — keep first brief + last 3
-      turns = [firstBrief, ...turns.slice(-3)];
     }
   }
 
+  // If short conversation (≤6 turns or single cycle), return everything
+  if (turns.length <= 6 || cycleBoundaries.length <= 1) {
+    return formatTurns(turns, transcript.turns.length);
+  }
+
+  // Split into: old cycles (digest) + current cycle (full)
+  const lastCycleStart = cycleBoundaries[cycleBoundaries.length - 1];
+  const currentCycleTurns = turns.slice(lastCycleStart);
+  const oldTurns = turns.slice(0, lastCycleStart);
+
+  // Build digest of old cycles
+  const digest = buildDigest(oldTurns, cycleBoundaries.slice(0, -1));
+
+  // Assemble
   const lines = ['## Conversation So Far\n'];
-  if (turns.length < transcript.turns.length) {
-    lines.push(`*(${transcript.turns.length - turns.length} earlier turns compacted — lead review below summarizes prior work)*\n`);
+
+  if (digest) {
+    lines.push('### Prior Cycles (digest)');
+    lines.push(digest);
+    lines.push('');
+  }
+
+  lines.push(`### Current Cycle (${currentCycleTurns.length} turns)\n`);
+  for (const turn of currentCycleTurns) {
+    lines.push(`**${turn.agent} (${turn.role}):**`);
+    lines.push(turn.content);
+    lines.push('');
+  }
+
+  const result = lines.join('\n');
+
+  // Safety: if still too large, truncate from the beginning of the digest
+  if (result.length > MAX_TRANSCRIPT_CHARS) {
+    const overflow = result.length - MAX_TRANSCRIPT_CHARS;
+    return '*(transcript truncated — ' + overflow + ' chars removed from older cycles)*\n\n' +
+      result.slice(overflow);
+  }
+
+  return result;
+}
+
+/** Build a structured digest from completed cycles. */
+function buildDigest(turns: Turn[], cycleBoundaries: number[]): string {
+  const sections: string[] = [];
+
+  for (let c = 0; c < cycleBoundaries.length; c++) {
+    const start = cycleBoundaries[c];
+    const end = c + 1 < cycleBoundaries.length ? cycleBoundaries[c + 1] : turns.length;
+    const cycleTurns = turns.slice(start, end);
+
+    // Extract key signals from each role
+    const done: string[] = [];
+    const pending: string[] = [];
+    const blocked: string[] = [];
+
+    for (const t of cycleTurns) {
+      const lines = t.content.split('\n');
+      for (const line of lines) {
+        const l = line.trim();
+        // Extract PR numbers, issue numbers, key actions
+        if (/PR\s*#\d+|merged|MERGED/.test(l) && l.length < 200) {
+          done.push(l.replace(/^[-*]\s*/, '').slice(0, 100));
+        }
+        if (/BLOCKED|blocked|needs:human/i.test(l) && l.length < 200) {
+          blocked.push(l.replace(/^[-*]\s*/, '').slice(0, 100));
+        }
+        if (/## STATUS:\s*CONTINUE|Remaining:|todo|not-started/i.test(l)) {
+          pending.push(l.replace(/^[-*]\s*/, '').slice(0, 100));
+        }
+      }
+    }
+
+    // Verifier verdict
+    const verifierTurn = cycleTurns.find(t => t.role === 'verifier');
+    const verdict = verifierTurn
+      ? (/APPROVED|approved|lgtm/i.test(verifierTurn.content) ? 'APPROVED' : 'REJECTED')
+      : 'no verifier';
+
+    const cycleLines: string[] = [`**Cycle ${c + 1}** (${verdict}):`];
+    if (done.length > 0) cycleLines.push(`  Done: ${done.slice(0, 3).join('; ')}`);
+    if (blocked.length > 0) cycleLines.push(`  Blocked: ${blocked.slice(0, 2).join('; ')}`);
+    if (pending.length > 0) cycleLines.push(`  Pending: ${pending.slice(0, 2).join('; ')}`);
+
+    if (done.length === 0 && blocked.length === 0 && pending.length === 0) {
+      cycleLines.push(`  (${cycleTurns.length} turns, no key signals extracted)`);
+    }
+
+    sections.push(cycleLines.join('\n'));
+  }
+
+  return sections.join('\n');
+}
+
+/** Format turns as markdown for transcript injection. */
+function formatTurns(turns: Turn[], totalTurns: number): string {
+  const lines = ['## Conversation So Far\n'];
+  if (turns.length < totalTurns) {
+    lines.push(`*(${totalTurns - turns.length} earlier turns compacted)*\n`);
   }
   for (const turn of turns) {
     lines.push(`### ${turn.agent} (${turn.role}) — ${turn.timestamp}`);
