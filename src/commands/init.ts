@@ -31,6 +31,7 @@ import {
   checkGhCli,
   runAuthChecks,
   displayCheckResults,
+  checkNodeVersion,
 } from '../lib/setup-checks.js';
 import { writeLine } from '../lib/terminal.js';
 
@@ -372,13 +373,23 @@ async function writeFile(filePath: string, content: string): Promise<void> {
 export async function initCommand(options: InitOptions): Promise<void> {
   const cwd = process.cwd();
 
-  // 1. Welcome
+  // 1. Node version gate — must be first, before any async work
+  const nodeCheck = checkNodeVersion();
+  if (nodeCheck.status === 'error') {
+    writeLine();
+    writeLine(`  ${chalk.red('✖')} ${chalk.red(nodeCheck.name)}: ${nodeCheck.message}`);
+    if (nodeCheck.hint) writeLine(`    ${chalk.cyan('→')} ${nodeCheck.hint}`);
+    writeLine();
+    process.exit(1);
+  }
+
+  // 2. Welcome
   writeLine();
   writeLine(chalk.bold('  Plant the seed for your AI workforce'));
   writeLine(chalk.dim('  https://agents-squads.com/docs/getting-started'));
   writeLine();
 
-  // 2. Select provider
+  // 3. Select provider
   const selectedProvider = await promptProvider(options.provider);
   const provider = PROVIDERS[selectedProvider];
 

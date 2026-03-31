@@ -4,6 +4,9 @@
  */
 
 import { execSync, spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import {
   colors,
   RESET,
@@ -87,6 +90,54 @@ export const PROVIDERS: Record<string, ProviderInfo> = {
     requiresApiKey: false,
   },
 };
+
+export const NODE_MIN_MAJOR = 18;
+
+/**
+ * Check Node.js version — must be >= 18.
+ * Returns a CheckResult; callers decide whether to abort.
+ */
+export function checkNodeVersion(): CheckResult {
+  const match = process.version.match(/^v(\d+)/);
+  const major = match ? parseInt(match[1], 10) : 0;
+
+  if (major < NODE_MIN_MAJOR) {
+    return {
+      name: 'Node.js',
+      status: 'error',
+      message: `v${major} detected — Node.js ${NODE_MIN_MAJOR}+ required`,
+      hint: `Upgrade: https://nodejs.org  (or: nvm install ${NODE_MIN_MAJOR})`,
+    };
+  }
+
+  return { name: 'Node.js', status: 'ok', message: `${process.version}` };
+}
+
+/**
+ * Check whether Anthropic auth is configured (API key or OAuth credentials).
+ * Returns a warning-level result — not a hard block — because Claude CLI itself
+ * provides clear auth error messages and handles OAuth gracefully. See #520.
+ */
+export function checkAnthropicAuth(): CheckResult {
+  // API key present — explicit auth
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { name: 'Anthropic auth', status: 'ok', message: 'ANTHROPIC_API_KEY set' };
+  }
+
+  // OAuth credentials file present (~/.claude/.credentials.json)
+  const credFile = join(homedir(), '.claude', '.credentials.json');
+  if (existsSync(credFile)) {
+    return { name: 'Anthropic auth', status: 'ok', message: 'OAuth credentials found' };
+  }
+
+  return {
+    name: 'Anthropic auth',
+    status: 'warning',
+    message: 'No API key or OAuth credentials found',
+    hint: 'Set ANTHROPIC_API_KEY or run: claude login',
+    fixCommand: 'claude login',
+  };
+}
 
 /**
  * Check if a command exists in PATH

@@ -47,6 +47,7 @@ vi.mock('../src/lib/git.js', () => ({
 const mockRunAuthChecks = vi.fn();
 const mockCheckGhCli = vi.fn();
 const mockDisplayCheckResults = vi.fn();
+const mockCheckNodeVersion = vi.fn(() => ({ name: 'Node.js', status: 'ok', message: 'v20.0.0' }));
 vi.mock('../src/lib/setup-checks.js', () => ({
   PROVIDERS: {
     claude: { id: 'claude', name: 'Claude Code', requiresSubscription: true, requiresApiKey: false },
@@ -60,6 +61,7 @@ vi.mock('../src/lib/setup-checks.js', () => ({
   runAuthChecks: (...args: unknown[]) => mockRunAuthChecks(...args),
   checkGhCli: (...args: unknown[]) => mockCheckGhCli(...args),
   displayCheckResults: (...args: unknown[]) => mockDisplayCheckResults(...args),
+  checkNodeVersion: (...args: unknown[]) => mockCheckNodeVersion(...args),
 }));
 
 const mockLoadTemplate = vi.fn();

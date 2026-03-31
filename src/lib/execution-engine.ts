@@ -50,6 +50,10 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from './llm-clis.js';
+import {
+  checkNodeVersion,
+  checkAnthropicAuth,
+} from './setup-checks.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
@@ -275,6 +279,16 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     return true;
   }
 
+  // --- Check 0: Node.js version ---
+  const nodeCheck = checkNodeVersion();
+  if (nodeCheck.status === 'error') {
+    writeLine();
+    writeLine(`  ${icons.error} ${colors.red}${nodeCheck.name}: ${nodeCheck.message}${RESET}`);
+    if (nodeCheck.hint) writeLine(`  ${colors.cyan}→ ${nodeCheck.hint}${RESET}`);
+    writeLine();
+    return false;
+  }
+
   const isAnthropic = provider === 'anthropic';
 
   // --- Check 1: CLI binary on PATH ---
@@ -303,9 +317,19 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     return false;
   }
 
-  // Auth check removed: Claude CLI handles its own auth errors with clear messages.
-  // Pre-checking here caused false warnings for OAuth users (keychain auth works
-  // without .credentials.json or ANTHROPIC_API_KEY). See #520.
+  // --- Check 2: Anthropic auth (API key or OAuth) ---
+  // Non-blocking: show a hint if neither is configured. Claude CLI handles auth errors
+  // directly, but a proactive hint prevents silent confusion for new users. See #520, #675.
+  if (isAnthropic) {
+    const authCheck = checkAnthropicAuth();
+    if (authCheck.status === 'warning') {
+      writeLine();
+      writeLine(`  ${icons.warning} ${colors.yellow}${authCheck.name}${RESET}: ${authCheck.message}`);
+      if (authCheck.hint) writeLine(`  ${colors.cyan}→ ${authCheck.hint}${RESET}`);
+      writeLine();
+      // Not aborting — Claude CLI will produce its own error if truly unauthenticated.
+    }
+  }
 
   return true;
 }
