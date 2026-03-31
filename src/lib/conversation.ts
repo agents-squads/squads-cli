@@ -31,7 +31,7 @@ export function classifyAgent(agentName: string, roleDescription?: string): Agen
     const lower = roleDescription.toLowerCase();
     if (lower.includes('orchestrat') || lower.includes('triage') || lower.includes('coordinat') || lower.includes('lead')) return 'lead';
     if (lower.includes('scan') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
-    if (lower.includes('verif') || lower.includes('critic')) return 'verifier';
+    if (lower.includes('verif') || lower.includes('critic') || lower.includes('review') || lower.includes('check')) return 'verifier';
     return 'worker';
   }
 
@@ -112,8 +112,8 @@ export function serializeTranscript(transcript: Transcript): string {
     }
   }
 
-  // If short conversation (≤6 turns or single cycle), return everything
-  if (turns.length <= 6 || cycleBoundaries.length <= 1) {
+  // If short conversation (≤5 turns or single cycle), return everything
+  if (turns.length <= 5 || cycleBoundaries.length <= 1) {
     return formatTurns(turns, transcript.turns.length);
   }
 
@@ -127,6 +127,16 @@ export function serializeTranscript(transcript: Transcript): string {
 
   // Assemble
   const lines = ['## Conversation So Far\n'];
+
+  // Always preserve the initial brief (first turn)
+  const firstTurn = turns[0];
+  lines.push(`**${firstTurn.agent} (${firstTurn.role}):**`);
+  lines.push(firstTurn.content);
+  lines.push('');
+
+  if (oldTurns.length > 1) {
+    lines.push(`*(${oldTurns.length - 1} earlier turns compacted)*\n`);
+  }
 
   if (digest) {
     lines.push('### Prior Cycles (digest)');
