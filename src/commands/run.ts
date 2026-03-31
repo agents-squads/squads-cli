@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import {
   findSquadsDir,
@@ -92,6 +92,17 @@ export async function runCommand(
       ['operations', 'company'],
     ];
 
+    // Resume support: load quota-skipped squads from previous run
+    const resumeFile = join(process.cwd(), '.agents', 'observability', 'resume.json');
+    let resumeSquads: Set<string> | null = null;
+    if (options.resume && existsSync(resumeFile)) {
+      try {
+        const data = JSON.parse(readFileSync(resumeFile, 'utf-8'));
+        resumeSquads = new Set(data.squads as string[]);
+        writeLine(`  ${bold}Resuming${RESET} ${resumeSquads.size} squads from quota stop: ${[...resumeSquads].join(', ')}`);
+      } catch { /* invalid file, run full cycle */ }
+    }
+
     const cycleStart = Date.now();
     const results: Array<{ squad: string; agent: string; status: string; durationMs: number; turnCount?: number; totalCost?: number; converged?: boolean }> = [];
 
@@ -179,7 +190,8 @@ export async function runCommand(
 
     for (let waveIdx = 0; waveIdx < waves.length; waveIdx++) {
       const wave = waves[waveIdx];
-      const waveSquads = wave.filter(s => plannedSquads.has(s));
+      // If resuming, only run squads that were skipped last time
+      const waveSquads = wave.filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
       if (waveSquads.length === 0) continue;
 
       const waveNum = waveIdx + 1;
@@ -209,12 +221,23 @@ export async function runCommand(
       });
 
       if (quotaHit) {
-        const remainingWaves = waves.slice(waveIdx + 1).flat().filter(s => plannedSquads.has(s));
+        const remainingWaves = waves.slice(waveIdx + 1).flat().filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
         if (remainingWaves.length > 0) {
           writeLine(`\n  ${colors.red}Quota limit reached.${RESET} Skipping ${remainingWaves.length} remaining squads.`);
+          writeLine(`  ${colors.dim}Resume later: squads run --org --resume${RESET}`);
           for (const s of remainingWaves) {
             results.push({ squad: s, agent: 'unknown', status: 'quota-skipped', durationMs: 0 });
           }
+          // Save skipped squads for resume
+          try {
+            const obsDir = join(process.cwd(), '.agents', 'observability');
+            if (!existsSync(obsDir)) mkdirSync(obsDir, { recursive: true });
+            writeFileSync(resumeFile, JSON.stringify({
+              squads: remainingWaves,
+              stoppedAt: new Date().toISOString(),
+              waveIdx: waveIdx + 1,
+            }));
+          } catch { /* best effort */ }
           break; // Exit wave loop
         }
       }
@@ -225,6 +248,12 @@ export async function runCommand(
           cwd: process.cwd(), stdio: 'pipe', encoding: 'utf-8',
         });
       } catch { /* no changes to commit */ }
+    }
+
+    // Clear resume file if cycle completed without quota hit
+    const quotaSkipped = results.filter(r => r.status === 'quota-skipped').length;
+    if (quotaSkipped === 0 && existsSync(resumeFile)) {
+      try { unlinkSync(resumeFile); } catch { /* best effort */ }
     }
 
     // Step 4: REPORT — compare goals before and after

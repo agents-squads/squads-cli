@@ -313,6 +313,7 @@ program
   .option('--no-eval', 'Skip post-run COO evaluation')
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
   .option('--force', 'Force re-run squads that already completed today')
+  .option('--resume', 'Resume org cycle from where quota stopped it')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
