@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { execSync } from 'child_process';
 import {
   findSquadsDir,
   loadSquad,
@@ -74,8 +75,23 @@ export async function runCommand(
       return;
     }
 
-    // Step 3: EXECUTE — run each squad as full conversation (lead → scan → work → verify)
-    // Agents run via `claude --print --allowedTools` = tool access + output capture
+    // Step 3: EXECUTE — wave-based parallel execution
+    //
+    // Wave 1 (producers):  research, intelligence, data — create raw material
+    // Wave 2 (builders):   cli, website, finance, engineering — build on wave 1
+    // Wave 3 (amplifiers): marketing, growth, product, analytics, customer, economics — use wave 2
+    // Wave 4 (reviewers):  operations, company — evaluate everything
+    //
+    // Within each wave, squads run in parallel (different target repos).
+    // Between waves, we wait — so each wave sees the previous wave's output.
+
+    const waves: string[][] = [
+      ['research', 'intelligence', 'data'],
+      ['cli', 'website', 'finance', 'engineering'],
+      ['marketing', 'growth', 'product', 'analytics', 'customer', 'economics'],
+      ['operations', 'company'],
+    ];
+
     const cycleStart = Date.now();
     const results: Array<{ squad: string; agent: string; status: string; durationMs: number; turnCount?: number; totalCost?: number; converged?: boolean }> = [];
 
@@ -86,10 +102,13 @@ export async function runCommand(
       allGoalsBefore[s.squad] = snapshotGoals(s.squad);
     }
 
-    // Check which squads already completed today AND have unchanged goals
+    // Build set of planned squads for filtering
+    const plannedSquads = new Set(plan.map(s => s.squad));
+
+    // Check skip logic
     const today = new Date().toISOString().slice(0, 10);
     const todayExecs = queryExecutions({ since: `${today}T00:00:00Z`, limit: 100 });
-    const completedTodayMap = new Map<string, string>(); // squad → last completion timestamp
+    const completedTodayMap = new Map<string, string>();
     for (const e of todayExecs) {
       if (e.status === 'completed' && e.agent?.includes('lead')) {
         if (!completedTodayMap.has(e.squad) || e.ts > completedTodayMap.get(e.squad)!) {
@@ -98,13 +117,10 @@ export async function runCommand(
       }
     }
 
-    // Check if goals were modified after last completion (mtime comparison)
     function shouldSkip(squadName: string): boolean {
       if (options.force) return false;
       const lastRun = completedTodayMap.get(squadName);
-      if (!lastRun) return false; // never ran today → don't skip
-
-      // Check if goals.md was modified after the last run
+      if (!lastRun) return false;
       const memoryDir = findMemoryDir();
       if (memoryDir) {
         const goalsPath = join(memoryDir, squadName, 'goals.md');
@@ -113,42 +129,29 @@ export async function runCommand(
           const lastRunMs = new Date(lastRun).getTime();
           const goalsMtime = existsSync(goalsPath) ? statSync(goalsPath).mtimeMs : 0;
           const priMtime = existsSync(priPath) ? statSync(priPath).mtimeMs : 0;
-          if (goalsMtime > lastRunMs || priMtime > lastRunMs) {
-            return false; // goals or priorities changed since last run → re-run
-          }
-        } catch { /* can't stat → don't skip */ return false; }
+          if (goalsMtime > lastRunMs || priMtime > lastRunMs) return false;
+        } catch { return false; }
       }
-      return true; // completed today, goals unchanged → skip
+      return true;
     }
 
-    let planIdx = 0;
-    let consecutiveQuotaFails = 0;
+    async function runSquadConversation(squadName: string): Promise<typeof results[0]> {
+      const s = plan.find(p => p.squad === squadName);
+      if (!s || !s.lead) return { squad: squadName, agent: 'unknown', status: 'skipped', durationMs: 0 };
 
-    while (planIdx < plan.length) {
-      const s = plan[planIdx];
-      if (!s.lead) { planIdx++; continue; }
-      const leadPath = join(squadsDir, s.squad, `${s.lead}.md`);
-      if (!existsSync(leadPath)) { planIdx++; continue; }
-
-      // Skip only if completed today AND goals/priorities unchanged since
-      if (shouldSkip(s.squad)) {
-        writeLine(`  ${colors.dim}skip  ${s.squad}/${s.lead} (completed today, goals unchanged)${RESET}`);
-        results.push({ squad: s.squad, agent: s.lead, status: 'skipped', durationMs: 0 });
-        planIdx++;
-        continue;
+      if (shouldSkip(squadName)) {
+        writeLine(`  ${colors.dim}skip  ${squadName} (completed today, goals unchanged)${RESET}`);
+        return { squad: squadName, agent: s.lead, status: 'skipped', durationMs: 0 };
       }
 
-      writeLine(`  ${colors.cyan}Running ${s.squad} conversation...${RESET}`);
+      const squad = loadSquad(squadName);
+      if (!squad) {
+        writeLine(`  ${colors.red}${squadName}: squad not found${RESET}`);
+        return { squad: squadName, agent: s.lead, status: 'failed', durationMs: 0 };
+      }
+
       const runStart = Date.now();
       try {
-        const squad = loadSquad(s.squad);
-        if (!squad) {
-          writeLine(`  ${colors.red}${s.squad}: squad not found${RESET}`);
-          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: 0 });
-          planIdx++;
-          continue;
-        }
-
         const convOptions: ConversationOptions = {
           task: options.task,
           maxTurns: options.maxTurns,
@@ -161,47 +164,41 @@ export async function runCommand(
         saveTranscript(result.transcript);
 
         const status = result.converged ? 'converged' : 'completed';
-        writeLine(`  ${result.converged ? icons.success : icons.warning} ${s.squad}: ${result.reason} ${colors.dim}(${result.turnCount} turns, ~$${result.totalCost.toFixed(2)})${RESET}`);
-        results.push({
-          squad: s.squad, agent: s.lead, status,
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${squadName}: ${result.reason} ${colors.dim}(${result.turnCount}t, ~$${result.totalCost.toFixed(2)})${RESET}`);
+        return {
+          squad: squadName, agent: s.lead, status,
           durationMs: Date.now() - runStart,
           turnCount: result.turnCount, totalCost: result.totalCost, converged: result.converged,
-        });
-        consecutiveQuotaFails = 0;
-        planIdx++;
+        };
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        const failDuration = Date.now() - runStart;
-        const isQuotaLikely = (failDuration < 10000 && errMsg.includes('code 1')) ||
-          errMsg.includes('hit your limit') || errMsg.includes('rate limit') || errMsg.includes('quota');
-
-        if (isQuotaLikely) {
-          consecutiveQuotaFails++;
-
-          if (consecutiveQuotaFails >= 2) {
-            const completedCount = results.filter(r => r.status === 'completed').length;
-            const remainingCount = plan.length - planIdx;
-            writeLine(`  ${colors.red}Quota limit reached.${RESET} ${completedCount} done, ${remainingCount} remaining.`);
-            writeLine(`  ${colors.dim}Waiting 60 minutes for quota reset...${RESET}`);
-            writeLine(`  ${colors.dim}(Ctrl+C to stop)${RESET}`);
-            await new Promise(r => setTimeout(r, 60 * 60 * 1000));
-            consecutiveQuotaFails = 0;
-            writeLine(`  ${colors.green}Resuming org cycle...${RESET}`);
-            // Don't increment planIdx — retry the same squad
-            continue;
-          }
-
-          // First quota fail — try next squad to confirm it's quota, not a bug
-          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: failDuration });
-          planIdx++;
-        } else {
-          // Non-quota failure — log and move on
-          consecutiveQuotaFails = 0;
-          results.push({ squad: s.squad, agent: s.lead, status: 'failed', durationMs: failDuration });
-          writeLine(`  ${colors.red}${s.squad}/${s.lead} failed: ${errMsg}${RESET}`);
-          planIdx++;
-        }
+        writeLine(`  ${colors.red}${squadName} failed: ${errMsg.slice(0, 80)}${RESET}`);
+        return { squad: squadName, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart };
       }
+    }
+
+    for (let waveIdx = 0; waveIdx < waves.length; waveIdx++) {
+      const wave = waves[waveIdx];
+      const waveSquads = wave.filter(s => plannedSquads.has(s));
+      if (waveSquads.length === 0) continue;
+
+      const waveNum = waveIdx + 1;
+      const waveNames = ['Producers', 'Builders', 'Amplifiers', 'Reviewers'];
+      writeLine();
+      writeLine(`  ${bold}Wave ${waveNum}: ${waveNames[waveIdx]}${RESET} ${colors.dim}(${waveSquads.join(', ')})${RESET}`);
+
+      // Run all squads in this wave in parallel
+      const waveResults = await Promise.all(
+        waveSquads.map(s => runSquadConversation(s))
+      );
+      results.push(...waveResults);
+
+      // Commit hq memory changes between waves so next wave sees fresh state
+      try {
+        execSync('git add -A .agents/memory/ && git diff --cached --quiet || git commit -m "memory: wave ' + waveNum + ' state updates"', {
+          cwd: process.cwd(), stdio: 'pipe', encoding: 'utf-8',
+        });
+      } catch { /* no changes to commit */ }
     }
 
     // Step 4: REPORT — compare goals before and after
