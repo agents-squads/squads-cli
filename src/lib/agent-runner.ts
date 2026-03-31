@@ -390,6 +390,9 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
           writeLine(`  ${colors.green}Run completed${RESET} — ${squadName}/${agentName} (${formatRunDuration(Date.now() - startMs)})`);
+          if (!isScheduledRun) {
+            writeLine(`  ${colors.dim}Tip: automate — add a routine to SQUAD.md, then \`squads autonomous start\`${RESET}`);
+          }
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
           writeLine(`  ${colors.green}Run started${RESET} — ${squadName}/${agentName} (background)`);
