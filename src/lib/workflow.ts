@@ -164,13 +164,20 @@ ${squadContext}
     child.on('close', (code) => {
       const output = Buffer.concat(chunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
-      if (output.length > 0) resolve(output);
-      else if (code !== 0) resolve(`[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`);
-      else resolve(`[${agentName} completed with no output]`);
+      // Detect quota hit — Claude returns this when rate limited
+      if (output.includes('hit your limit') || output.includes('rate limit')) {
+        resolve(`[QUOTA] ${agentName}: API limit reached`);
+      } else if (output.length > 0) {
+        resolve(output);
+      } else if (code !== 0) {
+        resolve(`[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`);
+      } else {
+        resolve(`[${agentName} completed with no output]`);
+      }
     });
 
     child.on('error', (err) => resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`));
-    setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out`); }, 15 * 60 * 1000);
+    setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after 8 minutes`); }, 8 * 60 * 1000);
   });
 }
 
@@ -303,6 +310,11 @@ ${squadContext}`;
     task: options.task || planPrompt, squadContext: '', cwd: squadCwd,
   });
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  // Quota detection — if plan hit the API limit, stop immediately
+  if (planOutput.includes('[QUOTA]') || planOutput.includes('hit your limit')) {
+    return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: false, reason: 'Quota limit reached' };
+  }
 
   // Check if lead declared done immediately (nothing to do)
   const conv = detectConvergence(transcript, maxTurns, costCeiling);

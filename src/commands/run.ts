@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
 import {
   findSquadsDir,
@@ -192,6 +192,32 @@ export async function runCommand(
         waveSquads.map(s => runSquadConversation(s))
       );
       results.push(...waveResults);
+
+      // Quota detection: if any squad in this wave got "hit your limit" responses,
+      // stop the cycle — remaining waves will produce empty results.
+      const quotaHit = waveResults.some(r => {
+        // Check transcripts for quota messages
+        const convDir = join(process.cwd(), '.agents', 'conversations', r.squad);
+        try {
+          const files = readdirSync(convDir).sort().reverse();
+          if (files.length > 0) {
+            const latest = readFileSync(join(convDir, files[0]), 'utf-8');
+            return latest.includes('hit your limit') || latest.includes('rate limit');
+          }
+        } catch { /* no transcript */ }
+        return false;
+      });
+
+      if (quotaHit) {
+        const remainingWaves = waves.slice(waveIdx + 1).flat().filter(s => plannedSquads.has(s));
+        if (remainingWaves.length > 0) {
+          writeLine(`\n  ${colors.red}Quota limit reached.${RESET} Skipping ${remainingWaves.length} remaining squads.`);
+          for (const s of remainingWaves) {
+            results.push({ squad: s, agent: 'unknown', status: 'quota-skipped', durationMs: 0 });
+          }
+          break; // Exit wave loop
+        }
+      }
 
       // Commit hq memory changes between waves so next wave sees fresh state
       try {
