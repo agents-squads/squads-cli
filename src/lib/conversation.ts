@@ -124,6 +124,9 @@ export function serializeTranscript(transcript: Transcript): string {
   return lines.join('\n');
 }
 
+/** Max chars per turn in transcript. Larger outputs are truncated with a note. */
+const MAX_TURN_CHARS = 8000;
+
 export function addTurn(
   transcript: Transcript,
   agent: string,
@@ -131,10 +134,15 @@ export function addTurn(
   content: string,
   estimatedCost: number,
 ): void {
+  // Budget: cap turn content to prevent context bloat
+  const trimmedContent = content.length > MAX_TURN_CHARS
+    ? content.slice(0, MAX_TURN_CHARS) + `\n\n...(truncated — ${content.length} chars total. Key outputs: check git log and gh pr list for deliverables.)`
+    : content;
+
   transcript.turns.push({
     agent,
     role,
-    content,
+    content: trimmedContent,
     timestamp: new Date().toISOString(),
     estimatedCost,
   });
