@@ -283,7 +283,7 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 // Run command - execute squads or individual agents
 program
   .command('run [target]')
-  .description('Run a squad, agent, or autopilot (no target = autopilot mode)')
+  .description('Run a squad or agent (no target = show available agents)')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -326,7 +326,8 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
   $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
-  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
+  $ squads run                          Show available agents grouped by squad
+  $ squads run --once                   Run one autopilot cycle then exit
   $ squads run --once --dry-run         Preview one autopilot cycle
   $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)

@@ -250,9 +250,14 @@ export async function runCommand(
     return;
   }
 
-  // MODE 1: Autopilot — no target means run all squads continuously
+  // MODE 1: No target — show agent discovery or run autopilot if flags indicate intent
   if (!target) {
-    await runAutopilot(squadsDir, options);
+    const autopilotIntent = options.once || options.interval || options.budget || options.phased;
+    if (autopilotIntent) {
+      await runAutopilot(squadsDir, options);
+    } else {
+      await showAgentDiscovery(squadsDir);
+    }
     return;
   }
 
@@ -327,6 +332,47 @@ export async function runCommand(
       process.exit(1);
     }
   }
+}
+
+async function showAgentDiscovery(squadsDir: string): Promise<void> {
+  const squads = listSquads(squadsDir);
+
+  writeLine();
+  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET}`);
+  writeLine();
+
+  if (squads.length === 0) {
+    writeLine(`  ${colors.dim}No squads found. Run \`squads init\` to create your first squad.${RESET}`);
+    writeLine();
+    return;
+  }
+
+  writeLine(`  ${bold}Available agents${RESET}  ${colors.dim}${squads.length} squad${squads.length === 1 ? '' : 's'}${RESET}`);
+  writeLine();
+
+  for (const squadName of squads) {
+    const squad = loadSquad(squadName);
+    if (!squad) continue;
+
+    const agentCount = squad.agents.length;
+    writeLine(`  ${colors.cyan}${bold}${squadName}${RESET}  ${colors.dim}${agentCount} agent${agentCount === 1 ? '' : 's'}${RESET}`);
+    if (squad.mission) {
+      writeLine(`  ${colors.dim}${squad.mission}${RESET}`);
+    }
+
+    for (const agent of squad.agents) {
+      const role = agent.role ? `  ${colors.dim}${agent.role}${RESET}` : '';
+      writeLine(`    ${icons.empty} ${colors.cyan}${agent.name}${RESET}${role}`);
+    }
+    writeLine();
+  }
+
+  writeLine(`  ${colors.dim}Run:${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET}              run squad conversation`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>/<agent>${RESET}      run specific agent`);
+  writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}<squad>${RESET} --task ${colors.cyan}"..."${RESET}   run with a directive`);
+  writeLine(`  ${colors.dim}$${RESET} squads run --once               one autopilot cycle`);
+  writeLine();
 }
 
 async function runSquad(

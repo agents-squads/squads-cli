@@ -175,13 +175,14 @@ vi.mock('../../src/lib/run-context.js', () => ({
 
 // ── Imports (after mocks) ──────────────────────────────────────────────────
 import { runCommand, runSquadCommand } from '../../src/commands/run.js';
-import { findSquadsDir, loadSquad, listAgents, findSimilarSquads } from '../../src/lib/squad-parser.js';
+import { findSquadsDir, loadSquad, listAgents, listSquads, findSimilarSquads } from '../../src/lib/squad-parser.js';
 import { writeLine } from '../../src/lib/terminal.js';
 import { isProviderCLIAvailable } from '../../src/lib/llm-clis.js';
 
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
 const mockLoadSquad = vi.mocked(loadSquad);
 const mockListAgents = vi.mocked(listAgents);
+const mockListSquads = vi.mocked(listSquads);
 const mockFindSimilarSquads = vi.mocked(findSimilarSquads);
 const mockWriteLine = vi.mocked(writeLine);
 const mockIsProviderCLIAvailable = vi.mocked(isProviderCLIAvailable);
@@ -447,6 +448,59 @@ describe('runCommand', () => {
         expect.stringContaining('API URL not configured')
       );
     });
+  });
+});
+
+// ── Tests: agent discovery (no target) ────────────────────────────────────
+describe('agent discovery (no target)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SQUADS_SKIP_CHECKS = '1';
+    exitSpy = makeExitSpy();
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    delete process.env.SQUADS_SKIP_CHECKS;
+  });
+
+  it('shows available agents grouped by squad when no target given', async () => {
+    mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+    mockListSquads.mockReturnValue(['cli', 'engineering']);
+    mockLoadSquad
+      .mockReturnValueOnce({ name: 'cli', dir: 'cli', mission: 'Build the CLI', agents: [{ name: 'issue-solver', role: 'solve issues', trigger: 'manual' }], pipelines: [], triggers: { scheduled: [], event: [], manual: [] }, routines: [], dependencies: [], outputPath: '', goals: [] })
+      .mockReturnValueOnce({ name: 'engineering', dir: 'engineering', mission: '', agents: [], pipelines: [], triggers: { scheduled: [], event: [], manual: [] }, routines: [], dependencies: [], outputPath: '', goals: [] });
+
+    await runCommand(null, {});
+
+    const calls = mockWriteLine.mock.calls.map(c => c[0]);
+    expect(calls.some(msg => msg?.toString().includes('Available agents'))).toBe(true);
+    expect(calls.some(msg => msg?.toString().includes('issue-solver'))).toBe(true);
+  });
+
+  it('shows "no squads found" when squads directory is empty', async () => {
+    mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+    mockListSquads.mockReturnValue([]);
+
+    await runCommand(null, {});
+
+    const calls = mockWriteLine.mock.calls.map(c => c[0]);
+    expect(calls.some(msg => msg?.toString().includes('No squads found'))).toBe(true);
+  });
+
+  it('does not show agent discovery when --once flag is set (autopilot intent)', async () => {
+    mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+    mockListSquads.mockReturnValue([]);
+
+    // once=true → autopilot intent → runAutopilot called, not showAgentDiscovery
+    // runAutopilot crashes on cognition mock returning {} (no beliefs) — that's fine,
+    // we only care that agent discovery was NOT triggered
+    await runCommand(null, { once: true }).catch(() => {/* autopilot may throw from mock */});
+
+    // listSquads is called by showAgentDiscovery, not by runAutopilot
+    expect(mockListSquads).not.toHaveBeenCalled();
   });
 });
 
