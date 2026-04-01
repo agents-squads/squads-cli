@@ -44,6 +44,12 @@ import { type ExecutionContext } from './run-types.js';
 import { getBotGhEnv } from './github.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
 import { colors, RESET, writeLine, bold } from './terminal.js';
+import {
+  logObservability,
+  snapshotGoals,
+  diffGoals,
+  type ObservabilityRecord,
+} from './observability.js';
 
 // =============================================================================
 // Configuration
@@ -70,6 +76,7 @@ function loadFocusPrompt(focus: CycleFocus): string {
   const focusPath = join(squadsDir, '..', 'config', 'cycle-focus.md');
   if (!existsSync(focusPath)) return '';
   const content = readFileSync(focusPath, 'utf-8');
+  if (!content) return '';
   const match = content.match(new RegExp(`## ${focus}\\n([\\s\\S]*?)(?=\\n## |$)`));
   return match ? match[1].trim() : '';
 }
