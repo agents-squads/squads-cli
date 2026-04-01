@@ -285,6 +285,11 @@ export async function runConversation(
   const lead = leads[0];
   const log = (msg: string) => writeLine(`  ${colors.dim}${msg}${RESET}`);
 
+  // Track timing and goals before cycle begins
+  const cycleStartMs = Date.now();
+  const executionId = generateExecutionId();
+  const goalsBefore = snapshotGoals(squad.name);
+
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
   // Build squad context once (shared by all agents)
@@ -414,6 +419,13 @@ Summary: [what was achieved]`;
     cwd: squadCwd,
   });
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  // Goals.md staleness check — warn if goals were not updated during review
+  const goalsAfterReview = snapshotGoals(squad.name);
+  const goalsChangedInReview = diffGoals(goalsBefore, goalsAfterReview);
+  if (goalsChangedInReview.length === 0 && Object.keys(goalsBefore).length > 0) {
+    writeLine(`  ${colors.yellow}[WARN] ${squad.name}: goals.md not updated after review — lead should update goals when work is completed${RESET}`);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // PHASE 4: VERIFY — Quality gate
