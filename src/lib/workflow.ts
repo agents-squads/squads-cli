@@ -49,6 +49,8 @@ import { colors, RESET, writeLine, bold } from './terminal.js';
 // Configuration
 // =============================================================================
 
+export type CycleFocus = 'create' | 'resolve' | 'review' | 'ship' | 'research' | 'cost';
+
 export interface ConversationOptions {
   task?: string;
   maxTurns?: number;
@@ -57,6 +59,19 @@ export interface ConversationOptions {
   model?: string;
   /** Token budget for the squad (output tokens). Default: 50K */
   tokenBudget?: number;
+  /** Cycle focus — changes the lead's planning behavior */
+  focus?: CycleFocus;
+}
+
+/** Load focus instructions from .agents/config/cycle-focus.md */
+function loadFocusPrompt(focus: CycleFocus): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+  const focusPath = join(squadsDir, '..', 'config', 'cycle-focus.md');
+  if (!existsSync(focusPath)) return '';
+  const content = readFileSync(focusPath, 'utf-8');
+  const match = content.match(new RegExp(`## ${focus}\\n([\\s\\S]*?)(?=\\n## |$)`));
+  return match ? match[1].trim() : '';
 }
 
 /** Default output token budget per squad. Lead should plan within this. */
@@ -277,22 +292,27 @@ export async function runConversation(
   const workerNames = workers.map(w => w.name).join(', ') || '(no workers — do the work yourself)';
   const scannerNames = scanners.map(s => s.name).join(', ');
 
+  // Load focus-specific instructions from .agents/config/cycle-focus.md
+  const focus = options.focus || 'create';
+  const focusInstructions = loadFocusPrompt(focus);
+
+  // Load plan prompt template from .agents/config/conversation-roles.md (Lead first turn)
+  // Focus instructions override the default planning behavior
   const planPrompt = `You are ${lead.name} (lead) in squad ${squad.name}.
 
 Read your full agent definition at ${lead.path} and follow its instructions.
 
-## Your Job: PLAN this cycle
+## Cycle Focus: ${focus.toUpperCase()}
 
-You have a token budget of ${Math.round(tokenBudget / 1000)}K output tokens for the whole squad.
-Each worker task uses ~5-10K tokens. Plan accordingly — max ${Math.floor(tokenBudget / 10000)} tasks.
+${focusInstructions}
+
+## Budget
+
+${Math.round(tokenBudget / 1000)}K output tokens for the whole squad.
+Each worker task uses ~5-10K tokens. Max ${Math.floor(tokenBudget / 10000)} tasks.
 
 Available workers: ${workerNames}
 Available scanners: ${scannerNames || '(none)'}
-
-1. Read feedback.md — address corrections FIRST
-2. Read goals.md — pick the TOP priority goal for this cycle
-3. Check the repo: open issues, open PRs, recent commits
-4. Create a PLAN with specific task assignments
 
 ## Output Format
 
@@ -301,7 +321,6 @@ GOAL: [which goal this cycle advances]
 TASKS:
 - worker: [worker-name] | task: [specific instruction with issue number or PR number]
 - worker: [worker-name] | task: [specific instruction]
-${scannerNames ? '- scanner: [scanner-name] | task: [what to scan for]' : ''}
 \`\`\`
 
 Then end with:

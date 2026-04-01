@@ -55,7 +55,8 @@ export async function runCommand(
     const { scanOrg, planOrgCycle, displayOrgScan, displayPlan } = await import('../lib/org-cycle.js');
 
     writeLine();
-    writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}`);
+    const focusLabel = options.focus ? ` ${bold}[${options.focus}]${RESET}` : '';
+    writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}${focusLabel}`);
     writeLine();
 
     // Step 1: SCAN
@@ -169,6 +170,7 @@ export async function runCommand(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          focus: (options.focus as ConversationOptions['focus']) || undefined,
         };
 
         const result = await runConversation(squad, convOptions);
