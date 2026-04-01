@@ -137,25 +137,28 @@ ${squadContext}
     trigger: 'scheduled', executionId: generateExecutionId(),
   };
 
-  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken });
+  // Effort level per role (#702): scanners low, workers high, verifiers medium
+  const effortByRole: Record<string, string> = { lead: 'high', scanner: 'low', worker: 'high', verifier: 'medium' };
+  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low' });
+
+  // Role-based tool sets (#701): scanners get read-only, workers get full, verifiers get read+build
+  const readTools = ['Read', 'Glob', 'Grep', 'Bash(git:*)', 'Bash(gh:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
+  const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
+
+  const toolsByRole: Record<string, string[]> = {
+    lead: [...readTools, ...writeTools],
+    scanner: readTools,
+    worker: [...readTools, ...writeTools],
+    verifier: [...readTools, ...buildTools],
+  };
 
   const claudeArgs: string[] = ['--print'];
   if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
     claudeArgs.push('--dangerously-skip-permissions');
   } else {
-    claudeArgs.push('--allowedTools',
-      'Read', 'Write', 'Edit', 'Glob', 'Grep',
-      'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
-      'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
-      'Bash(docker:*)', 'Bash(duckdb:*)',
-      'Bash(bq:*)', 'Bash(gcloud:*)',
-      'Bash(gws:*)', 'Bash(stripe:*)',
-      'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
-      'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
-      'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
-      'Bash(squads:*)',
-      'Agent', 'WebFetch', 'WebSearch',
-    );
+    const tools = toolsByRole[role] || [...readTools, ...writeTools];
+    claudeArgs.push('--allowedTools', ...tools);
   }
   claudeArgs.push('--disable-slash-commands');
   const guardrailPath = resolveGuardrailSettings(config.cwd);

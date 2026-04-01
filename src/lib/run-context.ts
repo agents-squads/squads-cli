@@ -18,7 +18,7 @@
  */
 
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
@@ -498,7 +498,14 @@ export function gatherSquadContext(
     if (content) {
       const body = stripYamlFrontmatter(content);
       const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
-      addLayer(5, 'Previous State', body, stateCap);
+      // Add staleness caveat (#721) so agents know if their memory is outdated
+      let staleNote = '';
+      try {
+        const mtime = statSync(stateFile).mtimeMs;
+        const daysAgo = Math.round((Date.now() - mtime) / 86400000);
+        if (daysAgo > 0) staleNote = `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
+      } catch { /* */ }
+      addLayer(5, 'Previous State', staleNote + body, stateCap);
     }
   }
 
