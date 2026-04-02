@@ -216,7 +216,7 @@ export async function runCommand(
           const files = readdirSync(convDir).sort().reverse();
           if (files.length > 0) {
             const latest = readFileSync(join(convDir, files[0]), 'utf-8');
-            return latest.includes('hit your limit') || latest.includes('rate limit');
+            return latest.includes('hit your limit') || latest.includes('rate limit') || latest.includes('[QUOTA]') || latest.includes('Quota limit reached');
           }
         } catch { /* no transcript */ }
         return false;

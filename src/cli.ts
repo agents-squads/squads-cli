@@ -414,6 +414,28 @@ exec.action(async (options) => {
   return execListCommand(options);
 });
 
+// Log command - run history from observability JSONL
+program
+  .command('log')
+  .description('Show run history with timestamps, duration, and status')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-a, --agent <agent>', 'Filter by agent')
+  .option('-n, --limit <n>', 'Number of runs to show (default: 20)', '20')
+  .option('--since <date>', 'Show runs since date (e.g. 7d, 2026-04-01)')
+  .option('-j, --json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads log                     Show last 20 runs
+  $ squads log --squad product     Filter by squad
+  $ squads log --limit 50          Show last 50 runs
+  $ squads log --since 7d          Runs in last 7 days
+  $ squads log --json              Machine-readable output
+`)
+  .action(async (options) => {
+    const { logCommand } = await import('./commands/log.js');
+    return logCommand({ ...options, limit: parseInt(options.limit, 10) });
+  });
+
 // ─── Understand (situational awareness) ──────────────────────────────────────
 
 // Dashboard command
