@@ -77,7 +77,7 @@ function loadFocusPrompt(focus: CycleFocus): string {
   if (!existsSync(focusPath)) return '';
   const content = readFileSync(focusPath, 'utf-8');
   if (!content) return '';
-  const match = content.match(new RegExp(`## ${focus}\\n([\\s\\S]*?)(?=\\n## |$)`));
+  const match = content?.match(new RegExp(`## ${focus}\\n([\\s\\S]*?)(?=\\n## |$)`));
   return match ? match[1].trim() : '';
 }
 
