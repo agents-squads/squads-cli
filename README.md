@@ -76,14 +76,31 @@ feedback, and improve with every cycle.
 
 ## Quick Start
 
+**Install and initialize your AI workforce in under 60 seconds:**
+
 ```bash
 npm install -g squads-cli
 squads init
-squads status
 ```
 
-`squads init` creates a `.agents/` directory with 4 starter squads and
-configures your environment.
+You'll see:
+```
+Initialized .agents/ with 4 starter squads:
+  intelligence/  — market scanner, analyst
+  product/       — roadmap planner, spec writer
+  marketing/     — content writer, SEO researcher
+  company/       — evaluator (reviews all outputs)
+
+Next: squads run intelligence -a scanner
+```
+
+**Run your first agent:**
+```bash
+squads run intelligence -a scanner
+```
+
+The scanner reads your business context and returns an intelligence brief.
+That's your AI workforce, running its first shift.
 
 ## How It Works
 
