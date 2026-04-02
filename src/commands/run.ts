@@ -358,9 +358,23 @@ export async function runCommand(
   if (squad) {
     await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
     await flushEvents(); // Ensure telemetry is sent before potential exit
-    await runSquad(squad, squadsDir, options);
-    // Post-run COO evaluation (default on, --no-eval to skip)
-    await runPostEvaluation([squad.name], options);
+    const runStartMs = Date.now();
+    let hadError = false;
+    try {
+      await runSquad(squad, squadsDir, options);
+      // Post-run COO evaluation (default on, --no-eval to skip)
+      await runPostEvaluation([squad.name], options);
+    } catch (err) {
+      hadError = true;
+      throw err;
+    } finally {
+      await track(Events.CLI_RUN_COMPLETE, {
+        exit_code: hadError ? 1 : 0,
+        duration_ms: Date.now() - runStartMs,
+        agent_count: squad.agents?.length ?? 1,
+        had_error: hadError,
+      });
+    }
   } else {
     // Try to find as an agent
     const agents = listAgents(squadsDir);
@@ -371,9 +385,23 @@ export async function runCommand(
       const pathParts = agent.filePath.split('/');
       const squadIdx = pathParts.indexOf('squads');
       const resolvedSquadName = squadIdx >= 0 ? pathParts[squadIdx + 1] : 'unknown';
-      await runAgent(agent.name, agent.filePath, resolvedSquadName, options);
-      // Post-run COO evaluation for the squad this agent belongs to
-      await runPostEvaluation([resolvedSquadName], options);
+      const runStartMs = Date.now();
+      let hadError = false;
+      try {
+        await runAgent(agent.name, agent.filePath, resolvedSquadName, options);
+        // Post-run COO evaluation for the squad this agent belongs to
+        await runPostEvaluation([resolvedSquadName], options);
+      } catch (err) {
+        hadError = true;
+        throw err;
+      } finally {
+        await track(Events.CLI_RUN_COMPLETE, {
+          exit_code: hadError ? 1 : 0,
+          duration_ms: Date.now() - runStartMs,
+          agent_count: 1,
+          had_error: hadError,
+        });
+      }
     } else {
       writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
       const similar = findSimilarSquads(target, listSquads(squadsDir));
