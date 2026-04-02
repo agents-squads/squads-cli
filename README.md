@@ -74,6 +74,21 @@ tuned by role so scanners stay lightweight and leads get the full picture.
 The desired result: agents that don't duplicate work, don't ignore
 feedback, and improve with every cycle.
 
+## How squads-cli compares
+
+| | squads-cli | CrewAI | AutoGen | LangGraph |
+|---|---|---|---|---|
+| **Language** | Any (CLI-first) | Python | Python | Python |
+| **Memory** | Persistent, file-based, compounding | Task-scoped | Session-scoped | Graph state |
+| **Git integration** | Native | None | None | None |
+| **IDP** | Built-in service catalog | None | None | None |
+| **Config** | Markdown files | Python classes | Python classes | Python classes |
+| **Runs locally** | Yes | Yes | Yes | Yes |
+
+**When to use squads-cli:** You want an AI workforce with persistent memory and domain structure that improves every cycle.
+
+**When CrewAI/AutoGen fits better:** You want Python-native agents wired into your Python codebase.
+
 ## Quick Start
 
 ```bash
