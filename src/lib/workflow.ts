@@ -352,12 +352,54 @@ ${squadContext}`;
 
   // Quota detection — if plan hit the API limit, stop immediately
   if (planOutput.includes('[QUOTA]') || planOutput.includes('hit your limit')) {
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: lead.name,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: transcript.totalCost,
+      context_tokens: 0,
+      error: 'Quota limit reached',
+      task: options.task,
+    });
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: false, reason: 'Quota limit reached' };
   }
 
   // Check if lead declared done immediately (nothing to do)
   const conv = detectConvergence(transcript, maxTurns, costCeiling);
   if (conv.converged) {
+    const goalsAfterEarly = snapshotGoals(squad.name);
+    const goalsChangedEarly = diffGoals(goalsBefore, goalsAfterEarly);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: lead.name,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'completed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: transcript.totalCost,
+      context_tokens: 0,
+      task: options.task,
+      goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
+      goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
+      goals_changed: goalsChangedEarly.length > 0 ? goalsChangedEarly : undefined,
+    });
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
   }
 
@@ -459,6 +501,38 @@ or
 
   // Determine final convergence
   const finalConv = detectConvergence(transcript, maxTurns, costCeiling);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Observability — log conversation cycle as a single record
+  // ═══════════════════════════════════════════════════════════════════
+
+  const cycleDurationMs = Date.now() - cycleStartMs;
+  const goalsAfterFinal = snapshotGoals(squad.name);
+  const goalsChanged = diffGoals(goalsBefore, goalsAfterFinal);
+
+  const obsRecord: ObservabilityRecord = {
+    ts: new Date().toISOString(),
+    id: executionId,
+    squad: squad.name,
+    agent: lead.name,
+    provider: 'anthropic',
+    model: options.model || modelForRole('lead'),
+    trigger: 'scheduled',
+    status: 'completed',
+    duration_ms: cycleDurationMs,
+    input_tokens: 0,   // token-level data not available from spawned agents
+    output_tokens: transcript.turns.length > 0 ? transcript.turns.reduce((acc, t) => acc + t.content.length, 0) : 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cost_usd: transcript.totalCost,
+    context_tokens: 0,
+    task: options.task,
+    goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
+    goals_after: Object.keys(goalsAfterFinal).length > 0 ? goalsAfterFinal : undefined,
+    goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
+  };
+  logObservability(obsRecord);
+
   return {
     transcript,
     turnCount: transcript.turns.length,
