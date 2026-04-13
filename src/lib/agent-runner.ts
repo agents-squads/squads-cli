@@ -15,7 +15,6 @@ import {
 import {
   type RunOptions,
   DEFAULT_TIMEOUT_MINUTES,
-  SOFT_DEADLINE_RATIO,
 } from './run-types.js';
 import {
   generateExecutionId,
@@ -36,7 +35,6 @@ import {
   executeWithClaude,
   executeWithProvider,
   verifyExecution,
-  preflightExecutorCheck,
 } from './execution-engine.js';
 import {
   type ContextRole,
@@ -67,8 +65,6 @@ import {
 } from './llm-clis.js';
 import { loadSession } from './auth.js';
 import { getApiUrl } from './env-config.js';
-import { pushCognitionSignal } from './api-client.js';
-import { findMemoryDir } from './memory.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const DRYRUN_DEF_MAX_CHARS = 500;
@@ -283,7 +279,6 @@ export async function runAgent(
   }
 
   // Generate the Claude Code prompt with timeout awareness
-  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const taskDirective = options.task
     ? `\n## TASK DIRECTIVE (overrides default behavior)\n${options.task}\n`
     : '';
