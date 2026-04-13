@@ -18,6 +18,7 @@ import {
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
+import { parseAgentFrontmatter } from './run-context.js';
 import {
   type ExecutionContext,
 } from './run-types.js';
@@ -336,7 +337,9 @@ export function buildAgentEnv(
 
   // Inject per-squad GCP credential if available
   // Agents get GOOGLE_APPLICATION_CREDENTIALS pointing to their squad's service account key
-  const credPath = join(homedir(), '.squads', 'secrets', `${execContext.squad}-sa-key.json`);
+  const credPath = process.env.SQUADS_GCP_CREDENTIALS_DIR
+    ? join(process.env.SQUADS_GCP_CREDENTIALS_DIR, `${execContext.squad}-sa-key.json`)
+    : join(homedir(), '.squads', 'secrets', `${execContext.squad}-sa-key.json`);
   if (existsSync(credPath)) env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
 
   if (options?.includeOtel) {
@@ -666,12 +669,9 @@ export async function executeWithClaude(
     const squadsDir = findSquadsDir();
     if (squadsDir) {
       const agentPath = join(squadsDir, squadName, `${agentName}.md`);
-      if (existsSync(agentPath)) {
-        const content = readFileSync(agentPath, 'utf-8');
-        const modelMatch = content.match(/^model:\s*["']?([^"'\n]+)["']?/m);
-        if (modelMatch) {
-          effectiveModel = modelMatch[1].trim();
-        }
+      const frontmatter = parseAgentFrontmatter(agentPath);
+      if (frontmatter.model) {
+        effectiveModel = frontmatter.model;
       }
     }
   }

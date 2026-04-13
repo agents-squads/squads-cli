@@ -501,8 +501,9 @@ export function gatherSquadContext(
       // Add staleness caveat (#721) so agents know if their memory is outdated
       let staleNote = '';
       try {
+        const MS_PER_DAY = 24 * 60 * 60 * 1000;
         const mtime = statSync(stateFile).mtimeMs;
-        const daysAgo = Math.round((Date.now() - mtime) / 86400000);
+        const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
         if (daysAgo > 0) staleNote = `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
       } catch { /* */ }
       addLayer(5, 'Previous State', staleNote + body, stateCap);
