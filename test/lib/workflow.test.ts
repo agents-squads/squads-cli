@@ -24,6 +24,7 @@ vi.mock('child_process', () => ({
 // Mock squad-parser
 vi.mock('../../src/lib/squad-parser.js', () => ({
   findSquadsDir: vi.fn(),
+  findProjectRoot: vi.fn().mockResolvedValue('/mock/root'),
 }));
 
 // Mock run-context to avoid file system reads in unit tests
