@@ -4,7 +4,7 @@
  */
 
 import ora from 'ora';
-import { join } from 'path';
+import { join, basename, extname } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import {
   findSquadsDir,
@@ -72,6 +72,13 @@ import { findMemoryDir } from './memory.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const DRYRUN_DEF_MAX_CHARS = 500;
+
+function formatRunDuration(ms: number): string {
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
 export const DRYRUN_CONTEXT_MAX_CHARS = parseInt(process.env.SQUADS_DRYRUN_MAX_CHARS || '800', 10);
 
 export async function runAgent(
@@ -80,6 +87,10 @@ export async function runAgent(
   squadName: string,
   options: RunOptions & { execute?: boolean }
 ): Promise<void> {
+  // Normalize: strip path prefix and extension if a full file path was passed
+  if (agentName.includes('/') || agentName.includes('\\')) {
+    agentName = basename(agentName, extname(agentName));
+  }
   const spinner = ora(`Running agent: ${agentName}`).start();
   const startMs = Date.now();
   const startTime = new Date(startMs).toISOString();
@@ -278,15 +289,8 @@ export async function runAgent(
     : '';
   const prompt = `You are ${agentName} from squad ${squadName}.
 ${taskDirective}
-Your full context follows — read it top-to-bottom. Each layer builds on the previous:
-- SYSTEM.md: how the system works (already loaded)
-- Company: who we are and why
-- Priorities: where to focus now
-- Goals: what to achieve (measurable targets)
-- Agent: your specific role and instructions
-- State: where you left off
-${systemContext}${squadContext}${cognitionContext}${learningContext}
-TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note it in state.md and move on.`;
+Your full context follows — read it top-to-bottom:
+${systemContext}${squadContext}${cognitionContext}${learningContext}`;
 
   // Resolve provider with full chain:
   // 1. Agent config (from agent file frontmatter/header)
@@ -385,9 +389,11 @@ TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note 
 
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
+          writeLine(`  ${colors.green}Run completed${RESET} — ${squadName}/${agentName} (${formatRunDuration(Date.now() - startMs)})`);
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
-          writeLine(`  ${colors.dim}${result}${RESET}`);
+          writeLine(`  ${colors.green}Run started${RESET} — ${squadName}/${agentName} (background)`);
+          if (result) writeLine(`  ${colors.dim}${result}${RESET}`);
           writeLine();
           writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
           writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
@@ -399,16 +405,21 @@ TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note 
           squad: squadName, agent: agentName, executionId, error: String(error),
         }).catch(() => {});
 
-        spinner.fail(`Agent ${agentName} failed to launch`);
+        spinner.fail(`Agent ${agentName} failed`);
+        writeLine(`  ${colors.red}Run failed${RESET} — ${squadName}/${agentName} (${formatRunDuration(Date.now() - startMs)})`);
         updateExecutionStatus(squadName, agentName, executionId, 'failed', {
           error: String(error),
           durationMs: Date.now() - startMs,
         });
         const msg = error instanceof Error ? error.message : String(error);
-        const isLikelyBug = error instanceof ReferenceError || error instanceof TypeError || error instanceof SyntaxError;
+        const isApiKeyError = /api.?key|authentication|unauthorized|401/i.test(msg);
+        const isLikelyBug = !isApiKeyError && (error instanceof ReferenceError || error instanceof TypeError || error instanceof SyntaxError);
         writeLine(`  ${colors.red}${msg}${RESET}`);
         writeLine();
-        if (isLikelyBug) {
+        if (isApiKeyError) {
+          writeLine(`  ${colors.yellow}API key not set or invalid. Set ANTHROPIC_API_KEY and retry:${RESET}`);
+          writeLine(`  ${colors.dim}$ export ANTHROPIC_API_KEY=sk-ant-...${RESET}`);
+        } else if (isLikelyBug) {
           writeLine(`  ${colors.yellow}This looks like a bug. Please try:${RESET}`);
           writeLine(`  ${colors.dim}$${RESET} squads doctor          ${colors.dim}— check your setup${RESET}`);
           writeLine(`  ${colors.dim}$${RESET} squads update           ${colors.dim}— get the latest fixes${RESET}`);
@@ -418,7 +429,8 @@ TIME LIMIT: ${timeoutMins} minutes. Focus on priorities first. If blocked, note 
         } else {
           writeLine(`  ${colors.dim}Run \`squads doctor\` to check your setup, or \`squads run ${agentName} --verbose\` for details.${RESET}`);
         }
-        break; // Error — exit retry loop
+        // Re-throw so callers (org cycle) can detect the failure
+        throw error;
       }
     }
   } else {

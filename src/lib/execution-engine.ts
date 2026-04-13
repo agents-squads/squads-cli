@@ -4,10 +4,17 @@
  */
 
 import { spawn, execSync } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import {
   loadSquad,
+  findSquadsDir,
+  findProjectRoot,
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
@@ -49,6 +56,34 @@ export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+
+// ── Guardrail settings ────────────────────────────────────────────────
+
+/**
+ * Resolve the path to a guardrail settings JSON file for --settings injection.
+ *
+ * Resolution order:
+ *   1. `.claude/guardrail.json` in the project root (user-provided override)
+ *   2. Bundled default: `templates/guardrail.json` alongside the squads-cli package
+ *
+ * Returns undefined when neither exists (no guardrail applied).
+ */
+export function resolveGuardrailSettings(projectRoot: string): string | undefined {
+  // 1. Project-level override
+  const projectGuardrail = join(projectRoot, '.claude', 'guardrail.json');
+  if (existsSync(projectGuardrail)) return projectGuardrail;
+
+  // 2. Bundled default (dist/lib/ → dist/templates/ in compiled output;
+  //    src/lib/ → templates/ in source tree)
+  const bundledGuardrail = join(__dirname, '..', '..', 'templates', 'guardrail.json');
+  if (existsSync(bundledGuardrail)) return bundledGuardrail;
+
+  // Also check one level up (when running from dist/lib/)
+  const bundledGuardrailAlt = join(__dirname, '..', 'templates', 'guardrail.json');
+  if (existsSync(bundledGuardrailAlt)) return bundledGuardrailAlt;
+
+  return undefined;
+}
 
 // ── Interfaces ────────────────────────────────────────────────────────
 
@@ -181,9 +216,11 @@ export async function verifyExecution(
     recentCommits = '(no commits found)';
   }
 
-  const verifyPrompt = `You are verifying whether an agent completed its task successfully.
+  // Load verification protocol from markdown
+  const verifyProtocolPath = join(findProjectRoot() || '', '.agents', 'config', 'verification.md');
+  const verifyProtocol = existsSync(verifyProtocolPath) ? readFileSync(verifyProtocolPath, 'utf-8') : 'Respond: PASS: reason or FAIL: reason';
 
-Agent: ${squadName}/${agentName}
+  const verifyPrompt = `Agent: ${squadName}/${agentName}
 
 ## Acceptance Criteria
 ${criteria}
@@ -196,12 +233,7 @@ ${stateContent || '(empty or not found)'}
 ### Recent Git Commits
 ${recentCommits}
 
-## Instructions
-Evaluate whether the acceptance criteria are met based on the evidence.
-Respond with EXACTLY one line:
-PASS: <brief reason>
-or
-FAIL: <brief reason>`;
+${verifyProtocol}`;
 
   try {
     const escapedPrompt = verifyPrompt.replace(/'/g, "'\\''");
@@ -301,6 +333,11 @@ export function buildAgentEnv(
   // Inject bot GH_TOKEN so agents create PRs/issues as the bot identity,
   // not the user's personal gh auth. This enables founder to review/approve.
   if (options?.ghToken) env.GH_TOKEN = options.ghToken;
+
+  // Inject per-squad GCP credential if available
+  // Agents get GOOGLE_APPLICATION_CREDENTIALS pointing to their squad's service account key
+  const credPath = join(homedir(), '.squads', 'secrets', `${execContext.squad}-sa-key.json`);
+  if (existsSync(credPath)) env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
 
   if (options?.includeOtel) {
     env.OTEL_RESOURCE_ATTRIBUTES = `squads.squad=${execContext.squad},squads.agent=${execContext.agent},squads.task_type=${execContext.taskType},squads.trigger=${execContext.trigger},squads.execution_id=${execContext.executionId}`;
@@ -614,10 +651,32 @@ export async function executeWithClaude(
   ensureProjectTrusted(projectRoot);
 
   // Resolve model and provider
+  // Priority: 1) CLI --model flag  2) agent frontmatter model:  3) SQUAD.md model routing
   const squad = squadName !== 'unknown' ? loadSquad(squadName) : null;
   const mcpConfigPath = selectMcpConfig(squadName, squad);
+
+  // Merge CLI --skills flag with SQUAD.md context.skills
+  const squadSkills = squad?.context?.skills || [];
+  const mergedSkills = [...new Set([...(skills || []), ...squadSkills])];
   const taskType = detectTaskType(agentName);
-  const resolvedModel = resolveModel(model, squad, taskType);
+
+  // Read agent frontmatter model if no explicit CLI flag
+  let effectiveModel = model;
+  if (!effectiveModel) {
+    const squadsDir = findSquadsDir();
+    if (squadsDir) {
+      const agentPath = join(squadsDir, squadName, `${agentName}.md`);
+      if (existsSync(agentPath)) {
+        const content = readFileSync(agentPath, 'utf-8');
+        const modelMatch = content.match(/^model:\s*["']?([^"'\n]+)["']?/m);
+        if (modelMatch) {
+          effectiveModel = modelMatch[1].trim();
+        }
+      }
+    }
+  }
+
+  const resolvedModel = resolveModel(effectiveModel, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
   // Resolve target repo for worktree creation (squad.repo → sibling dir)
@@ -664,7 +723,7 @@ export async function executeWithClaude(
     if (verbose) {
       logVerboseExecution({
         projectRoot, mode: 'foreground', useApi, execContext,
-        effort, skills, resolvedModel, claudeModelAlias, explicitModel: model,
+        effort, skills: mergedSkills, resolvedModel, claudeModelAlias, explicitModel: model,
       });
     }
 
@@ -684,6 +743,8 @@ export async function executeWithClaude(
         'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
         'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
         'Bash(docker:*)', 'Bash(duckdb:*)',
+        'Bash(bq:*)', 'Bash(gcloud:*)',
+        'Bash(gws:*)', 'Bash(stripe:*)',
         'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
         'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
         'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
@@ -693,11 +754,14 @@ export async function executeWithClaude(
     }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
+    // Inject guardrail PreToolUse hooks so spawned sessions inherit destructive-command guards
+    const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
+    if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-      effort, skills, includeOtel: true, ghToken: botGhToken,
+      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken,
     });
 
     return executeForeground({
@@ -710,7 +774,7 @@ export async function executeWithClaude(
   const timestamp = Date.now();
   const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-    effort, skills, includeOtel: !runInWatch, ghToken: botGhToken,
+    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken,
   });
 
   const wrapperScript = buildDetachedShellScript({
@@ -733,7 +797,7 @@ export async function executeWithClaude(
   if (verbose) {
     logVerboseExecution({
       projectRoot, mode: 'background', useApi, execContext,
-      effort, skills, resolvedModel, claudeModelAlias,
+      effort, skills: mergedSkills, resolvedModel, claudeModelAlias,
       explicitModel: model, logFile, mcpConfigPath,
     });
   }

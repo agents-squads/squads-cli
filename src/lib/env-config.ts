@@ -32,6 +32,8 @@ export interface EnvironmentConfig {
 export interface SquadsConfig {
   current: string;
   environments: Record<string, EnvironmentConfig>;
+  /** User email — captured opt-in during `squads init` for founder outreach */
+  email?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,4 +143,21 @@ export function getBridgeUrl(): string {
 
 export function getConsoleUrl(): string {
   return getEnv().console_url;
+}
+
+/**
+ * Persist the user's email address in ~/.squads/config.json.
+ * Used for opt-in founder outreach captured during `squads init`.
+ */
+export function saveEmail(email: string): void {
+  const config = loadConfig();
+  config.email = email;
+  saveConfig(config);
+}
+
+/**
+ * Retrieve the stored user email, if any.
+ */
+export function getEmail(): string | undefined {
+  return loadConfig().email;
 }

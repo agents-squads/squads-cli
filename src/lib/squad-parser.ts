@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { join, basename, dirname } from 'path';
+import { spawnSync } from 'child_process';
 import matter from 'gray-matter';
 import { resolveMcpConfig, type McpResolution } from './mcp-config.js';
 
@@ -64,6 +65,8 @@ export interface SquadFrontmatter {
   providers?: SquadProviders;
   /** Squad names this squad must wait for before executing (phase ordering) */
   depends_on?: string[];
+  /** Agents that participate in conversations. Others run on schedules. */
+  conversation_agents?: string[];
 }
 
 export interface Agent {
@@ -138,6 +141,8 @@ export interface Squad {
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
   stack?: string;
+  /** Agents that participate in squad conversations. Others run on schedules. */
+  conversation_agents?: string[];
   /** Multi-LLM provider configuration */
   providers?: SquadProviders;
   /** Domain this squad operates in */
@@ -175,22 +180,76 @@ export interface ExecutionContext extends SquadContext {
 }
 
 /**
- * Find the .agents/squads directory by searching current directory and parents.
- * Searches up to 5 parent directories.
- * @returns Path to squads directory or null if not found
+ * Run `git rev-parse` with a given flag in a given directory.
+ * Returns stdout trimmed, or null on error.
  */
-export function findSquadsDir(): string | null {
-  // Look for .agents/squads in current directory or parent directories
-  let dir = process.cwd();
+function gitRevParse(flag: string, cwd: string): string | null {
+  const result = spawnSync('git', ['rev-parse', flag], {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (result.status !== 0 || !result.stdout) return null;
+  return result.stdout.trim();
+}
 
-  for (let i = 0; i < 5; i++) {
+/**
+ * Walk up from `startDir` (up to `maxLevels` times) looking for .agents/squads.
+ * Returns the squads path on first hit, or null.
+ */
+function walkUpForSquadsDir(startDir: string, maxLevels: number): string | null {
+  let dir = startDir;
+  for (let i = 0; i < maxLevels; i++) {
     const squadsPath = join(dir, '.agents', 'squads');
-    if (existsSync(squadsPath)) {
-      return squadsPath;
-    }
+    if (existsSync(squadsPath)) return squadsPath;
     const parent = join(dir, '..');
     if (parent === dir) break;
     dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Find the .agents/squads directory by searching current directory and parents.
+ *
+ * Search order:
+ * 1. Walk up to 5 levels from process.cwd() (handles normal project layouts).
+ * 2. If that fails and we are inside a git worktree or subdirectory, get the
+ *    git toplevel via `git rev-parse --show-toplevel` and walk up from there.
+ * 3. Also check the parent of the git toplevel so that sibling layouts like
+ *    `agents-squads/hq/` are found when CWD is `agents-squads/.worktrees/xxx/`.
+ *
+ * @returns Path to squads directory or null if not found
+ */
+export function findSquadsDir(): string | null {
+  const cwd = process.cwd();
+
+  // 1. Standard ancestor walk from CWD.
+  const fromCwd = walkUpForSquadsDir(cwd, 5);
+  if (fromCwd) return fromCwd;
+
+  // 2. Git-aware fallback: get the worktree's toplevel checkout directory.
+  const gitToplevel = gitRevParse('--show-toplevel', cwd);
+  if (gitToplevel && gitToplevel !== cwd) {
+    // Walk up from the git toplevel (handles CWD being deep inside a worktree).
+    const fromGitRoot = walkUpForSquadsDir(gitToplevel, 5);
+    if (fromGitRoot) return fromGitRoot;
+  }
+
+  // 3. For git worktrees the common .git dir lives in the main repo. Use
+  //    --git-common-dir to find the main repo root and look for siblings.
+  const gitCommonDir = gitRevParse('--git-common-dir', cwd);
+  if (gitCommonDir) {
+    // --git-common-dir returns the path to the common .git dir.
+    // Its parent is the main repo root; walk up from there.
+    const mainRepoRoot = join(gitCommonDir, '..');
+    const fromMainRoot = walkUpForSquadsDir(mainRepoRoot, 5);
+    if (fromMainRoot) return fromMainRoot;
+
+    // Also check siblings of the main repo root (e.g. hq/ lives next to squads-cli/).
+    const orgRoot = join(mainRepoRoot, '..');
+    const fromOrgRoot = walkUpForSquadsDir(orgRoot, 3);
+    if (fromOrgRoot) return fromOrgRoot;
   }
 
   return null;
@@ -354,6 +413,7 @@ export function parseSquadFile(filePath: string): Squad {
     context: fm.context,
     repo: fm.repo,
     stack: fm.stack,
+    conversation_agents: Array.isArray(fm.conversation_agents) ? fm.conversation_agents : undefined,
     providers: fm.providers,
     // Preserve raw frontmatter for KPIs and other custom fields
     frontmatter: frontmatter as Record<string, unknown>,
