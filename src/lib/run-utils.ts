@@ -7,7 +7,6 @@ import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { findSquadsDir, type Squad } from './squad-parser.js';
 import { resolveMcpConfigPath } from './mcp-config.js';
-import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import type { ExecutionContext } from './run-types.js';
 
