@@ -76,21 +76,12 @@ export async function runCommand(
       return;
     }
 
-    // Step 3: EXECUTE — wave-based parallel execution
-    //
-    // Wave 1 (producers):  research, intelligence, data — create raw material
-    // Wave 2 (builders):   cli, website, finance, engineering — build on wave 1
-    // Wave 3 (amplifiers): marketing, growth, product, analytics, customer, economics — use wave 2
-    // Wave 4 (reviewers):  operations, company — evaluate everything
-    //
-    // Within each wave, squads run in parallel (different target repos).
-    // Between waves, we wait — so each wave sees the previous wave's output.
+    // Step 3: EXECUTE — all planned squads run in parallel
+    // Each squad targets its own repo, so no conflicts.
+    // Users can define custom wave ordering via SQUAD.md `wave:` field in the future.
 
     const waves: string[][] = [
-      ['research', 'intelligence', 'data'],
-      ['cli', 'website', 'finance', 'engineering'],
-      ['marketing', 'growth', 'product', 'analytics', 'customer', 'economics'],
-      ['operations', 'company'],
+      plan.map(s => s.squad),
     ];
 
     // Resume support: load quota-skipped squads from previous run
@@ -197,9 +188,8 @@ export async function runCommand(
       if (waveSquads.length === 0) continue;
 
       const waveNum = waveIdx + 1;
-      const waveNames = ['Producers', 'Builders', 'Amplifiers', 'Reviewers'];
       writeLine();
-      writeLine(`  ${bold}Wave ${waveNum}: ${waveNames[waveIdx]}${RESET} ${colors.dim}(${waveSquads.join(', ')})${RESET}`);
+      writeLine(`  ${bold}Wave ${waveNum}${RESET} ${colors.dim}(${waveSquads.join(', ')})${RESET}`);
 
       // Run all squads in this wave in parallel
       const waveResults = await Promise.all(
