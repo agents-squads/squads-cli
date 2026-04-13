@@ -11,9 +11,13 @@
  * Token budget replaces turn limits. Lead plans within the budget.
  */
 
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 import {
   type AgentRole,
@@ -312,35 +316,22 @@ export async function runConversation(
 
   // Load plan prompt template from .agents/config/conversation-roles.md (Lead first turn)
   // Focus instructions override the default planning behavior
-  const planPrompt = `You are ${lead.name} (lead) in squad ${squad.name}.
-
-Read your full agent definition at ${lead.path} and follow its instructions.
-
-## Cycle Focus: ${focus.toUpperCase()}
-
-${focusInstructions}
-
-## Budget
-
-${Math.round(tokenBudget / 1000)}K output tokens for the whole squad.
-Each worker task uses ~5-10K tokens. Max ${Math.floor(tokenBudget / 10000)} tasks.
-
-Available workers: ${workerNames}
-Available scanners: ${scannerNames || '(none)'}
-
-## Output Format
-
-\`\`\`plan
-GOAL: [which goal this cycle advances]
-TASKS:
-- worker: [worker-name] | task: [specific instruction with issue number or PR number]
-- worker: [worker-name] | task: [specific instruction]
-\`\`\`
-
-Then end with:
-## STATUS: CONTINUE
-
-${squadContext}`;
+  // Load plan prompt from template (no prompts in TypeScript — CLAUDE.md rule)
+  const planTemplatePath = join(__dirname, '..', 'templates', 'prompts', 'plan.md');
+  const planTemplate = existsSync(planTemplatePath)
+    ? readFileSync(planTemplatePath, 'utf-8')
+    : 'You are {{LEAD_NAME}} (lead) in squad {{SQUAD_NAME}}. Plan the work.';
+  const planPrompt = planTemplate
+    .replace('{{LEAD_NAME}}', lead.name)
+    .replace('{{SQUAD_NAME}}', squad.name)
+    .replace('{{LEAD_PATH}}', lead.path)
+    .replace('{{FOCUS}}', focus.toUpperCase())
+    .replace('{{FOCUS_INSTRUCTIONS}}', focusInstructions)
+    .replace('{{BUDGET_K}}', String(Math.round(tokenBudget / 1000)))
+    .replace('{{MAX_TASKS}}', String(Math.floor(tokenBudget / 10000)))
+    .replace('{{WORKERS}}', workerNames)
+    .replace('{{SCANNERS}}', scannerNames || '(none)')
+    .replace('{{SQUAD_CONTEXT}}', squadContext);
 
   const planOutput = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
