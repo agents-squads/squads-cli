@@ -63,6 +63,9 @@ import { registerReleaseCommands } from './commands/release-check.js';
 import { registerObservabilityCommands } from './commands/observability.js';
 import { registerTierCommand } from './commands/tier.js';
 import { registerServicesCommands } from './commands/services.js';
+import { registerGoalsCommand } from './commands/goals.js';
+import { registerCredentialsCommand } from './commands/credentials.js';
+import { registerReviewCommand } from './commands/review.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -309,6 +312,9 @@ program
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
+  .option('--force', 'Force re-run squads that already completed today')
+  .option('--resume', 'Resume org cycle from where quota stopped it')
+  .option('--focus <mode>', 'Cycle focus: create, resolve, review, ship, research, cost (default: create)')
   .addHelpText('after', `
 Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
@@ -407,6 +413,28 @@ exec.action(async (options) => {
   const { execListCommand } = await import('./commands/exec.js');
   return execListCommand(options);
 });
+
+// Log command - run history from observability JSONL
+program
+  .command('log')
+  .description('Show run history with timestamps, duration, and status')
+  .option('-s, --squad <squad>', 'Filter by squad')
+  .option('-a, --agent <agent>', 'Filter by agent')
+  .option('-n, --limit <n>', 'Number of runs to show (default: 20)', '20')
+  .option('--since <date>', 'Show runs since date (e.g. 7d, 2026-04-01)')
+  .option('-j, --json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads log                     Show last 20 runs
+  $ squads log --squad product     Filter by squad
+  $ squads log --limit 50          Show last 50 runs
+  $ squads log --since 7d          Runs in last 7 days
+  $ squads log --json              Machine-readable output
+`)
+  .action(async (options) => {
+    const { logCommand } = await import('./commands/log.js');
+    return logCommand({ ...options, limit: parseInt(options.limit, 10) });
+  });
 
 // ─── Understand (situational awareness) ──────────────────────────────────────
 
@@ -1058,6 +1086,9 @@ registerReleaseCommands(program);
 registerObservabilityCommands(program);
 registerTierCommand(program);
 registerServicesCommands(program);
+registerGoalsCommand(program);
+registerCredentialsCommand(program);
+registerReviewCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program
