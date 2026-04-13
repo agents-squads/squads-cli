@@ -61,6 +61,7 @@ export interface AgentFrontmatter {
   acceptance_criteria?: string;
   max_retries?: number;
   cooldown?: string;
+  model?: string;
   /**
    * `role:` field from agent YAML frontmatter (free text).
    * Used as the primary signal for context-role selection.
