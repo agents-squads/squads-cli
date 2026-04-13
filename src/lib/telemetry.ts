@@ -310,6 +310,7 @@ export const Events = {
 
   // Commands
   CLI_RUN: 'cli.run',
+  CLI_RUN_COMPLETE: 'cli.run.complete',
   CLI_STATUS: 'cli.status',
   CLI_DASHBOARD: 'cli.dashboard',
   CLI_WORKERS: 'cli.workers',
