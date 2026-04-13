@@ -360,7 +360,7 @@ export function computeScorecard(
 
   const totalPRs = records.reduce((sum, r) => sum + r.artifacts.prsCreated.length, 0);
   const mergedPRs = records.reduce((sum, r) => sum + r.outcomes.prsMerged, 0);
-  const unmergedPRs = records.reduce((sum, r) => sum + r.outcomes.prsClosedUnmerged, 0);
+  const _unmergedPRs = records.reduce((sum, r) => sum + r.outcomes.prsClosedUnmerged, 0);
   const totalIssues = records.reduce((sum, r) => sum + r.artifacts.issuesCreated.length, 0);
   const closedIssues = records.reduce((sum, r) => sum + r.outcomes.issuesClosed, 0);
   const totalCost = records.reduce((sum, r) => sum + r.costUsd, 0);

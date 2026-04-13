@@ -11,7 +11,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname } from 'path';
 import { findProjectRoot, loadSquad } from './squad-parser.js';
 import { colors, RESET, writeLine } from './terminal.js';
 

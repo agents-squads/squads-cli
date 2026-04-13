@@ -14,7 +14,6 @@ import {
 } from './squad-parser.js';
 import {
   type RunOptions,
-  DEFAULT_TIMEOUT_MINUTES,
 } from './run-types.js';
 import {
   generateExecutionId,
@@ -53,9 +52,7 @@ import {
 import { parseCooldown } from './cron.js';
 import {
   colors,
-  bold,
   RESET,
-  gradient,
   icons,
   writeLine,
 } from './terminal.js';

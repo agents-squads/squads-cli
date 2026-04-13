@@ -3,7 +3,6 @@
  * Extracted from commands/run.ts to reduce its size.
  */
 
-import { spawn } from 'child_process';
 import { join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import {
@@ -13,16 +12,11 @@ import {
 } from './run-types.js';
 import {
   checkClaudeCliAvailable,
-  getProjectRoot,
 } from './run-utils.js';
 import {
   executeWithClaude,
   executeWithProvider,
 } from './execution-engine.js';
-import {
-  checkLocalCooldown,
-  DEFAULT_SCHEDULED_COOLDOWN_MS,
-} from './execution-log.js';
 import { runAgent } from './agent-runner.js';
 import {
   findSquadsDir,
@@ -50,12 +44,9 @@ import {
 } from './cognition.js';
 import {
   runConversation,
-  saveTranscript,
   type ConversationOptions,
 } from './workflow.js';
 import {
-  reportExecutionStart,
-  reportConversationResult,
   pushCognitionSignal,
 } from './api-client.js';
 import { getBotGhEnv } from './github.js';
@@ -71,9 +62,7 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from './llm-clis.js';
-import { getBridgeUrl } from './env-config.js';
 import { classifyAgent } from './conversation.js';
-import ora from 'ora';
 
 // ── Post-run evaluation ─────────────────────────────────────────────
 // After any squad run, dispatch the COO (company-lead) to evaluate outputs.

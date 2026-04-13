@@ -18,7 +18,7 @@
  */
 
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
@@ -388,25 +388,6 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
   }
 }
 
-/** Read all .md files from a directory, concatenated */
-function readDirMd(dirPath: string, maxChars: number): string {
-  if (!existsSync(dirPath)) return '';
-  try {
-    const files = readdirSync(dirPath).filter(f => f.endsWith('.md')).sort();
-    const parts: string[] = [];
-    let totalChars = 0;
-    for (const file of files) {
-      const content = safeRead(join(dirPath, file));
-      if (!content) continue;
-      if (totalChars + content.length > maxChars) break;
-      parts.push(content);
-      totalChars += content.length;
-    }
-    return parts.join('\n\n');
-  } catch {
-    return '';
-  }
-}
 
 // ── Squad Context System Assembly ─────────────────────────────────────
 
