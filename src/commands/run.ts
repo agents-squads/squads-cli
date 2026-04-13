@@ -234,12 +234,6 @@ export async function runCommand(
         }
       }
 
-      // Commit hq memory changes between waves so next wave sees fresh state
-      try {
-        execSync('git add -A .agents/memory/ && git diff --cached --quiet || git commit -m "memory: wave ' + waveNum + ' state updates"', {
-          cwd: process.cwd(), stdio: 'pipe', encoding: 'utf-8',
-        });
-      } catch { /* no changes to commit */ }
     }
 
     // Clear resume file if cycle completed without quota hit
