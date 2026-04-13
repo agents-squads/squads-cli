@@ -1,6 +1,5 @@
 import { join } from 'path';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { execSync } from 'child_process';
 import {
   findSquadsDir,
   loadSquad,
