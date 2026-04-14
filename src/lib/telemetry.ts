@@ -30,9 +30,7 @@ const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
 // Write-only telemetry key — standard practice for CLI analytics (Segment, PostHog, etc.)
 // This key can only write events; it cannot read, delete, or access user data.
 // Users can opt out via `squads config set telemetry false`.
-const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || Buffer.from(
-  'c3FfdGVsX3YxXzdmOGE5YjJjM2Q0ZTVmNmE=', 'base64'
-).toString();
+const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || 'sq_tel_v1_7f8a9b2c3d4e5f6a';
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
