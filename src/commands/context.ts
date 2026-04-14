@@ -386,20 +386,9 @@ export async function contextPromptCommand(
 
   const agentPath = `.agents/squads/${squadName}/${options.agent}.md`;
 
-  // Build the prompt for Claude
-  const prompt = `Execute the ${options.agent} agent from squad ${squadName}.
-
-Read the agent definition at ${agentPath} and follow its instructions exactly.
-
-CRITICAL INSTRUCTIONS:
-- Work autonomously - do NOT ask clarifying questions
-- Use Task tool to spawn sub-agents when needed
-- Output findings to GitHub issues (gh issue create)
-- Output code changes as PRs (gh pr create)
-- Update memory files in .agents/memory/${squadName}/${options.agent}/
-- Type /exit when done
-
-Begin now.`;
+  // Prompt: identity + agent path only. All instructions in SYSTEM.md and agent.md.
+  const prompt = `You are ${options.agent} from squad ${squadName}.
+Read your agent definition at ${agentPath} and your context layers. Execute your goals.`;
 
   if (options.json) {
     console.log(JSON.stringify({

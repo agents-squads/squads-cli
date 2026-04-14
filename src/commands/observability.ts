@@ -12,7 +12,8 @@ import { colors, bold, RESET, writeLine } from '../lib/terminal.js';
 export function registerObservabilityCommands(program: Command): void {
   const obs = program
     .command('obs')
-    .description('Observability — execution history, token costs, and trends');
+    .description('Observability — execution history, token costs, and trends')
+    .action(() => { obs.outputHelp(); });
 
   obs
     .command('history')

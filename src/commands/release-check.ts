@@ -21,7 +21,8 @@ async function checkHealth(url: string, expect: number): Promise<{ ok: boolean; 
 export function registerReleaseCommands(program: Command): void {
   const release = program
     .command('release')
-    .description('Release management — pre-deploy checks and status');
+    .description('Release management — pre-deploy checks and status')
+    .action(() => { release.outputHelp(); });
 
   release
     .command('pre-check <service>')
