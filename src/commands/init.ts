@@ -724,6 +724,42 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const systemMd = loadSeedTemplate('config/SYSTEM.md', variables);
     await writeFile(path.join(cwd, '.agents/config/SYSTEM.md'), systemMd);
 
+    // Project config (.squads/config.yml) — per-user, gitignored
+    const configYmlPath = path.join(cwd, '.squads', 'config.yml');
+    if (!await fileExists(configYmlPath)) {
+      await fs.mkdir(path.join(cwd, '.squads'), { recursive: true });
+      const configContent = [
+        '# .squads/config.yml — Project configuration for squads-cli',
+        '# Customize for your project. Environment variables override these values.',
+        '',
+        '# Agent execution',
+        'agent_timeout_minutes: 30',
+        'token_budget: 50000',
+        'cost_ceiling: 25',
+        '',
+        '# Organization identity',
+        `company_name: "${businessName}"`,
+        '',
+        '# Telemetry',
+        'telemetry: true',
+        '',
+      ].join('\n');
+      await fs.writeFile(configYmlPath, configContent);
+    }
+
+    // Ensure .squads/config.yml is gitignored (per-user config, not committed)
+    const gitignorePath = path.join(cwd, '.gitignore');
+    const gitignoreEntry = '.squads/config.yml';
+    let gitignoreContent = '';
+    try { gitignoreContent = await fs.readFile(gitignorePath, 'utf-8'); } catch { /* no .gitignore yet */ }
+    if (!gitignoreContent.includes(gitignoreEntry)) {
+      const separator = gitignoreContent.length > 0 && !gitignoreContent.endsWith('\n') ? '\n' : '';
+      const section = gitignoreContent.length > 0
+        ? `${separator}\n# squads-cli (per-user config)\n${gitignoreEntry}\n`
+        : `# squads-cli (per-user config)\n${gitignoreEntry}\n`;
+      await fs.appendFile(gitignorePath, section);
+    }
+
     // IDP catalog entry (only if .agents/idp/ doesn't already exist)
     const idpCatalogDir = path.join(cwd, '.agents', 'idp', 'catalog');
     if (!existsSync(idpCatalogDir)) {
@@ -853,6 +889,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
   writeLine(chalk.dim('  • .agents/memory/               Persistent state'));
   writeLine(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
+  writeLine(chalk.dim('  • .squads/config.yml            Runtime config (agent timeout, budget, etc.)'));
   writeLine(chalk.dim('  • AGENTS.md                     Agent instructions (vendor-neutral)'));
   if (selectedProvider === 'claude') {
     writeLine(chalk.dim('  • CLAUDE.md                     Operating manual'));

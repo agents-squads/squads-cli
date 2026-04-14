@@ -43,6 +43,7 @@ import {
   resolveGuardrailSettings,
 } from './execution-engine.js';
 import { type ExecutionContext } from './run-types.js';
+import { loadProjectConfig } from './config.js';
 import { getBotGhEnv } from './github.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
 import { colors, RESET, writeLine } from './terminal.js';
@@ -83,7 +84,7 @@ function loadFocusPrompt(focus: CycleFocus): string {
   return match ? match[1].trim() : '';
 }
 
-/** Default output token budget per squad. Lead should plan within this. */
+/** Fallback token budget / cost ceiling — overridden by project config. */
 const DEFAULT_TOKEN_BUDGET = 50000;
 const DEFAULT_COST_CEILING = 25;
 
@@ -259,8 +260,9 @@ export async function runConversation(
     return { transcript: createTranscript(squad.name), turnCount: 0, totalCost: 0, converged: true, reason: 'No squads directory found' };
   }
 
-  const tokenBudget = options.tokenBudget || DEFAULT_TOKEN_BUDGET;
-  const costCeiling = options.costCeiling || DEFAULT_COST_CEILING;
+  const projectConfig = loadProjectConfig();
+  const tokenBudget = options.tokenBudget || projectConfig.token_budget || DEFAULT_TOKEN_BUDGET;
+  const costCeiling = options.costCeiling || projectConfig.cost_ceiling || DEFAULT_COST_CEILING;
   const maxTurns = options.maxTurns || 100;
   const transcript = createTranscript(squad.name);
 
