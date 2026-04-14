@@ -2,78 +2,71 @@
  * squads credentials — manage per-squad GCP service accounts and credentials.
  *
  * Creates, rotates, lists, and revokes service accounts so agents
- * can access the APIs they need without founder intervention.
+ * can access the APIs they need without manual setup.
+ *
+ * Permissions are defined per squad in SQUAD.md:
+ *   credentials:
+ *     gcp:
+ *       roles: [roles/bigquery.dataViewer, roles/bigquery.jobUser]
+ *       apis: [bigquery.googleapis.com]
  */
 
 import { Command } from 'commander';
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, renameSync } from 'fs';
 import { join, basename } from 'path';
-import { findSquadsDir } from '../lib/squad-parser.js';
+import { findSquadsDir, loadSquad } from '../lib/squad-parser.js';
 import { colors, bold, RESET, writeLine, icons } from '../lib/terminal.js';
 import { homedir } from 'os';
 
-// ── Permission mapping per squad ────────────────────────────────────────
-// Each squad gets ONLY the GCP roles it needs. Principle of least privilege.
+// ── Permission resolution ──────────────────────────────────────────────
 
 interface SquadPermissions {
   roles: string[];
-  apis: string[];       // APIs to enable on the project
+  apis: string[];
   description: string;
 }
 
-const SQUAD_PERMISSIONS: Record<string, SquadPermissions> = {
-  analytics: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com'],
-    description: 'BQ telemetry read access',
-  },
-  data: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser', 'roles/cloudsql.client'],
-    apis: ['bigquery.googleapis.com', 'sqladmin.googleapis.com'],
-    description: 'BQ read + Cloud SQL client',
-  },
-  finance: {
-    roles: ['roles/drive.file', 'roles/sheets.editor'],
-    apis: ['sheets.googleapis.com', 'drive.googleapis.com'],
-    description: 'Google Sheets + Drive for financial models',
-  },
-  marketing: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com', 'searchconsole.googleapis.com'],
-    description: 'BQ read + Search Console',
-  },
-  engineering: {
-    roles: ['roles/cloudsql.admin', 'roles/run.developer', 'roles/secretmanager.secretAccessor'],
-    apis: ['sqladmin.googleapis.com', 'run.googleapis.com', 'secretmanager.googleapis.com'],
-    description: 'Cloud SQL admin + Cloud Run deploy + secrets',
-  },
-  customer: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com'],
-    description: 'BQ telemetry for user analysis',
-  },
-  intelligence: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com'],
-    description: 'BQ read for intelligence queries',
-  },
-  product: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com'],
-    description: 'BQ telemetry for product analytics',
-  },
-  growth: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser'],
-    apis: ['bigquery.googleapis.com'],
-    description: 'BQ telemetry for growth metrics',
-  },
-  operations: {
-    roles: ['roles/bigquery.dataViewer', 'roles/bigquery.jobUser', 'roles/monitoring.viewer'],
-    apis: ['bigquery.googleapis.com', 'monitoring.googleapis.com'],
-    description: 'BQ read + monitoring for ops health',
-  },
-};
+/**
+ * Read credentials config from SQUAD.md `credentials.gcp` field.
+ * Falls back to empty permissions if not defined.
+ */
+function getSquadPermissions(squadName: string): SquadPermissions | null {
+  const squad = loadSquad(squadName);
+  if (!squad) return null;
+
+  // Read raw SQUAD.md to parse credentials section
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+
+  const squadMd = join(squadsDir, squadName, 'SQUAD.md');
+  if (!existsSync(squadMd)) return null;
+
+  const content = readFileSync(squadMd, 'utf-8');
+
+  // Parse YAML-like credentials block from SQUAD.md frontmatter or body
+  const roles: string[] = [];
+  const apis: string[] = [];
+
+  // Match roles: [role1, role2] or roles:\n  - role1\n  - role2
+  const rolesMatch = content.match(/gcp:\s*\n\s*roles:\s*\[([^\]]+)\]/);
+  if (rolesMatch) {
+    roles.push(...rolesMatch[1].split(',').map(r => r.trim().replace(/['"]/g, '')));
+  }
+
+  const apisMatch = content.match(/gcp:\s*\n(?:.*\n)*?\s*apis:\s*\[([^\]]+)\]/);
+  if (apisMatch) {
+    apis.push(...apisMatch[1].split(',').map(a => a.trim().replace(/['"]/g, '')));
+  }
+
+  if (roles.length === 0 && apis.length === 0) return null;
+
+  return {
+    roles,
+    apis,
+    description: `${roles.length} roles, ${apis.length} APIs`,
+  };
+}
 
 const SECRETS_DIR = join(homedir(), '.squads', 'secrets');
 const SA_SUFFIX = '-agent';
@@ -119,11 +112,15 @@ async function createCredential(squad: string, opts: { force?: boolean }): Promi
   const project = getProject();
   const email = saEmail(squad, project);
   const key = keyPath(squad);
-  const perms = SQUAD_PERMISSIONS[squad];
+  const perms = getSquadPermissions(squad);
 
   if (!perms) {
-    writeLine(`  ${icons.error} ${colors.red}No permission mapping for squad "${squad}"${RESET}`);
-    writeLine(`  ${colors.dim}Known squads: ${Object.keys(SQUAD_PERMISSIONS).join(', ')}${RESET}`);
+    writeLine(`  ${icons.error} ${colors.red}No credentials config for squad "${squad}"${RESET}`);
+    writeLine(`  ${colors.dim}Add to SQUAD.md:${RESET}`);
+    writeLine(`  ${colors.dim}  credentials:${RESET}`);
+    writeLine(`  ${colors.dim}    gcp:${RESET}`);
+    writeLine(`  ${colors.dim}      roles: [roles/bigquery.dataViewer]${RESET}`);
+    writeLine(`  ${colors.dim}      apis: [bigquery.googleapis.com]${RESET}`);
     return;
   }
 
@@ -223,34 +220,35 @@ async function rotateCredential(squad: string): Promise<void> {
 async function listCredentials(): Promise<void> {
   ensureSecretsDir();
   const squadsDir = findSquadsDir();
-  const allSquads = Object.keys(SQUAD_PERMISSIONS).sort();
+
+  // Discover squads dynamically
+  const squads: string[] = [];
+  if (squadsDir) {
+    const dirs = readdirSync(squadsDir).filter(d =>
+      existsSync(join(squadsDir, d, 'SQUAD.md'))
+    );
+    squads.push(...dirs.sort());
+  }
+
+  if (squads.length === 0) {
+    writeLine(`  ${colors.dim}No squads found. Run squads init first.${RESET}`);
+    return;
+  }
 
   writeLine();
   writeLine(`  ${bold}Squad Credentials${RESET}`);
   writeLine();
-  writeLine(`  ${'Squad'.padEnd(16)} ${'Status'.padEnd(10)} ${'Roles'.padEnd(40)} Key`);
-  writeLine(`  ${'-'.repeat(90)}`);
+  writeLine(`  ${'Squad'.padEnd(16)} ${'Status'.padEnd(10)} ${'GCP Config'.padEnd(20)} Key`);
+  writeLine(`  ${'-'.repeat(70)}`);
 
-  for (const squad of allSquads) {
+  for (const squad of squads) {
     const key = keyPath(squad);
-    const perms = SQUAD_PERMISSIONS[squad];
+    const perms = getSquadPermissions(squad);
     const hasKey = existsSync(key);
     const status = hasKey ? `${colors.green}active${RESET}` : `${colors.dim}none${RESET}  `;
-    const roles = perms.roles.map(r => r.split('/')[1]).join(', ');
+    const config = perms ? `${perms.roles.length} roles` : `${colors.dim}not configured${RESET}`;
 
-    writeLine(`  ${squad.padEnd(16)} ${status} ${colors.dim}${roles.slice(0, 38).padEnd(40)}${RESET} ${hasKey ? '~/.squads/secrets/' + basename(key) : ''}`);
-  }
-
-  // Show squads without permission mapping
-  if (squadsDir) {
-    const dirs = readdirSync(squadsDir).filter(d =>
-      existsSync(join(squadsDir, d, 'SQUAD.md')) && !SQUAD_PERMISSIONS[d]
-    );
-    if (dirs.length > 0) {
-      writeLine();
-      writeLine(`  ${colors.dim}Squads without permission mapping: ${dirs.join(', ')}${RESET}`);
-      writeLine(`  ${colors.dim}Add to SQUAD_PERMISSIONS in credentials.ts if they need GCP access.${RESET}`);
-    }
+    writeLine(`  ${squad.padEnd(16)} ${status} ${config.padEnd(20)} ${hasKey ? '~/.squads/secrets/' + basename(key) : ''}`);
   }
 
   writeLine();
@@ -298,7 +296,22 @@ async function revokeCredential(squad: string): Promise<void> {
 }
 
 async function createAll(opts: { force?: boolean }): Promise<void> {
-  const squads = Object.keys(SQUAD_PERMISSIONS).sort();
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) {
+    writeLine(`  ${icons.error} ${colors.red}No squads directory found.${RESET}`);
+    return;
+  }
+
+  // Discover squads with credentials config
+  const squads = readdirSync(squadsDir)
+    .filter(d => existsSync(join(squadsDir, d, 'SQUAD.md')) && getSquadPermissions(d) !== null)
+    .sort();
+
+  if (squads.length === 0) {
+    writeLine(`  ${colors.dim}No squads have credentials configured in SQUAD.md.${RESET}`);
+    return;
+  }
+
   writeLine(`  ${bold}Creating credentials for ${squads.length} squads${RESET}`);
   writeLine();
 
@@ -327,7 +340,7 @@ export function registerCredentialsCommand(program: Command): void {
 
   creds
     .command('create-all')
-    .description('Create credentials for all squads with permission mappings')
+    .description('Create credentials for all squads with GCP config in SQUAD.md')
     .option('--force', 'Recreate even if credentials exist')
     .action(async (opts) => {
       await createAll(opts);
