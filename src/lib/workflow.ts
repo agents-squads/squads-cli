@@ -205,7 +205,9 @@ ${squadContext}
     });
 
     child.on('error', (err) => { clearTimeout(timeout); resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`); });
-    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after 8 minutes`); }, 8 * 60 * 1000);
+    // Role-based timeout: workers need time to create PRs/files, leads need time to plan
+    const timeoutMinutes = role === 'scanner' ? 10 : role === 'verifier' ? 15 : 30;
+    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
   });
 }
 
