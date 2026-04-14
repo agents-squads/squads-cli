@@ -194,10 +194,10 @@ describe('E2E: First-Run User Journey (#488)', () => {
       (f) => existsSync(join(squadsDir, f, 'SQUAD.md'))
     );
 
-    // Must create 4 core squads + 1 demo squad
+    // Must create exactly 5 squads: 4 core + demo starter squad
     expect(squads.sort()).toEqual(['company', 'demo', 'intelligence', 'product', 'research']);
 
-    // Must create 15 agent files total: 14 core + 1 demo hello-world
+    // Must create 15 agent files total: 5 company + 3 research + 3 intelligence + 3 product + 1 demo (excluding SQUAD.md)
     let agentCount = 0;
     for (const squad of squads) {
       const files = readdirSync(join(squadsDir, squad)).filter(
