@@ -619,11 +619,11 @@ export async function runLeadMode(
     ? readFileSync(leadTemplatePath, 'utf-8')
     : 'You are the Lead of the {{SQUAD_NAME}} squad. Plan and delegate work.';
   const prompt = leadTemplate
-    .replace('{{SQUAD_NAME}}', squad.name)
-    .replace('{{MISSION}}', squad.mission || 'Execute squad operations efficiently.')
-    .replace('{{AGENT_LIST}}', agentList)
-    .replace('{{AGENT_PATHS}}', agentPaths)
-    .replace('{{LEAD_PROTOCOL}}', leadProtocol);
+    .replaceAll('{{SQUAD_NAME}}', squad.name)
+    .replaceAll('{{MISSION}}', squad.mission || 'Execute squad operations efficiently.')
+    .replaceAll('{{AGENT_LIST}}', agentList)
+    .replaceAll('{{AGENT_PATHS}}', agentPaths)
+    .replaceAll('{{LEAD_PROTOCOL}}', leadProtocol);
 
   // Determine provider
   const provider = options.provider || squad?.providers?.default || 'anthropic';

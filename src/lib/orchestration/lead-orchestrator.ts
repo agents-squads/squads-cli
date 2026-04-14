@@ -164,7 +164,7 @@ export function buildLeadPrompt(config: {
   return template
     .replace(/\{\{LEAD\}\}/g, config.lead)
     .replace(/\{\{SQUAD\}\}/g, config.squad)
-    .replace('{{WORKERS}}', workers)
+    .replace(/\{\{WORKERS\}\}/g, workers)
     .trim();
 }
 
