@@ -311,7 +311,6 @@ export const Events = {
   // Commands
   CLI_RUN: 'cli.run',
   CLI_RUN_COMPLETE: 'cli.run.complete',
-  CLI_LOG: 'cli.log',
   CLI_STATUS: 'cli.status',
   CLI_DASHBOARD: 'cli.dashboard',
   CLI_WORKERS: 'cli.workers',
@@ -319,6 +318,7 @@ export const Events = {
   CLI_CONTEXT: 'cli.context',
   CLI_COST: 'cli.cost',
   CLI_EXEC: 'cli.exec',
+  CLI_LOG: 'cli.log',
   CLI_BASELINE: 'cli.baseline',
 
   // Goals
@@ -360,6 +360,9 @@ export const Events = {
 
   // Cycle Sync
   CLI_SYNC_CYCLE: 'cli.sync.cycle',
+
+  // User outreach
+  CLI_EMAIL_CAPTURED: 'cli.email_captured',
 
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',
