@@ -31,7 +31,7 @@ import { reportExecutionStart, reportConversationResult, pushCognitionSignal } f
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { statSync } from 'fs';
-import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
+import { runPostEvaluation, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
 
 // ── Prerequisites check (#675) ──────────────────────────────────────
 
@@ -52,19 +52,7 @@ function checkPrerequisites(): void {
     process.exit(1);
   }
 
-  // Check 2: Claude CLI available
-  try {
-    execSync('which claude', { stdio: 'pipe' });
-  } catch {
-    writeLine();
-    writeLine(`  ${icons.error} ${colors.red}Claude CLI not found${RESET}`);
-    writeLine(`  ${colors.dim}squads-cli requires the Claude Code CLI to execute agents.${RESET}`);
-    writeLine();
-    writeLine(`  ${colors.cyan}Install:${RESET} npm install -g @anthropic-ai/claude-code`);
-    writeLine(`  ${colors.dim}More info: https://docs.anthropic.com/en/docs/claude-code${RESET}`);
-    writeLine();
-    process.exit(1);
-  }
+  // Claude CLI check is handled by preflightExecutorCheck later (provider-aware)
 }
 
 // ── Schedule hint (#695) ─────────────────────────────────────────────
@@ -76,8 +64,7 @@ function showScheduleHint(squadName: string): void {
   if (existsSync(hintFile)) return;
 
   writeLine(`  ${colors.dim}Tip: Run this daily for best results. Set up a schedule:${RESET}`);
-  writeLine(`  ${colors.dim}  squads run ${squadName} --cron "0 9 * * *"${RESET}`);
-  writeLine(`  ${colors.dim}  # or: crontab -e → 0 9 * * * cd /path && npx squads run ${squadName}${RESET}`);
+  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadName}${RESET}`);
   writeLine();
 
   try {
