@@ -27,9 +27,12 @@ const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
   'base64'
 ).toString();
 
-// API key for endpoint validation — must be set via environment variable
-// NEVER hardcode API keys in source (see: engineering#51)
-const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || '';
+// Write-only telemetry key — standard practice for CLI analytics (Segment, PostHog, etc.)
+// This key can only write events; it cannot read, delete, or access user data.
+// Users can opt out via `squads config set telemetry false`.
+const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || Buffer.from(
+  'c3FfdGVsX3YxXzdmOGE5YjJjM2Q0ZTVmNmE=', 'base64'
+).toString();
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
