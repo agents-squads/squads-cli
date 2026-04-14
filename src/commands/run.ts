@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
 import {
   findSquadsDir,
   loadSquad,
@@ -29,12 +30,55 @@ import { reportExecutionStart, reportConversationResult, pushCognitionSignal } f
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { statSync } from 'fs';
-import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
+import { runPostEvaluation, runLeadMode, runSequentialMode } from '../lib/run-modes.js';
+
+// ── Prerequisites check (#675) ──────────────────────────────────────
+
+function checkPrerequisites(): void {
+  // Skip in CI, tests, or when explicitly disabled
+  if (process.env.SQUADS_SKIP_CHECKS === '1' || process.env.CI || process.env.VITEST) return;
+
+  // Check 1: Node >= 18
+  const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
+  if (nodeVersion < 18) {
+    writeLine();
+    writeLine(`  ${icons.error} ${colors.red}Node.js ${process.versions.node} is not supported${RESET}`);
+    writeLine(`  ${colors.dim}squads-cli requires Node.js 18 or later.${RESET}`);
+    writeLine();
+    writeLine(`  ${colors.cyan}Install:${RESET} https://nodejs.org/en/download`);
+    writeLine(`  ${colors.dim}Or use nvm: nvm install 18 && nvm use 18${RESET}`);
+    writeLine();
+    process.exit(1);
+  }
+
+  // Claude CLI check is handled by preflightExecutorCheck later (provider-aware)
+}
+
+// ── Schedule hint (#695) ─────────────────────────────────────────────
+
+function showScheduleHint(squadName: string): void {
+  const hintDir = join(homedir(), '.squads-cli');
+  const hintFile = join(hintDir, 'schedule-hint-shown');
+
+  if (existsSync(hintFile)) return;
+
+  writeLine(`  ${colors.dim}Tip: Run this daily for best results. Set up a schedule:${RESET}`);
+  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadName}${RESET}`);
+  writeLine();
+
+  try {
+    if (!existsSync(hintDir)) mkdirSync(hintDir, { recursive: true });
+    writeFileSync(hintFile, new Date().toISOString());
+  } catch { /* best effort */ }
+}
 
 export async function runCommand(
   target: string | null,
   options: RunOptions
 ): Promise<void> {
+  // Prerequisites check: Node >= 18, Claude CLI available (#675)
+  checkPrerequisites();
+
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {
@@ -290,9 +334,23 @@ export async function runCommand(
     return;
   }
 
-  // MODE 1: Autopilot — no target means run all squads continuously
+  // MODE 1: No target — list available squads (#694)
   if (!target) {
-    await runAutopilot(squadsDir, options);
+    const squads = listSquads(squadsDir);
+    writeLine();
+    if (squads.length === 0) {
+      writeLine(`  ${colors.dim}No squads found. Run \`squads init\` to create one.${RESET}`);
+    } else {
+      writeLine(`  ${bold}Available squads:${RESET}`);
+      for (const name of squads) {
+        const squad = loadSquad(name);
+        const mission = squad?.mission ? ` ${colors.dim}— ${squad.mission}${RESET}` : '';
+        writeLine(`    ${colors.cyan}${name.padEnd(14)}${RESET}${mission}`);
+      }
+      writeLine();
+      writeLine(`  ${colors.dim}Usage: squads run <squad>${RESET}`);
+    }
+    writeLine();
     return;
   }
 
@@ -347,6 +405,8 @@ export async function runCommand(
       await runSquad(squad, squadsDir, options);
       // Post-run COO evaluation (default on, --no-eval to skip)
       await runPostEvaluation([squad.name], options);
+      // Show scheduling hint on first few runs (#695)
+      showScheduleHint(squad.name);
     } catch (err) {
       hadError = true;
       throw err;
