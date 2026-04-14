@@ -33,16 +33,22 @@ describe('services commands', () => {
   let tmpDir: string;
   let savedHome: string | undefined;
 
+  let savedCompose: string | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
     tmpDir = mkdtempSync(join(tmpdir(), 'svc-'));
     savedHome = process.env.HOME;
+    savedCompose = process.env.SQUADS_COMPOSE_FILE;
+    delete process.env.SQUADS_COMPOSE_FILE;
     mockTier.mockResolvedValue(tier1);
     mockExec.mockImplementation(() => { throw new Error('not found'); });
   });
 
   afterEach(() => {
     process.env.HOME = savedHome;
+    if (savedCompose) process.env.SQUADS_COMPOSE_FILE = savedCompose;
+    else delete process.env.SQUADS_COMPOSE_FILE;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -71,19 +77,18 @@ describe('services commands', () => {
       expect(output()).toMatch(/docker-compose\.yml not found/i);
     });
 
-    it('starts services with real compose file', async () => {
-      const dir = join(tmpDir, 'agents-squads', 'engineering', 'docker');
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'docker-compose.yml'), 'version: "3"\nservices:\n  pg:\n    image: postgres\n');
-      process.env.HOME = tmpDir;
+    it('starts services with compose file via env var', async () => {
+      const composePath = join(tmpDir, 'docker-compose.yml');
+      writeFileSync(composePath, 'version: "3"\nservices:\n  pg:\n    image: postgres\n');
+      process.env.SQUADS_COMPOSE_FILE = composePath;
       mockExec.mockImplementation((cmd: unknown) => {
         const c = String(cmd);
         if (c.includes('docker --version') || c.includes('docker compose version') || c.includes('up')) return '' as never;
+        if (c.includes('docker compose ps')) return 'running' as never;
         throw new Error('not found');
       });
-      mockTier.mockResolvedValue(tier2);
       await prog().parseAsync(['node', 'squads', 'services', 'up']);
-      expect(output()).toContain('Tier 2 active');
+      expect(output()).toContain('Starting services');
     });
   });
 
@@ -96,17 +101,20 @@ describe('services commands', () => {
   });
 
   describe('services status', () => {
-    it('shows no containers when docker ps fails', async () => {
+    it('shows Docker not installed when unavailable', async () => {
       await prog().parseAsync(['node', 'squads', 'services', 'status']);
-      expect(output()).toMatch(/no docker containers/i);
+      expect(output()).toMatch(/Docker not installed/i);
     });
 
     it('displays container names from docker ps', async () => {
       mockTier.mockResolvedValue(tier2);
       mockExec.mockImplementation((cmd: unknown) => {
-        if (String(cmd).includes('docker ps')) return 'squads-pg\tUp 5m (healthy)\t5432/tcp' as never;
+        const c = String(cmd);
+        if (c.includes('docker --version')) return 'Docker 24.0' as never;
+        if (c.includes('docker ps')) return 'squads-pg\tUp 5m (healthy)\t5432/tcp' as never;
         throw new Error('not found');
       });
+      process.env.HOME = tmpDir;
       await prog().parseAsync(['node', 'squads', 'services', 'status']);
       expect(output()).toContain('squads-pg');
     });
@@ -116,9 +124,10 @@ describe('services commands', () => {
     it('registers up/down/status with correct options', () => {
       const svc = prog().commands.find(c => c.name() === 'services')!;
       expect(svc.commands.map(c => c.name())).toEqual(expect.arrayContaining(['up', 'down', 'status']));
-      const upOpts = svc.commands.find(c => c.name() === 'up')!.options.map(o => o.long);
-      expect(upOpts).toContain('--webhooks');
-      expect(upOpts).toContain('--telemetry');
+      for (const cmd of ['up', 'down', 'status']) {
+        const opts = svc.commands.find(c => c.name() === cmd)!.options.map(o => o.long);
+        expect(opts).toContain('--file');
+      }
     });
   });
 });
