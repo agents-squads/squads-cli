@@ -42,6 +42,7 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
+import { DEFAULT_TIMEOUT_MINUTES } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { getBotGhEnv } from './github.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
@@ -205,8 +206,9 @@ ${squadContext}
     });
 
     child.on('error', (err) => { clearTimeout(timeout); resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`); });
-    // Role-based timeout: workers need time to create PRs/files, leads need time to plan
-    const timeoutMinutes = role === 'scanner' ? 10 : role === 'verifier' ? 15 : 30;
+    // Timeout: configurable via env var, defaults from run-types.ts
+    const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : DEFAULT_TIMEOUT_MINUTES;
     const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
   });
 }
