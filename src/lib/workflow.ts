@@ -37,6 +37,7 @@ import {
 import {
   type ContextRole,
   gatherSquadContext,
+  resolveContextRoleFromAgent,
 } from './run-context.js';
 import {
   buildAgentEnv,
@@ -296,7 +297,8 @@ export async function runConversation(
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
   // Build squad context once (shared by all agents)
-  const contextRole: ContextRole = lead.name.includes('company-lead') ? 'coo' : 'lead';
+  // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
+  const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
   const squadContext = gatherSquadContext(squad.name, lead.name, {
     agentPath: lead.path, role: contextRole,
   });

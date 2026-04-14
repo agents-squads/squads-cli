@@ -9,7 +9,11 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, watch } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export interface WorkerEvent {
   type: 'started' | 'completed' | 'failed' | 'output';
@@ -138,7 +142,8 @@ tmux kill-session -t ${config.sessionName} 2>/dev/null
 }
 
 /**
- * Build the lead agent prompt that includes orchestration capabilities
+ * Build the lead agent prompt that includes orchestration capabilities.
+ * Loads prompt from templates/prompts/orchestrator.md (no prompts in TypeScript — CLAUDE.md rule).
  */
 export function buildLeadPrompt(config: {
   squad: string;
@@ -146,19 +151,21 @@ export function buildLeadPrompt(config: {
   projectRoot: string;
   agents: string[];
 }): string {
-  // Keep prompt short - Claude will read detailed instructions from files
-  return `You are ${config.lead}, orchestrating the ${config.squad} squad.
+  const workers = config.agents.slice(0, 5).join(', ') + (config.agents.length > 5 ? ` (+${config.agents.length - 5} more)` : '');
 
-Read .agents/squads/${config.squad}/SQUAD.md for goals.
-Read .agents/squads/${config.squad}/${config.lead}.md for your instructions.
+  // Template resolution: dist/templates (built) or repo-root/templates (dev/test)
+  const distPath = join(__dirname, '..', '..', 'templates', 'prompts', 'orchestrator.md');
+  const rootPath = join(__dirname, '..', '..', '..', 'templates', 'prompts', 'orchestrator.md');
+  const templatePath = existsSync(distPath) ? distPath : rootPath;
+  const template = existsSync(templatePath)
+    ? readFileSync(templatePath, 'utf-8')
+    : 'You are {{LEAD}}, orchestrating the {{SQUAD}} squad. Workers: {{WORKERS}}';
 
-Workers: ${config.agents.slice(0, 5).join(', ')}${config.agents.length > 5 ? ` (+${config.agents.length - 5} more)` : ''}
-
-To spawn workers: squads run ${config.squad}/<agent> --execute --background
-Check events: ls .agents/events/pending/
-Review output: cat .agents/memory/${config.squad}/<agent>/state.md
-
-When done: git add .agents/ && git commit -m "feat(${config.squad}): orchestration complete" && git push && /exit`.trim();
+  return template
+    .replace(/\{\{LEAD\}\}/g, config.lead)
+    .replace(/\{\{SQUAD\}\}/g, config.squad)
+    .replace('{{WORKERS}}', workers)
+    .trim();
 }
 
 /**

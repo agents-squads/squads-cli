@@ -55,6 +55,7 @@ vi.mock('../../src/lib/observability.js', () => ({
 // Mock run-context to avoid file system reads in unit tests
 vi.mock('../../src/lib/run-context.js', () => ({
   gatherSquadContext: vi.fn().mockReturnValue(''),
+  resolveContextRoleFromAgent: vi.fn().mockReturnValue('lead'),
 }));
 
 // Mock conversation to keep tests fast

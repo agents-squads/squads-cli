@@ -327,7 +327,7 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
     if (normalized === r) return r;
   }
   // COO is a lead with expanded budget
-  if (normalized === 'coo') return 'coo';
+  if (normalized === 'coo' || normalized === 'company-lead') return 'coo';
 
   // Deterministic mapping from role text. Avoids brittle regex coupling.
   const scannerTokens = ['scan', 'monitor', 'detect', 'find', 'opportun', 'scout', 'gap', 'bottleneck'];
