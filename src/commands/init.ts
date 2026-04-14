@@ -752,7 +752,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     const gitignoreEntry = '.squads/config.yml';
     let gitignoreContent = '';
     try { gitignoreContent = await fs.readFile(gitignorePath, 'utf-8'); } catch { /* no .gitignore yet */ }
-    if (!gitignoreContent.includes(gitignoreEntry)) {
+    if (!gitignoreContent.split('\n').some(line => line.trim() === gitignoreEntry)) {
       const separator = gitignoreContent.length > 0 && !gitignoreContent.endsWith('\n') ? '\n' : '';
       const section = gitignoreContent.length > 0
         ? `${separator}\n# squads-cli (per-user config)\n${gitignoreEntry}\n`

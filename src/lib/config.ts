@@ -56,21 +56,23 @@ function parseSimpleYaml(content: string): Record<string, string> {
     // Skip empty lines, comments, and comment-only lines
     if (!trimmed || trimmed.startsWith('#')) continue;
     // Match `key: value` — colon must be followed by a space (YAML spec)
-    const match = trimmed.match(/^([a-z_][a-z0-9_]*):\s+(.*)/);
+    const match = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s+(.*)/);
     if (!match) continue;
-    const key = match[1];
+    const key = match[1].toLowerCase();
     let value = match[2];
-    // Strip inline comments (but not inside quoted strings)
-    if (!value.startsWith('"') && !value.startsWith("'")) {
+    // Strip inline comments — handle both unquoted and quoted values
+    // For quoted: strip comment after closing quote. For unquoted: strip at #
+    if (value.startsWith('"') || value.startsWith("'")) {
+      const quote = value[0];
+      const closeIdx = value.indexOf(quote, 1);
+      if (closeIdx > 0) {
+        value = value.slice(1, closeIdx);
+      }
+    } else {
       const commentIdx = value.indexOf('#');
-      if (commentIdx > 0) {
+      if (commentIdx >= 0) {
         value = value.slice(0, commentIdx).trim();
       }
-    }
-    // Strip surrounding quotes
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
     }
     result[key] = value;
   }

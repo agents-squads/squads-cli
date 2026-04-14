@@ -27,14 +27,9 @@ function exec(cmd: string, opts?: { cwd?: string }): string | null {
 }
 
 function findComposeFile(): string | null {
-  // 1. Explicit env var (highest priority, checked live — not cached)
-  if (process.env.SQUADS_COMPOSE_FILE && existsSync(process.env.SQUADS_COMPOSE_FILE)) {
-    return process.env.SQUADS_COMPOSE_FILE;
-  }
-
-  // 2. Project config file (.squads/config.yml)
+  // 1. Config (includes env var override via loadProjectConfig resolution order)
   const configCompose = loadProjectConfig().compose_file;
-  if (configCompose && !process.env.SQUADS_COMPOSE_FILE && existsSync(configCompose)) {
+  if (configCompose && existsSync(configCompose)) {
     return configCompose;
   }
 
