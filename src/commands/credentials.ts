@@ -7,7 +7,7 @@
 
 import { Command } from 'commander';
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, renameSync } from 'fs';
 import { join, basename } from 'path';
 import { findSquadsDir } from '../lib/squad-parser.js';
 import { colors, bold, RESET, writeLine, icons } from '../lib/terminal.js';
@@ -203,7 +203,6 @@ async function rotateCredential(squad: string): Promise<void> {
 
   // Replace old key file
   unlinkSync(key);
-  const { renameSync } = await import('fs');
   renameSync(tmpKey, key);
 
   // Delete old key from GCP
@@ -323,11 +322,7 @@ export function registerCredentialsCommand(program: Command): void {
     .description('Create a service account and key for a squad')
     .option('--force', 'Recreate even if credential exists')
     .action(async (squad: string, opts) => {
-      if (squad === '--all') {
-        await createAll(opts);
-      } else {
-        await createCredential(squad, opts);
-      }
+      await createCredential(squad, opts);
     });
 
   creds
