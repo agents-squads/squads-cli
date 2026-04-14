@@ -36,8 +36,8 @@ import { runPostEvaluation, runAutopilot, runLeadMode, runSequentialMode } from 
 // ── Prerequisites check (#675) ──────────────────────────────────────
 
 function checkPrerequisites(): void {
-  // Allow skipping for CI/CD or advanced users
-  if (process.env.SQUADS_SKIP_CHECKS === '1') return;
+  // Skip in CI, tests, or when explicitly disabled
+  if (process.env.SQUADS_SKIP_CHECKS === '1' || process.env.CI || process.env.VITEST) return;
 
   // Check 1: Node >= 18
   const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
