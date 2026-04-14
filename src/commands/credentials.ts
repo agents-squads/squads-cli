@@ -28,32 +28,20 @@ interface SquadPermissions {
 }
 
 /**
- * Read credentials config from SQUAD.md `credentials.gcp` field.
- * Falls back to empty permissions if not defined.
+ * Parse GCP credentials config from SQUAD.md content.
+ * Exported for testing. Looks for a credentials.gcp block with roles and apis.
  */
-function getSquadPermissions(squadName: string): SquadPermissions | null {
-  const squad = loadSquad(squadName);
-  if (!squad) return null;
-
-  // Read raw SQUAD.md to parse credentials section
-  const squadsDir = findSquadsDir();
-  if (!squadsDir) return null;
-
-  const squadMd = join(squadsDir, squadName, 'SQUAD.md');
-  if (!existsSync(squadMd)) return null;
-
-  const content = readFileSync(squadMd, 'utf-8');
-
-  // Parse YAML-like credentials block from SQUAD.md frontmatter or body
+export function parseGcpCredentials(content: string): SquadPermissions | null {
   const roles: string[] = [];
   const apis: string[] = [];
 
-  // Match roles: [role1, role2] or roles:\n  - role1\n  - role2
+  // Match: gcp:\n  roles: [role1, role2]
   const rolesMatch = content.match(/gcp:\s*\n\s*roles:\s*\[([^\]]+)\]/);
   if (rolesMatch) {
     roles.push(...rolesMatch[1].split(',').map(r => r.trim().replace(/['"]/g, '')));
   }
 
+  // Match: gcp:\n  ...\n  apis: [api1, api2]
   const apisMatch = content.match(/gcp:\s*\n(?:.*\n)*?\s*apis:\s*\[([^\]]+)\]/);
   if (apisMatch) {
     apis.push(...apisMatch[1].split(',').map(a => a.trim().replace(/['"]/g, '')));
@@ -66,6 +54,23 @@ function getSquadPermissions(squadName: string): SquadPermissions | null {
     apis,
     description: `${roles.length} roles, ${apis.length} APIs`,
   };
+}
+
+/**
+ * Read credentials config from SQUAD.md `credentials.gcp` field.
+ * Falls back to empty permissions if not defined.
+ */
+function getSquadPermissions(squadName: string): SquadPermissions | null {
+  const squad = loadSquad(squadName);
+  if (!squad) return null;
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return null;
+
+  const squadMd = join(squadsDir, squadName, 'SQUAD.md');
+  if (!existsSync(squadMd)) return null;
+
+  return parseGcpCredentials(readFileSync(squadMd, 'utf-8'));
 }
 
 const SECRETS_DIR = join(homedir(), '.squads', 'secrets');
