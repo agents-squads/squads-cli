@@ -19,6 +19,7 @@ import { execSync } from 'child_process';
 import { detectTier } from '../../src/lib/tier-detect.js';
 import { writeLine } from '../../src/lib/terminal.js';
 import { registerServicesCommands } from '../../src/commands/services.js';
+import { resetConfigCache } from '../../src/lib/config.js';
 
 const mockExec = vi.mocked(execSync);
 const mockTier = vi.mocked(detectTier);
@@ -37,6 +38,7 @@ describe('services commands', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetConfigCache();
     tmpDir = mkdtempSync(join(tmpdir(), 'svc-'));
     savedHome = process.env.HOME;
     savedCompose = process.env.SQUADS_COMPOSE_FILE;
