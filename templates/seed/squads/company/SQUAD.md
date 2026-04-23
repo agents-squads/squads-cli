@@ -31,6 +31,7 @@ Orchestrates all squads, evaluates outputs, and closes the feedback loop. Reads 
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: audit all squads, assess coverage against `BUSINESS_BRIEF.md`, identify the top 3 org-level priorities, produce a baseline company report
 - [ ] Evaluate squad outputs against the business focus in `BUSINESS_BRIEF.md`
 - [ ] Write feedback per squad: what was valuable, what was noise, what to prioritize next
 - [ ] Ensure no duplicate work across squads (check active-work.md)

@@ -20,6 +20,7 @@ Deep research on the market, competitors, and opportunities described in `BUSINE
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: baseline research topics covered, identify gaps against `BUSINESS_BRIEF.md`, and set the first research agenda with top 3 priorities
 - [ ] Research the competitive landscape for our business (see `BUSINESS_BRIEF.md`)
 - [ ] Produce a research report with sourced findings and confidence levels
 - [ ] Identify the top 3 opportunities and top 3 threats, ranked by impact

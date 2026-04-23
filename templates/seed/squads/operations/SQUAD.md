@@ -28,6 +28,7 @@ Runs the business. Tracks goals, manages finances, and ensures the organization 
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: audit current goals, finances, and operational rhythms against `BUSINESS_BRIEF.md` — produce a baseline ops report with top 3 priorities and at-risk items
 - [ ] Establish daily operational rhythm
 - [ ] Track business objectives and KPIs
 - [ ] Monitor financial health (revenue, expenses, runway)
