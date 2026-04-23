@@ -84,7 +84,7 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
     growth: {
       label: 'Growth',
       description: 'Owns the funnel, runs experiments',
-      squads: [getGrowthSquad()],
+      squads: [getMarketingSquad(), getGrowthSquad()],
     },
     operations: {
       label: 'Operations',
@@ -224,6 +224,9 @@ function getGrowthSquad(): SquadConfig {
     ],
     memoryFiles: [
       ['.agents/memory/growth/growth-lead/state.md', 'memory/growth/growth-lead/state.md'],
+      ['.agents/memory/growth/funnel-analyst/state.md', 'memory/growth/funnel-analyst/state.md'],
+      ['.agents/memory/growth/experiment-runner/state.md', 'memory/growth/experiment-runner/state.md'],
+      ['.agents/memory/growth/growth-critic/state.md', 'memory/growth/growth-critic/state.md'],
     ],
   };
 }
@@ -544,12 +547,26 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (options.pack && options.pack.length > 0) {
     const additionalSquads: SquadConfig[] = [];
     for (const pack of options.pack) {
-      if (pack === 'engineering') additionalSquads.push(getEngineeringSquad());
-      if (pack === 'marketing') additionalSquads.push(getMarketingSquad());
-      if (pack === 'growth') additionalSquads.push(getGrowthSquad());
-      if (pack === 'operations') additionalSquads.push(getOperationsSquad());
+      if (pack === 'engineering') {
+        additionalSquads.push(getEngineeringSquad());
+        selectedUseCase = 'engineering';
+      }
+      if (pack === 'marketing') {
+        additionalSquads.push(getMarketingSquad());
+        selectedUseCase = 'marketing';
+      }
+      if (pack === 'growth') {
+        // growth squad depends on marketing — include both
+        additionalSquads.push(getMarketingSquad(), getGrowthSquad());
+        selectedUseCase = 'growth';
+      }
+      if (pack === 'operations') {
+        additionalSquads.push(getOperationsSquad());
+        selectedUseCase = 'operations';
+      }
       if (pack === 'all') {
         additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getGrowthSquad(), getOperationsSquad());
+        selectedUseCase = 'full-company';
       }
     }
     // De-duplicate squads by name
