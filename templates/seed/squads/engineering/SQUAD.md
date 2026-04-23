@@ -31,6 +31,7 @@ Ships code. Solves issues, reviews PRs, and maintains code quality.
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: audit repo state (open issues, test coverage, CI health, tech debt, security surface) against `BUSINESS_BRIEF.md` and produce a baseline engineering report with top 3 priorities
 - [ ] Solve open GitHub issues with PRs
 - [ ] Maintain code quality through adversarial review
 - [ ] Keep test coverage high

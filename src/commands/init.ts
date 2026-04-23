@@ -45,7 +45,7 @@ export interface InitOptions {
 
 type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
 
-type UseCase = 'engineering' | 'marketing' | 'operations' | 'full-company' | 'custom';
+type UseCase = 'engineering' | 'marketing' | 'growth' | 'operations' | 'full-company' | 'custom';
 
 /**
  * Use-case configuration: squads, files, memory dirs, and display info
@@ -81,6 +81,11 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
       description: 'Grows audience',
       squads: [getMarketingSquad()],
     },
+    growth: {
+      label: 'Growth',
+      description: 'Owns the funnel, runs experiments',
+      squads: [getGrowthSquad()],
+    },
     operations: {
       label: 'Operations',
       description: 'Runs the business',
@@ -88,8 +93,8 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
     },
     'full-company': {
       label: 'Full Company',
-      description: 'Enterprise — Engineering + Marketing + Operations',
-      squads: [getEngineeringSquad(), getMarketingSquad(), getOperationsSquad()],
+      description: 'Enterprise — Engineering + Marketing + Growth + Operations',
+      squads: [getEngineeringSquad(), getMarketingSquad(), getGrowthSquad(), getOperationsSquad()],
     },
     custom: {
       label: 'Custom',
@@ -193,6 +198,32 @@ function getOperationsSquad(): SquadConfig {
     ],
     memoryFiles: [
       ['.agents/memory/operations/ops-lead/state.md', 'memory/operations/ops-lead/state.md'],
+    ],
+  };
+}
+
+function getGrowthSquad(): SquadConfig {
+  return {
+    name: 'growth',
+    description: 'Owns the funnel — measures AARRR, runs experiments, kills losers',
+    agentCount: 4,
+    agentSummary: 'growth-lead, funnel-analyst, experiment-runner, growth-critic',
+    dirs: [
+      '.agents/squads/growth',
+      '.agents/memory/growth/growth-lead',
+      '.agents/memory/growth/funnel-analyst',
+      '.agents/memory/growth/experiment-runner',
+      '.agents/memory/growth/growth-critic',
+    ],
+    files: [
+      ['.agents/squads/growth/SQUAD.md', 'squads/growth/SQUAD.md'],
+      ['.agents/squads/growth/growth-lead.md', 'squads/growth/growth-lead.md'],
+      ['.agents/squads/growth/funnel-analyst.md', 'squads/growth/funnel-analyst.md'],
+      ['.agents/squads/growth/experiment-runner.md', 'squads/growth/experiment-runner.md'],
+      ['.agents/squads/growth/growth-critic.md', 'squads/growth/growth-critic.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/growth/growth-lead/state.md', 'memory/growth/growth-lead/state.md'],
     ],
   };
 }
@@ -482,7 +513,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       writeLine();
       writeLine(`  ${chalk.cyan('1)')} Core only ${chalk.dim('— intelligence, research, product, company')} ${chalk.green('(recommended)')}`);
       writeLine(`  ${chalk.cyan('2)')} + Engineering ${chalk.dim('— issue-solver, code-reviewer, test-writer')}`);
-      writeLine(`  ${chalk.cyan('3)')} + All packs ${chalk.dim('— engineering, marketing, operations')}`);
+      writeLine(`  ${chalk.cyan('3)')} + All packs ${chalk.dim('— engineering, marketing, growth, operations')}`);
       writeLine();
 
       const rl = createInterface({
@@ -515,9 +546,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
     for (const pack of options.pack) {
       if (pack === 'engineering') additionalSquads.push(getEngineeringSquad());
       if (pack === 'marketing') additionalSquads.push(getMarketingSquad());
+      if (pack === 'growth') additionalSquads.push(getGrowthSquad());
       if (pack === 'operations') additionalSquads.push(getOperationsSquad());
       if (pack === 'all') {
-        additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getOperationsSquad());
+        additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getGrowthSquad(), getOperationsSquad());
       }
     }
     // De-duplicate squads by name
@@ -903,6 +935,8 @@ function getFirstRunCommand(useCase: UseCase): { squad: string; agent: string } 
       return { squad: 'engineering', agent: 'issue-solver' };
     case 'marketing':
       return { squad: 'marketing', agent: 'content-drafter' };
+    case 'growth':
+      return { squad: 'growth', agent: 'growth-lead' };
     case 'operations':
       return { squad: 'operations', agent: 'ops-lead' };
     case 'full-company':

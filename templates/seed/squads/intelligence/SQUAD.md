@@ -20,6 +20,7 @@ Strategic synthesis. Turns raw information into what you know, what you don't kn
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: baseline what we know vs don't know from `BUSINESS_BRIEF.md`, map intelligence gaps, set the first Know/Don't Know/Playbook brief
 - [ ] Produce a Know / Don't Know / Playbook brief for the business focus in `BUSINESS_BRIEF.md`
 - [ ] Identify the top 3 blind spots — what we're assuming without evidence
 - [ ] Map the competitive landscape with sourced facts, not opinions
