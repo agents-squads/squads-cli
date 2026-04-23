@@ -1,15 +1,23 @@
 /**
- * Squad Conversation Workflow — Orchestrates multi-agent conversations.
+ * Squad Workflow — Plan → Execute → Review → Verify
  *
- * Lead briefs → scanners discover → workers execute → lead reviews →
- * loop until convergence or budget exhausted.
+ * Architecture:
+ * 1. PLAN: Lead sees goals + feedback + budget → produces task assignments
+ * 2. EXECUTE: Workers run independently in parallel, each with their task
+ * 3. REVIEW: Lead evaluates worker output, merges PRs, updates goals
+ * 4. VERIFY: Verifier checks deliverables against quality gate
  *
- * CLI manages turns (deterministic), lead manages content (creative).
+ * Workers don't share a conversation — they get their task + squad context.
+ * Token budget replaces turn limits. Lead plans within the budget.
  */
 
-import { join } from 'path';
-import { existsSync, writeFileSync, mkdirSync } from 'fs';;
-import { execSync, exec } from 'child_process';;
+import { join, dirname } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 import {
   type AgentRole,
@@ -29,201 +37,186 @@ import {
 import {
   type ContextRole,
   gatherSquadContext,
+  resolveContextRoleFromAgent,
 } from './run-context.js';
+import {
+  buildAgentEnv,
+  resolveGuardrailSettings,
+} from './execution-engine.js';
+import { DEFAULT_TIMEOUT_MINUTES } from './run-types.js';
+import { type ExecutionContext } from './run-types.js';
+import { loadProjectConfig } from './config.js';
+import { getBotGhEnv } from './github.js';
+import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
+import { colors, RESET, writeLine } from './terminal.js';
+import {
+  logObservability,
+  snapshotGoals,
+  diffGoals,
+  type ObservabilityRecord,
+} from './observability.js';
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
+export type CycleFocus = 'create' | 'resolve' | 'review' | 'ship' | 'research' | 'cost';
+
 export interface ConversationOptions {
-  /** Override lead's briefing with a founder directive */
   task?: string;
-  /** Maximum turns before stopping (default: 20) */
   maxTurns?: number;
-  /** Cost ceiling in USD (default: 25) */
   costCeiling?: number;
-  /** Verbose logging */
   verbose?: boolean;
-  /** Model override for all agents */
   model?: string;
+  /** Token budget for the squad (output tokens). Default: 50K */
+  tokenBudget?: number;
+  /** Cycle focus — changes the lead's planning behavior */
+  focus?: CycleFocus;
 }
 
-const DEFAULT_MAX_TURNS = 20;
+/** Load focus instructions from .agents/config/cycle-focus.md */
+function loadFocusPrompt(focus: CycleFocus): string {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return '';
+  const focusPath = join(squadsDir, '..', 'config', 'cycle-focus.md');
+  if (!existsSync(focusPath)) return '';
+  const content = readFileSync(focusPath, 'utf-8');
+  if (!content) return '';
+  const match = content.match(new RegExp(`## ${focus}\\n([\\s\\S]*?)(?=\\n## |$)`));
+  return match ? match[1].trim() : '';
+}
+
+/** Fallback token budget / cost ceiling — overridden by project config. */
+const DEFAULT_TOKEN_BUDGET = 50000;
 const DEFAULT_COST_CEILING = 25;
 
 // =============================================================================
-// Agent Turn Execution
+// Agent Execution (independent, tool-capable)
 // =============================================================================
 
-interface AgentTurnConfig {
+interface AgentRunConfig {
   agentName: string;
   agentPath: string;
   role: AgentRole;
   squadName: string;
   model: string;
-  transcript: Transcript;
-  task?: string;
-  /** Working directory for the agent process (defaults to process.cwd()) */
-  cwd?: string;
+  /** The specific task for this agent (from lead's plan) */
+  task: string;
+  /** Full squad context (goals, feedback, priorities, etc.) */
+  squadContext: string;
+  cwd: string;
 }
 
 /**
- * Execute a single agent turn via `claude --print`.
- * Returns the agent's text output.
+ * Run a single agent independently via `claude --print --allowedTools`.
+ * Agent gets: their task + squad context. No shared transcript.
  */
-function executeAgentTurn(config: AgentTurnConfig): string {
-  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
-
-  // Build the prompt: agent definition + squad context + transcript context + role instructions
-  const transcriptContext = serializeTranscript(transcript);
-
-  // Inject role-based squad context (priorities, feedback, active work, etc.)
-  const contextRole: ContextRole = agentName.includes('company-lead') ? 'coo' : (role as ContextRole);
-  const squadContext = gatherSquadContext(squadName, agentName, {
-    agentPath, role: contextRole
-  });
-
-  let roleInstructions: string;
-  switch (role) {
-    case 'lead':
-      if (transcript.turns.length === 0 && task) {
-        // First turn with founder directive — replaces lead briefing
-        roleInstructions = `## Founder Directive\n\n${task}\n\nBrief the team on this directive. Set priorities and assign work.`;
-      } else if (transcript.turns.length === 0) {
-        roleInstructions = `## Your Role: Lead\n\nYou are starting a new squad session. Brief the team:\n1. Review open issues and PRs\n2. Set priorities for this session\n3. Assign work to workers\n4. Be specific about what each worker should do`;
-      } else {
-        roleInstructions = `## Your Role: Lead (Review)\n\nReview the work done so far. Either:\n- Request specific changes from workers\n- Approve and signal completion if quality is sufficient\n- Merge PRs using \`gh pr merge --squash --delete-branch --auto\` (waits for required checks)`;
-      }
-      break;
-    case 'scanner':
-      roleInstructions = `## Your Role: Scanner\n\nScan for issues, gaps, and opportunities. Report findings concisely. Do NOT fix anything — just discover and report.`;
-      break;
-    case 'worker':
-      roleInstructions = `## Your Role: Worker\n\nExecute the work assigned by the lead. Create branches, write code, open PRs to develop. Be focused and efficient.`;
-      break;
-    case 'verifier':
-      roleInstructions = `## Your Role: Verifier\n\nVerify that work meets quality standards. Check PRs, run tests, validate output. Report pass/fail with specifics.`;
-      break;
-  }
+async function runIndependentAgent(config: AgentRunConfig): Promise<string> {
+  const { agentName, agentPath, role, squadName, task, squadContext } = config;
 
   const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
 
 Read your full agent definition at ${agentPath} and follow its instructions.
 
-${roleInstructions}
+## Your Task
+
+${task}
+
 ${squadContext}
-${transcriptContext}
 
-IMPORTANT:
-- Be concise. Your output becomes part of a shared transcript.
-- Reference specific issue numbers, PR numbers, and file paths.
-- If you create a PR, include the PR number in your output.
-- If there's nothing to do, say "Nothing to do" clearly.
-- When done, summarize what you did in 2-3 sentences.`;
+## Output Requirements
 
-  // Resolve model: CLI override > role default
+- Commit your work (git add, commit, push)
+- Open PRs targeting develop (product repos) or push to main (domain repos)
+- Run the build before pushing — fix if it fails
+- Report: branch name, PR number, build status, what you changed
+- End with: ## STATUS: DONE or ## STATUS: BLOCKED [reason]`;
+
   const resolvedModel = config.model || modelForRole(role);
+  const claudeModel = getClaudeModelAlias(resolvedModel) || resolvedModel;
 
-  // Execute via claude --print (captures output)
-  // Strip CLAUDECODE and ANTHROPIC_API_KEY so child process uses Max subscription
   const { CLAUDECODE: _cc, ANTHROPIC_API_KEY: _ak, ...cleanEnv } = process.env;
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
+  let botGhToken: string | undefined;
   try {
-    const output = execSync(
-      `claude --print --dangerously-skip-permissions --model ${resolvedModel} -- '${escapedPrompt}'`,
-      {
-        cwd: config.cwd || process.cwd(),
-        timeout: 15 * 60 * 1000, // 15 min per turn
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-        encoding: 'utf-8',
-        env: cleanEnv,
-      }
-    );
-    return output.trim();
-  } catch (err: unknown) {
-    const error = err as { stdout?: string; stderr?: string; message?: string };
-    // If the command produced output before failing, use it
-    if (error.stdout && error.stdout.trim().length > 0) {
-      return error.stdout.trim();
-    }
-    return `[ERROR] Agent ${agentName} failed: ${error.message || 'unknown error'}`;
+    const ghEnv = await getBotGhEnv();
+    botGhToken = ghEnv.GH_TOKEN;
+  } catch { /* falls back to user auth */ }
+
+  const execContext: ExecutionContext = {
+    squad: squadName, agent: agentName,
+    taskType: role === 'lead' ? 'lead' : role === 'scanner' ? 'research' : role === 'verifier' ? 'evaluation' : 'execution',
+    trigger: 'scheduled', executionId: generateExecutionId(),
+  };
+
+  // Effort level per role (#702): scanners low, workers high, verifiers medium
+  const effortByRole: Record<string, string> = { lead: 'high', scanner: 'low', worker: 'high', verifier: 'medium' };
+  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low' });
+
+  // Role-based tool sets (#701): scanners get read-only, workers get full, verifiers get read+build
+  const readTools = ['Read', 'Glob', 'Grep', 'Bash(git:*)', 'Bash(gh:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
+  const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
+
+  const toolsByRole: Record<string, string[]> = {
+    lead: [...readTools, ...writeTools],
+    scanner: readTools,
+    worker: [...readTools, ...writeTools],
+    verifier: [...readTools, ...buildTools],
+  };
+
+  const claudeArgs: string[] = ['--print'];
+  if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
+    claudeArgs.push('--dangerously-skip-permissions');
+  } else {
+    const tools = toolsByRole[role] || [...readTools, ...writeTools];
+    claudeArgs.push('--allowedTools', ...tools);
   }
-}
+  claudeArgs.push('--disable-slash-commands');
+  const guardrailPath = resolveGuardrailSettings(config.cwd);
+  if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
+  if (claudeModel) claudeArgs.push('--model', claudeModel);
 
-/**
- * Async version of executeAgentTurn for parallel execution.
- * Same logic, but returns a Promise instead of blocking.
- */
-function executeAgentTurnAsync(config: AgentTurnConfig): Promise<string> {
-  const { agentName, agentPath, role, squadName, model: _model, transcript, task } = config;
+  return new Promise<string>((resolve) => {
+    const chunks: Buffer[] = [];
+    const child = spawn('claude', claudeArgs, {
+      cwd: config.cwd, env: agentEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
-  let roleInstructions = '';
-  switch (role) {
-    case 'lead':
-      roleInstructions = task
-        ? `FOUNDER DIRECTIVE: ${task}\n\nBrief the team on this directive. Assign specific tasks to scanners and workers.`
-        : 'Review the conversation so far. Assess worker output. Direct next actions or declare convergence.';
-      break;
-    case 'scanner':
-      roleInstructions = 'Scan for issues, data, or signals relevant to the lead\'s brief. Report findings concisely.';
-      break;
-    case 'worker':
-      roleInstructions = 'Execute the specific task assigned by the lead. Produce concrete output (PRs, issues, content, analysis).';
-      break;
-    case 'verifier':
-      roleInstructions = 'Verify the worker\'s output meets quality standards. Check for errors, omissions, and alignment with goals.';
-      break;
-  }
+    child.stdin.write(prompt);
+    child.stdin.end();
 
-  const transcriptContext = transcript.turns.length > 0
-    ? `\n== CONVERSATION SO FAR ==\n${serializeTranscript(transcript)}\n== END CONVERSATION ==`
-    : '';
+    // Timeout: configurable via env var, defaults from run-types.ts
+    const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : DEFAULT_TIMEOUT_MINUTES;
+    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
 
-  const resolvedModel = config.model || modelForRole(role);
-  const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const stderrChunks: Buffer[] = [];
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
-Read your full agent definition at ${agentPath} and follow its instructions.
-
-${roleInstructions}
-
-${transcriptContext}
-
-IMPORTANT:
-- Be concise. Your output becomes part of a shared transcript.
-- Reference specific issue numbers, PR numbers, and file paths.
-- If you create a PR, include the PR number in your output.
-- If there's nothing to do, say "Nothing to do" clearly.
-- When done, summarize what you did in 2-3 sentences.`;
-
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
-  const { CLAUDECODE: _cc2, ANTHROPIC_API_KEY: _ak2, ...cleanEnvAsync } = process.env;
-
-  return new Promise((resolve) => {
-    exec(
-      `claude --print --dangerously-skip-permissions --model ${resolvedModel} -- '${escapedPrompt}'`,
-      {
-        cwd: config.cwd || process.cwd(),
-        timeout: 15 * 60 * 1000,
-        maxBuffer: 10 * 1024 * 1024,
-        encoding: 'utf-8',
-        env: cleanEnvAsync,
-      },
-      (error: Error | null, stdout: string, _stderr: string) => {
-        if (stdout && stdout.trim().length > 0) {
-          resolve(stdout.trim());
-        } else if (error) {
-          resolve(`[ERROR] Agent ${agentName} failed: ${error.message || 'unknown error'}`);
-        } else {
-          resolve('[No output]');
-        }
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      const output = Buffer.concat(chunks).toString('utf-8').trim();
+      const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
+      if (output.includes('hit your limit') || output.includes('rate limit')) {
+        resolve(`[QUOTA] ${agentName}: API limit reached`);
+      } else if (output.length > 0) {
+        resolve(output);
+      } else if (code !== 0) {
+        resolve(`[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`);
+      } else {
+        resolve(`[${agentName} completed with no output]`);
       }
-    );
+    });
+
+    child.on('error', (err) => { clearTimeout(timeout); resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`); });
   });
 }
 
 // =============================================================================
-// Conversation Orchestrator
+// Squad Workflow: Plan → Execute → Review → Verify
 // =============================================================================
 
 interface ClassifiedAgent {
@@ -232,23 +225,20 @@ interface ClassifiedAgent {
   path: string;
 }
 
-/**
- * Build the turn order for a squad conversation.
- * Returns agents grouped by role in execution order.
- */
-function buildTurnPlan(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+  // If squad defines conversation_agents, only include those in the conversation.
+  // Other agents run on their own schedules, not in the squad conversation.
+  const conversationFilter = squad.conversation_agents;
+
   const agents: ClassifiedAgent[] = [];
-
   for (const agent of squad.agents) {
+    if (conversationFilter && !conversationFilter.includes(agent.name)) continue;
     const role = classifyAgent(agent.name, agent.role);
-    if (!role) continue; // Unclassified agents are excluded
-
+    if (!role) continue;
     const agentPath = join(squadsDir, squad.dir, `${agent.name}.md`);
     if (!existsSync(agentPath)) continue;
-
     agents.push({ name: agent.name, role, path: agentPath });
   }
-
   return agents;
 }
 
@@ -261,15 +251,10 @@ export interface ConversationResult {
 }
 
 /**
- * Run a full squad conversation.
+ * Run a squad workflow: Plan → Execute → Review → Verify.
  *
- * Turn order per cycle:
- * 1. Lead briefs (or founder directive on first turn)
- * 2. Scanners discover (parallel-safe but run sequentially for simplicity)
- * 3. Workers execute
- * 4. Lead reviews
- * 5. Verifiers check (if workers produced output)
- * 6. Check convergence → loop or exit
+ * Lead plans within token budget, workers execute independently in parallel,
+ * lead reviews, verifier checks quality.
  */
 export async function runConversation(
   squad: Squad,
@@ -277,252 +262,354 @@ export async function runConversation(
 ): Promise<ConversationResult> {
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
-    return {
-      transcript: createTranscript(squad.name),
-      turnCount: 0,
-      totalCost: 0,
-      converged: true,
-      reason: 'No squads directory found',
-    };
+    return { transcript: createTranscript(squad.name), turnCount: 0, totalCost: 0, converged: true, reason: 'No squads directory found' };
   }
 
-  const maxTurns = options.maxTurns || DEFAULT_MAX_TURNS;
-  const costCeiling = options.costCeiling || DEFAULT_COST_CEILING;
+  const projectConfig = loadProjectConfig();
+  const tokenBudget = options.tokenBudget || projectConfig.token_budget || DEFAULT_TOKEN_BUDGET;
+  const costCeiling = options.costCeiling || projectConfig.cost_ceiling || DEFAULT_COST_CEILING;
+  const maxTurns = options.maxTurns || 100;
   const transcript = createTranscript(squad.name);
 
-  // Resolve squad's working directory from repo field (e.g. "org/squads-cli" → sibling repo dir)
-  // squadsDir = /path/to/hq/.agents/squads → go up 3 levels to get parent of project root
+  // Resolve squad's working directory
   let squadCwd = process.cwd();
   if (squad.repo) {
     const repoName = squad.repo.split('/').pop();
     if (repoName) {
       const reposRoot = join(squadsDir, '..', '..', '..');
       const candidatePath = join(reposRoot, repoName);
-      if (existsSync(candidatePath)) {
-        squadCwd = candidatePath;
-      }
+      if (existsSync(candidatePath)) squadCwd = candidatePath;
     }
   }
 
-  // Classify all agents
-  const allAgents = buildTurnPlan(squad, squadsDir);
+  const allAgents = buildAgentRoster(squad, squadsDir);
   const leads = allAgents.filter(a => a.role === 'lead');
   const scanners = allAgents.filter(a => a.role === 'scanner');
   const workers = allAgents.filter(a => a.role === 'worker');
   const verifiers = allAgents.filter(a => a.role === 'verifier');
 
   if (leads.length === 0) {
-    return {
-      transcript,
-      turnCount: 0,
-      totalCost: 0,
-      converged: true,
-      reason: 'No lead agent found — cannot orchestrate conversation',
-    };
+    return { transcript, turnCount: 0, totalCost: 0, converged: true, reason: 'No lead agent found' };
   }
 
-  const lead = leads[0]; // Primary lead
-  const log = (msg: string) => {
-    if (options.verbose) {
-      const ts = new Date().toISOString().slice(11, 19);
-      process.stderr.write(`  [${ts}] ${msg}\n`);
-    }
-  };
+  const lead = leads[0];
+  const log = (msg: string) => writeLine(`  ${colors.dim}${msg}${RESET}`);
 
-  log(`Conversation: ${squad.name} | ${allAgents.length} agents | max ${maxTurns} turns | $${costCeiling} ceiling`);
-  log(`  Lead: ${lead.name} | Scanners: ${scanners.map(s => s.name).join(', ') || 'none'} | Workers: ${workers.map(w => w.name).join(', ') || 'none'} | Verifiers: ${verifiers.map(v => v.name).join(', ') || 'none'}`);
+  // Track timing and goals before cycle begins
+  const cycleStartMs = Date.now();
+  const executionId = generateExecutionId();
+  const goalsBefore = snapshotGoals(squad.name);
 
-  // === CYCLE LOOP ===
-  let cycleCount = 0;
-  const MAX_CYCLES = 5; // Safety: max 5 full cycles (lead→scan→work→review→verify)
+  log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
-  while (cycleCount < MAX_CYCLES) {
-    cycleCount++;
-    log(`\n--- Cycle ${cycleCount} ---`);
+  // Build squad context once (shared by all agents)
+  // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
+  const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
+  const squadContext = gatherSquadContext(squad.name, lead.name, {
+    agentPath: lead.path, role: contextRole,
+  });
 
-    // Step 1: Lead briefs
-    log(`Turn ${transcript.turns.length + 1}: ${lead.name} (lead)`);
-    const leadOutput = executeAgentTurn({
-      agentName: lead.name,
-      agentPath: lead.path,
-      role: 'lead',
-      squadName: squad.name,
+  // ═══════════════════════════════════════════════════════════════════
+  // PHASE 1: PLAN — Lead scopes work within budget
+  // ═══════════════════════════════════════════════════════════════════
+
+  log(`  plan: ${lead.name}...`);
+
+  const workerNames = workers.map(w => w.name).join(', ') || '(no workers — do the work yourself)';
+  const scannerNames = scanners.map(s => s.name).join(', ');
+
+  // Load focus-specific instructions from .agents/config/cycle-focus.md
+  const focus = options.focus || 'create';
+  const focusInstructions = loadFocusPrompt(focus);
+
+  // Load plan prompt template from .agents/config/conversation-roles.md (Lead first turn)
+  // Focus instructions override the default planning behavior
+  // Load plan prompt from template (no prompts in TypeScript — CLAUDE.md rule)
+  const planTemplatePath = join(__dirname, '..', 'templates', 'prompts', 'plan.md');
+  const planTemplate = existsSync(planTemplatePath)
+    ? readFileSync(planTemplatePath, 'utf-8')
+    : 'You are {{LEAD_NAME}} (lead) in squad {{SQUAD_NAME}}. Plan the work.';
+  const planPrompt = planTemplate
+    .replace('{{LEAD_NAME}}', lead.name)
+    .replace('{{SQUAD_NAME}}', squad.name)
+    .replace('{{LEAD_PATH}}', lead.path)
+    .replace('{{FOCUS}}', focus.toUpperCase())
+    .replace('{{FOCUS_INSTRUCTIONS}}', focusInstructions)
+    .replace('{{BUDGET_K}}', String(Math.round(tokenBudget / 1000)))
+    .replace('{{MAX_TASKS}}', String(Math.floor(tokenBudget / 10000)))
+    .replace('{{WORKERS}}', workerNames)
+    .replace('{{SCANNERS}}', scannerNames || '(none)')
+    .replace('{{SQUAD_CONTEXT}}', squadContext);
+
+  const planOutput = await runIndependentAgent({
+    agentName: lead.name, agentPath: lead.path, role: 'lead',
+    squadName: squad.name, model: options.model || modelForRole('lead'),
+    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd,
+  });
+  addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  // Quota detection — if plan hit the API limit, stop immediately
+  if (planOutput.includes('[QUOTA]') || planOutput.includes('hit your limit')) {
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: lead.name,
+      provider: 'anthropic',
       model: options.model || modelForRole('lead'),
-      transcript,
-      task: cycleCount === 1 ? options.task : undefined,
-      cwd: squadCwd,
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: transcript.totalCost,
+      context_tokens: 0,
+      error: 'Quota limit reached',
+      task: options.task,
     });
-    addTurn(transcript, lead.name, 'lead', leadOutput, estimateTurnCost(options.model || 'sonnet'));
+    return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: false, reason: 'Quota limit reached' };
+  }
 
-    // Check convergence after lead
-    let conv = detectConvergence(transcript, maxTurns, costCeiling);
-    if (conv.converged) {
-      log(`Converged after lead: ${conv.reason}`);
-      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-    }
+  // Check if lead declared done immediately (nothing to do)
+  const conv = detectConvergence(transcript, maxTurns, costCeiling);
+  if (conv.converged) {
+    const goalsAfterEarly = snapshotGoals(squad.name);
+    const goalsChangedEarly = diffGoals(goalsBefore, goalsAfterEarly);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: lead.name,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'completed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: transcript.totalCost,
+      context_tokens: 0,
+      task: options.task,
+      goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
+      goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
+      goals_changed: goalsChangedEarly.length > 0 ? goalsChangedEarly : undefined,
+    });
+    return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
+  }
 
-    // Step 2: Scanners (only on first cycle) — run in parallel
-    if (cycleCount === 1 && scanners.length > 0) {
-      if (scanners.length === 1) {
-        log(`Turn ${transcript.turns.length + 1}: ${scanners[0].name} (scanner)`);
-        const output = executeAgentTurn({
-          agentName: scanners[0].name,
-          agentPath: scanners[0].path,
-          role: 'scanner',
-          squadName: squad.name,
-          model: options.model || modelForRole('scanner'),
-          transcript,
-          cwd: squadCwd,
-        });
-        addTurn(transcript, scanners[0].name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
-      } else {
-        log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + scanners.length}: ${scanners.map(s => s.name).join(', ')} (scanners, parallel)`);
-        const scannerPromises = scanners.map(scanner =>
-          executeAgentTurnAsync({
-            agentName: scanner.name,
-            agentPath: scanner.path,
-            role: 'scanner',
-            squadName: squad.name,
-            model: options.model || modelForRole('scanner'),
-            transcript, // snapshot — all scanners see same context
-            cwd: squadCwd,
-          }).then(output => ({ agent: scanner, output }))
-        );
-        const scannerResults = await Promise.all(scannerPromises);
-        for (const { agent, output } of scannerResults) {
-          addTurn(transcript, agent.name, 'scanner', output, estimateTurnCost(options.model || 'haiku'));
-        }
-      }
+  // ═══════════════════════════════════════════════════════════════════
+  // PHASE 2: EXECUTE — Workers run independently in parallel
+  // ═══════════════════════════════════════════════════════════════════
 
-      conv = detectConvergence(transcript, maxTurns, costCeiling);
-      if (conv.converged) {
-        return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-      }
-    }
+  // Parse task assignments from lead's plan
+  const taskAssignments = parseTaskAssignments(planOutput, [...workers, ...scanners]);
 
-    // Step 3: Workers execute — run in parallel if multiple
-    if (workers.length === 1) {
-      log(`Turn ${transcript.turns.length + 1}: ${workers[0].name} (worker)`);
-      const output = executeAgentTurn({
-        agentName: workers[0].name,
-        agentPath: workers[0].path,
-        role: 'worker',
-        squadName: squad.name,
-        model: options.model || modelForRole('worker'),
-        transcript,
-        cwd: squadCwd,
-      });
+  if (taskAssignments.length === 0) {
+    // No tasks parsed — lead does the work directly
+    log(`  execute: no task assignments found, lead works directly`);
+    addTurn(transcript, lead.name, 'lead', '[Lead produced plan but no parseable task assignments. Lead should do the work directly in the review phase.]', estimateTurnCost('sonnet'));
+  } else {
+    log(`  execute: ${taskAssignments.length} tasks in parallel...`);
+
+    // Run all assigned workers in parallel
+    const workerPromises = taskAssignments.map(({ agent, task }) => {
+      log(`    ${agent.name}: ${task.slice(0, 60)}...`);
+      return runIndependentAgent({
+        agentName: agent.name, agentPath: agent.path, role: agent.role,
+        squadName: squad.name, model: options.model || modelForRole(agent.role),
+        task, squadContext, cwd: squadCwd,
+      }).then(output => ({ agent, output }));
+    });
+
+    const workerResults = await Promise.all(workerPromises);
+
+    for (const { agent, output } of workerResults) {
       if (output.startsWith('[ERROR]')) {
-        process.stderr.write(`  [WARN] Worker ${workers[0].name} errored: ${output}\n`);
+        writeLine(`  ${colors.yellow}[WARN] ${agent.name}: ${output.slice(0, 80)}${RESET}`);
       }
-      addTurn(transcript, workers[0].name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
-    } else if (workers.length > 1) {
-      log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + workers.length}: ${workers.map(w => w.name).join(', ')} (workers, parallel)`);
-      const workerPromises = workers.map(worker =>
-        executeAgentTurnAsync({
-          agentName: worker.name,
-          agentPath: worker.path,
-          role: 'worker',
-          squadName: squad.name,
-          model: options.model || modelForRole('worker'),
-          transcript, // snapshot — all workers see same context
-          cwd: squadCwd,
-        }).then(output => ({ agent: worker, output }))
-      );
-      const workerResults = await Promise.all(workerPromises);
-      for (const { agent, output } of workerResults) {
-        if (output.startsWith('[ERROR]')) {
-          process.stderr.write(`  [WARN] Worker ${agent.name} errored: ${output}\n`);
-        }
-        addTurn(transcript, agent.name, 'worker', output, estimateTurnCost(options.model || 'sonnet'));
-      }
-    }
-
-    conv = detectConvergence(transcript, maxTurns, costCeiling);
-    if (conv.converged) {
-      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-    }
-
-    // Step 4: Lead reviews worker output
-    log(`Turn ${transcript.turns.length + 1}: ${lead.name} (lead review)`);
-    const reviewOutput = executeAgentTurn({
-      agentName: lead.name,
-      agentPath: lead.path,
-      role: 'lead',
-      squadName: squad.name,
-      model: options.model || modelForRole('lead'),
-      transcript,
-      cwd: squadCwd,
-    });
-    addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
-
-    conv = detectConvergence(transcript, maxTurns, costCeiling);
-    if (conv.converged) {
-      return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-    }
-
-    // Step 5: Verifiers — run in parallel if multiple
-    if (verifiers.length === 1) {
-      log(`Turn ${transcript.turns.length + 1}: ${verifiers[0].name} (verifier)`);
-      const output = executeAgentTurn({
-        agentName: verifiers[0].name,
-        agentPath: verifiers[0].path,
-        role: 'verifier',
-        squadName: squad.name,
-        model: options.model || modelForRole('verifier'),
-        transcript,
-        cwd: squadCwd,
-      });
-      addTurn(transcript, verifiers[0].name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
-    } else if (verifiers.length > 1) {
-      log(`Turns ${transcript.turns.length + 1}-${transcript.turns.length + verifiers.length}: ${verifiers.map(v => v.name).join(', ')} (verifiers, parallel)`);
-      const verifierPromises = verifiers.map(verifier =>
-        executeAgentTurnAsync({
-          agentName: verifier.name,
-          agentPath: verifier.path,
-          role: 'verifier',
-          squadName: squad.name,
-          model: options.model || modelForRole('verifier'),
-          transcript,
-          cwd: squadCwd,
-        }).then(output => ({ agent: verifier, output }))
-      );
-      const verifierResults = await Promise.all(verifierPromises);
-      for (const { agent, output } of verifierResults) {
-        addTurn(transcript, agent.name, 'verifier', output, estimateTurnCost(options.model || 'haiku'));
-      }
-    }
-
-    if (verifiers.length > 0) {
-      conv = detectConvergence(transcript, maxTurns, costCeiling);
-      if (conv.converged) {
-        return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
-      }
+      addTurn(transcript, agent.name, agent.role, output, estimateTurnCost(options.model || 'sonnet'));
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PHASE 3: REVIEW — Lead evaluates worker output
+  // ═══════════════════════════════════════════════════════════════════
+
+  log(`  review: ${lead.name}...`);
+
+  const reviewPrompt = `Review the work done by your team. The conversation transcript shows what each worker produced.
+
+1. Check if workers actually committed code (PR numbers, commit SHAs)
+2. Merge PRs that are ready: \`gh pr merge --squash --delete-branch --auto\`
+3. Update goals.md if a goal was achieved
+4. Update state.md with what was accomplished
+
+End with:
+## STATUS: DONE
+Summary: [what was achieved]`;
+
+  const reviewOutput = await runIndependentAgent({
+    agentName: lead.name, agentPath: lead.path, role: 'lead',
+    squadName: squad.name, model: options.model || modelForRole('lead'),
+    task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+    cwd: squadCwd,
+  });
+  addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  // Goals.md staleness check — warn if goals were not updated during review
+  const goalsAfterReview = snapshotGoals(squad.name);
+  const goalsChangedInReview = diffGoals(goalsBefore, goalsAfterReview);
+  if (goalsChangedInReview.length === 0 && Object.keys(goalsBefore).length > 0) {
+    writeLine(`  ${colors.yellow}[WARN] ${squad.name}: goals.md not updated after review — lead should update goals when work is completed${RESET}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PHASE 4: VERIFY — Quality gate
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (verifiers.length > 0) {
+    const verifier = verifiers[0];
+    log(`  verify: ${verifier.name}...`);
+
+    const verifyPrompt = `Verify the work from this cycle. The transcript shows the plan and worker outputs.
+
+Check every PR and deliverable:
+1. Build: does it pass?
+2. Conflicts: is the PR mergeable?
+3. Review comments: are ALL automated review comments addressed?
+4. Correctness: does it match what the lead asked for?
+
+End with:
+## VERDICT: APPROVED (all checks pass)
+or
+## VERDICT: REJECTED (which check failed and why)`;
+
+    const verifyOutput = await runIndependentAgent({
+      agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
+      squadName: squad.name, model: options.model || modelForRole('verifier'),
+      task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+      cwd: squadCwd,
+    });
+    addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
+  }
+
+  // Determine final convergence
+  const finalConv = detectConvergence(transcript, maxTurns, costCeiling);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Observability — log conversation cycle as a single record
+  // ═══════════════════════════════════════════════════════════════════
+
+  const cycleDurationMs = Date.now() - cycleStartMs;
+  const goalsAfterFinal = snapshotGoals(squad.name);
+  const goalsChanged = diffGoals(goalsBefore, goalsAfterFinal);
+
+  const obsRecord: ObservabilityRecord = {
+    ts: new Date().toISOString(),
+    id: executionId,
+    squad: squad.name,
+    agent: lead.name,
+    provider: 'anthropic',
+    model: options.model || modelForRole('lead'),
+    trigger: 'scheduled',
+    status: 'completed',
+    duration_ms: cycleDurationMs,
+    input_tokens: 0,   // token-level data not available from spawned agents
+    output_tokens: transcript.turns.length > 0 ? transcript.turns.reduce((acc, t) => acc + t.content.length, 0) : 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cost_usd: transcript.totalCost,
+    context_tokens: 0,
+    task: options.task,
+    goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
+    goals_after: Object.keys(goalsAfterFinal).length > 0 ? goalsAfterFinal : undefined,
+    goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
+  };
+  logObservability(obsRecord);
 
   return {
     transcript,
     turnCount: transcript.turns.length,
     totalCost: transcript.totalCost,
-    converged: false,
-    reason: `Max cycles reached (${MAX_CYCLES})`,
+    converged: finalConv.converged, // reflect actual convergence status
+    reason: finalConv.reason || 'Cycle complete (plan → execute → review → verify)',
   };
+}
+
+// =============================================================================
+// Task Assignment Parser
+// =============================================================================
+
+interface TaskAssignment {
+  agent: ClassifiedAgent;
+  task: string;
+}
+
+/**
+ * Parse task assignments from lead's plan output.
+ * Looks for patterns like:
+ *   - worker: worker-name | task: do something
+ *   - scanner: scanner-name | task: scan something
+ *   - Assigned: worker-name → do something
+ */
+function parseTaskAssignments(planOutput: string, availableAgents: ClassifiedAgent[]): TaskAssignment[] {
+  const assignments: TaskAssignment[] = [];
+  const lines = planOutput.split('\n');
+
+  for (const line of lines) {
+    // Pattern: "- worker: name | task: description"
+    const pipeMatch = line.match(/(?:worker|scanner|agent):\s*(\S+)\s*\|\s*task:\s*(.+)/i);
+    if (pipeMatch) {
+      const agentName = pipeMatch[1].trim();
+      const task = pipeMatch[2].trim();
+      const agent = availableAgents.find(a => a.name === agentName || a.name.includes(agentName) || agentName.includes(a.name));
+      if (agent && task) {
+        assignments.push({ agent, task });
+        continue;
+      }
+    }
+
+    // Pattern: "Assigned: name → description" or "- name: description"
+    const arrowMatch = line.match(/(?:assigned|assign):\s*(\S+)\s*[→→-]\s*(.+)/i);
+    if (arrowMatch) {
+      const agentName = arrowMatch[1].trim();
+      const task = arrowMatch[2].trim();
+      const agent = availableAgents.find(a => a.name === agentName || a.name.includes(agentName) || agentName.includes(a.name));
+      if (agent && task) {
+        assignments.push({ agent, task });
+        continue;
+      }
+    }
+  }
+
+  // If no assignments parsed but workers exist, assign all workers the lead's full plan
+  if (assignments.length === 0 && availableAgents.length > 0) {
+    const workers = availableAgents.filter(a => a.role === 'worker');
+    for (const worker of workers) {
+      assignments.push({
+        agent: worker,
+        task: `The lead produced this plan. Execute the most important task:\n\n${planOutput.slice(0, 3000)}`,
+      });
+    }
+  }
+
+  return assignments;
 }
 
 // =============================================================================
 // Transcript Persistence
 // =============================================================================
 
-/** Save conversation transcript to .agents/conversations/{squad}/ */
 export function saveTranscript(transcript: Transcript): string | null {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return null;
 
   const convDir = join(squadsDir, '..', 'conversations', transcript.squad);
-  if (!existsSync(convDir)) {
-    mkdirSync(convDir, { recursive: true });
-  }
+  if (!existsSync(convDir)) mkdirSync(convDir, { recursive: true });
 
   const id = Date.now().toString(36);
   const filePath = join(convDir, `${id}.md`);
@@ -532,9 +619,7 @@ export function saveTranscript(transcript: Transcript): string | null {
     `Started: ${transcript.startedAt}`,
     `Turns: ${transcript.turns.length}`,
     `Estimated cost: $${transcript.totalCost.toFixed(2)}`,
-    '',
-    '---',
-    '',
+    '', '---', '',
   ];
 
   for (const turn of transcript.turns) {

@@ -7,7 +7,7 @@
  * - Git log (deploy frequency, recent activity)
  */
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import type { CatalogEntry, ScorecardDefinition, ScorecardResult } from './types.js';

@@ -16,7 +16,6 @@ import { join } from 'path';
 import { findSquadsDir, loadSquad } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, bold, RESET, writeLine } from './terminal.js';
-import { logObservability, type ObservabilityRecord } from './observability.js';
 
 export interface OrgScanResult {
   squad: string;

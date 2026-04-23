@@ -79,8 +79,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Determine npm dist-tag
+        id: dist_tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if [[ "$TAG" == *-* ]]; then
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing pre-release $TAG to @next"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing $TAG to @latest"
+          fi
+
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag ${{ steps.dist_tag.outputs.npm_tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -88,5 +102,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.dist_tag.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

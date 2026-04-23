@@ -15,7 +15,6 @@ import {
   findSquadsDir,
   listSquads,
   loadSquad,
-  type Squad,
 } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';

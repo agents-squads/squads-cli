@@ -23,6 +23,7 @@ Turns intelligence and research insights into decisions about what to build, imp
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: audit current product state, user feedback, and backlog against `BUSINESS_BRIEF.md` — produce a baseline product report with top 3 opportunities
 - [ ] Translate research findings into a prioritized list of opportunities
 - [ ] Produce a product roadmap with clear rationale for each item
 - [ ] Write specs for the top priority with acceptance criteria

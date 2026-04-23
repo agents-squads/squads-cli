@@ -18,7 +18,7 @@
  */
 
 import { join, dirname } from 'path';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
@@ -61,6 +61,7 @@ export interface AgentFrontmatter {
   acceptance_criteria?: string;
   max_retries?: number;
   cooldown?: string;
+  model?: string;
   /**
    * `role:` field from agent YAML frontmatter (free text).
    * Used as the primary signal for context-role selection.
@@ -326,7 +327,7 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
     if (normalized === r) return r;
   }
   // COO is a lead with expanded budget
-  if (normalized === 'coo') return 'coo';
+  if (normalized === 'coo' || normalized === 'company-lead') return 'coo';
 
   // Deterministic mapping from role text. Avoids brittle regex coupling.
   const scannerTokens = ['scan', 'monitor', 'detect', 'find', 'opportun', 'scout', 'gap', 'bottleneck'];
@@ -387,25 +388,6 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
   }
 }
 
-/** Read all .md files from a directory, concatenated */
-function readDirMd(dirPath: string, maxChars: number): string {
-  if (!existsSync(dirPath)) return '';
-  try {
-    const files = readdirSync(dirPath).filter(f => f.endsWith('.md')).sort();
-    const parts: string[] = [];
-    let totalChars = 0;
-    for (const file of files) {
-      const content = safeRead(join(dirPath, file));
-      if (!content) continue;
-      if (totalChars + content.length > maxChars) break;
-      parts.push(content);
-      totalChars += content.length;
-    }
-    return parts.join('\n\n');
-  } catch {
-    return '';
-  }
-}
 
 // ── Squad Context System Assembly ─────────────────────────────────────
 
@@ -464,22 +446,25 @@ export function gatherSquadContext(
     return true;
   }
 
-  // ── L1: company.md — Why (company identity, alignment) ──
-  const companyContext = loadCompanyContext();
-  if (companyContext) {
-    addLayer(1, 'Company', stripYamlFrontmatter(companyContext));
-  }
+  // ═══════════════════════════════════════════════════════════════════
+  // Context injection order: ACTION-FIRST, REFERENCE-LAST
+  //
+  // LLMs pay most attention to the beginning and end of context.
+  // Put what the agent should ACT ON first (feedback, goals, state).
+  // Put reference material last (company, agent definition).
+  // ═══════════════════════════════════════════════════════════════════
 
-  // ── L2: priorities.md — Where (current focus, urgency) ──
+  // ── L6: feedback.md — ACT ON THIS (corrections from last cycle) ──
+  // Injected FIRST so agents address feedback before anything else.
   if (memoryDir) {
-    const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
-    const content = safeRead(prioritiesFile);
+    const feedbackFile = join(memoryDir, squadName, 'feedback.md');
+    const content = safeRead(feedbackFile);
     if (content) {
-      addLayer(2, 'Priorities', stripYamlFrontmatter(content));
+      addLayer(6, 'Feedback (act on this first)', content);
     }
   }
 
-  // ── L3: goals.md — What (measurable targets) ──
+  // ── L3: goals.md — What to achieve this cycle ──
   if (memoryDir) {
     const goalsFile = join(memoryDir, squadName, 'goals.md');
     const content = safeRead(goalsFile);
@@ -488,38 +473,50 @@ export function gatherSquadContext(
     }
   }
 
-  // ── L4: agent.md — You (agent role, instructions) ──
+  // ── L5: state.md — Where we left off ──
+  if (memoryDir) {
+    const stateFile = join(memoryDir, squadName, agentName, 'state.md');
+    const content = safeRead(stateFile);
+    if (content) {
+      const body = stripYamlFrontmatter(content);
+      const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
+      // Add staleness caveat (#721) so agents know if their memory is outdated
+      let staleNote = '';
+      try {
+        const MS_PER_DAY = 24 * 60 * 60 * 1000;
+        const mtime = statSync(stateFile).mtimeMs;
+        const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
+        if (daysAgo > 0) staleNote = `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
+      } catch { /* */ }
+      addLayer(5, 'Previous State', staleNote + body, stateCap);
+    }
+  }
+
+  // ── L2: priorities.md — Where to focus ──
+  if (memoryDir) {
+    const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
+    const content = safeRead(prioritiesFile);
+    if (content) {
+      addLayer(2, 'Priorities', stripYamlFrontmatter(content));
+    }
+  }
+
+  // ── L4: agent.md — Your role and instructions ──
   if (options.agentPath) {
     const agentContent = safeRead(options.agentPath);
     if (agentContent) {
-      // Strip YAML frontmatter — inject the markdown body only
       const body = stripYamlFrontmatter(agentContent);
       addLayer(4, `Agent: ${agentName}`, body);
     }
   }
 
-  // ── L5: state.md — Memory (continuity from last run) ──
-  if (memoryDir) {
-    const stateFile = join(memoryDir, squadName, agentName, 'state.md');
-    const content = safeRead(stateFile);
-    if (content) {
-      // Strip frontmatter — LLM gets the body (Current/Blockers/Carry Forward)
-      const body = stripYamlFrontmatter(content);
-      const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
-      addLayer(5, 'Previous State', body, stateCap);
-    }
+  // ── L1: company.md — Who we are (reference) ──
+  const companyContext = loadCompanyContext();
+  if (companyContext) {
+    addLayer(1, 'Company', stripYamlFrontmatter(companyContext));
   }
 
-  // ── L6: feedback.md — Supporting (squad-level feedback) ──
-  if (memoryDir) {
-    const feedbackFile = join(memoryDir, squadName, 'feedback.md');
-    const content = safeRead(feedbackFile);
-    if (content) {
-      addLayer(6, 'Feedback', content);
-    }
-  }
-
-  // ── L7: Daily briefing — Supporting (org pulse, leads+coo only) ──
+  // ── L7: Daily briefing — Org pulse (leads+coo only, reference) ──
   if (memoryDir) {
     const dailyFile = join(memoryDir, 'daily-briefing.md');
     const content = safeRead(dailyFile);
@@ -528,7 +525,7 @@ export function gatherSquadContext(
     }
   }
 
-  // ── L8: Cross-squad learnings — Supporting (from context_from agents) ──
+  // ── L8: Cross-squad learnings (leads+coo only, reference) ──
   if (memoryDir) {
     const frontmatter = options.agentPath ? parseAgentFrontmatter(options.agentPath) : {};
     const contextSquads = frontmatter.context_from || [];

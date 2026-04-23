@@ -30,6 +30,7 @@ Grows your audience. Creates content, manages social presence, and tracks growth
 
 ## Goals
 
+- [ ] **First run — Squad evaluation**: audit existing content assets, active channels, brand voice, and content gaps against `BUSINESS_BRIEF.md` — produce a baseline marketing report with top 3 priorities
 - [ ] Establish content creation rhythm
 - [ ] Build social media presence
 - [ ] Track and improve engagement metrics

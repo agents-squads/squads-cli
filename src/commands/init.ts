@@ -16,9 +16,11 @@ import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
+import { saveEmail } from '../lib/env-config.js';
 import { existsSync, readFileSync } from 'fs';
 import {
   loadTemplate,
@@ -43,7 +45,7 @@ export interface InitOptions {
 
 type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
 
-type UseCase = 'engineering' | 'marketing' | 'operations' | 'full-company' | 'custom';
+type UseCase = 'engineering' | 'marketing' | 'growth' | 'operations' | 'full-company' | 'custom';
 
 /**
  * Use-case configuration: squads, files, memory dirs, and display info
@@ -79,6 +81,11 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
       description: 'Grows audience',
       squads: [getMarketingSquad()],
     },
+    growth: {
+      label: 'Growth',
+      description: 'Owns the funnel, runs experiments',
+      squads: [getMarketingSquad(), getGrowthSquad()],
+    },
     operations: {
       label: 'Operations',
       description: 'Runs the business',
@@ -86,8 +93,8 @@ function getUseCaseConfig(useCase: UseCase): UseCaseConfig {
     },
     'full-company': {
       label: 'Full Company',
-      description: 'Enterprise — Engineering + Marketing + Operations',
-      squads: [getEngineeringSquad(), getMarketingSquad(), getOperationsSquad()],
+      description: 'Enterprise — Engineering + Marketing + Growth + Operations',
+      squads: [getEngineeringSquad(), getMarketingSquad(), getGrowthSquad(), getOperationsSquad()],
     },
     custom: {
       label: 'Custom',
@@ -191,6 +198,35 @@ function getOperationsSquad(): SquadConfig {
     ],
     memoryFiles: [
       ['.agents/memory/operations/ops-lead/state.md', 'memory/operations/ops-lead/state.md'],
+    ],
+  };
+}
+
+function getGrowthSquad(): SquadConfig {
+  return {
+    name: 'growth',
+    description: 'Owns the funnel — measures AARRR, runs experiments, kills losers',
+    agentCount: 4,
+    agentSummary: 'growth-lead, funnel-analyst, experiment-runner, growth-critic',
+    dirs: [
+      '.agents/squads/growth',
+      '.agents/memory/growth/growth-lead',
+      '.agents/memory/growth/funnel-analyst',
+      '.agents/memory/growth/experiment-runner',
+      '.agents/memory/growth/growth-critic',
+    ],
+    files: [
+      ['.agents/squads/growth/SQUAD.md', 'squads/growth/SQUAD.md'],
+      ['.agents/squads/growth/growth-lead.md', 'squads/growth/growth-lead.md'],
+      ['.agents/squads/growth/funnel-analyst.md', 'squads/growth/funnel-analyst.md'],
+      ['.agents/squads/growth/experiment-runner.md', 'squads/growth/experiment-runner.md'],
+      ['.agents/squads/growth/growth-critic.md', 'squads/growth/growth-critic.md'],
+    ],
+    memoryFiles: [
+      ['.agents/memory/growth/growth-lead/state.md', 'memory/growth/growth-lead/state.md'],
+      ['.agents/memory/growth/funnel-analyst/state.md', 'memory/growth/funnel-analyst/state.md'],
+      ['.agents/memory/growth/experiment-runner/state.md', 'memory/growth/experiment-runner/state.md'],
+      ['.agents/memory/growth/growth-critic/state.md', 'memory/growth/growth-critic/state.md'],
     ],
   };
 }
@@ -480,7 +516,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       writeLine();
       writeLine(`  ${chalk.cyan('1)')} Core only ${chalk.dim('— intelligence, research, product, company')} ${chalk.green('(recommended)')}`);
       writeLine(`  ${chalk.cyan('2)')} + Engineering ${chalk.dim('— issue-solver, code-reviewer, test-writer')}`);
-      writeLine(`  ${chalk.cyan('3)')} + All packs ${chalk.dim('— engineering, marketing, operations')}`);
+      writeLine(`  ${chalk.cyan('3)')} + All packs ${chalk.dim('— engineering, marketing, growth, operations')}`);
       writeLine();
 
       const rl = createInterface({
@@ -511,11 +547,26 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (options.pack && options.pack.length > 0) {
     const additionalSquads: SquadConfig[] = [];
     for (const pack of options.pack) {
-      if (pack === 'engineering') additionalSquads.push(getEngineeringSquad());
-      if (pack === 'marketing') additionalSquads.push(getMarketingSquad());
-      if (pack === 'operations') additionalSquads.push(getOperationsSquad());
+      if (pack === 'engineering') {
+        additionalSquads.push(getEngineeringSquad());
+        selectedUseCase = 'engineering';
+      }
+      if (pack === 'marketing') {
+        additionalSquads.push(getMarketingSquad());
+        selectedUseCase = 'marketing';
+      }
+      if (pack === 'growth') {
+        // growth squad depends on marketing — include both
+        additionalSquads.push(getMarketingSquad(), getGrowthSquad());
+        selectedUseCase = 'growth';
+      }
+      if (pack === 'operations') {
+        additionalSquads.push(getOperationsSquad());
+        selectedUseCase = 'operations';
+      }
       if (pack === 'all') {
-        additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getOperationsSquad());
+        additionalSquads.push(getEngineeringSquad(), getMarketingSquad(), getGrowthSquad(), getOperationsSquad());
+        selectedUseCase = 'full-company';
       }
     }
     // De-duplicate squads by name
@@ -570,6 +621,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     // Core directories (always created)
     const dirs = [
+      '.agents/squads/demo',
       '.agents/squads/company',
       '.agents/squads/research',
       '.agents/squads/intelligence',
@@ -578,6 +630,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       '.agents/memory/company/event-dispatcher',
       '.agents/memory/company/goal-tracker',
       '.agents/memory/company/company-eval',
+      '.agents/memory/demo/hello-world',
       '.agents/memory/company/company-critic',
       '.agents/memory/research/lead',
       '.agents/memory/research/analyst',
@@ -605,6 +658,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
 
     spinner.text = 'Creating squad definitions...';
+
+    // Demo squad (always created — starter agent so `squads run demo hello-world` works)
+    const demoFiles: [string, string][] = [
+      ['.agents/squads/demo/SQUAD.md', 'squads/demo/SQUAD.md'],
+      ['.agents/squads/demo/hello-world.md', 'squads/demo/hello-world.md'],
+    ];
 
     // Core squad files (always created)
     const companyFiles: [string, string][] = [
@@ -639,7 +698,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
 
     // Write all squad files
-    for (const [dest, template] of [...companyFiles, ...researchFiles, ...intelligenceFiles, ...productFiles, ...useCaseFiles]) {
+    for (const [dest, template] of [...demoFiles, ...companyFiles, ...researchFiles, ...intelligenceFiles, ...productFiles, ...useCaseFiles]) {
       const content = loadSeedTemplate(template, variables);
       await writeFile(path.join(cwd, dest), content);
     }
@@ -713,6 +772,42 @@ export async function initCommand(options: InitOptions): Promise<void> {
     // System protocol (Layer 0 of context cascade)
     const systemMd = loadSeedTemplate('config/SYSTEM.md', variables);
     await writeFile(path.join(cwd, '.agents/config/SYSTEM.md'), systemMd);
+
+    // Project config (.squads/config.yml) — per-user, gitignored
+    const configYmlPath = path.join(cwd, '.squads', 'config.yml');
+    if (!await fileExists(configYmlPath)) {
+      await fs.mkdir(path.join(cwd, '.squads'), { recursive: true });
+      const configContent = [
+        '# .squads/config.yml — Project configuration for squads-cli',
+        '# Customize for your project. Environment variables override these values.',
+        '',
+        '# Agent execution',
+        'agent_timeout_minutes: 30',
+        'token_budget: 50000',
+        'cost_ceiling: 25',
+        '',
+        '# Organization identity',
+        `company_name: "${businessName}"`,
+        '',
+        '# Telemetry',
+        'telemetry: true',
+        '',
+      ].join('\n');
+      await fs.writeFile(configYmlPath, configContent);
+    }
+
+    // Ensure .squads/config.yml is gitignored (per-user config, not committed)
+    const gitignorePath = path.join(cwd, '.gitignore');
+    const gitignoreEntry = '.squads/config.yml';
+    let gitignoreContent = '';
+    try { gitignoreContent = await fs.readFile(gitignorePath, 'utf-8'); } catch { /* no .gitignore yet */ }
+    if (!gitignoreContent.split('\n').some(line => line.trim() === gitignoreEntry)) {
+      const separator = gitignoreContent.length > 0 && !gitignoreContent.endsWith('\n') ? '\n' : '';
+      const section = gitignoreContent.length > 0
+        ? `${separator}\n# squads-cli (per-user config)\n${gitignoreEntry}\n`
+        : `# squads-cli (per-user config)\n${gitignoreEntry}\n`;
+      await fs.appendFile(gitignorePath, section);
+    }
 
     // IDP catalog entry (only if .agents/idp/ doesn't already exist)
     const idpCatalogDir = path.join(cwd, '.agents', 'idp', 'catalog');
@@ -828,8 +923,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  Created:'));
 
   // Core squads (always present)
-  writeLine(chalk.dim('  • research/    3 agents — Researches your market, competitors, and opportunities'));
-  writeLine(chalk.dim('  • company/     5 agents — Manages goals, events, and strategy'));
+  writeLine(chalk.dim('  • demo/         1 agent  — Starter agent to verify your setup'));
+  writeLine(chalk.dim('  • research/     3 agents — Researches your market, competitors, and opportunities'));
+  writeLine(chalk.dim('  • company/      5 agents — Manages goals, events, and strategy'));
   writeLine(chalk.dim('  • intelligence/ 3 agents — Monitors trends and competitive signals'));
   writeLine(chalk.dim('  • product/      3 agents — Roadmap, specs, user feedback synthesis'));
 
@@ -842,59 +938,65 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(chalk.dim('  • .agents/skills/               CLI + GitHub workflow skills'));
   writeLine(chalk.dim('  • .agents/memory/               Persistent state'));
   writeLine(chalk.dim('  • .agents/BUSINESS_BRIEF.md'));
+  writeLine(chalk.dim('  • .squads/config.yml            Runtime config (agent timeout, budget, etc.)'));
   writeLine(chalk.dim('  • AGENTS.md                     Agent instructions (vendor-neutral)'));
   if (selectedProvider === 'claude') {
     writeLine(chalk.dim('  • CLAUDE.md                     Operating manual'));
     writeLine(chalk.dim('  • .claude/settings.json         Session hooks'));
   }
   writeLine();
-  writeLine(chalk.bold('  Getting started:'));
+  writeLine(chalk.bold('  What\'s next:'));
   writeLine();
-  writeLine(`     ${chalk.cyan('1.')} ${chalk.yellow('$EDITOR .agents/BUSINESS_BRIEF.md')}`);
-  writeLine(chalk.dim('        Set your business context — agents use this for every run'));
+  writeLine(`  ${chalk.green('→')} Verify your setup works:`);
+  writeLine(`     ${chalk.yellow('squads run demo hello-world')}`);
   writeLine();
-  // Dynamic "first run" suggestion based on use case
-  const firstRunCommand = getFirstRunCommand(selectedUseCase);
-  const squadCommand = firstRunCommand.command.replace(/\/[^/]+$/, '');
-  writeLine(`     ${chalk.cyan('2.')} ${chalk.yellow(firstRunCommand.command)}`);
-  writeLine(chalk.dim(`        ${firstRunCommand.description}`));
-  writeLine(chalk.dim(`        Full squad (4+ agents, longer): ${squadCommand}`));
+  // Dynamic first-run suggestion based on use case
+  const firstRun = getFirstRunCommand(selectedUseCase);
+  const firstRunCmd = `squads run ${firstRun.squad} -a ${firstRun.agent}`;
+  writeLine(`  ${chalk.green('→')} Run your first real agent:`);
+  writeLine(`     ${chalk.yellow(firstRunCmd)}`);
   writeLine();
-  writeLine(`     ${chalk.cyan('3.')} ${chalk.yellow(`squads run`)}`);
-  writeLine(chalk.dim('        Autopilot — runs all squads on schedule, learns between cycles'));
-  writeLine(chalk.dim(`        Options: squads run --once (single cycle), squads run -i 15 --budget 50`));
+  writeLine(`  ${chalk.dim('See all squads:')} ${chalk.yellow('squads status')}`);
+  writeLine(`  ${chalk.dim('Docs:')} ${chalk.dim('https://agents-squads.com/docs/getting-started')}`);
   writeLine();
-  writeLine(chalk.dim('  Docs: https://agents-squads.com/docs/getting-started'));
-  writeLine();
+
+  // 7. Opt-in email capture for founder outreach
+  // Gracefully wrapped — never blocks init if prompt fails
+  try {
+    if (isInteractive()) {
+      const emailInput = await prompt('Email (optional, for updates):', '');
+      if (emailInput && emailInput.includes('@')) {
+        saveEmail(emailInput);
+        const emailHash = createHash('sha256').update(emailInput.toLowerCase().trim()).digest('hex');
+        await track(Events.CLI_EMAIL_CAPTURED, { emailHash });
+        writeLine(chalk.dim('  Email saved. We will reach out with updates.'));
+        writeLine();
+      }
+    }
+  } catch {
+    // Non-fatal — email capture failure must never break init
+  }
   }
 
 /**
- * Get the suggested first command based on installed packs
+ * Get the suggested first agent to run based on installed packs.
+ * Returns squad and agent names separately so the caller can format
+ * the command as: squads run {squad} -a {agent}
  */
-function getFirstRunCommand(useCase: UseCase): { command: string; description: string } {
+function getFirstRunCommand(useCase: UseCase): { squad: string; agent: string } {
   switch (useCase) {
     case 'engineering':
-      return {
-        command: 'squads run engineering/issue-solver',
-        description: 'Run a single agent — finds and solves GitHub issues (~2 min)',
-      };
+      return { squad: 'engineering', agent: 'issue-solver' };
     case 'marketing':
-      return {
-        command: 'squads run marketing/content-drafter',
-        description: 'Run a single agent — drafts content for your business (~2 min)',
-      };
+      return { squad: 'marketing', agent: 'content-drafter' };
+    case 'growth':
+      return { squad: 'growth', agent: 'growth-lead' };
     case 'operations':
-      return {
-        command: 'squads run operations/ops-lead',
-        description: 'Run a single agent — coordinates daily operations (~2 min)',
-      };
+      return { squad: 'operations', agent: 'ops-lead' };
     case 'full-company':
     case 'custom':
     default:
-      return {
-        command: 'squads run research/lead',
-        description: 'Run a single agent — researches the topic you set (~2 min)',
-      };
+      return { squad: 'research', agent: 'lead' };
   }
 }
 

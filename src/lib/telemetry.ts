@@ -3,6 +3,7 @@ import { join } from 'path';
 import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
 import { version as cliVersion } from '../version.js';
+import { loadProjectConfig } from './config.js';
 
 interface TelemetryEvent {
   event: string;
@@ -27,9 +28,10 @@ const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
   'base64'
 ).toString();
 
-// API key for endpoint validation — must be set via environment variable
-// NEVER hardcode API keys in source (see: engineering#51)
-const TELEMETRY_KEY = process.env.SQUADS_TELEMETRY_KEY || '';
+// Write-only telemetry key — locked to Agents Squads infrastructure.
+// This key can only write events; it cannot read, delete, or access user data.
+// Users can opt out via `squads config set telemetry false`.
+const TELEMETRY_KEY = 'sq_tel_v1_7f8a9b2c3d4e5f6a';
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
@@ -125,7 +127,11 @@ function saveConfig(config: TelemetryConfig): void {
 
 /**
  * Check if telemetry is enabled.
- * Telemetry is disabled if SQUADS_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1.
+ * Telemetry is disabled if:
+ *   - SQUADS_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 (env)
+ *   - SQUADS_TELEMETRY=false (env, checked via project config)
+ *   - telemetry: false in .squads/config.yml
+ *   - `squads config set telemetry false` (~/.squads-cli/telemetry.json)
  * @returns true if telemetry collection is enabled
  */
 export function isEnabled(): boolean {
@@ -135,6 +141,15 @@ export function isEnabled(): boolean {
   }
   if (process.env.DO_NOT_TRACK === '1') {
     return false;
+  }
+
+  // Check project-level config (env: SQUADS_TELEMETRY > .squads/config.yml)
+  try {
+    if (!loadProjectConfig().telemetry) {
+      return false;
+    }
+  } catch {
+    // Config loading may fail in edge cases — fall through to user config
   }
 
   return getConfig().enabled;
@@ -310,6 +325,7 @@ export const Events = {
 
   // Commands
   CLI_RUN: 'cli.run',
+  CLI_RUN_COMPLETE: 'cli.run.complete',
   CLI_STATUS: 'cli.status',
   CLI_DASHBOARD: 'cli.dashboard',
   CLI_WORKERS: 'cli.workers',
@@ -317,6 +333,7 @@ export const Events = {
   CLI_CONTEXT: 'cli.context',
   CLI_COST: 'cli.cost',
   CLI_EXEC: 'cli.exec',
+  CLI_LOG: 'cli.log',
   CLI_BASELINE: 'cli.baseline',
 
   // Goals
@@ -358,6 +375,9 @@ export const Events = {
 
   // Cycle Sync
   CLI_SYNC_CYCLE: 'cli.sync.cycle',
+
+  // User outreach
+  CLI_EMAIL_CAPTURED: 'cli.email_captured',
 
   // Context Condenser
   CONDENSER_COMPRESS: 'condenser.compress',

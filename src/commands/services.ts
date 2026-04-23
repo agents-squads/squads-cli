@@ -1,9 +1,12 @@
 /**
- * squads services — manage Tier 2 local infrastructure.
+ * squads services — manage local infrastructure services.
  *
- * squads services up       Start Docker services, switch to local config
- * squads services down     Stop services, fall back to standalone
+ * squads services up       Start Docker services
+ * squads services down     Stop Docker services
  * squads services status   Show running containers and health
+ *
+ * Discovers docker-compose.yml from the user's project root or
+ * a configurable SQUADS_COMPOSE_FILE environment variable.
  */
 
 import { Command } from 'commander';
@@ -11,6 +14,8 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { detectTier } from '../lib/tier-detect.js';
+import { findProjectRoot } from '../lib/squad-parser.js';
+import { loadProjectConfig } from '../lib/config.js';
 import { colors, bold, RESET, writeLine } from '../lib/terminal.js';
 
 function exec(cmd: string, opts?: { cwd?: string }): string | null {
@@ -22,18 +27,42 @@ function exec(cmd: string, opts?: { cwd?: string }): string | null {
 }
 
 function findComposeFile(): string | null {
-  // Search for docker-compose in known locations
-  const home = process.env.HOME || '';
-  const candidates = [
-    join(home, 'agents-squads', 'engineering', 'docker', 'docker-compose.yml'),
-    join(home, 'agents-squads', 'engineering', 'docker', 'docker-compose.yaml'),
-    join(process.cwd(), '..', 'engineering', 'docker', 'docker-compose.yml'),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+  // 1. Config (includes env var override via loadProjectConfig resolution order)
+  const configCompose = loadProjectConfig().compose_file;
+  if (configCompose && existsSync(configCompose)) {
+    return configCompose;
   }
+
+  // 3. Search from project root upward
+  const projectRoot = findProjectRoot();
+  const searchRoots = [projectRoot, process.cwd()].filter(Boolean) as string[];
+
+  for (const root of searchRoots) {
+    const candidates = [
+      join(root, 'docker-compose.yml'),
+      join(root, 'docker-compose.yaml'),
+      join(root, 'docker', 'docker-compose.yml'),
+      join(root, 'docker', 'docker-compose.yaml'),
+      join(root, 'infra', 'docker-compose.yml'),
+      join(root, 'infra', 'docker-compose.yaml'),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
   return null;
+}
+
+function resolveComposeFile(filePath?: string): string | null {
+  if (filePath) {
+    if (!existsSync(filePath)) {
+      writeLine(`\n  ${colors.red}File not found: ${filePath}${RESET}\n`);
+      return null;
+    }
+    return filePath;
+  }
+  return findComposeFile();
 }
 
 function dockerAvailable(): boolean {
@@ -47,14 +76,14 @@ function dockerComposeAvailable(): boolean {
 export function registerServicesCommands(program: Command): void {
   const services = program
     .command('services')
-    .description('Manage Tier 2 local services (Postgres, Redis, API, Bridge)');
+    .description('Manage local Docker services for your project')
+    .action(() => { services.outputHelp(); });
 
   // ── services up ──
   services
     .command('up')
     .description('Start local services (Docker required)')
-    .option('--webhooks', 'Also start ngrok tunnel for GitHub webhooks')
-    .option('--telemetry', 'Also start OpenTelemetry collector')
+    .option('--file <path>', 'Path to docker-compose.yml')
     .action(async (opts) => {
       if (!dockerAvailable()) {
         writeLine(`\n  ${colors.red}Docker not found.${RESET}`);
@@ -66,24 +95,22 @@ export function registerServicesCommands(program: Command): void {
         return;
       }
 
-      const composeFile = findComposeFile();
+      const composeFile = resolveComposeFile(opts.file);
       if (!composeFile) {
-        writeLine(`\n  ${colors.red}docker-compose.yml not found.${RESET}`);
-        writeLine(`  ${colors.dim}Expected at: ../engineering/docker/docker-compose.yml (sibling repo)${RESET}\n`);
+        if (!opts.file) {
+          writeLine(`\n  ${colors.red}docker-compose.yml not found.${RESET}`);
+          writeLine(`  ${colors.dim}Searched: project root, ./docker/, ./infra/${RESET}`);
+          writeLine(`  ${colors.dim}Or set SQUADS_COMPOSE_FILE env var, or use --file <path>${RESET}\n`);
+        }
         return;
       }
 
       const composeDir = join(composeFile, '..');
-      writeLine(`\n  ${bold}Starting Tier 2 services...${RESET}\n`);
-
-      // Build profile args
-      let profileArgs = '';
-      if (opts.webhooks) profileArgs += ' --profile webhooks';
-      if (opts.telemetry) profileArgs += ' --profile telemetry';
+      writeLine(`\n  ${bold}Starting services...${RESET}`);
+      writeLine(`  ${colors.dim}${composeFile}${RESET}\n`);
 
       try {
-        writeLine(`  ${colors.dim}docker compose up -d${profileArgs}${RESET}`);
-        execSync(`docker compose${profileArgs} up -d`, {
+        execSync(`docker compose up -d`, {
           cwd: composeDir,
           stdio: 'inherit',
           timeout: 120000,
@@ -92,25 +119,24 @@ export function registerServicesCommands(program: Command): void {
         writeLine();
         writeLine(`  ${colors.green}Services started.${RESET} Waiting for health checks...`);
 
-        // Wait for API to be healthy
+        // Wait for services to be healthy
         let healthy = false;
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 10; i++) {
           await new Promise(r => setTimeout(r, 2000));
-          const info = await detectTier();
-          if (info.services.api) {
+          const states = exec('docker compose ps --format "{{.State}}"', { cwd: composeDir });
+          if (!states) continue;
+          const stateList = states.split('\n').filter(Boolean);
+          const allRunning = stateList.length > 0 && stateList.every(s => s === 'running' || s === 'healthy');
+          if (allRunning) {
             healthy = true;
             break;
           }
         }
 
         if (healthy) {
-          writeLine(`  ${colors.green}Tier 2 active.${RESET} All services healthy.\n`);
-          writeLine(`  ${colors.dim}API:     http://localhost:8090${RESET}`);
-          writeLine(`  ${colors.dim}Bridge:  http://localhost:8088${RESET}`);
-          writeLine(`  ${colors.dim}Postgres: localhost:5432${RESET}`);
-          writeLine(`  ${colors.dim}Redis:   localhost:6379${RESET}`);
+          writeLine(`  ${colors.green}All services healthy.${RESET}`);
         } else {
-          writeLine(`  ${colors.yellow}Services started but API not healthy yet. Run 'squads services status' to check.${RESET}`);
+          writeLine(`  ${colors.yellow}Some services still starting. Run 'squads services status' to check.${RESET}`);
         }
         writeLine();
       } catch (e) {
@@ -122,15 +148,18 @@ export function registerServicesCommands(program: Command): void {
   services
     .command('down')
     .description('Stop local services')
-    .action(() => {
-      const composeFile = findComposeFile();
+    .option('--file <path>', 'Path to docker-compose.yml')
+    .action((opts) => {
+      const composeFile = resolveComposeFile(opts.file);
       if (!composeFile) {
-        writeLine(`\n  ${colors.dim}No docker-compose.yml found. Nothing to stop.${RESET}\n`);
+        if (!opts.file) {
+          writeLine(`\n  ${colors.dim}No docker-compose.yml found. Nothing to stop.${RESET}\n`);
+        }
         return;
       }
 
       const composeDir = join(composeFile, '..');
-      writeLine(`\n  ${bold}Stopping Tier 2 services...${RESET}\n`);
+      writeLine(`\n  ${bold}Stopping services...${RESET}\n`);
 
       try {
         execSync('docker compose down', {
@@ -138,7 +167,7 @@ export function registerServicesCommands(program: Command): void {
           stdio: 'inherit',
           timeout: 60000,
         });
-        writeLine(`\n  ${colors.dim}Services stopped. Falling back to Tier 1 (file-based).${RESET}\n`);
+        writeLine(`\n  ${colors.dim}Services stopped.${RESET}\n`);
       } catch (e) {
         writeLine(`\n  ${colors.red}Failed to stop services: ${e instanceof Error ? e.message : String(e)}${RESET}\n`);
       }
@@ -147,38 +176,49 @@ export function registerServicesCommands(program: Command): void {
   // ── services status ──
   services
     .command('status')
-    .description('Show running services and health')
-    .action(async () => {
-      const info = await detectTier();
+    .description('Show running Docker containers and health')
+    .option('--file <path>', 'Path to docker-compose.yml')
+    .action(async (opts) => {
+      if (!dockerAvailable()) {
+        writeLine(`\n  ${colors.dim}Docker not installed.${RESET}\n`);
+        return;
+      }
 
+      const info = await detectTier();
       writeLine();
       writeLine(`  ${bold}Services${RESET} (Tier ${info.tier})\n`);
 
-      const containers = exec('docker ps --filter name=squads --format "{{.Names}}\\t{{.Status}}\\t{{.Ports}}"');
-      if (!containers) {
+      const composeFile = resolveComposeFile(opts.file);
+      if (composeFile) {
+        const composeDir = join(composeFile, '..');
+        const containers = exec('docker compose ps --format "{{.Name}}\\t{{.Status}}\\t{{.Ports}}"', { cwd: composeDir });
+        if (containers) {
+          for (const line of containers.split('\n').filter(Boolean)) {
+            const [name, status, ports] = line.split('\t');
+            const healthy = status?.includes('healthy') || status?.includes('Up') || status?.includes('running');
+            const icon = healthy ? `${colors.green}up${RESET}` : `${colors.red}down${RESET}`;
+            const portStr = ports ? `  ${colors.dim}${ports.split(',')[0]}${RESET}` : '';
+            writeLine(`  ${icon}  ${bold}${name}${RESET}${portStr}`);
+          }
+          writeLine();
+          return;
+        }
+      }
+
+      // Fallback: show any running Docker containers
+      const anyContainers = exec('docker ps --format "{{.Names}}\\t{{.Status}}\\t{{.Ports}}"');
+      if (!anyContainers) {
         writeLine(`  ${colors.dim}No Docker containers running.${RESET}\n`);
         return;
       }
 
-      for (const line of containers.split('\n').filter(Boolean)) {
+      for (const line of anyContainers.split('\n').filter(Boolean)) {
         const [name, status, ports] = line.split('\t');
-        const healthy = status?.includes('healthy') || status?.includes('Up');
+        const healthy = status?.includes('healthy') || status?.includes('Up') || status?.includes('running');
         const icon = healthy ? `${colors.green}up${RESET}` : `${colors.red}down${RESET}`;
         const portStr = ports ? `  ${colors.dim}${ports.split(',')[0]}${RESET}` : '';
         writeLine(`  ${icon}  ${bold}${name}${RESET}${portStr}`);
       }
-
       writeLine();
-
-      // Show DB stats
-      const jobCount = exec("docker exec squads-postgres psql -U squads -d squads -t -c 'SELECT count(*) FROM procrastinate_jobs;'");
-      const execCount = exec("docker exec squads-postgres psql -U squads -d squads -t -c 'SELECT count(*) FROM agent_executions;'");
-
-      if (jobCount || execCount) {
-        writeLine(`  ${colors.cyan}Database${RESET}`);
-        if (jobCount) writeLine(`    Procrastinate jobs: ${jobCount.trim()}`);
-        if (execCount) writeLine(`    Agent executions:  ${execCount.trim()}`);
-        writeLine();
-      }
     });
 }

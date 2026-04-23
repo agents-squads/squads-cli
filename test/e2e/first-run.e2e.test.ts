@@ -188,16 +188,16 @@ describe('E2E: First-Run User Journey (#488)', () => {
    * Step 3b: Verify init scaffolding content
    * The 4 core squads, cascade files, sentinel, and agent count.
    */
-  it('Step 3b — init content: 4 squads, 14 agents, cascade files, placeholder sentinel', () => {
+  it('Step 3b — init content: 5 squads (4 core + demo), 15 agents, cascade files, placeholder sentinel', () => {
     const squadsDir = join(testDir, '.agents', 'squads');
     const squads = readdirSync(squadsDir).filter(
       (f) => existsSync(join(squadsDir, f, 'SQUAD.md'))
     );
 
-    // Must create exactly 4 core squads
-    expect(squads.sort()).toEqual(['company', 'intelligence', 'product', 'research']);
+    // Must create exactly 5 squads: 4 core + demo starter squad
+    expect(squads.sort()).toEqual(['company', 'demo', 'intelligence', 'product', 'research']);
 
-    // Must create 14 agent files total (excluding SQUAD.md)
+    // Must create 15 agent files total: 5 company + 3 research + 3 intelligence + 3 product + 1 demo (excluding SQUAD.md)
     let agentCount = 0;
     for (const squad of squads) {
       const files = readdirSync(join(squadsDir, squad)).filter(
@@ -205,7 +205,7 @@ describe('E2E: First-Run User Journey (#488)', () => {
       );
       agentCount += files.length;
     }
-    expect(agentCount).toBe(14);
+    expect(agentCount).toBe(15);
 
     // Context cascade files must exist
     expect(existsSync(join(testDir, '.agents', 'config', 'SYSTEM.md'))).toBe(true);

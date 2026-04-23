@@ -47,6 +47,7 @@ describe('telemetry', () => {
 
     it('has command events', () => {
       expect(Events.CLI_RUN).toBe('cli.run');
+      expect(Events.CLI_RUN_COMPLETE).toBe('cli.run.complete');
       expect(Events.CLI_STATUS).toBe('cli.status');
       expect(Events.CLI_DASHBOARD).toBe('cli.dashboard');
     });

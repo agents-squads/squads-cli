@@ -3,9 +3,12 @@
  * Extracted from commands/run.ts to reduce its size.
  */
 
-import { spawn } from 'child_process';
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import {
   type RunOptions,
   DEFAULT_TIMEOUT_MINUTES,
@@ -13,19 +16,15 @@ import {
 } from './run-types.js';
 import {
   checkClaudeCliAvailable,
-  getProjectRoot,
 } from './run-utils.js';
 import {
   executeWithClaude,
   executeWithProvider,
 } from './execution-engine.js';
-import {
-  checkLocalCooldown,
-  DEFAULT_SCHEDULED_COOLDOWN_MS,
-} from './execution-log.js';
 import { runAgent } from './agent-runner.js';
 import {
   findSquadsDir,
+  findProjectRoot,
   loadSquad,
 } from './squad-parser.js';
 import {
@@ -49,12 +48,9 @@ import {
 } from './cognition.js';
 import {
   runConversation,
-  saveTranscript,
   type ConversationOptions,
 } from './workflow.js';
 import {
-  reportExecutionStart,
-  reportConversationResult,
   pushCognitionSignal,
 } from './api-client.js';
 import { getBotGhEnv } from './github.js';
@@ -70,15 +66,45 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from './llm-clis.js';
-import { getBridgeUrl } from './env-config.js';
 import { classifyAgent } from './conversation.js';
-import ora from 'ora';
+import { parseAgentFrontmatter } from './run-context.js';
 
 // ── Post-run evaluation ─────────────────────────────────────────────
 // After any squad run, dispatch the COO (company-lead) to evaluate outputs.
 // This is the feedback loop that makes the system learn.
 
 const EVAL_TIMEOUT_MINUTES = 15;
+
+/**
+ * Find an agent with `role: coo` or `role: company-lead` in its frontmatter,
+ * searching across all squads. Returns null if none found.
+ */
+function findCooAgent(squadsDir: string): { agentName: string; agentPath: string; squadName: string } | null {
+  let squadDirs: string[];
+  try {
+    squadDirs = readdirSync(squadsDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name);
+  } catch { return null; }
+
+  for (const squadName of squadDirs) {
+    const squadPath = join(squadsDir, squadName);
+    let files: string[];
+    try {
+      files = readdirSync(squadPath).filter(f => f.endsWith('.md') && f !== 'SQUAD.md');
+    } catch { continue; }
+
+    for (const file of files) {
+      const agentPath = join(squadPath, file);
+      const fm = parseAgentFrontmatter(agentPath);
+      const role = (fm.agent_role || '').trim().toLowerCase();
+      if (role === 'coo' || role === 'company-lead') {
+        return { agentName: file.replace(/\.md$/, ''), agentPath, squadName };
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Run the COO evaluation after squad execution.
@@ -101,11 +127,11 @@ export async function runPostEvaluation(
   const squadsDir = findSquadsDir();
   if (!squadsDir) return;
 
-  // Find company-lead agent
-  const cooPath = join(squadsDir, 'company', 'company-lead.md');
-  if (!existsSync(cooPath)) {
+  // Find any agent with role: coo in frontmatter across all squads
+  const coo = findCooAgent(squadsDir);
+  if (!coo) {
     if (options.verbose) {
-      writeLine(`  ${colors.dim}Skipping evaluation: company-lead.md not found${RESET}`);
+      writeLine(`  ${colors.dim}Skipping evaluation: no agent with role: coo found${RESET}`);
     }
     return;
   }
@@ -114,72 +140,12 @@ export async function runPostEvaluation(
   writeLine();
   writeLine(`  ${gradient('eval')} ${colors.dim}COO evaluating: ${squadList}${RESET}`);
 
-  const evalTask = `Post-run evaluation for: ${squadList}.
+  // Load evaluation protocol from markdown (single source of truth)
+  const evalProtocolPath = join(findProjectRoot() || '', '.agents', 'config', 'coo-evaluation.md');
+  const evalProtocol = existsSync(evalProtocolPath) ? readFileSync(evalProtocolPath, 'utf-8') : '';
+  const evalTask = `Post-run evaluation for: ${squadList}.\n\n${evalProtocol}`;
 
-## Evaluation Process
-
-For each squad (${squadList}):
-
-### 1. Read previous feedback FIRST
-Read \`.agents/memory/{squad}/feedback.md\` if it exists. Note the previous grade, identified patterns, and priorities. This is your baseline — you are measuring CHANGE, not just current state.
-
-### 2. Gather current evidence
-- PRs (last 7 days): \`gh pr list --state all --limit 20 --json number,title,state,mergedAt,createdAt\`
-- Recent commits (last 7 days): \`gh api repos/{owner}/{repo}/commits?since=YYYY-MM-DDT00:00:00Z&per_page=20 --jq '.[].commit.message'\`
-- Open issues: \`gh issue list --state open --limit 15 --json number,title,labels\`
-- Read \`.agents/memory/{squad}/priorities.md\` and \`.agents/memory/company/directives.md\`
-- Read \`.agents/memory/{squad}/active-work.md\` (previous cycle's work tracking)
-
-### 3. Write feedback.md (APPEND history, don't overwrite)
-\`\`\`markdown
-# Feedback — {squad}
-
-## Current Assessment (YYYY-MM-DD): [A-F]
-Merge rate: X% | Noise ratio: Y% | Priority alignment: Z%
-
-## Trajectory: [improving | stable | declining | new]
-Previous grade: [grade] → Current: [grade]. [1-line explanation of why]
-
-## Valuable (continue)
-- [specific PR/issue that advanced priorities]
-
-## Noise (stop)
-- [specific anti-pattern observed]
-
-## Next Cycle Priorities
-1. [specific actionable item]
-
-## History
-| Date | Grade | Key Signal |
-|------|-------|------------|
-| YYYY-MM-DD | X | [what drove this grade] |
-[keep last 10 entries, append new row]
-\`\`\`
-
-### 4. Write active-work.md
-\`\`\`markdown
-# Active Work — {squad} (YYYY-MM-DD)
-## Continue (open PRs)
-- #{number}: {title} — {status/next action}
-## Backlog (assigned issues)
-- #{number}: {title} — {priority}
-## Do NOT Create
-- {description of known duplicate patterns from feedback history}
-\`\`\`
-
-### 5. Commit to hq main
-${squadsRun.length > 1 ? `
-### 6. Cross-squad assessment
-Evaluate how outputs from ${squadList} connect:
-- Duplicated efforts across squads?
-- Missing handoffs (one squad's output should feed another)?
-- Coordination gaps (conflicting PRs, redundant issues)?
-- Combined trajectory: is the org getting more effective or more noisy?
-Write cross-squad findings to \`.agents/memory/company/cross-squad-review.md\`.
-` : ''}
-CRITICAL: You are measuring DIRECTION not just position. A C-grade squad improving from F is better than a B-grade squad declining from A. The history table IS the feedback loop — agents read it next cycle.`;
-
-  await runAgent('company-lead', cooPath, 'company', {
+  await runAgent(coo.agentName, coo.agentPath, coo.squadName, {
     ...options,
     task: evalTask,
     timeout: EVAL_TIMEOUT_MINUTES,
@@ -636,65 +602,28 @@ export async function runLeadMode(
     return;
   }
 
-  // Build the lead prompt
+  // Build the lead prompt from template (no prompts in TypeScript — CLAUDE.md rule)
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
   const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
 
-  const prompt = `You are the Lead of the ${squad.name} squad.
+  // Load lead mode protocol from markdown
+  const leadProtocolPath = join(findProjectRoot() || '', '.agents', 'config', 'lead-mode.md');
+  const leadProtocol = existsSync(leadProtocolPath) ? readFileSync(leadProtocolPath, 'utf-8') : '';
 
-## Mission
-${squad.mission || 'Execute squad operations efficiently.'}
-
-## Available Agents
-${agentList}
-
-## Agent Definition Files
-${agentPaths}
-
-## Your Role as Lead
-
-1. **Assess the situation**: Check for pending work:
-   - Run \`gh issue list --repo {org}/hq --label squad:${squad.name}\` for assigned issues
-   - Check .agents/memory/${squad.dir}/ for squad state and pending tasks
-   - Review recent activity with \`git log --oneline -10\`
-
-2. **Delegate work using Task tool**: For each piece of work:
-   - Use the Task tool with subagent_type="general-purpose"
-   - Include the agent definition file path in the prompt
-   - Spawn multiple Task agents IN PARALLEL when work is independent
-   - Example: "Read ${agentFiles[0]?.path || 'agent.md'} and execute its instructions for [specific task]"
-
-3. **Coordinate parallel execution**:
-   - Independent tasks → spawn Task agents in parallel (single message, multiple tool calls)
-   - Dependent tasks → run sequentially
-   - Monitor progress and handle failures
-
-4. **Report and update memory**:
-   - Update .agents/memory/${squad.dir}/state.md with completed work
-   - Log learnings to learnings.md
-   - Create issues for follow-up work if needed
-
-## Time Budget
-You have ${timeoutMins} minutes. Prioritize high-impact work.
-
-## Critical Instructions
-- Use Task tool for delegation, NOT direct execution of agent work
-- Spawn parallel Task agents when work is independent
-- When done, type /exit to end the session
-- Do NOT wait for user input - work autonomously
-
-## Async Mode (CRITICAL)
-This is ASYNC execution - Task agents must be fully autonomous:
-- **Findings** → Create GitHub issues (gh issue create)
-- **Code changes** → Create PRs (gh pr create)
-- **Analysis results** → Write to .agents/outputs/ or memory files
-- **NEVER wait for human review** - complete the work and move on
-- **NEVER ask clarifying questions** - make reasonable decisions
-
-Instruct each Task agent: "Work autonomously. Output findings to GitHub issues. Output code changes as PRs. Do not wait for review."
-
-Begin by assessing pending work, then delegate to agents via Task tool.`;
+  // Template resolution: dist/templates (built) or repo-root/templates (dev/test)
+  const leadDistPath = join(__dirname, '..', 'templates', 'prompts', 'lead-mode.md');
+  const leadRootPath = join(__dirname, '..', '..', 'templates', 'prompts', 'lead-mode.md');
+  const leadTemplatePath = existsSync(leadDistPath) ? leadDistPath : leadRootPath;
+  const leadTemplate = existsSync(leadTemplatePath)
+    ? readFileSync(leadTemplatePath, 'utf-8')
+    : 'You are the Lead of the {{SQUAD_NAME}} squad. Plan and delegate work.';
+  const prompt = leadTemplate
+    .replaceAll('{{SQUAD_NAME}}', squad.name)
+    .replaceAll('{{MISSION}}', squad.mission || 'Execute squad operations efficiently.')
+    .replaceAll('{{AGENT_LIST}}', agentList)
+    .replaceAll('{{AGENT_PATHS}}', agentPaths)
+    .replaceAll('{{LEAD_PROTOCOL}}', leadProtocol);
 
   // Determine provider
   const provider = options.provider || squad?.providers?.default || 'anthropic';

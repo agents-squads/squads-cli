@@ -6,29 +6,56 @@
  * - saveTranscript: creates file, returns path, handles no squads dir
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
+
+// Helper: create a mock child process that emits output then closes
+function createMockChild(output: string, code = 0) {
+  const child = new EventEmitter() as any;
+  child.stdin = { write: vi.fn(), end: vi.fn() };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = vi.fn();
+  // Emit output async so listeners are attached first
+  process.nextTick(() => {
+    if (output) child.stdout.emit('data', Buffer.from(output));
+    child.emit('close', code);
+  });
+  return child;
+}
 
 // Mock fs before import
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
-  readFileSync: vi.fn(),
+  readFileSync: vi.fn().mockReturnValue(''),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
+  appendFileSync: vi.fn(),
 }));
 
-// Mock child_process before import
+// Mock child_process before import — workflow.ts uses spawn for agent execution
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   exec: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 // Mock squad-parser
 vi.mock('../../src/lib/squad-parser.js', () => ({
   findSquadsDir: vi.fn(),
+  findProjectRoot: vi.fn().mockReturnValue('/mock/root'),
+}));
+
+// Mock observability to avoid file system reads
+vi.mock('../../src/lib/observability.js', () => ({
+  logObservability: vi.fn(),
+  snapshotGoals: vi.fn().mockReturnValue({}),
+  diffGoals: vi.fn().mockReturnValue([]),
 }));
 
 // Mock run-context to avoid file system reads in unit tests
 vi.mock('../../src/lib/run-context.js', () => ({
   gatherSquadContext: vi.fn().mockReturnValue(''),
+  resolveContextRoleFromAgent: vi.fn().mockReturnValue('lead'),
 }));
 
 // Mock conversation to keep tests fast
@@ -41,7 +68,7 @@ vi.mock('../../src/lib/conversation.js', async () => {
 });
 
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
 import { runConversation, saveTranscript } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
@@ -50,7 +77,7 @@ import type { Squad } from '../../src/lib/squad-parser.js';
 const mockExistsSync = vi.mocked(existsSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
-const mockExecSync = vi.mocked(execSync);
+const mockSpawn = vi.mocked(spawn);
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
 
 // Minimal squad fixture
@@ -105,7 +132,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true); // agent file exists
 
     // Lead outputs a convergence phrase immediately
-    mockExecSync.mockReturnValue('Session complete. All PRs merged.' as never);
+    mockSpawn.mockImplementation(() => createMockChild('Session complete. All PRs merged.') as any);
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -121,7 +148,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     // Each lead turn produces non-convergent output but we set very low cost ceiling
-    mockExecSync.mockReturnValue('Still working on it.' as never);
+    mockSpawn.mockImplementation(() => createMockChild('Still working on it.') as any);
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -142,7 +169,7 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     // Each turn produces non-convergent output with no cost (free)
-    mockExecSync.mockImplementation(() => 'Still working on it.' as never);
+    mockSpawn.mockImplementation(() => createMockChild('Still working on it.') as any);
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -163,9 +190,10 @@ describe('runConversation', () => {
     mockExistsSync.mockReturnValue(true);
 
     const capturedPrompts: string[] = [];
-    mockExecSync.mockImplementation((cmd: string) => {
-      capturedPrompts.push(cmd);
-      return 'Session complete.' as never;
+    mockSpawn.mockImplementation(() => {
+      const child = createMockChild('Session complete.');
+      child.stdin.write = vi.fn((data: string) => { capturedPrompts.push(data); return true; });
+      return child as any;
     });
 
     const squad = makeSquad({
@@ -190,7 +218,7 @@ describe('runConversation', () => {
       return false;
     });
 
-    mockExecSync.mockReturnValue('Session complete.' as never);
+    mockSpawn.mockImplementation(() => createMockChild('Session complete.') as any);
 
     const squad = makeSquad({
       repo: 'agents-squads/squads-cli',
@@ -206,7 +234,7 @@ describe('runConversation', () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);
 
-    mockExecSync.mockReturnValue('Session complete.' as never);
+    mockSpawn.mockImplementation(() => createMockChild('Session complete.') as any);
 
     const squad = makeSquad({
       agents: [
