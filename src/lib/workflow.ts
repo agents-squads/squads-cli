@@ -42,6 +42,7 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
+import { DEFAULT_TIMEOUT_MINUTES } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { getBotGhEnv } from './github.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
@@ -184,6 +185,11 @@ ${squadContext}
     child.stdin.write(prompt);
     child.stdin.end();
 
+    // Timeout: configurable via env var, defaults from run-types.ts
+    const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : DEFAULT_TIMEOUT_MINUTES;
+    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
+
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
     const stderrChunks: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
@@ -192,7 +198,6 @@ ${squadContext}
       clearTimeout(timeout);
       const output = Buffer.concat(chunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
-      // Detect quota hit — Claude returns this when rate limited
       if (output.includes('hit your limit') || output.includes('rate limit')) {
         resolve(`[QUOTA] ${agentName}: API limit reached`);
       } else if (output.length > 0) {
@@ -205,7 +210,6 @@ ${squadContext}
     });
 
     child.on('error', (err) => { clearTimeout(timeout); resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`); });
-    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after 8 minutes`); }, 8 * 60 * 1000);
   });
 }
 
