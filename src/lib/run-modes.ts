@@ -3,8 +3,12 @@
  * Extracted from commands/run.ts to reduce its size.
  */
 
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import {
   type RunOptions,
   DEFAULT_TIMEOUT_MINUTES,
@@ -63,12 +67,44 @@ import {
   isProviderCLIAvailable,
 } from './llm-clis.js';
 import { classifyAgent } from './conversation.js';
+import { parseAgentFrontmatter } from './run-context.js';
 
 // ── Post-run evaluation ─────────────────────────────────────────────
 // After any squad run, dispatch the COO (company-lead) to evaluate outputs.
 // This is the feedback loop that makes the system learn.
 
 const EVAL_TIMEOUT_MINUTES = 15;
+
+/**
+ * Find an agent with `role: coo` or `role: company-lead` in its frontmatter,
+ * searching across all squads. Returns null if none found.
+ */
+function findCooAgent(squadsDir: string): { agentName: string; agentPath: string; squadName: string } | null {
+  let squadDirs: string[];
+  try {
+    squadDirs = readdirSync(squadsDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name);
+  } catch { return null; }
+
+  for (const squadName of squadDirs) {
+    const squadPath = join(squadsDir, squadName);
+    let files: string[];
+    try {
+      files = readdirSync(squadPath).filter(f => f.endsWith('.md') && f !== 'SQUAD.md');
+    } catch { continue; }
+
+    for (const file of files) {
+      const agentPath = join(squadPath, file);
+      const fm = parseAgentFrontmatter(agentPath);
+      const role = (fm.agent_role || '').trim().toLowerCase();
+      if (role === 'coo' || role === 'company-lead') {
+        return { agentName: file.replace(/\.md$/, ''), agentPath, squadName };
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Run the COO evaluation after squad execution.
@@ -91,11 +127,11 @@ export async function runPostEvaluation(
   const squadsDir = findSquadsDir();
   if (!squadsDir) return;
 
-  // Find company-lead agent
-  const cooPath = join(squadsDir, 'company', 'company-lead.md');
-  if (!existsSync(cooPath)) {
+  // Find any agent with role: coo in frontmatter across all squads
+  const coo = findCooAgent(squadsDir);
+  if (!coo) {
     if (options.verbose) {
-      writeLine(`  ${colors.dim}Skipping evaluation: company-lead.md not found${RESET}`);
+      writeLine(`  ${colors.dim}Skipping evaluation: no agent with role: coo found${RESET}`);
     }
     return;
   }
@@ -109,7 +145,7 @@ export async function runPostEvaluation(
   const evalProtocol = existsSync(evalProtocolPath) ? readFileSync(evalProtocolPath, 'utf-8') : '';
   const evalTask = `Post-run evaluation for: ${squadList}.\n\n${evalProtocol}`;
 
-  await runAgent('company-lead', cooPath, 'company', {
+  await runAgent(coo.agentName, coo.agentPath, coo.squadName, {
     ...options,
     task: evalTask,
     timeout: EVAL_TIMEOUT_MINUTES,
@@ -566,7 +602,7 @@ export async function runLeadMode(
     return;
   }
 
-  // Build the lead prompt
+  // Build the lead prompt from template (no prompts in TypeScript — CLAUDE.md rule)
   const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
   const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
   const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
@@ -575,22 +611,19 @@ export async function runLeadMode(
   const leadProtocolPath = join(findProjectRoot() || '', '.agents', 'config', 'lead-mode.md');
   const leadProtocol = existsSync(leadProtocolPath) ? readFileSync(leadProtocolPath, 'utf-8') : '';
 
-  const prompt = `You are the Lead of the ${squad.name} squad.
-
-## Mission
-${squad.mission || 'Execute squad operations efficiently.'}
-
-## Available Agents
-${agentList}
-
-## Agent Definition Files
-${agentPaths}
-
-${leadProtocol}
-
-Instruct each Task agent: "Work autonomously. Output findings to GitHub issues. Output code changes as PRs. Do not wait for review."
-
-Begin by assessing pending work, then delegate to agents via Task tool.`;
+  // Template resolution: dist/templates (built) or repo-root/templates (dev/test)
+  const leadDistPath = join(__dirname, '..', 'templates', 'prompts', 'lead-mode.md');
+  const leadRootPath = join(__dirname, '..', '..', 'templates', 'prompts', 'lead-mode.md');
+  const leadTemplatePath = existsSync(leadDistPath) ? leadDistPath : leadRootPath;
+  const leadTemplate = existsSync(leadTemplatePath)
+    ? readFileSync(leadTemplatePath, 'utf-8')
+    : 'You are the Lead of the {{SQUAD_NAME}} squad. Plan and delegate work.';
+  const prompt = leadTemplate
+    .replaceAll('{{SQUAD_NAME}}', squad.name)
+    .replaceAll('{{MISSION}}', squad.mission || 'Execute squad operations efficiently.')
+    .replaceAll('{{AGENT_LIST}}', agentList)
+    .replaceAll('{{AGENT_PATHS}}', agentPaths)
+    .replaceAll('{{LEAD_PROTOCOL}}', leadProtocol);
 
   // Determine provider
   const provider = options.provider || squad?.providers?.default || 'anthropic';

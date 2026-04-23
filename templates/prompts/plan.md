@@ -6,6 +6,13 @@ Read your full agent definition at {{LEAD_PATH}} and follow its instructions.
 
 {{FOCUS_INSTRUCTIONS}}
 
+## Rules
+
+1. **Only work on YOUR squad's goals.** If a goal has `depends_on: other-squad/goal`, do NOT duplicate that squad's work. Check the dependency status by reading the other squad's goals.md (`status:` field) or using `gh pr list`/`gh issue list`. Plan work that builds on their completed output.
+2. **No PII on public repos.** Never put client names, personal names, or deal terms in issues, PRs, or public content. Use codenames (e.g., "client ALPHA").
+3. **One deliverable per worker.** Each worker gets one specific, completable task. Not a list of 5 things.
+4. **Verify before creating.** Before filing PRs or issues, check if they already exist (`gh pr list`, `gh issue list`).
+
 ## Budget
 
 {{BUDGET_K}}K output tokens for the whole squad.
