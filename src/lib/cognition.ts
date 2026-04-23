@@ -20,6 +20,7 @@ import { findMemoryDir } from './memory.js';
 import { pushCognitionSignal, ingestMemorySignal } from './api-client.js';
 import { slackNotify } from './squad-loop.js';
 import { colors, RESET, writeLine } from './terminal.js';
+import { loadProjectConfig } from './config.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -475,7 +476,7 @@ export async function reflect(
     ? state.reflections[state.reflections.length - 1]
     : null;
 
-  const companyName = process.env.SQUADS_COMPANY_NAME || 'your organization';
+  const companyName = loadProjectConfig().company_name || 'your organization';
   const prompt = `You are the cognition engine for ${companyName}.
 Your job is to reflect on the current state of the business and produce actionable insights.
 

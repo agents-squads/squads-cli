@@ -3,6 +3,7 @@ import { join } from 'path';
 import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
 import { version as cliVersion } from '../version.js';
+import { loadProjectConfig } from './config.js';
 
 interface TelemetryEvent {
   event: string;
@@ -126,7 +127,11 @@ function saveConfig(config: TelemetryConfig): void {
 
 /**
  * Check if telemetry is enabled.
- * Telemetry is disabled if SQUADS_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1.
+ * Telemetry is disabled if:
+ *   - SQUADS_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 (env)
+ *   - SQUADS_TELEMETRY=false (env, checked via project config)
+ *   - telemetry: false in .squads/config.yml
+ *   - `squads config set telemetry false` (~/.squads-cli/telemetry.json)
  * @returns true if telemetry collection is enabled
  */
 export function isEnabled(): boolean {
@@ -136,6 +141,15 @@ export function isEnabled(): boolean {
   }
   if (process.env.DO_NOT_TRACK === '1') {
     return false;
+  }
+
+  // Check project-level config (env: SQUADS_TELEMETRY > .squads/config.yml)
+  try {
+    if (!loadProjectConfig().telemetry) {
+      return false;
+    }
+  } catch {
+    // Config loading may fail in edge cases — fall through to user config
   }
 
   return getConfig().enabled;

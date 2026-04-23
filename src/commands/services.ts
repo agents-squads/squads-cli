@@ -15,6 +15,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { detectTier } from '../lib/tier-detect.js';
 import { findProjectRoot } from '../lib/squad-parser.js';
+import { loadProjectConfig } from '../lib/config.js';
 import { colors, bold, RESET, writeLine } from '../lib/terminal.js';
 
 function exec(cmd: string, opts?: { cwd?: string }): string | null {
@@ -26,12 +27,13 @@ function exec(cmd: string, opts?: { cwd?: string }): string | null {
 }
 
 function findComposeFile(): string | null {
-  // 1. Explicit env var override
-  if (process.env.SQUADS_COMPOSE_FILE && existsSync(process.env.SQUADS_COMPOSE_FILE)) {
-    return process.env.SQUADS_COMPOSE_FILE;
+  // 1. Config (includes env var override via loadProjectConfig resolution order)
+  const configCompose = loadProjectConfig().compose_file;
+  if (configCompose && existsSync(configCompose)) {
+    return configCompose;
   }
 
-  // 2. Search from project root upward
+  // 3. Search from project root upward
   const projectRoot = findProjectRoot();
   const searchRoots = [projectRoot, process.cwd()].filter(Boolean) as string[];
 
