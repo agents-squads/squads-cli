@@ -108,9 +108,7 @@ export async function runAgent(
   if (options.dryRun) {
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     // Show context that would be injected (with role-based gating)
-    const dryRunContextRole: ContextRole = agentName.includes('company-lead')
-      ? 'coo'
-      : resolveContextRoleFromAgent(agentPath, agentName);
+    const dryRunContextRole: ContextRole = resolveContextRoleFromAgent(agentPath, agentName);
     const dryRunContext = gatherSquadContext(squadName, agentName, {
       verbose: options.verbose, agentPath, role: dryRunContextRole
     });
@@ -237,10 +235,7 @@ export async function runAgent(
   const systemContext = systemProtocol ? `\n${systemProtocol}\n` : '';
 
   // Derive context role from the agent's own YAML frontmatter `role:` free-text.
-  // Company COO override remains explicit.
-  const contextRole: ContextRole = agentName.includes('company-lead')
-    ? 'coo'
-    : resolveContextRoleFromAgent(agentPath, agentName);
+  const contextRole: ContextRole = resolveContextRoleFromAgent(agentPath, agentName);
 
   // Gather squad context (role-based: scanners get minimal, leads get everything)
   const squadContext = gatherSquadContext(squadName, agentName, {

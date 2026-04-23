@@ -8,6 +8,8 @@
  * calls return cached result (sync).
  */
 
+import { getApiUrl, getBridgeUrl } from './env-config.js';
+
 export interface TierInfo {
   tier: 1 | 2;
   services: {
@@ -22,8 +24,6 @@ export interface TierInfo {
   };
 }
 
-const DEFAULT_API_URL = 'http://localhost:8090';
-const DEFAULT_BRIDGE_URL = 'http://localhost:8088';
 const PROBE_TIMEOUT_MS = 1500;
 
 let cached: TierInfo | null = null;
@@ -47,10 +47,13 @@ async function probe(url: string): Promise<boolean> {
 export async function detectTier(): Promise<TierInfo> {
   if (cached) return cached;
 
+  const apiUrl = getApiUrl();
+  const bridgeUrl = getBridgeUrl();
+
   // Probe API and Bridge in parallel
   const [apiOk, bridgeOk] = await Promise.all([
-    probe(DEFAULT_API_URL),
-    probe(DEFAULT_BRIDGE_URL),
+    apiUrl ? probe(apiUrl) : Promise.resolve(false),
+    bridgeUrl ? probe(bridgeUrl) : Promise.resolve(false),
   ]);
 
   // Tier 2 requires at least the API to be healthy
@@ -65,8 +68,8 @@ export async function detectTier(): Promise<TierInfo> {
       redis: apiOk,    // If API is up, Redis is up (API depends on it)
     },
     urls: {
-      api: apiOk ? DEFAULT_API_URL : null,
-      bridge: bridgeOk ? DEFAULT_BRIDGE_URL : null,
+      api: apiOk ? apiUrl : null,
+      bridge: bridgeOk ? bridgeUrl : null,
     },
   };
 
