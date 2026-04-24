@@ -62,13 +62,29 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      # Upgrade npm to a version that supports OIDC trusted publishing (>= 11.5.1)
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest
 
       - run: npm ci
 
       - run: npm run build
 
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Determine npm dist-tag from package.json
+        id: dist_tag
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *-* ]]; then
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+            echo "Publishing pre-release $VERSION to @next"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "Publishing $VERSION to @latest"
+          fi
+
+      # Authentication via OIDC trusted publisher (configured on npmjs.com).
+      # No NPM_TOKEN needed.
+      - run: npm publish --provenance --access public --tag ${{ steps.dist_tag.outputs.npm_tag }}
