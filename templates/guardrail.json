@@ -10,6 +10,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'path=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get(\\\"file_path\\\",\\\"\\\"))\" 2>/dev/null || true); case \"$path\" in */goals.md|*/priorities.md|*/directives.md|*/SQUAD.md) echo \"BLOCKED: $path is a governance file. Only the founder can edit goals/priorities/directives/SQUAD identity. Propose changes by writing to .squads/proposed/<filename>-$(date +%Y%m%d).md instead — the founder reviews and merges.\" >&2; exit 2;; esac'",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
