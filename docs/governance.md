@@ -36,6 +36,44 @@ Instead of editing the canonical file, agents write to `.squads/proposed/<source
 
 The founder reviews proposals on a cadence (weekly, or per release) and merges accepted ones into the canonical files.
 
+## `goals.md` format — every claim must cite evidence
+
+Every entry under `Achieved`, `In Progress`, or `Active` in `goals.md` **must** include at least one verifiable reference. Without this, agents can claim wins that didn't happen, and reviewers can't tell convention from fabrication. (Empirical: a one-shot audit across 19 squads found 3 outright false achievements and 66 entries with no checkable reference.)
+
+### Required ref types
+At least one of:
+- **Pull request:** `→ #123` (same repo) or `→ org/repo#123`
+- **Commit:** `→ <sha>` (7+ chars) or `→ org/repo@<sha>`
+- **File:** `→ path/to/file.ts:42` (line number optional)
+- **Issue closed by PR:** `→ closes #123` or `→ fixed in #456`
+
+### Examples
+```markdown
+## Achieved
+- Conversation protocol shipped → #733
+- Telemetry restored after March outage → #739, src/lib/telemetry.ts
+- v0.3.1 published to @latest → 2383ab2
+
+## In Progress
+- Windows smoke test → #761 (open)
+- Governance guardrail → #765 (open)
+
+## Active
+- Tier 2 public images → epic #762 (no work started)
+```
+
+### Anti-patterns (will be flagged by `squads coherence`)
+```markdown
+- 13/13 Docker tests pass                    # ❌ no PR/commit/file
+- Marketing pipeline working                  # ❌ unverifiable claim
+- Achieved telemetry coverage                 # ❌ what proves it?
+```
+
+### Validation
+Two layers:
+1. **Convention** — agents writing proposals to `.squads/proposed/` follow this format.
+2. **Tooling** — `squads coherence` (next release) walks every `goals.md`, checks each ref against git/gh state, flags contradictions. Until then, `scripts/validate-goals.sh` in `hq` does the same job.
+
 ## Coherence checks
 
 Run `squads coherence` (coming in the next release) to surface drift:
@@ -43,6 +81,7 @@ Run `squads coherence` (coming in the next release) to surface drift:
 - Are priorities grounded in goals?
 - Are governance files stale (>14 days)?
 - Are there pending proposals awaiting founder review?
+- Do `Achieved` entries cite verifiable refs (PR, commit, file)?
 
 ## Override
 

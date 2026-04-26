@@ -36,6 +36,12 @@ Examples:
 - [ ] Deferred — revisit on YYYY-MM-DD
 ```
 
+## When proposing `goals.md` changes
+
+Every entry under `Achieved`, `In Progress`, or `Active` **must cite a verifiable ref** — PR, commit, file path, or issue. See `docs/governance.md` for the format spec and examples.
+
+Proposals that add `Achieved` entries with no ref will be rejected on review. The validator (`scripts/validate-goals.sh` in `hq`, `squads coherence` in a future CLI release) catches the same issue automatically.
+
 ## Founder workflow
 
 Weekly (or per-release), the founder reviews proposals:
