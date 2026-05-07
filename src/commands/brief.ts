@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { findProjectRoot } from '../lib/squad-parser.js';
@@ -78,7 +78,7 @@ async function briefCommand(options: { sessions: number; dryRun: boolean; coo: b
   try {
     const { CLAUDECODE: _cc, ANTHROPIC_API_KEY: _ak, ...cleanEnv } = process.env;
     const prompt = `${EXTRACTION_PROMPT}\n\n${transcripts}`;
-    const proc = spawnSync('claude', ['--print', '--model', 'claude-haiku-4-5-20251001'], {
+    const proc = spawnSync('claude', ['--print', '--model', 'haiku'], {
       input: prompt,
       encoding: 'utf-8',
       timeout: 60_000,
@@ -109,7 +109,7 @@ async function briefCommand(options: { sessions: number; dryRun: boolean; coo: b
   for (const task of result.tasks) {
     const repo = task.repo ?? squadRepos[task.squad];
     writeLine(`  ${bold}[${task.squad}]${RESET} ${task.title}`);
-    writeLine(`  ${dim}${task.body.slice(0, 120)}...${RESET}`);
+    writeLine(`  ${dim}${task.body.length > 120 ? task.body.slice(0, 120) + '...' : task.body}${RESET}`);
     if (repo) writeLine(`  ${dim}→ ${repo}${RESET}`);
     writeLine();
   }
@@ -131,12 +131,9 @@ async function briefCommand(options: { sessions: number; dryRun: boolean; coo: b
     }
 
     try {
-      const title = task.title.replace(/"/g, '\\"');
-      const body = task.body.replace(/"/g, '\\"');
-      const url = execSync(
-        `gh issue create -R "${repo}" --title "${title}" --body "${body}" 2>/dev/null`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
+      const proc = spawnSync('gh', ['issue', 'create', '-R', repo, '--title', task.title, '--body', task.body], { encoding: 'utf-8' });
+      if (proc.status !== 0) throw new Error(proc.stderr);
+      const url = proc.stdout.trim();
       writeLine(`  ${colors.green}created${RESET} ${url}`);
       created++;
     } catch {
