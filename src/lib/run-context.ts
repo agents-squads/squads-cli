@@ -14,10 +14,14 @@
  *   L9:  founder-context.md    — Live strategic state (universal, all squads see)
  *   L10: founder-alignment.md  — Per-squad contribution to founder's current pipeline
  *
- * L9 + L10 are auto-generated (e.g. by hq/scripts/founder-context-digest.py) from
+ * L9 + L10 are auto-generated (e.g. by hq/.claude/hooks/founder-context-digest.py) from
  * interactive sessions, git activity, and open PRs/issues. They translate the
  * founder's live strategic context into per-squad, named contributions so each
  * squad shows up aligned with current priorities rather than inventing generic work.
+ *
+ * Business-specific structural reference (Drive folder map, ERP architecture,
+ * canonical sheet schemas) can be embedded inline into founder-context.md by
+ * the digest script. The CLI loader stays generic; users decide what to embed.
  *
  * SQUAD.md is metadata only (repo, agents, config) — NOT injected into prompt.
  * Each layer adds a unique dimension. No layer contradicts another.
@@ -38,11 +42,11 @@ export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
 export const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 6000,   // ~1500 tokens — company + priorities + goals + agent + state + founder ctx
-  worker: 16000,   // ~4000 tokens — + feedback + founder ctx + alignment
-  lead: 32000,     // ~8000 tokens — all layers + founder ctx + alignment
-  coo: 40000,      // ~10000 tokens — all layers + expanded + founder ctx
-  verifier: 16000, // similar needs to worker
+  scanner: 8000,   // ~2000 tokens — company + priorities + goals + agent + state + founder ctx
+  worker: 22000,   // ~5500 tokens — + feedback + founder ctx + alignment (founder ctx may embed structural reference)
+  lead: 40000,     // ~10000 tokens — all layers + founder ctx + alignment
+  coo: 48000,      // ~12000 tokens — all layers + expanded + founder ctx
+  verifier: 22000, // similar needs to worker
 };
 
 /**
@@ -420,8 +424,10 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
  *
  * Layers 9 and 10 are injected FIRST in the prompt (LLMs pay most attention
  * to the beginning of context) so squads align with the founder's live
- * pipeline before processing any other layer. Both files are auto-generated
- * (e.g. by hq/scripts/founder-context-digest.py).
+ * pipeline before processing any other layer. Both are auto-generated
+ * (e.g. by hq/.claude/hooks/founder-context-digest.py) which can also
+ * embed business-specific structural reference (Drive map, ERP architecture)
+ * directly into founder-context.md when relevant.
  *
  * SQUAD.md is NOT injected — it's metadata for the CLI (repo, agents, config).
  * Missing files are skipped gracefully — no crashes on first run or new squads.
