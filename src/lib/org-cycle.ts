@@ -162,8 +162,11 @@ export function displayOrgScan(scan: OrgScanResult[]): void {
 /**
  * Refresh founder context before an org cycle.
  *
- * Looks for `scripts/founder-context-digest.py` in the project root. If it
- * exists, runs it when `.agents/memory/company/founder-context.md` is missing
+ * Looks for the digest script at one of two paths (in order):
+ *   - .claude/hooks/founder-context-digest.py   (preferred — version-controlled hook)
+ *   - scripts/founder-context-digest.py         (fallback — for projects with a scripts/ dir)
+ *
+ * Runs the script when `.agents/memory/company/founder-context.md` is missing
  * or older than `staleHours` (default 2h). On success, the digest writes:
  *   - .agents/memory/company/founder-context.md  (universal)
  *   - .agents/memory/{squad}/founder-alignment.md  (per-squad)
@@ -172,7 +175,7 @@ export function displayOrgScan(scan: OrgScanResult[]): void {
  * Returns:
  *   'refreshed' — digest ran successfully and produced fresh files
  *   'fresh'     — existing context is recent enough, no refresh needed
- *   'skipped'   — no digest script found at expected path; nothing to do
+ *   'skipped'   — no digest script found at expected paths; nothing to do
  *   'failed'    — digest exited non-zero; org cycle should NOT proceed
  */
 export function refreshFounderContext(
@@ -181,8 +184,12 @@ export function refreshFounderContext(
   const projectRoot = findProjectRoot();
   if (!projectRoot) return 'skipped';
 
-  const digestScript = join(projectRoot, 'scripts', 'founder-context-digest.py');
-  if (!existsSync(digestScript)) return 'skipped';
+  const candidatePaths = [
+    join(projectRoot, '.claude', 'hooks', 'founder-context-digest.py'),
+    join(projectRoot, 'scripts', 'founder-context-digest.py'),
+  ];
+  const digestScript = candidatePaths.find(p => existsSync(p));
+  if (!digestScript) return 'skipped';
 
   const memoryDir = findMemoryDir();
   const contextFile = memoryDir
