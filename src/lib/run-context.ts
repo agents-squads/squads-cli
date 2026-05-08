@@ -42,11 +42,11 @@ export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
 export const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 8000,   // ~2000 tokens — company + priorities + goals + agent + state + founder ctx
-  worker: 22000,   // ~5500 tokens — + feedback + founder ctx + alignment (founder ctx may embed structural reference)
-  lead: 40000,     // ~10000 tokens — all layers + founder ctx + alignment
-  coo: 48000,      // ~12000 tokens — all layers + expanded + founder ctx
-  verifier: 22000, // similar needs to worker
+  scanner: 50000,  // ~12500 tokens — full founder ctx (incl. embedded Drive structure) + identity layers
+  worker: 60000,   // ~15000 tokens — + feedback + alignment
+  lead: 80000,     // ~20000 tokens — all layers + founder ctx + alignment
+  coo: 100000,     // ~25000 tokens — all layers + expanded + founder ctx
+  verifier: 60000, // similar needs to worker
 };
 
 /**
@@ -447,23 +447,29 @@ export function gatherSquadContext(
   const sections: string[] = [];
   let usedChars = 0;
 
-  /** Try to add a layer. Returns true if added, false if budget exceeded or not allowed. */
+  /** Try to add a layer. Returns true if added (possibly truncated), false if no budget left. */
   function addLayer(layerNum: number, header: string, content: string, maxChars?: number): boolean {
     if (!allowedSections.has(layerNum)) return false;
     if (!content) return false;
 
-    let text = content;
+    const TRUNCATION_SUFFIX = '\n...';
     const remaining = Math.max(0, budget - usedChars);
-    const cap = maxChars !== undefined ? Math.min(maxChars, remaining) : remaining;
-    if (text.length > cap) {
-      text = text.substring(0, cap) + '\n...';
-    }
-
-    if (usedChars + text.length > budget) {
+    if (remaining <= TRUNCATION_SUFFIX.length) {
+      // No room left for even a meaningful truncation
       if (options.verbose) {
         writeLine(`  ${colors.dim}Context budget exhausted at layer ${layerNum} (${header})${RESET}`);
       }
       return false;
+    }
+
+    const cap = maxChars !== undefined ? Math.min(maxChars, remaining) : remaining;
+    let text = content;
+    if (text.length > cap) {
+      // Reserve TRUNCATION_SUFFIX bytes for the suffix so total fits exactly within cap
+      text = text.substring(0, cap - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+      if (options.verbose) {
+        writeLine(`  ${colors.dim}Layer ${layerNum} truncated to ${text.length}/${content.length} chars${RESET}`);
+      }
     }
 
     sections.push(`## ${header}\n${text}`);
