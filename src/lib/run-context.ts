@@ -42,11 +42,11 @@ export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
 export const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 50000,  // ~12500 tokens — full founder ctx (incl. embedded Drive structure) + identity layers
-  worker: 60000,   // ~15000 tokens — + feedback + alignment
+  scanner: 50000,  // ~12500 tokens — identity layers + founder ctx + alignment
+  worker: 60000,   // ~15000 tokens — identity + feedback + founder ctx + alignment
   lead: 80000,     // ~20000 tokens — all layers + founder ctx + alignment
-  coo: 100000,     // ~25000 tokens — all layers + expanded + founder ctx
-  verifier: 60000, // similar needs to worker
+  coo: 100000,     // ~25000 tokens — all layers + expanded budget + founder ctx + alignment
+  verifier: 60000, // ~15000 tokens — same as worker + founder ctx + alignment
 };
 
 /**
@@ -60,11 +60,11 @@ export const ROLE_BUDGETS: Record<ContextRole, number> = {
  * generic work disconnected from the founder's current pipeline.
  */
 export const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
-  scanner:  new Set([1, 2, 3, 4, 5,             9, 10]),   // identity + focus + role + memory + founder ctx
-  worker:   new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // + feedback + founder ctx
-  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + founder ctx
-  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + founder ctx + expanded budget
-  verifier: new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // same as worker + founder ctx
+  scanner:  new Set([1, 2, 3, 4, 5,             9, 10]),   // identity + focus + role + memory + founder ctx + alignment
+  worker:   new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // + feedback + founder ctx + alignment
+  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + founder ctx + alignment
+  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + expanded budget + founder ctx + alignment
+  verifier: new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // same as worker + founder ctx + alignment
 };
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
@@ -83,6 +83,12 @@ export interface AgentFrontmatter {
    * Used as the primary signal for context-role selection.
    */
   agent_role?: string;
+  /**
+   * Maximum context tokens for this agent.
+   * When set, overrides the role-level ROLE_BUDGETS cap for context assembly.
+   * Allows squad operators to cap context spend per agent.
+   */
+  max_context_tokens?: number;
 }
 
 /**
@@ -135,6 +141,12 @@ export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
   const retriesMatch = yaml.match(/max_retries:\s*(\d+)/);
   if (retriesMatch) {
     result.max_retries = parseInt(retriesMatch[1], 10);
+  }
+
+  // max_context_tokens: 5000
+  const maxContextTokensMatch = yaml.match(/max_context_tokens:\s*(\d+)/);
+  if (maxContextTokensMatch) {
+    result.max_context_tokens = parseInt(maxContextTokensMatch[1], 10);
   }
 
   // cooldown: "30m" or "6h" or "2 hours"

@@ -217,11 +217,20 @@ export function refreshFounderContext(
   writeLine(`  ${colors.dim}founder-context: refreshing from CC sessions + git activity...${RESET}`);
   // Two Claude calls (universal + per-squad block for all squads in one shot)
   // can take 5-8 min on large inputs. Cap at 12 min to be safe.
-  const result = spawnSync('python3', [digestScript], {
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  const result = spawnSync(pythonCmd, [digestScript], {
     cwd: projectRoot,
     stdio: 'inherit',
     timeout: 12 * 60 * 1000,
   });
+
+  if (result.error) {
+    const isTimeout = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    writeLine(
+      `  ${colors.yellow}founder-context: digest ${isTimeout ? 'timed out' : 'failed to start'}: ${result.error.message}${RESET}`
+    );
+    return 'failed';
+  }
 
   if (result.status === 0) {
     writeLine(`  ${colors.green}founder-context: refreshed${RESET}\n`);

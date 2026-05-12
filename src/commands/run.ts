@@ -106,7 +106,7 @@ export async function runCommand(
     // into per-squad alignment files so agents run aligned with the founder's
     // current pipeline, not generic squad goals.
     if (!options.dryRun) {
-      const ctxResult = refreshFounderContext();
+      const ctxResult = refreshFounderContext({ force: options.force });
       if (ctxResult === 'failed') {
         writeLine(`  ${colors.red}Aborting org cycle. Fix the digest script and retry.${RESET}\n`);
         return;
@@ -405,6 +405,13 @@ export async function runCommand(
     if (!checksOk) {
       process.exit(1);
     }
+  }
+
+  // Refresh founder context for single-squad runs (same as --org, so agents
+  // always see aligned strategic context regardless of how they're invoked).
+  if (squad && !options.dryRun) {
+    const { refreshFounderContext: refreshCtx } = await import('../lib/org-cycle.js');
+    refreshCtx({ force: options.force });
   }
 
   if (squad) {
