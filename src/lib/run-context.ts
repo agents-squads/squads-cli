@@ -30,7 +30,7 @@ export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
-const ROLE_BUDGETS: Record<ContextRole, number> = {
+export const ROLE_BUDGETS: Record<ContextRole, number> = {
   scanner: 4000,   // ~1000 tokens — company + priorities + goals + agent + state
   worker: 12000,   // ~3000 tokens — + feedback
   lead: 24000,     // ~6000 tokens — all layers
@@ -43,7 +43,7 @@ const ROLE_BUDGETS: Record<ContextRole, number> = {
  * Numbers correspond to layer order in the Squad Context System:
  *   1=company, 2=priorities, 3=goals, 4=agent, 5=state, 6=feedback, 7=daily-briefing, 8=cross-squad
  */
-const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
+export const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
   scanner:  new Set([1, 2, 3, 4, 5]),           // identity + focus + role + memory
   worker:   new Set([1, 2, 3, 4, 5, 6]),        // + feedback
   lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8]),  // + daily briefing + cross-squad
