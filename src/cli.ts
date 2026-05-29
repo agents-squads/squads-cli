@@ -58,6 +58,7 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
 import { registerCognitionCommand } from './commands/cognition.js';
+import { registerContractCommand } from './commands/contract.js';
 import { registerCatalogCommands } from './commands/catalog.js';
 import { registerReleaseCommands } from './commands/release-check.js';
 import { registerObservabilityCommands } from './commands/observability.js';
@@ -1079,6 +1080,9 @@ registerDeployCommand(program);
 
 // Cognition command group - business cognition engine
 registerCognitionCommand(program);
+
+// Agent Contracts — governed per-agent capability definitions (P0)
+registerContractCommand(program);
 
 // IDP — service catalog, scorecards, release checks
 registerCatalogCommands(program);
