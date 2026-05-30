@@ -19,6 +19,9 @@
  * managed settings — tracked for the real-run smoke.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
 export interface SandboxSettingsOptions {
   /** Worktree/project root — the agent's write root. */
   cwd: string;
@@ -77,8 +80,6 @@ export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<strin
 export function readGuardrailHooks(guardrailPath: string | undefined): unknown {
   if (!guardrailPath) return undefined;
   try {
-    // Lazy fs to keep the builder pure/testable.
-    const { readFileSync, existsSync } = require('fs') as typeof import('fs');
     if (!existsSync(guardrailPath)) return undefined;
     const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { hooks?: unknown };
     return json.hooks;
@@ -89,8 +90,6 @@ export function readGuardrailHooks(guardrailPath: string | undefined): unknown {
 
 /** Write the merged settings to a temp file and return its path (for --settings). */
 export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
-  const { writeFileSync, mkdirSync } = require('fs') as typeof import('fs');
-  const { join } = require('path') as typeof import('path');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'squads-sandbox-settings.json');
   writeFileSync(path, JSON.stringify(settings, null, 2));
