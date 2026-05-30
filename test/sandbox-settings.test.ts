@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
-  buildSandboxSettings, sandboxEnabled,
+  buildSandboxSettings, sandboxEnabled, readGuardrailHooks, writeSandboxSettingsFile,
   DEFAULT_DENY_READ, DEFAULT_EXCLUDED_COMMANDS, DEFAULT_ALLOWED_DOMAINS,
 } from '../src/lib/sandbox-settings.js';
 
@@ -53,6 +56,25 @@ describe('buildSandboxSettings', () => {
     expect(sb.network.allowedDomains).toEqual(['x.com']);
     expect(sb.excludedCommands).toEqual(['foo *']);
     expect(sb.filesystem.denyRead).toEqual(['~/secret']);
+  });
+});
+
+describe('file I/O (the path the ESM-require bug broke at runtime)', () => {
+  it('writeSandboxSettingsFile writes valid JSON and returns its path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sbx-'));
+    const settings = buildSandboxSettings({ cwd: '/w' });
+    const path = writeSandboxSettingsFile(settings, dir);
+    const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    expect((parsed.sandbox as { enabled: boolean }).enabled).toBe(true);
+  });
+
+  it('readGuardrailHooks pulls .hooks out of a settings file (and is safe on missing)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gr-'));
+    const p = join(dir, 'guardrail.json');
+    writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash' }] } }));
+    expect(readGuardrailHooks(p)).toEqual({ PreToolUse: [{ matcher: 'Bash' }] });
+    expect(readGuardrailHooks(join(dir, 'nope.json'))).toBeUndefined();
+    expect(readGuardrailHooks(undefined)).toBeUndefined();
   });
 });
 
