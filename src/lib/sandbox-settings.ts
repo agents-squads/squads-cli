@@ -1,0 +1,103 @@
+/**
+ * Sandbox settings — configure Claude Code's BUILT-IN OS sandbox for spawned
+ * agents (P2 of chief-cli-runtime, hq#418 / squads-cli#780).
+ *
+ * Decision (2026-05-30, after research): do NOT hand-roll Seatbelt/bubblewrap
+ * profiles or a proxy. Claude Code (which our agents already run on) ships an OS
+ * sandbox — Seatbelt(macOS)/bubblewrap(Linux) filesystem isolation + a default-
+ * deny network proxy with a domain allowlist — and Anthropic OSS'd it as
+ * `@anthropic-ai/sandbox-runtime`. We just feed it settings (merged with the
+ * existing guardrail PreToolUse hooks) via the spawn's `--settings` flag.
+ *
+ * Gated behind `SQUADS_SANDBOX=1` for now: when off, behavior is unchanged; when
+ * on, agents run sandboxed. Flip the default after a real `squads run` smoke.
+ *
+ * Gotchas baked in (from Anthropic's docs): `gh`/`gcloud`/`terraform` (Go TLS)
+ * and `docker` are incompatible with Seatbelt → `excludedCommands` (run outside
+ * the sandbox); default read still exposes `~/.ssh`/`~/.aws` → `denyRead` them.
+ * Network egress allowlisting that BLOCKS (vs prompts) headless agents needs
+ * managed settings — tracked for the real-run smoke.
+ */
+
+export interface SandboxSettingsOptions {
+  /** Worktree/project root — the agent's write root. */
+  cwd: string;
+  /** Extra writable paths (the contract's write_scope, e.g. memory dir). */
+  writeScope?: string[];
+  /** Network allowlist (defaults to our known hosts). */
+  allowedDomains?: string[];
+  /** Commands that must run OUTSIDE the sandbox (Seatbelt-incompatible). */
+  excludedCommands?: string[];
+  /** Paths whose READ is denied even though default read is broad. */
+  denyRead?: string[];
+  /** Existing guardrail PreToolUse hooks to merge in (the denylist). */
+  guardrailHooks?: unknown;
+  /** Strict = hard-fail if sandbox unavailable + no unsandboxed escape hatch. */
+  strict?: boolean;
+}
+
+export const DEFAULT_ALLOWED_DOMAINS = [
+  'api.anthropic.com',
+  'github.com', '*.github.com', 'codeload.github.com', 'objects.githubusercontent.com',
+  'registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org',
+  '*.googleapis.com',
+];
+
+// Go-TLS tools fail under Seatbelt; docker is incompatible. Run them unsandboxed.
+export const DEFAULT_EXCLUDED_COMMANDS = ['gh *', 'gcloud *', 'terraform *', 'docker *'];
+
+// Default read is the whole machine minus these — credential dirs must be denied.
+export const DEFAULT_DENY_READ = ['~/.ssh', '~/.aws', '~/.config/gcloud'];
+
+/** Build the Claude Code settings object (sandbox + merged guardrail hooks). */
+export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<string, unknown> {
+  const settings: Record<string, unknown> = {};
+  if (opts.guardrailHooks) settings.hooks = opts.guardrailHooks;
+  settings.sandbox = {
+    enabled: true,
+    failIfUnavailable: opts.strict ?? false,
+    // Non-strict keeps Claude Code's escape hatch (retry unsandboxed → permission
+    // flow) so a sandbox-incompatible command degrades gracefully instead of
+    // failing the agent. Strict mode (no escape) is the eventual posture.
+    allowUnsandboxedCommands: opts.strict ? false : true,
+    filesystem: {
+      allowWrite: [opts.cwd, ...(opts.writeScope ?? [])],
+      denyRead: opts.denyRead ?? DEFAULT_DENY_READ,
+    },
+    network: { allowedDomains: opts.allowedDomains ?? DEFAULT_ALLOWED_DOMAINS },
+    // Block (not prompt) non-allowed domains for headless agents. NOTE: only
+    // honored in *managed* settings — verify/parameterize in the real-run smoke.
+    allowManagedDomainsOnly: true,
+    excludedCommands: opts.excludedCommands ?? DEFAULT_EXCLUDED_COMMANDS,
+  };
+  return settings;
+}
+
+/** Read the PreToolUse hooks out of a guardrail settings file, if any. */
+export function readGuardrailHooks(guardrailPath: string | undefined): unknown {
+  if (!guardrailPath) return undefined;
+  try {
+    // Lazy fs to keep the builder pure/testable.
+    const { readFileSync, existsSync } = require('fs') as typeof import('fs');
+    if (!existsSync(guardrailPath)) return undefined;
+    const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { hooks?: unknown };
+    return json.hooks;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Write the merged settings to a temp file and return its path (for --settings). */
+export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
+  const { writeFileSync, mkdirSync } = require('fs') as typeof import('fs');
+  const { join } = require('path') as typeof import('path');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'squads-sandbox-settings.json');
+  writeFileSync(path, JSON.stringify(settings, null, 2));
+  return path;
+}
+
+/** Whether sandboxing is opt-in enabled for spawns. */
+export function sandboxEnabled(): boolean {
+  return process.env.SQUADS_SANDBOX === '1';
+}
