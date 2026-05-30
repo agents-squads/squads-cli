@@ -41,6 +41,7 @@ import { findMemoryDir } from './memory.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
+import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import {
   colors,
   RESET,
@@ -140,6 +141,22 @@ export async function autoCommitAgentWork(
 
     // Stage all changes (agent work should be committed)
     execSync('git add -A', execOpts);
+
+    // PII/secret guard — never let an agent's auto-commit leak a credential or
+    // PII into a (possibly public) repo. Scan only the staged ADDITIONS; if any
+    // finding, unstage and refuse to commit (safe failure: work stays local,
+    // surfaced as an error rather than pushed).
+    const stagedDiff = execSync('git diff --cached', {
+      encoding: 'utf-8', cwd: projectRoot, maxBuffer: 32 * 1024 * 1024,
+    });
+    const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
+    if (findings.length > 0) {
+      try { execSync('git reset', execOpts); } catch { /* refuse to commit regardless */ }
+      return {
+        committed: false,
+        error: `blocked: ${findings.length} secret/PII finding(s) in staged changes — ${summarizeFindings(findings)}`,
+      };
+    }
 
     // Build commit message with provider-specific co-author
     // Write to temp file to avoid shell injection via squad/agent names
