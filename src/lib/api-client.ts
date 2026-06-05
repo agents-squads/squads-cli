@@ -21,7 +21,7 @@ const AGENT_EXECUTIONS_PATH: CreateAgentExecutionAgentExecutionsPostData['url'] 
 function agentExecutionPath(
   executionId: UpdateAgentExecutionAgentExecutionsExecutionIdPatchData['path']['execution_id'],
 ): string {
-  return `/agent-executions/${executionId}`;
+  return `/agent-executions/${encodeURIComponent(executionId)}`;
 }
 
 function getApiConfig(): { apiUrl: string; token: string } | null {
