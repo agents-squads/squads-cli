@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'cmd=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get(\\\"command\\\",\\\"\\\"))\" 2>/dev/null || true); case \"$cmd\" in *\"rm -rf /\"*|*\"rm -rf ~\"*|*\"rm -rf $HOME\"*) echo \"BLOCKED: rm -rf on root/home is not allowed\" >&2; exit 2;; *\"git push --force\"*|*\"git push -f \"*) echo \"BLOCKED: force push is not allowed\" >&2; exit 2;; *\"git reset --hard\"*) echo \"BLOCKED: git reset --hard is not allowed\" >&2; exit 2;; *\"git clean -f\"*|*\"git clean -fd\"*) echo \"BLOCKED: destructive git clean is not allowed\" >&2; exit 2;; *\"npm publish\"*|*\"yarn publish\"*|*\"pnpm publish\"*) echo \"BLOCKED: publishing packages is not allowed\" >&2; exit 2;; esac'",
+            "command": "bash -c 'cmd=$(python3 -c \"import sys,json; print(json.load(sys.stdin).get(\\\"tool_input\\\",{}).get(\\\"command\\\",\\\"\\\"))\" 2>/dev/null || true); case \"$cmd\" in *\"rm -rf /\"*|*\"rm -rf ~\"*|*\"rm -rf $HOME\"*) echo \"BLOCKED: rm -rf on root/home is not allowed\" >&2; exit 2;; *\"git push --force\"*|*\"git push -f \"*) echo \"BLOCKED: force push is not allowed\" >&2; exit 2;; *\"git reset --hard\"*) echo \"BLOCKED: git reset --hard is not allowed\" >&2; exit 2;; *\"git clean -f\"*|*\"git clean -fd\"*) echo \"BLOCKED: destructive git clean is not allowed\" >&2; exit 2;; *\"npm publish\"*|*\"yarn publish\"*|*\"pnpm publish\"*) echo \"BLOCKED: publishing packages is not allowed\" >&2; exit 2;; esac'",
             "timeout": 5
           }
         ]
