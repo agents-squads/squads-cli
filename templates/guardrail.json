@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "deny": [
+      "Edit(goals.md)", "Write(goals.md)", "MultiEdit(goals.md)",
+      "Edit(priorities.md)", "Write(priorities.md)", "MultiEdit(priorities.md)",
+      "Edit(directives.md)", "Write(directives.md)", "MultiEdit(directives.md)",
+      "Edit(SQUAD.md)", "Write(SQUAD.md)", "MultiEdit(SQUAD.md)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
