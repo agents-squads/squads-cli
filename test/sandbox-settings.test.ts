@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  buildSandboxSettings, sandboxEnabled, readGuardrailHooks, writeSandboxSettingsFile,
+  buildSandboxSettings, sandboxEnabled, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile,
   DEFAULT_DENY_READ, DEFAULT_EXCLUDED_COMMANDS, DEFAULT_ALLOWED_DOMAINS,
 } from '../src/lib/sandbox-settings.js';
 
@@ -49,6 +49,12 @@ describe('buildSandboxSettings', () => {
     expect(buildSandboxSettings({ cwd: '/w' }).hooks).toBeUndefined();
   });
 
+  it('carries guardrail permissions through (governance deny rules survive the sandbox path)', () => {
+    const permissions = { deny: ['Edit(goals.md)', 'Write(directives.md)'] };
+    expect(buildSandboxSettings({ cwd: '/w', guardrailPermissions: permissions }).permissions).toEqual(permissions);
+    expect(buildSandboxSettings({ cwd: '/w' }).permissions).toBeUndefined();
+  });
+
   it('overrides: custom allowedDomains/excludedCommands/denyRead win', () => {
     const sb = buildSandboxSettings({
       cwd: '/w', allowedDomains: ['x.com'], excludedCommands: ['foo *'], denyRead: ['~/secret'],
@@ -75,6 +81,15 @@ describe('file I/O (the path the ESM-require bug broke at runtime)', () => {
     expect(readGuardrailHooks(p)).toEqual({ PreToolUse: [{ matcher: 'Bash' }] });
     expect(readGuardrailHooks(join(dir, 'nope.json'))).toBeUndefined();
     expect(readGuardrailHooks(undefined)).toBeUndefined();
+  });
+
+  it('readGuardrailPermissions pulls .permissions out of a settings file (and is safe on missing)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gp-'));
+    const p = join(dir, 'guardrail.json');
+    writeFileSync(p, JSON.stringify({ permissions: { deny: ['Edit(goals.md)'] } }));
+    expect(readGuardrailPermissions(p)).toEqual({ deny: ['Edit(goals.md)'] });
+    expect(readGuardrailPermissions(join(dir, 'nope.json'))).toBeUndefined();
+    expect(readGuardrailPermissions(undefined)).toBeUndefined();
   });
 });
 

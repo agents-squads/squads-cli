@@ -43,7 +43,7 @@ import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, writeSandboxSettingsFile, sandboxEnabled,
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled,
 } from './sandbox-settings.js';
 import {
   colors,
@@ -785,6 +785,7 @@ export async function executeWithClaude(
         cwd: targetRepoRoot,
         writeScope: memDir ? [memDir] : [],
         guardrailHooks: readGuardrailHooks(guardrailPath),
+        guardrailPermissions: readGuardrailPermissions(guardrailPath),
       });
       const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
       claudeArgs.push('--settings', settingsPath);

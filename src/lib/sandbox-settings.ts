@@ -35,6 +35,8 @@ export interface SandboxSettingsOptions {
   denyRead?: string[];
   /** Existing guardrail PreToolUse hooks to merge in (the denylist). */
   guardrailHooks?: unknown;
+  /** Existing guardrail permissions (governance deny rules) to carry through. */
+  guardrailPermissions?: unknown;
   /** Strict = hard-fail if sandbox unavailable + no unsandboxed escape hatch. */
   strict?: boolean;
 }
@@ -56,6 +58,10 @@ export const DEFAULT_DENY_READ = ['~/.ssh', '~/.aws', '~/.config/gcloud'];
 export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<string, unknown> {
   const settings: Record<string, unknown> = {};
   if (opts.guardrailHooks) settings.hooks = opts.guardrailHooks;
+  // Carry the governance deny rules through the sandbox path too — otherwise
+  // enabling SQUADS_SANDBOX would silently drop them (the file is rebuilt here,
+  // not passed verbatim like the non-sandbox --settings path).
+  if (opts.guardrailPermissions) settings.permissions = opts.guardrailPermissions;
   settings.sandbox = {
     enabled: true,
     failIfUnavailable: opts.strict ?? false,
@@ -83,6 +89,18 @@ export function readGuardrailHooks(guardrailPath: string | undefined): unknown {
     if (!existsSync(guardrailPath)) return undefined;
     const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { hooks?: unknown };
     return json.hooks;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read the permissions (governance deny rules) out of a guardrail settings file, if any. */
+export function readGuardrailPermissions(guardrailPath: string | undefined): unknown {
+  if (!guardrailPath) return undefined;
+  try {
+    if (!existsSync(guardrailPath)) return undefined;
+    const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { permissions?: unknown };
+    return json.permissions;
   } catch {
     return undefined;
   }
