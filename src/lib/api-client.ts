@@ -5,8 +5,24 @@
 
 import { loadSession } from './auth.js';
 import { getApiUrl } from './env-config.js';
+import type {
+  CreateAgentExecutionAgentExecutionsPostData,
+  UpdateAgentExecutionAgentExecutionsExecutionIdPatchData,
+} from '../client/index.js';
 
 const API_TIMEOUT_MS = 5000;
+
+// Endpoint paths bound to the generated OpenAPI types (src/client/, regenerated
+// by `npm run gen:client`). If squads-api renames these routes the spec types
+// change and these assignments stop compiling — spec-first drift protection at
+// the call site, with no runtime dependency on a generated SDK.
+const AGENT_EXECUTIONS_PATH: CreateAgentExecutionAgentExecutionsPostData['url'] = '/agent-executions';
+
+function agentExecutionPath(
+  executionId: UpdateAgentExecutionAgentExecutionsExecutionIdPatchData['path']['execution_id'],
+): string {
+  return `/agent-executions/${executionId}`;
+}
 
 function getApiConfig(): { apiUrl: string; token: string } | null {
   const session = loadSession();
@@ -58,7 +74,7 @@ export async function reportExecutionStart(
   if (!config) return null;
 
   try {
-    const response = await fetch(`${config.apiUrl}/agent-executions`, {
+    const response = await fetch(`${config.apiUrl}${AGENT_EXECUTIONS_PATH}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -99,7 +115,7 @@ export async function reportExecutionComplete(
     durationMs?: number;
   },
 ): Promise<boolean> {
-  return apiRequest(`/agent-executions/${executionId}`, 'PATCH', {
+  return apiRequest(agentExecutionPath(executionId), 'PATCH', {
     status,
     ...(details?.summary ? { summary: details.summary } : {}),
     ...(details?.error ? { error: details.error } : {}),
@@ -121,7 +137,7 @@ export async function reportConversationResult(
     agentsInvolved: string[];
   },
 ): Promise<boolean> {
-  return apiRequest(`/agent-executions/${executionId}`, 'PATCH', {
+  return apiRequest(agentExecutionPath(executionId), 'PATCH', {
     status: result.converged ? 'completed' : 'stopped',
     summary: `${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`,
     cost_usd: result.totalCost,

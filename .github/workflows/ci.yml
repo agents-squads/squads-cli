@@ -57,6 +57,31 @@ jobs:
           path: dist/
           retention-days: 7
 
+  codegen:
+    name: API client codegen (drift guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Regenerate API client from vendored spec
+        run: npm run gen:client
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- src/client; then
+            echo "::error::src/client is out of date. Run 'npm run gen:client' and commit the result."
+            exit 1
+          fi
+
   security:
     runs-on: ubuntu-latest
     steps:
