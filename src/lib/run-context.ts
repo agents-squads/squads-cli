@@ -4,13 +4,24 @@
  * Squad Context System — context assembly for agent execution.
  *
  * Layers flow from general to particular (no overrides, each answers a different question):
- *   L0: SYSTEM.md      — How    (system, tools, principles — immutable, outside budget)
- *   L1: company.md     — Why    (company identity, alignment)
- *   L2: priorities.md  — Where  (current focus, urgency)
- *   L3: goals.md       — What   (measurable targets)
- *   L4: agent.md       — You    (agent role, specific instructions)
- *   L5: state.md       — Memory (continuity from last run)
- *   L6+: Supporting    — feedback, daily-briefing, cross-squad learnings
+ *   L0:  SYSTEM.md             — How    (system, tools, principles — immutable, outside budget)
+ *   L1:  company.md            — Why    (company identity, alignment)
+ *   L2:  priorities.md         — Where  (current focus, urgency)
+ *   L3:  goals.md              — What   (measurable targets)
+ *   L4:  agent.md              — You    (agent role, specific instructions)
+ *   L5:  state.md              — Memory (continuity from last run)
+ *   L6+: Supporting            — feedback, daily-briefing, cross-squad learnings
+ *   L9:  founder-context.md    — Live strategic state (universal, all squads see)
+ *   L10: founder-alignment.md  — Per-squad contribution to founder's current pipeline
+ *
+ * L9 + L10 are auto-generated (e.g. by hq/.claude/hooks/founder-context-digest.py) from
+ * interactive sessions, git activity, and open PRs/issues. They translate the
+ * founder's live strategic context into per-squad, named contributions so each
+ * squad shows up aligned with current priorities rather than inventing generic work.
+ *
+ * Business-specific structural reference (Drive folder map, ERP architecture,
+ * canonical sheet schemas) can be embedded inline into founder-context.md by
+ * the digest script. The CLI loader stays generic; users decide what to embed.
  *
  * SQUAD.md is metadata only (repo, agents, config) — NOT injected into prompt.
  * Each layer adds a unique dimension. No layer contradicts another.
@@ -31,24 +42,29 @@ export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
 export const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 4000,   // ~1000 tokens — company + priorities + goals + agent + state
-  worker: 12000,   // ~3000 tokens — + feedback
-  lead: 24000,     // ~6000 tokens — all layers
-  coo: 32000,      // ~8000 tokens — all layers + expanded
-  verifier: 12000, // similar needs to worker
+  scanner: 50000,  // ~12500 tokens — identity layers + founder ctx + alignment
+  worker: 60000,   // ~15000 tokens — identity + feedback + founder ctx + alignment
+  lead: 80000,     // ~20000 tokens — all layers + founder ctx + alignment
+  coo: 100000,     // ~25000 tokens — all layers + expanded budget + founder ctx + alignment
+  verifier: 60000, // ~15000 tokens — same as worker + founder ctx + alignment
 };
 
 /**
  * Which layers each role gets access to.
  * Numbers correspond to layer order in the Squad Context System:
- *   1=company, 2=priorities, 3=goals, 4=agent, 5=state, 6=feedback, 7=daily-briefing, 8=cross-squad
+ *   1=company, 2=priorities, 3=goals, 4=agent, 5=state, 6=feedback,
+ *   7=daily-briefing, 8=cross-squad, 9=founder-context, 10=founder-alignment
+ *
+ * Layers 9 and 10 are visible to ALL roles (including scanners): live strategic
+ * context is always relevant, regardless of role. Without it, agents invent
+ * generic work disconnected from the founder's current pipeline.
  */
 export const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
-  scanner:  new Set([1, 2, 3, 4, 5]),           // identity + focus + role + memory
-  worker:   new Set([1, 2, 3, 4, 5, 6]),        // + feedback
-  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8]),  // + daily briefing + cross-squad
-  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8]),  // all layers + expanded budget
-  verifier: new Set([1, 2, 3, 4, 5, 6]),        // same as worker
+  scanner:  new Set([1, 2, 3, 4, 5,             9, 10]),   // identity + focus + role + memory + founder ctx + alignment
+  worker:   new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // + feedback + founder ctx + alignment
+  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + founder ctx + alignment
+  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + expanded budget + founder ctx + alignment
+  verifier: new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // same as worker + founder ctx + alignment
 };
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
@@ -67,6 +83,12 @@ export interface AgentFrontmatter {
    * Used as the primary signal for context-role selection.
    */
   agent_role?: string;
+  /**
+   * Maximum context tokens for this agent.
+   * When set, overrides the role-level ROLE_BUDGETS cap for context assembly.
+   * Allows squad operators to cap context spend per agent.
+   */
+  max_context_tokens?: number;
 }
 
 /**
@@ -119,6 +141,12 @@ export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
   const retriesMatch = yaml.match(/max_retries:\s*(\d+)/);
   if (retriesMatch) {
     result.max_retries = parseInt(retriesMatch[1], 10);
+  }
+
+  // max_context_tokens: 5000
+  const maxContextTokensMatch = yaml.match(/max_context_tokens:\s*(\d+)/);
+  if (maxContextTokensMatch) {
+    result.max_context_tokens = parseInt(maxContextTokensMatch[1], 10);
   }
 
   // cooldown: "30m" or "6h" or "2 hours"
@@ -395,14 +423,23 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
  * Gather context for agent execution.
  *
  * Layers flow general → particular (each adds a unique dimension):
- *   1. company.md     — Why    (company identity, alignment)
- *   2. priorities.md  — Where  (current focus, urgency)
- *   3. goals.md       — What   (measurable targets)
- *   4. agent.md       — You    (agent role, instructions)
- *   5. state.md       — Memory (continuity from last run)
- *   6. feedback.md    — Supporting (squad feedback)
- *   7. daily-briefing — Supporting (org pulse, leads+coo only)
- *   8. cross-squad    — Supporting (learnings from other squads)
+ *    1. company.md             — Why    (company identity, alignment)
+ *    2. priorities.md          — Where  (current focus, urgency)
+ *    3. goals.md               — What   (measurable targets)
+ *    4. agent.md               — You    (agent role, instructions)
+ *    5. state.md               — Memory (continuity from last run)
+ *    6. feedback.md            — Supporting (squad feedback)
+ *    7. daily-briefing         — Supporting (org pulse, leads+coo only)
+ *    8. cross-squad            — Supporting (learnings from other squads)
+ *    9. founder-context.md     — Live strategic state (universal, all roles)
+ *   10. founder-alignment.md   — Per-squad contribution to current pipeline
+ *
+ * Layers 9 and 10 are injected FIRST in the prompt (LLMs pay most attention
+ * to the beginning of context) so squads align with the founder's live
+ * pipeline before processing any other layer. Both are auto-generated
+ * (e.g. by hq/.claude/hooks/founder-context-digest.py) which can also
+ * embed business-specific structural reference (Drive map, ERP architecture)
+ * directly into founder-context.md when relevant.
  *
  * SQUAD.md is NOT injected — it's metadata for the CLI (repo, agents, config).
  * Missing files are skipped gracefully — no crashes on first run or new squads.
@@ -422,23 +459,29 @@ export function gatherSquadContext(
   const sections: string[] = [];
   let usedChars = 0;
 
-  /** Try to add a layer. Returns true if added, false if budget exceeded or not allowed. */
+  /** Try to add a layer. Returns true if added (possibly truncated), false if no budget left. */
   function addLayer(layerNum: number, header: string, content: string, maxChars?: number): boolean {
     if (!allowedSections.has(layerNum)) return false;
     if (!content) return false;
 
-    let text = content;
+    const TRUNCATION_SUFFIX = '\n...';
     const remaining = Math.max(0, budget - usedChars);
-    const cap = maxChars !== undefined ? Math.min(maxChars, remaining) : remaining;
-    if (text.length > cap) {
-      text = text.substring(0, cap) + '\n...';
-    }
-
-    if (usedChars + text.length > budget) {
+    if (remaining <= TRUNCATION_SUFFIX.length) {
+      // No room left for even a meaningful truncation
       if (options.verbose) {
         writeLine(`  ${colors.dim}Context budget exhausted at layer ${layerNum} (${header})${RESET}`);
       }
       return false;
+    }
+
+    const cap = maxChars !== undefined ? Math.min(maxChars, remaining) : remaining;
+    let text = content;
+    if (text.length > cap) {
+      // Reserve TRUNCATION_SUFFIX bytes for the suffix so total fits exactly within cap
+      text = text.substring(0, cap - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+      if (options.verbose) {
+        writeLine(`  ${colors.dim}Layer ${layerNum} truncated to ${text.length}/${content.length} chars${RESET}`);
+      }
     }
 
     sections.push(`## ${header}\n${text}`);
@@ -454,8 +497,32 @@ export function gatherSquadContext(
   // Put reference material last (company, agent definition).
   // ═══════════════════════════════════════════════════════════════════
 
+  // ── L9: founder-context.md — Live strategic state (ACT-ALIGNED) ──
+  // Injected FIRST so agents see the founder's current pipeline before
+  // any squad-internal context. Auto-generated from interactive sessions,
+  // git activity, and open PRs/issues. Universal — all squads see this.
+  if (memoryDir) {
+    const founderContextFile = join(memoryDir, 'company', 'founder-context.md');
+    const content = safeRead(founderContextFile);
+    if (content) {
+      addLayer(9, 'Founder Context (live strategic state — read first)', content);
+    }
+  }
+
+  // ── L10: founder-alignment.md — How THIS squad contributes this cycle ──
+  // Per-squad translation of founder context into named, domain-specific
+  // contributions. Auto-generated alongside L9. Specific to this squadName.
+  if (memoryDir) {
+    const alignmentFile = join(memoryDir, squadName, 'founder-alignment.md');
+    const content = safeRead(alignmentFile);
+    if (content) {
+      addLayer(10, `Founder Alignment — ${squadName} (your contribution this cycle)`, content);
+    }
+  }
+
   // ── L6: feedback.md — ACT ON THIS (corrections from last cycle) ──
-  // Injected FIRST so agents address feedback before anything else.
+  // Injected after founder context so corrections shape interpretation
+  // of the strategic state.
   if (memoryDir) {
     const feedbackFile = join(memoryDir, squadName, 'feedback.md');
     const content = safeRead(feedbackFile);

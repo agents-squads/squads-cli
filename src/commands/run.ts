@@ -95,12 +95,23 @@ export async function runCommand(
 
   // MODE 0: Org cycle — run all squads as a coordinated system
   if (target === '--org' || options.org) {
-    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan } = await import('../lib/org-cycle.js');
+    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan, refreshFounderContext } = await import('../lib/org-cycle.js');
 
     writeLine();
     const focusLabel = options.focus ? ` ${bold}[${options.focus}]${RESET}` : '';
     writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}${focusLabel}`);
     writeLine();
+
+    // Step 0: REFRESH founder context — distill recent sessions + git activity
+    // into per-squad alignment files so agents run aligned with the founder's
+    // current pipeline, not generic squad goals.
+    if (!options.dryRun) {
+      const ctxResult = refreshFounderContext({ force: options.force });
+      if (ctxResult === 'failed') {
+        writeLine(`  ${colors.red}Aborting org cycle. Fix the digest script and retry.${RESET}\n`);
+        return;
+      }
+    }
 
     // Step 1: SCAN
     const scan = scanOrg();
@@ -394,6 +405,13 @@ export async function runCommand(
     if (!checksOk) {
       process.exit(1);
     }
+  }
+
+  // Refresh founder context for single-squad runs (same as --org, so agents
+  // always see aligned strategic context regardless of how they're invoked).
+  if (squad && !options.dryRun) {
+    const { refreshFounderContext: refreshCtx } = await import('../lib/org-cycle.js');
+    refreshCtx({ force: options.force });
   }
 
   if (squad) {

@@ -20,7 +20,9 @@ describe('deriveContract — maps existing frontmatter + role defaults', () => {
     expect(c.role).toBe('scanner');
     expect(c.tool_grants.every((t) => t.sensitivity === 'read')).toBe(true);
     expect(c.write_scope).toEqual([]); // no write grants → no write scope
-    expect(c.scoped_context.layers).toEqual([1, 2, 3, 4, 5]);
+    // Founder-context layers (9, 10) are visible to ALL roles incl. scanner — live
+    // strategic state is always relevant (see ROLE_SECTIONS in run-context.ts).
+    expect(c.scoped_context.layers).toEqual([1, 2, 3, 4, 5, 9, 10]);
     expect(c.default).toBe('deny');
     expect(c.workspace_id).toBe('local');
   });
