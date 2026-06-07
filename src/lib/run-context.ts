@@ -67,6 +67,12 @@ export interface AgentFrontmatter {
    * Used as the primary signal for context-role selection.
    */
   agent_role?: string;
+  /**
+   * Maximum context tokens for this agent.
+   * When set, overrides the role-level ROLE_BUDGETS cap for context assembly.
+   * Allows squad operators to cap context spend per agent.
+   */
+  max_context_tokens?: number;
 }
 
 /**
@@ -119,6 +125,12 @@ export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
   const retriesMatch = yaml.match(/max_retries:\s*(\d+)/);
   if (retriesMatch) {
     result.max_retries = parseInt(retriesMatch[1], 10);
+  }
+
+  // max_context_tokens: 5000
+  const maxContextTokensMatch = yaml.match(/max_context_tokens:\s*(\d+)/);
+  if (maxContextTokensMatch) {
+    result.max_context_tokens = parseInt(maxContextTokensMatch[1], 10);
   }
 
   // cooldown: "30m" or "6h" or "2 hours"
