@@ -109,8 +109,10 @@ export async function runAgent(
     spinner.info(`[DRY RUN] Would run ${agentName}`);
     // Show context that would be injected (with role-based gating)
     const dryRunContextRole: ContextRole = resolveContextRoleFromAgent(agentPath, agentName);
+    const dryRunFrontmatter = parseAgentFrontmatter(agentPath);
     const dryRunContext = gatherSquadContext(squadName, agentName, {
-      verbose: options.verbose, agentPath, role: dryRunContextRole
+      verbose: options.verbose, agentPath, role: dryRunContextRole,
+      maxTokens: dryRunFrontmatter.max_context_tokens,
     });
     if (options.verbose) {
       writeLine(`  ${colors.dim}Agent definition:${RESET}`);
@@ -237,9 +239,17 @@ export async function runAgent(
   // Derive context role from the agent's own YAML frontmatter `role:` free-text.
   const contextRole: ContextRole = resolveContextRoleFromAgent(agentPath, agentName);
 
+  // Read agent frontmatter for per-agent context budget override.
+  const agentFrontmatter = parseAgentFrontmatter(agentPath);
+
   // Gather squad context (role-based: scanners get minimal, leads get everything)
+  // If the agent sets max_context_tokens, that overrides the role-level ROLE_BUDGETS cap.
+  if (options.verbose && agentFrontmatter.max_context_tokens) {
+    writeLine(`  ${colors.dim}Context budget: ${agentFrontmatter.max_context_tokens} tokens (agent override)${RESET}`);
+  }
   const squadContext = gatherSquadContext(squadName, agentName, {
-    verbose: options.verbose, agentPath, role: contextRole
+    verbose: options.verbose, agentPath, role: contextRole,
+    maxTokens: agentFrontmatter.max_context_tokens,
   });
 
   // Fetch cognition beliefs for prompt injection (Reflexion pattern)
