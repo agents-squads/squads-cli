@@ -153,16 +153,24 @@ ${squadContext}
   const effortByRole: Record<string, string> = { lead: 'high', scanner: 'low', worker: 'high', verifier: 'medium' };
   const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low' });
 
-  // Role-based tool sets (#701): scanners get read-only, workers get full, verifiers get read+build
-  const readTools = ['Read', 'Glob', 'Grep', 'Bash(git:*)', 'Bash(gh:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  // Role-based tool sets (#701): scanners read-only, workers full, verifiers read+build.
+  // readBase = inspection only (no git/gh, no writes).
+  const readBase = ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  // Lead git/gh: inspect repos/PRs, file delegation issues, and MERGE ready worker
+  // PRs (orchestration — CI-gated via --auto, per the review prompt). NOT commit/push/
+  // pr-create — the lead lands workers' reviewed code but never authors/ships its own.
+  const leadGitGh = ['Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git fetch:*)', 'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)', 'Bash(gh issue view:*)', 'Bash(gh issue list:*)', 'Bash(gh issue create:*)'];
+  const readTools = [...readBase, 'Bash(git:*)', 'Bash(gh:*)'];
   const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
   const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
 
   const toolsByRole: Record<string, string[]> = {
-    // Leads PLAN and DELEGATE — they get read + dispatch (Agent), but NOT
-    // Write/Edit/build-Bash. Without this a lead authors+commits code itself
-    // instead of assigning workers (squads-cli#790).
-    lead: [...readTools, 'Agent'],
+    // Leads PLAN, DELEGATE, and LAND: read, state/memory writes (Write/Edit so the
+    // review phase can update state.md — goals.md stays governance-blocked by design),
+    // git/gh that inspects + files issues + MERGES ready worker PRs (CI-gated --auto),
+    // and Agent (dispatch). NO git commit/push, NO gh pr create, NO build-Bash — a lead
+    // lands workers' reviewed PRs but CANNOT author/ship code itself (squads-cli#790, #793).
+    lead: [...readBase, ...leadGitGh, 'Write', 'Edit', 'Agent'],
     scanner: readTools,
     worker: [...readTools, ...writeTools],
     verifier: [...readTools, ...buildTools],
