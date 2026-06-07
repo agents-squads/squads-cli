@@ -159,7 +159,10 @@ ${squadContext}
   const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
 
   const toolsByRole: Record<string, string[]> = {
-    lead: [...readTools, ...writeTools],
+    // Leads PLAN and DELEGATE — they get read + dispatch (Agent), but NOT
+    // Write/Edit/build-Bash. Without this a lead authors+commits code itself
+    // instead of assigning workers (squads-cli#790).
+    lead: [...readTools, 'Agent'],
     scanner: readTools,
     worker: [...readTools, ...writeTools],
     verifier: [...readTools, ...buildTools],
