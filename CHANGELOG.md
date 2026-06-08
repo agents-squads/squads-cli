@@ -21,8 +21,10 @@ Agent runtime, founder-context, and a full safety/governance layer.
 ### Changed
 - **Roadmap-bounded autonomy** — leads plan, delegate, update state, and land reviewed PRs, but cannot author or ship code themselves; workers do the building.
 - **Role-based timeouts + anti-collision** rules in the conversation engine.
+- **Requires Node ≥ 20** — dropped EOL Node 18 from the test/release matrices; the bundled `vitest`/`rolldown` toolchain imports `styleText` from `node:util`, available only on Node ≥ 20.
 
 ### Fixed
+- **Release pipeline** — `release.yml`/`publish.yml` no longer fail on Node 18, which had silently blocked the last two tagged releases from publishing to npm.
 - Telemetry write-key restored (broken since 2026-03-14).
 - Services made path-agnostic (no hardcoded paths).
 - Agent guardrail Bash denylist now actually fires.
