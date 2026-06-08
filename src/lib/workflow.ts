@@ -265,9 +265,17 @@ ${squadContext}
     // Timeout: configurable via env var, defaults from run-types.ts
     const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
     const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? DEFAULT_TIMEOUT_MINUTES);
+    let timedOut = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {
+      timedOut = true;
       child.kill('SIGTERM');
-      resolve({ text: `[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`, usage: emptyUsage() });
+      // Safety net: if the child ignores SIGTERM, force-kill so `close` still
+      // fires and we never hang. The `close` handler does the usage capture +
+      // resolve for BOTH the normal and timed-out paths, so a cut-off agent
+      // still reports the assistant-event tokens it streamed before the kill
+      // (instead of the old emptyUsage(), which dropped them on the floor).
+      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
     }, timeoutMinutes * 60 * 1000);
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -278,6 +286,7 @@ ${squadContext}
 
     child.on('close', (code) => {
       clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       accumulator.push(decoder.decode()); // flush bytes held back for a split multi-byte char
       accumulator.flush();
       const { text, usage: rawUsage, isError } = accumulator.getResult();
@@ -291,6 +300,14 @@ ${squadContext}
         ? { ...rawUsage, cost_usd: deriveCostFromTokens(rawUsage, rawUsage.model || claudeModel || config.model) }
         : rawUsage;
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
+
+      // Timed-out agents: return the timeout sentinel the convergence loop
+      // expects, but with the salvaged assistant-event usage (real tokens; cost
+      // derived above) instead of zero — cut-off cost is no longer invisible.
+      if (timedOut) {
+        resolve({ text: `[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`, usage });
+        return;
+      }
 
       // Preserve the contract: still RETURN the agent's response text (now from
       // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
