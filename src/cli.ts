@@ -532,6 +532,17 @@ program
     return budgetCheckCommand(squad, options);
   });
 
+// Usage command - local-first cost/token view from executions.jsonl (no Bridge)
+program
+  .command('usage')
+  .description('Show local cost/token usage (today, rolling window, by squad)')
+  .option('-w, --window <hours>', 'Rolling-window size in hours', '5')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    const { usageCommand } = await import('./commands/usage.js');
+    return usageCommand(options);
+  });
+
 // Health command - quick infrastructure check
 program
   .command('health')

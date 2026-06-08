@@ -130,6 +130,18 @@ export async function runCommand(
       return;
     }
 
+    // Pre-run cost estimate — pull avg-per-agent from recent local history
+    // (executions.jsonl), fall back to ~$0.75/agent with no history. Local-first.
+    {
+      const { avgCostPerRun, todayCostUsd } = await import('../lib/observability.js');
+      const avg = avgCostPerRun();
+      const n = plan.length;
+      const est = avg * n;
+      const usedToday = todayCostUsd();
+      writeLine(`  ${colors.dim}est. ~$${est.toFixed(2)} for ${n} agents (avg $${avg.toFixed(2)}/agent from recent runs) · $${usedToday.toFixed(2)} used today${RESET}`);
+      writeLine();
+    }
+
     // Step 3: EXECUTE — all planned squads run in parallel
     // Each squad targets its own repo, so no conflicts.
     // Users can define custom wave ordering via SQUAD.md `wave:` field in the future.
