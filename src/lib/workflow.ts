@@ -48,6 +48,7 @@ import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
 import { getBotGhEnv } from './github.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
+import { createRunWorktree } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import {
   logObservability,
@@ -316,6 +317,16 @@ export async function runConversation(
     }
   }
 
+  // Per-squad-RUN worktree isolation (#440): create ONE git worktree of the
+  // squad's repo so all agents in this conversation (plan → execute → review →
+  // verify) share an isolated checkout — the worker's branch switches, file
+  // drops, and PRs never touch the user's working tree. Falls back to in-place
+  // (squadCwd unchanged) if the dir isn't a git repo or worktree add fails.
+  // Disable with SQUADS_NO_WORKTREE=1. Cleanup runs in finally below.
+  const worktree = createRunWorktree(squadCwd, squad.name);
+  squadCwd = worktree.cwd;
+
+  try {
   const allAgents = buildAgentRoster(squad, squadsDir);
   const leads = allAgents.filter(a => a.role === 'lead');
   const scanners = allAgents.filter(a => a.role === 'scanner');
@@ -572,6 +583,11 @@ or
     converged: finalConv.converged, // reflect actual convergence status
     reason: finalConv.reason || 'Cycle complete (plan → execute → review → verify)',
   };
+  } finally {
+    // Remove the per-run worktree on every exit path (success, early return,
+    // or throw). No-op when isolation was skipped/fell back in-place (#440).
+    worktree.cleanup();
+  }
 }
 
 // =============================================================================
