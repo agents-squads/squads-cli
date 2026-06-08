@@ -5,7 +5,7 @@
 import type { EffortLevel } from './squad-parser.js';
 
 // ── Constants ────────────────────────────────────────────────────────
-export const DEFAULT_TIMEOUT_MINUTES = 30;
+export const DEFAULT_TIMEOUT_MINUTES = 15;
 export const SOFT_DEADLINE_RATIO = 0.7;
 
 /** Providers that support tool use (sub-agent spawning, conversation orchestration) */
@@ -17,7 +17,7 @@ export interface RunOptions {
   verbose?: boolean;
   dryRun?: boolean;
   agent?: string;
-  timeout?: number; // minutes, default 30
+  timeout?: number; // per-agent minutes; unset → DEFAULT_TIMEOUT_MINUTES
   execute?: boolean;
   parallel?: boolean; // Run all agents in parallel
   lead?: boolean; // Run as lead session using Task tool for parallelization

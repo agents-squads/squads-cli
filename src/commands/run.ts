@@ -215,6 +215,7 @@ export async function runCommand(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
           focus: (options.focus as ConversationOptions['focus']) || undefined,
         };
 
@@ -360,6 +361,7 @@ export async function runCommand(
       }
       writeLine();
       writeLine(`  ${colors.dim}Usage: squads run <squad>${RESET}`);
+      writeLine(`  ${colors.dim}Run all squads as one cycle: squads run --org${RESET}`);
     }
     writeLine();
     return;
@@ -599,6 +601,7 @@ async function runSquad(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
         };
 
         // Report execution start to API (fire-and-forget on failure)

@@ -291,11 +291,11 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 // Run command - execute squads or individual agents
 program
   .command('run [target]')
-  .description('Run a squad, agent, or autopilot (no target = autopilot mode)')
+  .description('Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle.')
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
-  .option('-t, --timeout <minutes>', 'Execution timeout in minutes (default: 30)', '30')
+  .option('-t, --timeout <minutes>', 'Per-agent execution timeout in minutes (default: 15)')
   .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
   .option('-b, --background', 'Run agent in background (detached process)')
@@ -336,13 +336,14 @@ Examples:
   $ squads run engineering -w           Run in background but tail logs
   $ squads run research --provider=google  Use Gemini CLI instead of Claude
   $ squads run engineering/issue-solver --cloud  Dispatch to cloud worker
-  $ squads run                          Autopilot mode (watch → decide → dispatch → learn)
+  $ squads run                          List available squads
+  $ squads run --org                    Run all squads as one coordinated cycle
   $ squads run --once --dry-run         Preview one autopilot cycle
   $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)
   .action(async (target, options) => {
     const { runCommand } = await import('./commands/run.js');
-    return runCommand(target || null, { ...options, timeout: parseInt(options.timeout, 10) });
+    return runCommand(target || null, { ...options, timeout: options.timeout != null ? parseInt(options.timeout, 10) : undefined });
   });
 
 // List command — alias for status

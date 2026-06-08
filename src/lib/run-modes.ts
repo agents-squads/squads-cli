@@ -470,6 +470,7 @@ async function runSquadLoop(
             costCeiling: options.costCeiling || 25,
             verbose: options.verbose,
             model: options.model,
+            timeout: options.timeout,
           };
           await runConversation(squad, convOptions);
         } else {
