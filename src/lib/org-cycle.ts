@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn } from 'child_process';
 import { join, dirname } from 'path';
 import { findSquadsDir, loadSquad, findProjectRoot } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
@@ -180,7 +180,7 @@ export function displayOrgScan(scan: OrgScanResult[]): void {
  */
 export function refreshFounderContext(
   options: { staleHours?: number; force?: boolean } = {}
-): 'refreshed' | 'fresh' | 'skipped' | 'failed' {
+): 'refreshed' | 'fresh' | 'skipped' | 'failed' | 'refreshing' {
   const projectRoot = findProjectRoot();
   if (!projectRoot) return 'skipped';
 
@@ -214,10 +214,25 @@ export function refreshFounderContext(
 
   if (!isStale) return 'fresh';
 
-  writeLine(`  ${colors.dim}founder-context: refreshing from CC sessions + git activity...${RESET}`);
-  // Two Claude calls (universal + per-squad block for all squads in one shot)
-  // can take 5-8 min on large inputs. Cap at 12 min to be safe.
   const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  const hasExisting = !!(contextFile && existsSync(contextFile));
+  const syncForced = process.env.SQUADS_DIGEST_SYNC === '1' || !!options.force;
+
+  // #447: don't block the run on the multi-minute digest. If a (stale) context
+  // file already exists, refresh it in the BACKGROUND (detached) and proceed now
+  // with the current copy — the refresh lands for the next run. Block (bounded)
+  // only on first-ever generation or when explicitly forced (--force / SQUADS_DIGEST_SYNC=1).
+  if (hasExisting && !syncForced) {
+    writeLine(`  ${colors.dim}founder-context: stale — refreshing in background; this run uses the current copy${RESET}`);
+    try {
+      const child = spawn(pythonCmd, [digestScript], { cwd: projectRoot, detached: true, stdio: 'ignore' });
+      child.unref();
+    } catch { /* best-effort — the run proceeds with the stale copy regardless */ }
+    return 'refreshing';
+  }
+
+  writeLine(`  ${colors.dim}founder-context: ${hasExisting ? 'refreshing (forced)' : 'generating (first run)'} — CC sessions + git activity...${RESET}`);
+  // Two Claude calls (universal + per-squad) can take 5-8 min on large inputs. Cap at 12 min.
   const result = spawnSync(pythonCmd, [digestScript], {
     cwd: projectRoot,
     stdio: 'inherit',
