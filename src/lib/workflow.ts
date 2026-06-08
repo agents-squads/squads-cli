@@ -107,6 +107,8 @@ interface AgentRunConfig {
   cwd: string;
   /** Stream this agent's output live (prefixed) — set under squad-run --verbose (#791) */
   verbose?: boolean;
+  /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → DEFAULT_TIMEOUT_MINUTES (#438) */
+  timeout?: number;
 }
 
 /**
@@ -202,7 +204,7 @@ ${squadContext}
 
     // Timeout: configurable via env var, defaults from run-types.ts
     const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
-    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : DEFAULT_TIMEOUT_MINUTES;
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? DEFAULT_TIMEOUT_MINUTES);
     const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
 
     // Under --verbose, stream the agent's output live (line-buffered, prefixed) so
@@ -374,7 +376,7 @@ export async function runConversation(
   const planOutput = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
-    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose,
+    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
   });
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -451,7 +453,7 @@ export async function runConversation(
       return runIndependentAgent({
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
-        task, squadContext, cwd: squadCwd, verbose: options.verbose,
+        task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
       }).then(output => ({ agent, output }));
     });
 
@@ -486,7 +488,7 @@ Summary: [what was achieved]`;
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-    cwd: squadCwd, verbose: options.verbose,
+    cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
   });
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -522,7 +524,7 @@ or
       agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
       squadName: squad.name, model: options.model || modelForRole('verifier'),
       task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-      cwd: squadCwd, verbose: options.verbose,
+      cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
     });
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
   }
