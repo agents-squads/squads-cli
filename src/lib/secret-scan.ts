@@ -76,6 +76,7 @@ export function scanText(text: string, opts: ScanOptions = {}): SecretFinding[] 
     out.push({ type: 'secret', ruleId: `assigned:${a[1]}`, redacted: redact(a[3]) });
   }
   for (const term of opts.forbidden ?? []) {
+    if (typeof term !== 'string') continue;
     const t = term.trim();
     // Require >= 3 chars: a 1-2 char term ("to", "me") would match almost any
     // text and block every auto-commit (catastrophic false positives).

@@ -72,7 +72,7 @@ export interface AgentContract {
 // ── Tool-grant vocabulary (what the Claude Code allowlist can enforce) ───────
 const TOOL_NAME =
   /^(Read|Write|Edit|MultiEdit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
-const BASH_SCOPED = /^Bash\([A-Za-z0-9_./\s-]+(:\*)?\)$/; // Bash(git:*) | Bash(ls) | Bash(git status:*)
+const BASH_SCOPED = /^Bash\([A-Za-z0-9_./ -]+(:\*)?\)$/; // Bash(git:*) | Bash(git status:*) — literal space only (not \s, which allows \n/\r/\t)
 const MCP_TOOL = /^mcp__[a-z0-9_]+__([a-z0-9_]+|\*)$/;
 
 export function isEnforceableTool(tool: string): boolean {
@@ -220,6 +220,9 @@ export function validateContract(c: AgentContract): ContractViolation[] {
         fail('tool_grants', 'invalid tool grant structure');
         continue;
       }
+      if (!['read', 'write', 'consequential'].includes(t.sensitivity)) {
+        fail('tool_grants', `invalid sensitivity "${t.sensitivity}" for tool "${t.tool}"`);
+      }
       if (!isEnforceableTool(t.tool)) {
         fail('tool_grants', `"${t.tool}" is not expressible in the allowedTools vocabulary (tool name | Bash(cmd:*) | mcp__server__tool) — unenforceable`);
       }
@@ -233,6 +236,8 @@ export function validateContract(c: AgentContract): ContractViolation[] {
       fail('write_scope', 'must be an array of glob patterns');
     } else if (c.write_scope.length === 0) {
       fail('write_scope', `has ${writers.length} write/consequential grant(s) but no write_scope (unjailed write)`);
+    } else if (c.write_scope.some((s) => typeof s !== 'string')) {
+      fail('write_scope', 'glob patterns must be strings');
     }
   }
 
@@ -252,6 +257,10 @@ export function validateContract(c: AgentContract): ContractViolation[] {
     fail('credential_scope', 'must be an array of secret names');
   } else {
     for (const s of c.credential_scope) {
+      if (typeof s !== 'string') {
+        fail('credential_scope', 'secret names must be strings');
+        continue;
+      }
       if (!KNOWN_SECRETS.has(s)) fail('credential_scope', `unknown secret "${s}"`);
     }
   }
