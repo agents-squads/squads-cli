@@ -536,5 +536,28 @@ Build things.
       expect(squad.goals[0].progress).toBe('100%');
       expect(squad.goals[1].completed).toBe(false);
     });
+
+    // #449: non-English rosters. Mirrors the real client-graffo SQUAD.md
+    // (header "| Agente | Rol | Frecuencia |", role values in Spanish).
+    it('parses a Spanish "## Agentes" roster (Agente / Rol / Frecuencia)', () => {
+      const content = `# Squad: client-graffo
+
+## Agentes
+
+| Agente | Rol | Frecuencia |
+|--------|-----|-----------|
+| \`client-graffo-lead\` | Orquestador — coordina el squad | Semanal (lunes 8am CLT) |
+| \`finanzas-agent\` | P&L, F29, márgenes, flujo de caja | Semanal (lunes 8am CLT) |
+| \`operaciones-agent\` | Inventario, proveedores, despachos | Diario (9am CLT) |
+`;
+      writeFileSync(squadFile, content);
+
+      const squad = parseSquadFile(squadFile);
+      expect(squad.agents).toHaveLength(3);
+      const lead = squad.agents.find(a => a.name === 'client-graffo-lead');
+      expect(lead).toBeDefined();
+      expect(lead!.role).toBe('Orquestador — coordina el squad');
+      expect(lead!.trigger).toBe('Semanal (lunes 8am CLT)');
+    });
   });
 });

@@ -70,7 +70,7 @@ vi.mock('../../src/lib/conversation.js', async () => {
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { spawn } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
-import { runConversation, saveTranscript } from '../../src/lib/workflow.js';
+import { runConversation, saveTranscript, buildAgentRoster } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
 import type { Squad } from '../../src/lib/squad-parser.js';
 
@@ -246,6 +246,96 @@ describe('runConversation', () => {
     const result = await runConversation(squad, { verbose: false });
     // Should converge without crashing on the unclassifiable agent
     expect(result.converged).toBe(true);
+  });
+});
+
+// ─── buildAgentRoster (lead detection robustness, #449) ─────────────────────────
+
+describe('buildAgentRoster', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true); // all agent .md files exist
+  });
+
+  it('detects a lead from a Spanish "Orquestador" role value', () => {
+    const squad = makeSquad({
+      name: 'client-graffo',
+      dir: 'client-graffo',
+      agents: [
+        { name: 'client-graffo-lead', role: 'Orquestador — coordina el squad', model: undefined } as any,
+        { name: 'finanzas-agent', role: 'P&L, F29, márgenes, flujo de caja', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads');
+    const lead = roster.find(a => a.role === 'lead');
+    expect(lead).toBeDefined();
+    expect(lead!.name).toBe('client-graffo-lead');
+  });
+
+  it('recognizes other Spanish role synonyms (verificador, escáner, trabajador)', () => {
+    const squad = makeSquad({
+      name: 'es-squad',
+      dir: 'es-squad',
+      agents: [
+        { name: 'a', role: 'Orquestador del equipo', model: undefined } as any,
+        { name: 'b', role: 'Escáner de oportunidades', model: undefined } as any,
+        { name: 'c', role: 'Trabajador que entrega', model: undefined } as any,
+        { name: 'd', role: 'Verificador de calidad', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads');
+    expect(roster.find(a => a.name === 'a')!.role).toBe('lead');
+    expect(roster.find(a => a.name === 'b')!.role).toBe('scanner');
+    expect(roster.find(a => a.name === 'c')!.role).toBe('worker');
+    expect(roster.find(a => a.name === 'd')!.role).toBe('verifier');
+  });
+
+  it('falls back to NAME detection when no role tags a lead', () => {
+    const squad = makeSquad({
+      name: 'mystery',
+      dir: 'mystery',
+      agents: [
+        // None of these roles classify as lead.
+        { name: 'mystery-lead', role: 'does general stuff', model: undefined } as any,
+        { name: 'helper-bot', role: 'builds things', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads');
+    const lead = roster.find(a => a.role === 'lead');
+    expect(lead).toBeDefined();
+    expect(lead!.name).toBe('mystery-lead');
+  });
+
+  it('name fallback matches any agent ending in -lead', () => {
+    const squad = makeSquad({
+      name: 'acme',
+      dir: 'acme',
+      agents: [
+        { name: 'ops-lead', role: 'runs operations', model: undefined } as any,
+        { name: 'helper', role: 'builds things', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads');
+    expect(roster.find(a => a.role === 'lead')!.name).toBe('ops-lead');
+  });
+
+  it('does not promote a -lead-named agent when a real lead is already classified', () => {
+    // `worker-bot` ends in nothing lead-ish; the only lead is the orchestrator.
+    // The name fallback must NOT fire (a lead already exists), so the worker
+    // stays a worker rather than being promoted.
+    const squad = makeSquad({
+      name: 'dup',
+      dir: 'dup',
+      agents: [
+        { name: 'real-orchestrator', role: 'orchestrates the team', model: undefined } as any,
+        { name: 'worker-bot', role: 'builds things', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads');
+    const leads = roster.filter(a => a.role === 'lead');
+    expect(leads).toHaveLength(1);
+    expect(leads[0].name).toBe('real-orchestrator');
+    expect(roster.find(a => a.name === 'worker-bot')!.role).toBe('worker');
   });
 });
 

@@ -85,6 +85,39 @@ describe('classifyAgent', () => {
       expect(classifyAgent('unknown-agent')).toBeNull();
     });
   });
+
+  describe('Spanish role-value synonyms (#449)', () => {
+    it('maps "Orquestador" role to lead', () => {
+      expect(classifyAgent('finanzas-agent', 'Orquestador — coordina el squad')).toBe('lead');
+    });
+    it('maps "líder" role to lead', () => {
+      expect(classifyAgent('agente-x', 'líder del equipo')).toBe('lead');
+    });
+    it('maps "escáner" role to scanner', () => {
+      expect(classifyAgent('agente-x', 'escáner de oportunidades')).toBe('scanner');
+    });
+    it('maps "verificador" role to verifier', () => {
+      expect(classifyAgent('agente-x', 'verificador de calidad')).toBe('verifier');
+    });
+    it('maps "crítico" role to verifier', () => {
+      expect(classifyAgent('agente-x', 'crítico de entregables')).toBe('verifier');
+    });
+    it('maps "trabajador" role to worker (default)', () => {
+      expect(classifyAgent('agente-x', 'trabajador que entrega tareas')).toBe('worker');
+    });
+  });
+
+  describe('Spanish name-based synonyms (#449)', () => {
+    it('maps *orquestador* name to lead', () => {
+      expect(classifyAgent('orquestador-squad')).toBe('lead');
+    });
+    it('maps *verificador* name to verifier', () => {
+      expect(classifyAgent('verificador-calidad')).toBe('verifier');
+    });
+    it('maps *trabajador* name to worker', () => {
+      expect(classifyAgent('trabajador-1')).toBe('worker');
+    });
+  });
 });
 
 // ─── modelForRole ─────────────────────────────────────────────────────────────

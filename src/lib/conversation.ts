@@ -20,18 +20,22 @@ export type AgentRole = 'lead' | 'scanner' | 'worker' | 'verifier';
 export function classifyAgent(agentName: string, roleDescription?: string): AgentRole | null {
   // Name-based classification FIRST — more reliable than parsing ambiguous
   // role descriptions (e.g. "review PRs" in eng-lead ≠ verifier).
+  // Substrings (not whole words) so they match compound names + Spanish rosters
+  // (e.g. "orquestador", "escáner", "verificador") — see #449.
   const name = agentName.toLowerCase();
-  if (name.includes('lead') || name.includes('orchestrator')) return 'lead';
-  if (name.includes('scanner') || name.includes('scout') || name.includes('monitor')) return 'scanner';
-  if (name.includes('verifier') || name.includes('critic') || name.includes('reviewer')) return 'verifier';
-  if (name.includes('worker') || name.includes('solver') || name.includes('builder')) return 'worker';
+  if (name.includes('lead') || name.includes('orchestrator') || name.includes('orquestador') || name.includes('lider') || name.includes('líder')) return 'lead';
+  if (name.includes('scanner') || name.includes('scout') || name.includes('monitor') || name.includes('escaner') || name.includes('escáner')) return 'scanner';
+  if (name.includes('verifier') || name.includes('critic') || name.includes('reviewer') || name.includes('verificador') || name.includes('crítico') || name.includes('critico')) return 'verifier';
+  if (name.includes('worker') || name.includes('solver') || name.includes('builder') || name.includes('trabajador')) return 'worker';
 
-  // Fallback: parse role description from SQUAD.md
+  // Fallback: parse role description from SQUAD.md. Matches English + Spanish
+  // synonyms (lead/orquestador/líder, scanner/escáner, verifier/verificador/crítico,
+  // worker/trabajador). Substring stems cover conjugations/accents (#449).
   if (roleDescription) {
     const lower = roleDescription.toLowerCase();
-    if (lower.includes('orchestrat') || lower.includes('triage') || lower.includes('coordinat') || lower.includes('lead')) return 'lead';
-    if (lower.includes('scan') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
-    if (lower.includes('verif') || lower.includes('critic') || lower.includes('review') || lower.includes('check')) return 'verifier';
+    if (lower.includes('orchestrat') || lower.includes('orquestad') || lower.includes('triage') || lower.includes('coordinat') || lower.includes('lead') || lower.includes('lider') || lower.includes('líder')) return 'lead';
+    if (lower.includes('scan') || lower.includes('escan') || lower.includes('escán') || lower.includes('monitor') || lower.includes('detect')) return 'scanner';
+    if (lower.includes('verif') || lower.includes('critic') || lower.includes('crític') || lower.includes('review') || lower.includes('check')) return 'verifier';
     return 'worker';
   }
 
