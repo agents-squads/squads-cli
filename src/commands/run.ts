@@ -215,6 +215,7 @@ export async function runCommand(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
           focus: (options.focus as ConversationOptions['focus']) || undefined,
         };
 
@@ -600,6 +601,7 @@ async function runSquad(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
         };
 
         // Report execution start to API (fire-and-forget on failure)

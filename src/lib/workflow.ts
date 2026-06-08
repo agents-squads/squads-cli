@@ -68,6 +68,8 @@ export interface ConversationOptions {
   costCeiling?: number;
   verbose?: boolean;
   model?: string;
+  /** Per-agent execution timeout (minutes) — from --timeout; threads to each spawned agent (#438) */
+  timeout?: number;
   /** Token budget for the squad (output tokens). Default: 50K */
   tokenBudget?: number;
   /** Cycle focus — changes the lead's planning behavior */
