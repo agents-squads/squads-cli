@@ -208,11 +208,13 @@ ${squadContext}
     // Under --verbose, stream the agent's output live (line-buffered, prefixed) so
     // runs are supervisable — otherwise output is only visible post-hoc in the
     // transcript (#791). Full tool-call streaming (stream-json) is a follow-up.
+    // Stream-decode so multi-byte UTF-8 chars split across chunk boundaries aren't corrupted.
+    const decoder = new TextDecoder('utf-8');
     let lineBuf = '';
     child.stdout.on('data', (chunk: Buffer) => {
       chunks.push(chunk);
       if (!config.verbose) return;
-      lineBuf += chunk.toString('utf-8');
+      lineBuf += decoder.decode(chunk, { stream: true });
       const lines = lineBuf.split('\n');
       lineBuf = lines.pop() ?? '';
       for (const line of lines) writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
@@ -222,7 +224,10 @@ ${squadContext}
 
     child.on('close', (code) => {
       clearTimeout(timeout);
-      if (config.verbose && lineBuf.trim()) writeLine(`  ${colors.dim}${agentName} │${RESET} ${lineBuf}`);
+      if (config.verbose) {
+        lineBuf += decoder.decode();  // flush bytes held back for a split multi-byte char
+        if (lineBuf.trim()) writeLine(`  ${colors.dim}${agentName} │${RESET} ${lineBuf}`);
+      }
       const output = Buffer.concat(chunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
       if (output.includes('hit your limit') || output.includes('rate limit')) {
