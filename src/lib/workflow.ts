@@ -33,6 +33,7 @@ import {
 import {
   type Squad,
   findSquadsDir,
+  findProjectRoot,
 } from './squad-parser.js';
 import {
   type ContextRole,
@@ -191,14 +192,28 @@ ${squadContext}
     claudeArgs.push('--allowedTools', ...tools);
   }
   claudeArgs.push('--disable-slash-commands');
-  const guardrailPath = resolveGuardrailSettings(config.cwd);
+
+  // Fail-safe (#448): the agent's cwd must exist at spawn time. Under parallel
+  // org runs a per-run worktree can vanish between creation and spawn (a racing
+  // squad's worktree cleanup/prune against the shared repo .git). spawn() with a
+  // missing cwd makes the process error out ("Path ... does not exist"), killing
+  // an otherwise-healthy squad. Fall back to a valid directory instead.
+  let spawnCwd = config.cwd;
+  if (!existsSync(spawnCwd)) {
+    spawnCwd = findProjectRoot() || process.cwd();
+    writeLine(
+      `  ${colors.dim}warn: ${agentName} cwd ${config.cwd} is missing, falling back to ${spawnCwd}${RESET}`
+    );
+  }
+
+  const guardrailPath = resolveGuardrailSettings(spawnCwd);
   if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
   if (claudeModel) claudeArgs.push('--model', claudeModel);
 
   return new Promise<string>((resolve) => {
     const chunks: Buffer[] = [];
     const child = spawn('claude', claudeArgs, {
-      cwd: config.cwd, env: agentEnv,
+      cwd: spawnCwd, env: agentEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -260,7 +275,7 @@ interface ClassifiedAgent {
   path: string;
 }
 
-function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+export function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
   // If squad defines conversation_agents, only include those in the conversation.
   // Other agents run on their own schedules, not in the squad conversation.
   const conversationFilter = squad.conversation_agents;
@@ -274,6 +289,19 @@ function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
     if (!existsSync(agentPath)) continue;
     agents.push({ name: agent.name, role, path: agentPath });
   }
+
+  // Lead fallback by NAME (#449): if no agent classified as lead (e.g. a roster
+  // whose role values don't match any synonym), promote the agent whose name is
+  // `<squad>-lead` or otherwise ends in `-lead`. Without a lead the whole squad
+  // is skipped ("No lead agent found"), so this is the last line of defense.
+  if (!agents.some(a => a.role === 'lead')) {
+    const byName = agents.find(
+      a => a.name.toLowerCase() === `${squad.name.toLowerCase()}-lead` ||
+        a.name.toLowerCase().endsWith('-lead')
+    );
+    if (byName) byName.role = 'lead';
+  }
+
   return agents;
 }
 

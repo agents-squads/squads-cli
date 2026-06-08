@@ -128,6 +128,19 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
     return noop;
   }
 
+  // Fail-safe (#448): `git worktree add` can report success yet leave no
+  // directory at `worktreePath` — observed under parallel org runs where one
+  // squad's cleanup (`worktree remove`/prune) races another's create against the
+  // SAME shared repo `.git`, corrupting the new worktree's admin metadata. If
+  // the dir isn't there when we're about to hand it to an agent, fall back to
+  // running in-place rather than letting the agent spawn into a missing cwd.
+  if (!existsSync(worktreePath)) {
+    writeLine(
+      `  ${colors.dim}warn: worktree for ${squadName} reported created but ${worktreePath} is missing, running in-place${RESET}`
+    );
+    return noop;
+  }
+
   const cleanup = () => {
     try {
       // --force removes the worktree even with uncommitted changes. Safe:

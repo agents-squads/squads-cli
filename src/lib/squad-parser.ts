@@ -457,19 +457,31 @@ export function parseSquadFile(filePath: string): Squad {
         currentSection.includes('evaluator') || currentSection.includes('builder') ||
         currentSection.includes('priority')) {
 
-      if (line.includes('|') && line.includes('Agent')) {
-        inTable = true;
-        tableHeaders = line.split('|').map(h => h.trim().toLowerCase());
-        continue;
+      // Detect the header row by an EXACT column name, not a substring of the
+      // whole line — data rows contain agent NAMES like "finanzas-agent" which
+      // also include "agent". An exact cell match ("agent"/"agente") only ever
+      // hits a header. Re-fires per sub-table (e.g. intelligence's `### Tier N`
+      // tables share one `## Agents` section), updating tableHeaders each time.
+      // Accept English + Spanish ("agente") so non-English rosters parse (#449).
+      if (line.includes('|')) {
+        const headerCells = line.split('|').map(h => h.trim().toLowerCase());
+        if (headerCells.some(h => h === 'agent' || h === 'agente')) {
+          inTable = true;
+          tableHeaders = headerCells;
+          continue;
+        }
       }
 
       if (inTable && line.includes('|') && !line.includes('---')) {
         const cells = line.split('|').map(c => c.trim().replace(/`/g, '').replace(/\*\*/g, ''));
-        const agentIdx = tableHeaders.findIndex(h => h === 'agent');
-        const roleIdx = tableHeaders.findIndex(h => h === 'role');
-        const triggerIdx = tableHeaders.findIndex(h => h === 'trigger');
-        const statusIdx = tableHeaders.findIndex(h => h === 'status');
-        const effortIdx = tableHeaders.findIndex(h => h === 'effort');
+        // Column resolution accepts English + Spanish header names (#449):
+        // agent/agente, role/rol, trigger/frecuencia, status/estado, effort/esfuerzo.
+        const colIdx = (...names: string[]) => tableHeaders.findIndex(h => names.includes(h));
+        const agentIdx = colIdx('agent', 'agente');
+        const roleIdx = colIdx('role', 'rol');
+        const triggerIdx = colIdx('trigger', 'frecuencia', 'frequency');
+        const statusIdx = colIdx('status', 'estado');
+        const effortIdx = colIdx('effort', 'esfuerzo');
 
         if (agentIdx >= 0 && cells[agentIdx]) {
           const effortValue = effortIdx >= 0 ? cells[effortIdx]?.toLowerCase() : undefined;
