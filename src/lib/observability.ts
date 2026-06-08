@@ -66,7 +66,17 @@ export interface CostSummary {
 
 // ── Model Pricing (per 1M tokens) ────────────────────────────────────
 
-const MODEL_PRICING: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> = {
+export interface ModelPricing {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Opus tier (incl. the model ids that show up in real session files: 4-8, 4-7)
+  'claude-opus-4-8': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+  'claude-opus-4-7': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-opus-4-6': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-opus-4-5-20251101': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-sonnet-4-6': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
@@ -75,6 +85,34 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cache_read:
   'claude-haiku-4-5-20251001': { input: 0.80, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
   'default': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
 };
+
+/**
+ * Resolve a pricing row for a model id. Prefix-matches the families above so an
+ * unseen dated variant (e.g. `claude-opus-4-8-20260601`) still prices as opus
+ * instead of silently falling back to the (cheaper) sonnet default.
+ */
+export function pricingForModel(model: string | undefined): ModelPricing {
+  if (!model) return MODEL_PRICING['default'];
+  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  if (model.includes('opus')) return MODEL_PRICING['claude-opus-4-8'];
+  if (model.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5-20251001'];
+  if (model.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
+  return MODEL_PRICING['default'];
+}
+
+/** Token bundle → notional USD using per-1M-token pricing for `model`. */
+export function deriveCostFromTokens(
+  tokens: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number },
+  model: string | undefined,
+): number {
+  const p = pricingForModel(model);
+  return (
+    (tokens.input_tokens / 1_000_000) * p.input +
+    (tokens.output_tokens / 1_000_000) * p.output +
+    (tokens.cache_read_tokens / 1_000_000) * p.cache_read +
+    (tokens.cache_write_tokens / 1_000_000) * p.cache_write
+  );
+}
 
 // ── Paths ────────────────────────────────────────────────────────────
 
@@ -187,13 +225,7 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
 
     // Calculate cost from tokens if not directly available
     if (usage.cost_usd === 0) {
-      const pricing = MODEL_PRICING[usage.model] || MODEL_PRICING['default'];
-      usage.cost_usd = (
-        (usage.input_tokens / 1_000_000) * pricing.input +
-        (usage.output_tokens / 1_000_000) * pricing.output +
-        (usage.cache_read_tokens / 1_000_000) * pricing.cache_read +
-        (usage.cache_write_tokens / 1_000_000) * pricing.cache_write
-      );
+      usage.cost_usd = deriveCostFromTokens(usage, usage.model);
     }
 
     return usage;
@@ -304,6 +336,45 @@ async function pushToApi(record: ObservabilityRecord): Promise<void> {
   }
 }
 
+/**
+ * Best-effort push to the Bridge (HTTP gateway fronting Postgres). No-op and
+ * silent if the Bridge URL is unset or unreachable — local JSONL stays the
+ * source of truth, so the CLI fully works with NO Bridge. Fire-and-forget.
+ */
+async function pushToBridge(record: ObservabilityRecord): Promise<void> {
+  try {
+    const { getBridgeUrl } = await import('./env-config.js');
+    const bridgeUrl = getBridgeUrl();
+    if (!bridgeUrl) return; // Tier 1 / local-only — skip silently
+
+    await fetch(`${bridgeUrl}/api/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        execution_id: record.id,
+        ts: record.ts,
+        squad: record.squad,
+        agent: record.agent,
+        provider: record.provider,
+        model: record.model,
+        trigger: record.trigger,
+        status: record.status,
+        duration_ms: record.duration_ms,
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_read_tokens: record.cache_read_tokens,
+        cache_write_tokens: record.cache_write_tokens,
+        cost_usd: record.cost_usd,
+        error: record.error || null,
+      }),
+      // Short timeout — never block the local write on a slow/dead Bridge.
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {
+    // Bridge down or unset — silent. Local JSONL is the base.
+  }
+}
+
 export function logObservability(record: ObservabilityRecord): void {
   const logPath = getLogPath();
   if (!logPath) return;
@@ -313,10 +384,13 @@ export function logObservability(record: ObservabilityRecord): void {
     mkdirSync(dir, { recursive: true });
   }
 
+  // Local JSONL is the source of truth — write it first, always.
   appendFileSync(logPath, JSON.stringify(record) + '\n');
 
   // Dual-write: also push to API when Tier 2 is active (fire-and-forget)
   pushToApi(record).catch(() => {});
+  // Best-effort Bridge push (no-op/silent if Bridge unset or down).
+  pushToBridge(record).catch(() => {});
 }
 
 // ── Read ─────────────────────────────────────────────────────────────
@@ -344,6 +418,100 @@ export function queryExecutions(opts: QueryOptions = {}): ObservabilityRecord[] 
   if (opts.limit) records = records.slice(0, opts.limit);
 
   return records;
+}
+
+// ── Local usage view (source: executions.jsonl, no Bridge needed) ─────
+
+export interface UsageBucket {
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  runs: number;
+}
+
+export interface LocalUsageSummary {
+  /** Since local midnight (calendar day). */
+  today: UsageBucket;
+  /** Rolling window (last `windowHours` hours). */
+  window: UsageBucket;
+  windowHours: number;
+  /** Per-squad totals over the wider of today / window. */
+  bySquad: Array<{ squad: string } & UsageBucket>;
+}
+
+function emptyBucket(): UsageBucket {
+  return { cost_usd: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, runs: 0 };
+}
+
+function addToBucket(b: UsageBucket, r: ObservabilityRecord): void {
+  b.cost_usd += r.cost_usd || 0;
+  b.input_tokens += r.input_tokens || 0;
+  b.output_tokens += r.output_tokens || 0;
+  b.cache_read_tokens += r.cache_read_tokens || 0;
+  b.cache_write_tokens += r.cache_write_tokens || 0;
+  b.runs += 1;
+}
+
+/**
+ * Local-first usage rollup straight from executions.jsonl — no Bridge/Postgres.
+ * Returns today's total, a rolling-window total, and a per-squad breakdown.
+ */
+export function localUsageSummary(windowHours = 5): LocalUsageSummary {
+  const all = queryExecutions({});
+  const now = Date.now();
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const todayMs = startOfToday.getTime();
+  const windowMs = now - windowHours * 60 * 60 * 1000;
+
+  const today = emptyBucket();
+  const windowBucket = emptyBucket();
+  const bySquad = new Map<string, { squad: string } & UsageBucket>();
+
+  for (const r of all) {
+    const t = new Date(r.ts).getTime();
+    if (Number.isNaN(t)) continue;
+    const inToday = t >= todayMs;
+    const inWindow = t >= windowMs;
+    if (inToday) addToBucket(today, r);
+    if (inWindow) addToBucket(windowBucket, r);
+    // Per-squad over the wider span (today OR window) so the breakdown is useful.
+    if (inToday || inWindow) {
+      let bucket = bySquad.get(r.squad);
+      if (!bucket) { bucket = { squad: r.squad, ...emptyBucket() }; bySquad.set(r.squad, bucket); }
+      addToBucket(bucket, r);
+    }
+  }
+
+  return {
+    today,
+    window: windowBucket,
+    windowHours,
+    bySquad: [...bySquad.values()].sort((a, b) => b.cost_usd - a.cost_usd),
+  };
+}
+
+/**
+ * Average cost per agent run from recent local history, for pre-run estimates.
+ * Returns `fallback` when there is no usable cost history (e.g. first run, or
+ * all records are zero-cost). Only counts records with cost_usd > 0.
+ */
+export function avgCostPerRun(windowHours = 24, fallback = 0.75): number {
+  const all = queryExecutions({});
+  const windowMs = Date.now() - windowHours * 60 * 60 * 1000;
+  let cost = 0, runs = 0;
+  for (const r of all) {
+    const t = new Date(r.ts).getTime();
+    if (Number.isNaN(t) || t < windowMs) continue;
+    if ((r.cost_usd || 0) > 0) { cost += r.cost_usd; runs += 1; }
+  }
+  return runs > 0 ? cost / runs : fallback;
+}
+
+/** Today's total spend (local midnight → now) from executions.jsonl. */
+export function todayCostUsd(): number {
+  return localUsageSummary().today.cost_usd;
 }
 
 export function calculateCostSummary(period: 'today' | '7d' | '30d' | 'all' = '7d'): CostSummary {

@@ -8,16 +8,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
-// Helper: create a mock child process that emits output then closes
-function createMockChild(output: string, code = 0) {
+// Helper: create a mock child process that emits stream-json output then closes.
+// runIndependentAgent now spawns `claude --output-format stream-json`, so the
+// mock emits the canonical terminal `result` event carrying the text + usage
+// (mirroring real claude output) rather than a bare text blob.
+function createMockChild(output: string, code = 0, usage?: Record<string, unknown>) {
   const child = new EventEmitter() as any;
   child.stdin = { write: vi.fn(), end: vi.fn() };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = vi.fn();
+  const resultEvent = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    result: output,
+    total_cost_usd: 0,
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    num_turns: 1,
+    is_error: false,
+    ...usage,
+  });
   // Emit output async so listeners are attached first
   process.nextTick(() => {
-    if (output) child.stdout.emit('data', Buffer.from(output));
+    if (output) child.stdout.emit('data', Buffer.from(resultEvent + '\n'));
     child.emit('close', code);
   });
   return child;
