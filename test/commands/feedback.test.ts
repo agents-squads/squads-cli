@@ -29,22 +29,22 @@ Build great software.
 
 | agent | role | trigger | status |
 |-------|------|---------|--------|
-| lead | Squad lead | manual | active |
+| engineering-lead | Squad lead | manual | active |
 `
     );
     writeFileSync(
-      join(squadDir, 'lead.md'),
+      join(squadDir, 'engineering-lead.md'),
       `---
-name: lead
+name: engineering-lead
 role: Squad lead
 status: active
 ---
 `
     );
 
-    // Create memory directory
-    // Note: getFeedbackPath uses squad.agents[0]?.name || `${squadName}-lead`
-    // Since parseSquadFile may not find agents in table format, it falls back
+    // Create memory directory.
+    // getFeedbackPath uses squad.agents[0]?.name || `${squadName}-lead`; the
+    // first (and lead) agent is engineering-lead, so feedback lands here.
     const memoryDir = join(testDir, '.agents', 'memory', 'engineering', 'engineering-lead');
     mkdirSync(memoryDir, { recursive: true });
 
