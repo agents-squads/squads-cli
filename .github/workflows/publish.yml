@@ -23,7 +23,9 @@ jobs:
     needs: verify
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        # Node 18 dropped: EOL, and vitest/rolldown import `styleText` from
+        # node:util, which exists only on Node >= 20.
+        node-version: [20, 22]
 
     steps:
       - uses: actions/checkout@v4
