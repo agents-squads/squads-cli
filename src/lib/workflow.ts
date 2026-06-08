@@ -55,6 +55,7 @@ import {
   logObservability,
   snapshotGoals,
   diffGoals,
+  deriveCostFromTokens,
   type ObservabilityRecord,
 } from './observability.js';
 import {
@@ -279,7 +280,16 @@ ${squadContext}
       clearTimeout(timeout);
       accumulator.push(decoder.decode()); // flush bytes held back for a split multi-byte char
       accumulator.flush();
-      const { text, usage, isError } = accumulator.getResult();
+      const { text, usage: rawUsage, isError } = accumulator.getResult();
+      // Cut-off runs (no terminal `result` event) carry real assistant-event
+      // tokens but cost_usd == 0. Derive a notional cost from tokens × pricing
+      // so the observability record still shows a cost — tokens are the real
+      // quota unit; cost is a derived proxy on a Max subscription. (No-op when
+      // there are no tokens, or when the result event already gave us a cost.)
+      const hasTokens = rawUsage.input_tokens + rawUsage.output_tokens + rawUsage.cache_read_tokens + rawUsage.cache_write_tokens > 0;
+      const usage: StreamUsage = (rawUsage.cost_usd === 0 && hasTokens)
+        ? { ...rawUsage, cost_usd: deriveCostFromTokens(rawUsage, rawUsage.model || claudeModel || config.model) }
+        : rawUsage;
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
 
       // Preserve the contract: still RETURN the agent's response text (now from

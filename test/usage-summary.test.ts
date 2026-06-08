@@ -17,7 +17,7 @@ vi.mock('../src/lib/squad-parser.js', () => ({
   findProjectRoot: () => TEST_ROOT,
 }));
 
-import { localUsageSummary, avgCostPerRun, todayCostUsd } from '../src/lib/observability.js';
+import { localUsageSummary, avgCostPerRun, todayCostUsd, deriveCostFromTokens, pricingForModel } from '../src/lib/observability.js';
 
 function rec(over: Record<string, unknown>): string {
   return JSON.stringify({
@@ -85,5 +85,44 @@ describe('local usage summary', () => {
 
   it('todayCostUsd returns a non-negative number', () => {
     expect(todayCostUsd()).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('cost derivation from tokens (cut-off runs)', () => {
+  it('prices opus correctly for the model ids seen in real session files', () => {
+    // 1M input + 1M output of opus → 15 + 75 = $90 (cache fields 0).
+    const cost = deriveCostFromTokens(
+      { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_tokens: 0, cache_write_tokens: 0 },
+      'claude-opus-4-8',
+    );
+    expect(cost).toBeCloseTo(90, 6);
+  });
+
+  it('includes cache read/write at their (cheaper) rates', () => {
+    // opus: 1M cache_read @ $1.50 + 1M cache_write @ $18.75 = $20.25
+    const cost = deriveCostFromTokens(
+      { input_tokens: 0, output_tokens: 0, cache_read_tokens: 1_000_000, cache_write_tokens: 1_000_000 },
+      'claude-opus-4-8',
+    );
+    expect(cost).toBeCloseTo(20.25, 6);
+  });
+
+  it('a cut-off run with real tokens derives a NON-ZERO cost', () => {
+    // The bug this fixes: cut-off run logged cost_usd: 0 despite burning tokens.
+    const cost = deriveCostFromTokens(
+      { input_tokens: 2200, output_tokens: 550, cache_read_tokens: 11000, cache_write_tokens: 100 },
+      'claude-opus-4-8',
+    );
+    expect(cost).toBeGreaterThan(0);
+  });
+
+  it('prefix-matches unseen dated opus variants to opus pricing (not sonnet default)', () => {
+    const p = pricingForModel('claude-opus-4-8-20260601');
+    expect(p.input).toBe(15.0); // opus, not the 3.0 sonnet default
+  });
+
+  it('falls back to the default (sonnet) pricing for unknown models', () => {
+    const p = pricingForModel('some-other-model');
+    expect(p.input).toBe(3.0);
   });
 });

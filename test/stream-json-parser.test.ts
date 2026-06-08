@@ -78,6 +78,7 @@ describe('parseStreamJsonLine', () => {
       cache_read_tokens: 30,
       cache_write_tokens: 40,
       num_turns: 3,
+      model: '', // no `model` on this result event
     });
   });
 
@@ -167,20 +168,94 @@ describe('StreamJsonAccumulator (chunk boundaries)', () => {
   });
 });
 
+describe('assistant-event usage (cut-off fallback)', () => {
+  it('parses message.usage + model off an assistant event', () => {
+    const parsed = parseStreamJsonLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 30 },
+          content: [{ type: 'text', text: 'thinking…' }],
+        },
+      })
+    );
+    expect(parsed.text).toBe('thinking…');
+    expect(parsed.assistantUsage).toBeDefined();
+    expect(parsed.assistantUsage!.input_tokens).toBe(100);
+    expect(parsed.assistantUsage!.output_tokens).toBe(50);
+    expect(parsed.assistantUsage!.cache_read_tokens).toBe(2000);
+    expect(parsed.assistantUsage!.cache_write_tokens).toBe(30);
+    expect(parsed.assistantUsage!.cost_usd).toBe(0); // assistant events carry no cost
+    expect(parsed.assistantUsage!.model).toBe('claude-opus-4-8');
+  });
+
+  it('returns no assistantUsage when an assistant event has no usage numbers', () => {
+    const parsed = parseStreamJsonLine(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read' }] } })
+    );
+    expect(parsed.assistantUsage).toBeUndefined();
+  });
+
+  it('CUT-OFF: assistant events but NO result event → summed tokens (non-zero), no cost', () => {
+    // Simulates an agent killed mid-tool-call (timeout / turn limit): assistant
+    // events stream usage, but the terminal `result` event never arrives.
+    const cutOff = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'z' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 100 }, content: [{ type: 'text', text: 'step 1' }] },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: 'claude-opus-4-8', usage: { input_tokens: 1200, output_tokens: 350, cache_read_input_tokens: 6000, cache_creation_input_tokens: 0 }, content: [{ type: 'tool_use', name: 'Bash' }] },
+      }),
+      // …process killed here. No result event.
+    ].join('\n');
+
+    const out = parseStreamJson(cutOff);
+    expect(out.sawResult).toBe(false);
+    // Summed across both assistant events.
+    expect(out.usage.input_tokens).toBe(2200);
+    expect(out.usage.output_tokens).toBe(550);
+    expect(out.usage.cache_read_tokens).toBe(11000);
+    expect(out.usage.cache_write_tokens).toBe(100);
+    expect(out.usage.cost_usd).toBe(0); // cost is derived downstream from tokens
+    expect(out.usage.model).toBe('claude-opus-4-8');
+    // The point of the fix: tokens are non-zero so the record is not a 0.
+    const totalTokens = out.usage.input_tokens + out.usage.output_tokens + out.usage.cache_read_tokens + out.usage.cache_write_tokens;
+    expect(totalTokens).toBeGreaterThan(0);
+  });
+
+  it('result event WINS over summed assistant tokens when present (canonical aggregate)', () => {
+    const withResult = [
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 200 }, content: [{ type: 'text', text: 'x' }] } }),
+      JSON.stringify({ type: 'result', result: 'done', total_cost_usd: 0.9, usage: { input_tokens: 1500, output_tokens: 320, cache_read_input_tokens: 8000, cache_creation_input_tokens: 200 }, num_turns: 4, is_error: false }),
+    ].join('\n');
+    const out = parseStreamJson(withResult);
+    expect(out.sawResult).toBe(true);
+    // Uses the result event's aggregate (1500/320), NOT the assistant sum (1000/200).
+    expect(out.usage.input_tokens).toBe(1500);
+    expect(out.usage.output_tokens).toBe(320);
+    expect(out.usage.cost_usd).toBeCloseTo(0.9, 4);
+  });
+});
+
 describe('usage helpers', () => {
   it('emptyUsage is all zeros', () => {
     expect(emptyUsage()).toEqual({
       cost_usd: 0, input_tokens: 0, output_tokens: 0,
-      cache_read_tokens: 0, cache_write_tokens: 0, num_turns: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, num_turns: 0, model: '',
     });
   });
 
   it('addUsage sums field-by-field (for multi-agent conversation totals)', () => {
-    const a = { cost_usd: 0.1, input_tokens: 10, output_tokens: 5, cache_read_tokens: 1, cache_write_tokens: 2, num_turns: 1 };
-    const b = { cost_usd: 0.2, input_tokens: 20, output_tokens: 6, cache_read_tokens: 3, cache_write_tokens: 4, num_turns: 2 };
+    const a = { cost_usd: 0.1, input_tokens: 10, output_tokens: 5, cache_read_tokens: 1, cache_write_tokens: 2, num_turns: 1, model: 'claude-opus-4-8' };
+    const b = { cost_usd: 0.2, input_tokens: 20, output_tokens: 6, cache_read_tokens: 3, cache_write_tokens: 4, num_turns: 2, model: '' };
     expect(addUsage(a, b)).toEqual({
       cost_usd: 0.30000000000000004, // float, but the fields are summed correctly
       input_tokens: 30, output_tokens: 11, cache_read_tokens: 4, cache_write_tokens: 6, num_turns: 3,
+      model: 'claude-opus-4-8', // first known model id is kept
     });
   });
 });

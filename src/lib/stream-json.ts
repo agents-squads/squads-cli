@@ -27,6 +27,12 @@ export interface StreamUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   num_turns: number;
+  /**
+   * Model id seen on the stream (assistant/result events). Carried so callers
+   * can derive cost from tokens × pricing when cost_usd is 0 (cut-off runs).
+   * Empty string when unknown.
+   */
+  model?: string;
 }
 
 export function emptyUsage(): StreamUsage {
@@ -37,6 +43,7 @@ export function emptyUsage(): StreamUsage {
     cache_read_tokens: 0,
     cache_write_tokens: 0,
     num_turns: 0,
+    model: '',
   };
 }
 
@@ -49,6 +56,8 @@ export function addUsage(a: StreamUsage, b: StreamUsage): StreamUsage {
     cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens,
     cache_write_tokens: a.cache_write_tokens + b.cache_write_tokens,
     num_turns: a.num_turns + b.num_turns,
+    // Keep the first known model id (agents in one run share a model).
+    model: a.model || b.model || '',
   };
 }
 
@@ -56,6 +65,13 @@ export function addUsage(a: StreamUsage, b: StreamUsage): StreamUsage {
 export interface ParsedLine {
   /** Assistant text emitted by this line (to stream live + accumulate). */
   text?: string;
+  /**
+   * Per-message usage from an `assistant` event (`message.usage`). Accumulated
+   * across the stream so a cut-off run (no terminal `result` event) still has
+   * real token counts. `cost_usd`/`num_turns` are not present on assistant
+   * events, so this carries only token fields + the model id.
+   */
+  assistantUsage?: StreamUsage;
   /** Set on the terminal `result` event. */
   result?: {
     /** Canonical full response text. */
@@ -70,10 +86,32 @@ interface AssistantContentBlock {
   text?: string;
 }
 
+/** Tokens + model from a single `assistant` event's `message.usage`. */
+function parseAssistantUsage(message: Record<string, unknown> | undefined): StreamUsage | undefined {
+  if (!message) return undefined;
+  const u = (message.usage as Record<string, number>) || {};
+  const input = u.input_tokens || 0;
+  const output = u.output_tokens || 0;
+  const cacheRead = u.cache_read_input_tokens || 0;
+  const cacheWrite = u.cache_creation_input_tokens || 0;
+  // No usage numbers on this event → nothing to accumulate.
+  if (!input && !output && !cacheRead && !cacheWrite) return undefined;
+  return {
+    cost_usd: 0, // assistant events don't carry cost — derived later from tokens
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
+    num_turns: 0,
+    model: typeof message.model === 'string' ? message.model : '',
+  };
+}
+
 /**
- * Parse a single JSONL line from the stream. Returns the assistant text on
- * `assistant` events and the canonical result (text + usage) on the `result`
- * event. Malformed / non-JSON / uninteresting lines return an empty object.
+ * Parse a single JSONL line from the stream. Returns the assistant text + per-
+ * message usage on `assistant` events, and the canonical result (text + usage)
+ * on the `result` event. Malformed / non-JSON / uninteresting lines return an
+ * empty object.
  */
 export function parseStreamJsonLine(line: string): ParsedLine {
   const trimmed = line.trim();
@@ -87,16 +125,19 @@ export function parseStreamJsonLine(line: string): ParsedLine {
   }
 
   if (ev.type === 'assistant') {
-    const message = ev.message as { content?: AssistantContentBlock[] } | undefined;
+    const message = ev.message as ({ content?: AssistantContentBlock[] } & Record<string, unknown>) | undefined;
+    const out: ParsedLine = {};
     const blocks = message?.content;
     if (Array.isArray(blocks)) {
       const text = blocks
         .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
         .map((b) => b.text as string)
         .join('');
-      if (text) return { text };
+      if (text) out.text = text;
     }
-    return {};
+    const assistantUsage = parseAssistantUsage(message);
+    if (assistantUsage) out.assistantUsage = assistantUsage;
+    return out;
   }
 
   if (ev.type === 'result') {
@@ -112,6 +153,7 @@ export function parseStreamJsonLine(line: string): ParsedLine {
           cache_read_tokens: u.cache_read_input_tokens || 0,
           cache_write_tokens: u.cache_creation_input_tokens || 0,
           num_turns: typeof ev.num_turns === 'number' ? ev.num_turns : 0,
+          model: typeof ev.model === 'string' ? ev.model : '',
         },
       },
     };
@@ -142,6 +184,15 @@ export class StreamJsonAccumulator {
   private buf = '';
   private assistantText = '';
   private usage: StreamUsage = emptyUsage();
+  /**
+   * Running token sum across `assistant` events. Used as the cut-off fallback:
+   * if the run is killed (timeout / turn limit) before the terminal `result`
+   * event, this still holds real per-message token counts so observability gets
+   * non-zero usage. Each assistant event reports the cumulative tokens for that
+   * turn; we sum them across the stream (matches the existing session-file
+   * parser in observability.ts, which sums message.usage the same way).
+   */
+  private assistantUsage: StreamUsage = emptyUsage();
   private resultText: string | null = null;
   private isError = false;
   private sawResult = false;
@@ -171,6 +222,9 @@ export class StreamJsonAccumulator {
       this.assistantText += this.assistantText ? '\n' + parsed.text : parsed.text;
       this.onText?.(parsed.text);
     }
+    if (parsed.assistantUsage) {
+      this.assistantUsage = addUsage(this.assistantUsage, parsed.assistantUsage);
+    }
     if (parsed.result) {
       this.sawResult = true;
       this.resultText = parsed.result.text;
@@ -186,7 +240,13 @@ export class StreamJsonAccumulator {
     const text = this.resultText && this.resultText.length > 0
       ? this.resultText
       : this.assistantText;
-    return { text, usage: this.usage, isError: this.isError, sawResult: this.sawResult };
+    // Usage: the terminal `result` event is canonical (a single aggregate over
+    // the whole run, incl. cost). When it's absent (cut off mid-response), fall
+    // back to the summed assistant-event tokens so the record still carries real
+    // quota numbers — cost_usd may be 0 here (assistant events don't report it),
+    // which is fine: the caller derives cost from tokens × pricing.
+    const usage = this.sawResult ? this.usage : this.assistantUsage;
+    return { text, usage, isError: this.isError, sawResult: this.sawResult };
   }
 }
 

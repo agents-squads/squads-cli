@@ -66,7 +66,17 @@ export interface CostSummary {
 
 // ── Model Pricing (per 1M tokens) ────────────────────────────────────
 
-const MODEL_PRICING: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> = {
+export interface ModelPricing {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Opus tier (incl. the model ids that show up in real session files: 4-8, 4-7)
+  'claude-opus-4-8': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+  'claude-opus-4-7': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-opus-4-6': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-opus-4-5-20251101': { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
   'claude-sonnet-4-6': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
@@ -75,6 +85,34 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cache_read:
   'claude-haiku-4-5-20251001': { input: 0.80, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
   'default': { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
 };
+
+/**
+ * Resolve a pricing row for a model id. Prefix-matches the families above so an
+ * unseen dated variant (e.g. `claude-opus-4-8-20260601`) still prices as opus
+ * instead of silently falling back to the (cheaper) sonnet default.
+ */
+export function pricingForModel(model: string | undefined): ModelPricing {
+  if (!model) return MODEL_PRICING['default'];
+  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  if (model.includes('opus')) return MODEL_PRICING['claude-opus-4-8'];
+  if (model.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5-20251001'];
+  if (model.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
+  return MODEL_PRICING['default'];
+}
+
+/** Token bundle → notional USD using per-1M-token pricing for `model`. */
+export function deriveCostFromTokens(
+  tokens: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number },
+  model: string | undefined,
+): number {
+  const p = pricingForModel(model);
+  return (
+    (tokens.input_tokens / 1_000_000) * p.input +
+    (tokens.output_tokens / 1_000_000) * p.output +
+    (tokens.cache_read_tokens / 1_000_000) * p.cache_read +
+    (tokens.cache_write_tokens / 1_000_000) * p.cache_write
+  );
+}
 
 // ── Paths ────────────────────────────────────────────────────────────
 
@@ -187,13 +225,7 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
 
     // Calculate cost from tokens if not directly available
     if (usage.cost_usd === 0) {
-      const pricing = MODEL_PRICING[usage.model] || MODEL_PRICING['default'];
-      usage.cost_usd = (
-        (usage.input_tokens / 1_000_000) * pricing.input +
-        (usage.output_tokens / 1_000_000) * pricing.output +
-        (usage.cache_read_tokens / 1_000_000) * pricing.cache_read +
-        (usage.cache_write_tokens / 1_000_000) * pricing.cache_write
-      );
+      usage.cost_usd = deriveCostFromTokens(usage, usage.model);
     }
 
     return usage;
