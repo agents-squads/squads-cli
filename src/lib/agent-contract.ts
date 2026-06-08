@@ -72,7 +72,7 @@ export interface AgentContract {
 // ── Tool-grant vocabulary (what the Claude Code allowlist can enforce) ───────
 const TOOL_NAME =
   /^(Read|Write|Edit|MultiEdit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
-const BASH_SCOPED = /^Bash\([A-Za-z0-9_./-]+(:\*)?\)$/; // Bash(git:*) | Bash(ls)
+const BASH_SCOPED = /^Bash\([A-Za-z0-9_./ -]+(:\*)?\)$/; // Bash(git:*) | Bash(git status:*) — literal space only (not \s, which allows \n/\r/\t)
 const MCP_TOOL = /^mcp__[a-z0-9_]+__([a-z0-9_]+|\*)$/;
 
 export function isEnforceableTool(tool: string): boolean {
@@ -190,8 +190,9 @@ export interface ContractViolation {
 }
 
 const KNOWN_SECRETS = new Set([
-  'ANTHROPIC_API_KEY', 'SLACK_BOT_TOKEN', 'GH_TOKEN', 'MERCADOPUBLICO_API_KEY',
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SLACK_BOT_TOKEN', 'GH_TOKEN', 'MERCADOPUBLICO_API_KEY',
   'STRIPE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'DATABASE_URL',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION',
 ]);
 
 /**
@@ -208,19 +209,39 @@ export function validateContract(c: AgentContract): ContractViolation[] {
   const validRoles: ContextRole[] = ['scanner', 'worker', 'lead', 'coo', 'verifier'];
   if (!validRoles.includes(c.role)) fail('role', `unknown role "${c.role}"`);
 
-  if (c.tool_grants.length === 0) fail('tool_grants', 'empty — an agent with no grants cannot act');
-  for (const t of c.tool_grants) {
-    if (!isEnforceableTool(t.tool)) {
-      fail('tool_grants', `"${t.tool}" is not expressible in the allowedTools vocabulary (tool name | Bash(cmd:*) | mcp__server__tool) — unenforceable`);
+  // Defensive: these fields come from arbitrary user frontmatter — a non-array
+  // (e.g. a string) would otherwise spread into chars / throw downstream (security bypass).
+  if (!Array.isArray(c.tool_grants)) {
+    fail('tool_grants', 'must be an array of tool grants');
+  } else {
+    if (c.tool_grants.length === 0) fail('tool_grants', 'empty — an agent with no grants cannot act');
+    for (const t of c.tool_grants) {
+      if (!t || typeof t.tool !== 'string') {
+        fail('tool_grants', 'invalid tool grant structure');
+        continue;
+      }
+      if (!['read', 'write', 'consequential'].includes(t.sensitivity)) {
+        fail('tool_grants', `invalid sensitivity "${t.sensitivity}" for tool "${t.tool}"`);
+      }
+      if (!isEnforceableTool(t.tool)) {
+        fail('tool_grants', `"${t.tool}" is not expressible in the allowedTools vocabulary (tool name | Bash(cmd:*) | mcp__server__tool) — unenforceable`);
+      }
     }
   }
 
-  const writers = c.tool_grants.filter((t) => t.sensitivity !== 'read');
-  if (writers.length > 0 && c.write_scope.length === 0) {
-    fail('write_scope', `has ${writers.length} write/consequential grant(s) but no write_scope (unjailed write)`);
+  const grants = Array.isArray(c.tool_grants) ? c.tool_grants.filter((t) => t && typeof t.tool === 'string') : [];
+  const writers = grants.filter((t) => t.sensitivity !== 'read');
+  if (writers.length > 0) {
+    if (!Array.isArray(c.write_scope)) {
+      fail('write_scope', 'must be an array of glob patterns');
+    } else if (c.write_scope.length === 0) {
+      fail('write_scope', `has ${writers.length} write/consequential grant(s) but no write_scope (unjailed write)`);
+    } else if (c.write_scope.some((s) => typeof s !== 'string')) {
+      fail('write_scope', 'glob patterns must be strings');
+    }
   }
 
-  const consequential = c.tool_grants.filter((t) => t.sensitivity === 'consequential');
+  const consequential = grants.filter((t) => t.sensitivity === 'consequential');
   if (consequential.length > 0 && c.hitl_gate === 'none') {
     fail('hitl_gate', `has consequential grant(s) (${consequential.map((t) => t.tool).join(', ')}) but hitl_gate is "none"`);
   }
@@ -232,8 +253,16 @@ export function validateContract(c: AgentContract): ContractViolation[] {
     fail('resource_ceiling', 'needs a cost ceiling (per_run_usd or daily_usd)');
   }
 
-  for (const s of c.credential_scope) {
-    if (!KNOWN_SECRETS.has(s)) fail('credential_scope', `unknown secret "${s}"`);
+  if (!Array.isArray(c.credential_scope)) {
+    fail('credential_scope', 'must be an array of secret names');
+  } else {
+    for (const s of c.credential_scope) {
+      if (typeof s !== 'string') {
+        fail('credential_scope', 'secret names must be strings');
+        continue;
+      }
+      if (!KNOWN_SECRETS.has(s)) fail('credential_scope', `unknown secret "${s}"`);
+    }
   }
 
   if (c.autonomy === 'autonomous' && c.hitl_gate !== 'none') {

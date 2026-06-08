@@ -42,7 +42,7 @@ export interface SandboxSettingsOptions {
 }
 
 export const DEFAULT_ALLOWED_DOMAINS = [
-  'api.anthropic.com',
+  'api.anthropic.com', 'api.openai.com',
   'github.com', '*.github.com', 'codeload.github.com', 'objects.githubusercontent.com',
   'registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org',
   '*.googleapis.com',
