@@ -5,6 +5,20 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.3.3] — 2026-06-08
+
+Runtime reliability — `squads run` is safe and pleasant to leave unattended.
+
+### Fixed
+- **Per-agent timeout now actually bounds agents** — `--timeout <min>` was ignored in conversation mode; it now caps each agent (precedence: `SQUADS_AGENT_TIMEOUT_MINUTES` env > `--timeout` > default). Default lowered **30 → 15 min** so a hung agent can't burn half an hour (#806).
+- **Founder-context refresh no longer blocks the run** — when context is stale, the digest now refreshes in the **background** while the run proceeds with the current copy (was a multi-minute synchronous Pass-1 over the whole session history). `--force` / `SQUADS_DIGEST_SYNC=1` still refresh synchronously (#807).
+
+### Added
+- **Per-squad-run worktree isolation** — each squad run executes in its own git worktree, so agents never switch branches, drop files, or open PRs in your working checkout. Graceful fallback to in-place if the dir isn't a git repo; `SQUADS_NO_WORKTREE=1` to disable (#808).
+
+### Changed
+- `squads run` (no target) now lists squads and surfaces a `Run all squads: squads run --org` hint; corrected the misleading "autopilot mode" command description (#805).
+
 ## [0.3.2] — 2026-06-08
 
 Agent runtime, founder-context, and a full safety/governance layer.
