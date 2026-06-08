@@ -105,6 +105,8 @@ interface AgentRunConfig {
   /** Full squad context (goals, feedback, priorities, etc.) */
   squadContext: string;
   cwd: string;
+  /** Stream this agent's output live (prefixed) — set under squad-run --verbose (#791) */
+  verbose?: boolean;
 }
 
 /**
@@ -203,12 +205,29 @@ ${squadContext}
     const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : DEFAULT_TIMEOUT_MINUTES;
     const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
 
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    // Under --verbose, stream the agent's output live (line-buffered, prefixed) so
+    // runs are supervisable — otherwise output is only visible post-hoc in the
+    // transcript (#791). Full tool-call streaming (stream-json) is a follow-up.
+    // Stream-decode so multi-byte UTF-8 chars split across chunk boundaries aren't corrupted.
+    const decoder = new TextDecoder('utf-8');
+    let lineBuf = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+      if (!config.verbose) return;
+      lineBuf += decoder.decode(chunk, { stream: true });
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop() ?? '';
+      for (const line of lines) writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
+    });
     const stderrChunks: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on('close', (code) => {
       clearTimeout(timeout);
+      if (config.verbose) {
+        lineBuf += decoder.decode();  // flush bytes held back for a split multi-byte char
+        if (lineBuf.trim()) writeLine(`  ${colors.dim}${agentName} │${RESET} ${lineBuf}`);
+      }
       const output = Buffer.concat(chunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
       if (output.includes('hit your limit') || output.includes('rate limit')) {
@@ -355,7 +374,7 @@ export async function runConversation(
   const planOutput = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
-    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd,
+    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose,
   });
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -432,7 +451,7 @@ export async function runConversation(
       return runIndependentAgent({
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
-        task, squadContext, cwd: squadCwd,
+        task, squadContext, cwd: squadCwd, verbose: options.verbose,
       }).then(output => ({ agent, output }));
     });
 
@@ -467,7 +486,7 @@ Summary: [what was achieved]`;
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-    cwd: squadCwd,
+    cwd: squadCwd, verbose: options.verbose,
   });
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
@@ -503,7 +522,7 @@ or
       agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
       squadName: squad.name, model: options.model || modelForRole('verifier'),
       task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-      cwd: squadCwd,
+      cwd: squadCwd, verbose: options.verbose,
     });
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
   }
