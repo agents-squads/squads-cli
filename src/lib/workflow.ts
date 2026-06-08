@@ -57,6 +57,12 @@ import {
   diffGoals,
   type ObservabilityRecord,
 } from './observability.js';
+import {
+  StreamJsonAccumulator,
+  emptyUsage,
+  addUsage,
+  type StreamUsage,
+} from './stream-json.js';
 
 // =============================================================================
 // Configuration
@@ -116,10 +122,28 @@ interface AgentRunConfig {
 }
 
 /**
- * Run a single agent independently via `claude --print --allowedTools`.
- * Agent gets: their task + squad context. No shared transcript.
+ * Result of one independent agent run: the response text PLUS the real cost/
+ * token usage captured from the stream-json `result` event (#791 follow-up).
+ * `usage` is all-zero only when no result event was seen (timeout / spawn error).
  */
-async function runIndependentAgent(config: AgentRunConfig): Promise<string> {
+export interface AgentRunResult {
+  text: string;
+  usage: StreamUsage;
+}
+
+/**
+ * Run a single agent independently via
+ * `claude --print --output-format stream-json --verbose --allowedTools`.
+ * Agent gets: their task + squad context. No shared transcript.
+ *
+ * `--output-format stream-json` emits JSONL events (one per line) and REQUIRES
+ * `--verbose` on the claude invocation to do so — that is always passed and is
+ * separate from our user-facing `config.verbose`, which only gates the LIVE
+ * display of assistant text. The terminal `result` event carries the canonical
+ * full response text and real `total_cost_usd` + `usage`, so observability gets
+ * true numbers instead of 0.
+ */
+async function runIndependentAgent(config: AgentRunConfig): Promise<AgentRunResult> {
   const { agentName, agentPath, role, squadName, task, squadContext } = config;
 
   const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
@@ -184,7 +208,10 @@ ${squadContext}
     verifier: [...readTools, ...buildTools],
   };
 
-  const claudeArgs: string[] = ['--print'];
+  // stream-json gives us the per-agent cost/usage in the terminal `result` event.
+  // `--verbose` is REQUIRED for stream-json to emit events — always pass it; it's
+  // independent of config.verbose (which only gates the live display below).
+  const claudeArgs: string[] = ['--print', '--output-format', 'stream-json', '--verbose'];
   if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
     claudeArgs.push('--dangerously-skip-permissions');
   } else {
@@ -210,8 +237,7 @@ ${squadContext}
   if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
   if (claudeModel) claudeArgs.push('--model', claudeModel);
 
-  return new Promise<string>((resolve) => {
-    const chunks: Buffer[] = [];
+  return new Promise<AgentRunResult>((resolve) => {
     const child = spawn('claude', claudeArgs, {
       cwd: spawnCwd, env: agentEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -220,48 +246,63 @@ ${squadContext}
     child.stdin.write(prompt);
     child.stdin.end();
 
+    // Parse the JSONL stream-json stdout line-by-line. On `assistant` events we
+    // stream the text live (under config.verbose) with the existing prefix; on
+    // the terminal `result` event we capture the canonical text + real cost/usage.
+    // Stream-decode so multi-byte UTF-8 chars split across chunk boundaries aren't corrupted.
+    const decoder = new TextDecoder('utf-8');
+    const accumulator = new StreamJsonAccumulator(
+      config.verbose
+        ? (text: string) => {
+            for (const line of text.split('\n')) {
+              writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
+            }
+          }
+        : undefined
+    );
+
     // Timeout: configurable via env var, defaults from run-types.ts
     const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
     const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? DEFAULT_TIMEOUT_MINUTES);
-    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(`[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`); }, timeoutMinutes * 60 * 1000);
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      resolve({ text: `[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`, usage: emptyUsage() });
+    }, timeoutMinutes * 60 * 1000);
 
-    // Under --verbose, stream the agent's output live (line-buffered, prefixed) so
-    // runs are supervisable — otherwise output is only visible post-hoc in the
-    // transcript (#791). Full tool-call streaming (stream-json) is a follow-up.
-    // Stream-decode so multi-byte UTF-8 chars split across chunk boundaries aren't corrupted.
-    const decoder = new TextDecoder('utf-8');
-    let lineBuf = '';
     child.stdout.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-      if (!config.verbose) return;
-      lineBuf += decoder.decode(chunk, { stream: true });
-      const lines = lineBuf.split('\n');
-      lineBuf = lines.pop() ?? '';
-      for (const line of lines) writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
+      accumulator.push(decoder.decode(chunk, { stream: true }));
     });
     const stderrChunks: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on('close', (code) => {
       clearTimeout(timeout);
-      if (config.verbose) {
-        lineBuf += decoder.decode();  // flush bytes held back for a split multi-byte char
-        if (lineBuf.trim()) writeLine(`  ${colors.dim}${agentName} │${RESET} ${lineBuf}`);
-      }
-      const output = Buffer.concat(chunks).toString('utf-8').trim();
+      accumulator.push(decoder.decode()); // flush bytes held back for a split multi-byte char
+      accumulator.flush();
+      const { text, usage, isError } = accumulator.getResult();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
-      if (output.includes('hit your limit') || output.includes('rate limit')) {
-        resolve(`[QUOTA] ${agentName}: API limit reached`);
-      } else if (output.length > 0) {
-        resolve(output);
+
+      // Preserve the contract: still RETURN the agent's response text (now from
+      // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
+      // downstream plan/convergence parsing depends on.
+      if (text.includes('hit your limit') || text.includes('rate limit')) {
+        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage });
+      } else if (isError && text.length > 0) {
+        // is_error:true — return the error text as before, but keep real usage.
+        resolve({ text, usage });
+      } else if (text.length > 0) {
+        resolve({ text: text.trim(), usage });
       } else if (code !== 0) {
-        resolve(`[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`);
+        resolve({ text: `[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`, usage });
       } else {
-        resolve(`[${agentName} completed with no output]`);
+        resolve({ text: `[${agentName} completed with no output]`, usage });
       }
     });
 
-    child.on('error', (err) => { clearTimeout(timeout); resolve(`[ERROR] ${agentName} failed to spawn: ${err.message}`); });
+    child.on('error', (err) => {
+      clearTimeout(timeout);
+      resolve({ text: `[ERROR] ${agentName} failed to spawn: ${err.message}`, usage: emptyUsage() });
+    });
   });
 }
 
@@ -373,6 +414,10 @@ export async function runConversation(
   const executionId = generateExecutionId();
   const goalsBefore = snapshotGoals(squad.name);
 
+  // Accumulate REAL cost/usage across every agent spawn in this conversation
+  // (plan + workers + review + verify) — captured from stream-json result events.
+  let cycleUsage: StreamUsage = emptyUsage();
+
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
   // Build squad context once (shared by all agents)
@@ -414,11 +459,13 @@ export async function runConversation(
     .replace('{{SCANNERS}}', scannerNames || '(none)')
     .replace('{{SQUAD_CONTEXT}}', squadContext);
 
-  const planOutput = await runIndependentAgent({
+  const planResult = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
   });
+  const planOutput = planResult.text;
+  cycleUsage = addUsage(cycleUsage, planResult.usage);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Quota detection — if plan hit the API limit, stop immediately
@@ -433,11 +480,11 @@ export async function runConversation(
       trigger: 'scheduled',
       status: 'failed',
       duration_ms: Date.now() - cycleStartMs,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
-      cost_usd: transcript.totalCost,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
       error: 'Quota limit reached',
       task: options.task,
@@ -460,18 +507,18 @@ export async function runConversation(
       trigger: 'scheduled',
       status: 'completed',
       duration_ms: Date.now() - cycleStartMs,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
-      cost_usd: transcript.totalCost,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
       task: options.task,
       goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
       goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
       goals_changed: goalsChangedEarly.length > 0 ? goalsChangedEarly : undefined,
     });
-    return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: true, reason: conv.reason };
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: true, reason: conv.reason };
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -495,12 +542,13 @@ export async function runConversation(
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
         task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
-      }).then(output => ({ agent, output }));
+      }).then(result => ({ agent, output: result.text, usage: result.usage }));
     });
 
     const workerResults = await Promise.all(workerPromises);
 
-    for (const { agent, output } of workerResults) {
+    for (const { agent, output, usage } of workerResults) {
+      cycleUsage = addUsage(cycleUsage, usage);
       if (output.startsWith('[ERROR]')) {
         writeLine(`  ${colors.yellow}[WARN] ${agent.name}: ${output.slice(0, 80)}${RESET}`);
       }
@@ -525,12 +573,14 @@ End with:
 ## STATUS: DONE
 Summary: [what was achieved]`;
 
-  const reviewOutput = await runIndependentAgent({
+  const reviewResult = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
     cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
   });
+  const reviewOutput = reviewResult.text;
+  cycleUsage = addUsage(cycleUsage, reviewResult.usage);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Goals.md staleness check — warn if goals were not updated during review
@@ -561,12 +611,14 @@ End with:
 or
 ## VERDICT: REJECTED (which check failed and why)`;
 
-    const verifyOutput = await runIndependentAgent({
+    const verifyResult = await runIndependentAgent({
       agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
       squadName: squad.name, model: options.model || modelForRole('verifier'),
       task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
       cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
     });
+    const verifyOutput = verifyResult.text;
+    cycleUsage = addUsage(cycleUsage, verifyResult.usage);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
   }
 
@@ -591,11 +643,12 @@ or
     trigger: 'scheduled',
     status: 'completed',
     duration_ms: cycleDurationMs,
-    input_tokens: 0,   // token-level data not available from spawned agents
-    output_tokens: transcript.turns.length > 0 ? transcript.turns.reduce((acc, t) => acc + t.content.length, 0) : 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    cost_usd: transcript.totalCost,
+    // Real token-level data captured from stream-json result events (#791 follow-up).
+    input_tokens: cycleUsage.input_tokens,
+    output_tokens: cycleUsage.output_tokens,
+    cache_read_tokens: cycleUsage.cache_read_tokens,
+    cache_write_tokens: cycleUsage.cache_write_tokens,
+    cost_usd: cycleUsage.cost_usd,
     context_tokens: 0,
     task: options.task,
     goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
@@ -607,7 +660,7 @@ or
   return {
     transcript,
     turnCount: transcript.turns.length,
-    totalCost: transcript.totalCost,
+    totalCost: cycleUsage.cost_usd,
     converged: finalConv.converged, // reflect actual convergence status
     reason: finalConv.reason || 'Cycle complete (plan → execute → review → verify)',
   };
