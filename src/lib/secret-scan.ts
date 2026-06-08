@@ -77,7 +77,9 @@ export function scanText(text: string, opts: ScanOptions = {}): SecretFinding[] 
   }
   for (const term of opts.forbidden ?? []) {
     const t = term.trim();
-    if (t && text.toLowerCase().includes(t.toLowerCase())) {
+    // Require >= 3 chars: a 1-2 char term ("to", "me") would match almost any
+    // text and block every auto-commit (catastrophic false positives).
+    if (t.length >= 3 && text.toLowerCase().includes(t.toLowerCase())) {
       out.push({ type: 'forbidden', ruleId: 'denylist', redacted: redact(t) });
     }
   }

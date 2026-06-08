@@ -94,6 +94,9 @@ async function briefCommand(options: { sessions: number; dryRun: boolean; coo: b
     const jsonMatch = proc.stdout.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('No JSON found in response');
     result = JSON.parse(jsonMatch[0]) as BriefResult;
+    if (!result || typeof result.focus !== 'string' || !Array.isArray(result.tasks)) {
+      throw new Error('Unexpected JSON schema from extraction (need focus:string, tasks:[])');
+    }
   } catch (err) {
     writeLine(`  ${colors.red}Extraction failed:${RESET} ${err instanceof Error ? err.message : String(err)}`);
     return;
