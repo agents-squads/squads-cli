@@ -73,9 +73,11 @@ jobs:
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
-      # Upgrade npm to a version that supports OIDC trusted publishing (>= 11.5.1)
+      # Upgrade npm to a version that supports OIDC trusted publishing (>= 11.5.1).
+      # --force bypasses the self-upgrade MODULE_NOT_FOUND bug where mid-upgrade
+      # npm fails to resolve its own internal modules (e.g. 'promise-retry').
       - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@latest --force
 
       - name: Install dependencies
         run: npm ci

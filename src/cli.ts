@@ -191,6 +191,12 @@ program
   .name('squads')
   .description('Your AI workforce — business operating system for AI managers')
   .version(version)
+  .addHelpText('after', `
+Resources:
+  Changelog       https://github.com/agents-squads/squads-cli/blob/main/CHANGELOG.md
+  Releases        https://github.com/agents-squads/squads-cli/releases
+  Issues          https://github.com/agents-squads/squads-cli/issues
+`)
   // Enable typo suggestions (Commander.js built-in feature)
   .showSuggestionAfterError(true)
   // Configure help to exit with code 0 (Unix convention)
