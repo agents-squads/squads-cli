@@ -58,6 +58,7 @@ import { registerApprovalCommand } from './commands/approval.js';
 import { registerDeployCommand } from './commands/deploy.js';
 import { registerEvalCommand } from './commands/eval.js';
 import { registerCognitionCommand } from './commands/cognition.js';
+import { registerContractCommand } from './commands/contract.js';
 import { registerCatalogCommands } from './commands/catalog.js';
 import { registerReleaseCommands } from './commands/release-check.js';
 import { registerObservabilityCommands } from './commands/observability.js';
@@ -66,6 +67,7 @@ import { registerServicesCommands } from './commands/services.js';
 import { registerGoalsCommand } from './commands/goals.js';
 import { registerCredentialsCommand } from './commands/credentials.js';
 import { registerReviewCommand } from './commands/review.js';
+import { registerBriefCommand } from './commands/brief.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1086,6 +1088,9 @@ registerDeployCommand(program);
 // Cognition command group - business cognition engine
 registerCognitionCommand(program);
 
+// Agent Contracts — governed per-agent capability definitions (P0)
+registerContractCommand(program);
+
 // IDP — service catalog, scorecards, release checks
 registerCatalogCommands(program);
 registerReleaseCommands(program);
@@ -1095,6 +1100,7 @@ registerServicesCommands(program);
 registerGoalsCommand(program);
 registerCredentialsCommand(program);
 registerReviewCommand(program);
+registerBriefCommand(program);
 
 // Providers command - show LLM CLI availability for multi-LLM support
 program

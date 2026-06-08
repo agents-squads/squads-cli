@@ -5,6 +5,34 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.3.2] — 2026-06-08
+
+Agent runtime, founder-context, and a full safety/governance layer.
+
+### Added
+- **Founder-context layers** — `founder-context.md` (universal) + per-squad `founder-alignment.md` injected first into every agent's context, so squads run aligned with the operator's live pipeline.
+- **`squads brief`** — distills founder intentions from recent sessions into GitHub issues.
+- **Live `--verbose` streaming** — `squads run --verbose` streams each agent's output as it works (not just post-run).
+- **Per-agent `max_context_tokens`** — cap an agent's context-assembly budget in YAML frontmatter.
+- **Agent Contract** — schema + CI validator for agent capabilities (tool grants, write scope, credential scope, resource ceilings).
+- **OS sandbox** (opt-in) — run agent sessions in Claude Code's OS sandbox with an egress allowlist.
+- **API type codegen** — generated client types from the squads-api OpenAPI spec.
+
+### Changed
+- **Roadmap-bounded autonomy** — leads plan, delegate, update state, and land reviewed PRs, but cannot author or ship code themselves; workers do the building.
+- **Role-based timeouts + anti-collision** rules in the conversation engine.
+
+### Fixed
+- Telemetry write-key restored (broken since 2026-03-14).
+- Services made path-agnostic (no hardcoded paths).
+- Agent guardrail Bash denylist now actually fires.
+- UX: prerequisites check, no-args squad list, schedule hint.
+
+### Security
+- **Secret/PII guardrail** — blocks agent auto-commits that would leak secrets or PII.
+- **Governance deny-rules** — agents can't edit `goals`/`priorities`/`directives`/`SQUAD.md` during runs.
+- Defensive validation hardening across contract / secret-scan / brief / sandbox.
+
 ## [0.3.1] — 2026-04-24
 
 First stable v0.3.x release on `@latest`. Same code as `0.3.0-rc.1` (burned in on `@next`).

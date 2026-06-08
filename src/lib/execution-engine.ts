@@ -41,6 +41,10 @@ import { findMemoryDir } from './memory.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
+import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
+import {
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled,
+} from './sandbox-settings.js';
 import {
   colors,
   RESET,
@@ -140,6 +144,22 @@ export async function autoCommitAgentWork(
 
     // Stage all changes (agent work should be committed)
     execSync('git add -A', execOpts);
+
+    // PII/secret guard — never let an agent's auto-commit leak a credential or
+    // PII into a (possibly public) repo. Scan only the staged ADDITIONS; if any
+    // finding, unstage and refuse to commit (safe failure: work stays local,
+    // surfaced as an error rather than pushed).
+    const stagedDiff = execSync('git diff --cached', {
+      encoding: 'utf-8', cwd: projectRoot, maxBuffer: 32 * 1024 * 1024,
+    });
+    const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
+    if (findings.length > 0) {
+      try { execSync('git reset', execOpts); } catch { /* refuse to commit regardless */ }
+      return {
+        committed: false,
+        error: `blocked: ${findings.length} secret/PII finding(s) in staged changes — ${summarizeFindings(findings)}`,
+      };
+    }
 
     // Build commit message with provider-specific co-author
     // Write to temp file to avoid shell injection via squad/agent names
@@ -754,15 +774,32 @@ export async function executeWithClaude(
     }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
-    // Inject guardrail PreToolUse hooks so spawned sessions inherit destructive-command guards
+    // Inject guardrail PreToolUse hooks so spawned sessions inherit destructive-command guards.
+    // P2 (opt-in via SQUADS_SANDBOX=1): additionally run the agent inside Claude Code's OS
+    // sandbox (Seatbelt/bubblewrap) — FS isolation (write = worktree + memory) + denyRead
+    // of credential dirs + a network domain allowlist — merging the guardrail hooks in.
     const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
-    if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
+    if (sandboxEnabled()) {
+      const memDir = findMemoryDir();
+      const settings = buildSandboxSettings({
+        cwd: targetRepoRoot,
+        writeScope: memDir ? [memDir] : [],
+        guardrailHooks: readGuardrailHooks(guardrailPath),
+        guardrailPermissions: readGuardrailPermissions(guardrailPath),
+      });
+      const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+      claudeArgs.push('--settings', settingsPath);
+    } else if (guardrailPath) {
+      claudeArgs.push('--settings', guardrailPath);
+    }
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
       effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken,
     });
+    // P2: native subprocess credential scrub (strips Anthropic/cloud creds from bash children).
+    if (sandboxEnabled()) agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
