@@ -35,6 +35,13 @@ export interface ObservabilityRecord {
   cache_write_tokens: number;
   cost_usd: number;
   context_tokens: number;
+  // What the agent DID this run (parsed from its tool_use blocks) — real output,
+  // not just spend. Lets "did squad X move its backlog?" be a query, not a guess.
+  actions?: number;        // total tool calls (0 ≈ noise)
+  files_edited?: number;
+  commits?: number;
+  prs_created?: number;
+  issues_created?: number;
   error?: string;
   task?: string;
   // Goal tracking

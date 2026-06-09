@@ -61,10 +61,39 @@ export function addUsage(a: StreamUsage, b: StreamUsage): StreamUsage {
   };
 }
 
+/**
+ * What an agent actually DID during a run — derived from the `tool_use` blocks
+ * in the stream, so observability records real output (not just cost). These
+ * are accurate counts of the agent's own actions, not fuzzy correlations.
+ */
+export interface RunOutcomes {
+  actions: number;        // total tool_use calls — activity proxy (0 ≈ noise)
+  files_edited: number;   // Edit / Write / NotebookEdit calls
+  commits: number;        // `git … commit` Bash calls
+  prs_created: number;    // `gh pr create` Bash calls
+  issues_created: number; // `gh issue create` Bash calls
+}
+
+export function emptyOutcomes(): RunOutcomes {
+  return { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 };
+}
+
+export function addOutcomes(a: RunOutcomes, b: RunOutcomes): RunOutcomes {
+  return {
+    actions: a.actions + b.actions,
+    files_edited: a.files_edited + b.files_edited,
+    commits: a.commits + b.commits,
+    prs_created: a.prs_created + b.prs_created,
+    issues_created: a.issues_created + b.issues_created,
+  };
+}
+
 /** What a single parsed line yields, if anything actionable. */
 export interface ParsedLine {
   /** Assistant text emitted by this line (to stream live + accumulate). */
   text?: string;
+  /** Outcomes from this event's `tool_use` blocks (accumulated across the run). */
+  outcomes?: RunOutcomes;
   /**
    * Per-message usage from an `assistant` event (`message.usage`). Accumulated
    * across the stream so a cut-off run (no terminal `result` event) still has
@@ -84,6 +113,26 @@ export interface ParsedLine {
 interface AssistantContentBlock {
   type?: string;
   text?: string;
+  name?: string;                     // tool name on `tool_use` blocks
+  input?: Record<string, unknown>;   // tool input (e.g. Bash `command`)
+}
+
+/** Count what the agent did from a message's `tool_use` blocks. */
+function parseOutcomes(blocks: AssistantContentBlock[]): RunOutcomes {
+  const o = emptyOutcomes();
+  for (const b of blocks) {
+    if (!b || b.type !== 'tool_use') continue;
+    o.actions += 1;
+    const name = (b.name || '').toLowerCase();
+    if (name === 'edit' || name === 'write' || name === 'notebookedit') o.files_edited += 1;
+    if (name === 'bash') {
+      const cmd = String((b.input as { command?: unknown } | undefined)?.command ?? '');
+      if (/\bgit\b/.test(cmd) && /\bcommit\b/.test(cmd)) o.commits += 1;
+      if (/\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) o.prs_created += 1;
+      if (/\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) o.issues_created += 1;
+    }
+  }
+  return o;
 }
 
 /** Tokens + model from a single `assistant` event's `message.usage`. */
@@ -134,6 +183,8 @@ export function parseStreamJsonLine(line: string): ParsedLine {
         .map((b) => b.text as string)
         .join('');
       if (text) out.text = text;
+      const outcomes = parseOutcomes(blocks);
+      if (outcomes.actions > 0) out.outcomes = outcomes;
     }
     const assistantUsage = parseAssistantUsage(message);
     if (assistantUsage) out.assistantUsage = assistantUsage;
@@ -171,6 +222,8 @@ export interface StreamResult {
   isError: boolean;
   /** True when a terminal `result` event was actually seen. */
   sawResult: boolean;
+  /** What the agent did: tool actions / commits / PRs / issues / file edits. */
+  outcomes: RunOutcomes;
 }
 
 /**
@@ -196,6 +249,8 @@ export class StreamJsonAccumulator {
   private resultText: string | null = null;
   private isError = false;
   private sawResult = false;
+  /** Running sum of what the agent did across the whole stream. */
+  private outcomes: RunOutcomes = emptyOutcomes();
 
   /** @param onText optional sink for live display of assistant text chunks. */
   constructor(private readonly onText?: (text: string) => void) {}
@@ -225,6 +280,9 @@ export class StreamJsonAccumulator {
     if (parsed.assistantUsage) {
       this.assistantUsage = addUsage(this.assistantUsage, parsed.assistantUsage);
     }
+    if (parsed.outcomes) {
+      this.outcomes = addOutcomes(this.outcomes, parsed.outcomes);
+    }
     if (parsed.result) {
       this.sawResult = true;
       this.resultText = parsed.result.text;
@@ -246,7 +304,7 @@ export class StreamJsonAccumulator {
     // quota numbers — cost_usd may be 0 here (assistant events don't report it),
     // which is fine: the caller derives cost from tokens × pricing.
     const usage = this.sawResult ? this.usage : this.assistantUsage;
-    return { text, usage, isError: this.isError, sawResult: this.sawResult };
+    return { text, usage, isError: this.isError, sawResult: this.sawResult, outcomes: this.outcomes };
   }
 }
 
