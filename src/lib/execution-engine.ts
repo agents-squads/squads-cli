@@ -1103,10 +1103,10 @@ export async function executeWithProvider(
     ? `; git -C '${workDir}' add -A 2>/dev/null` +
       `; git -C '${workDir}' -c user.name='squads-agent' -c user.email='agents@agents-squads.com' commit -m 'feat(${squadName}/${agentName}): agent work via ${provider}' >/dev/null 2>&1` +
       `; KEEP_BRANCH=''` +
-      `; if [ "\$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
+      `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
       ` git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 || KEEP_BRANCH=1; fi` +
       `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null` +
-      `; if [ -z "\$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
+      `; if [ -z "$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
       ` else echo "agent work preserved on branch ${branchName} (merge manually)" >> '${logFile}'; fi`
     : '';
   const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
