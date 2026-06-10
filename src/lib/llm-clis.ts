@@ -81,6 +81,25 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     buildArgs: (prompt) => ['exec', prompt],
   },
 
+  // DeepSeek has no first-party agentic CLI; delegate to aider, which speaks
+  // DeepSeek's chat-completions API natively via DEEPSEEK_API_KEY. (codex was
+  // considered but recent versions dropped chat-completions wire support, and
+  // DeepSeek does not implement the Responses API.)
+  deepseek: {
+    provider: 'deepseek',
+    displayName: 'DeepSeek (via aider)',
+    command: 'aider',
+    install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--model',
+      opts?.model ? `deepseek/${opts.model.replace(/^deepseek\//, '')}` : 'deepseek/deepseek-chat',
+      '--message',
+      prompt,
+      '--yes',
+      '--no-auto-commits',
+    ],
+  },
+
   mistral: {
     provider: 'mistral',
     displayName: 'Mistral',
