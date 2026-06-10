@@ -955,6 +955,9 @@ export async function executeWithProvider(
     squadName?: string;
     agentName?: string;
     model?: string;
+    executionId?: string;
+    trigger?: ExecutionContext['trigger'];
+    startMs?: number;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -1029,11 +1032,27 @@ export async function executeWithProvider(
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
+      // When the provider prints usage (aider et al), pipe output through so
+      // it can be parsed for observability — still streamed live to the user.
+      const captureUsage = typeof cliConfig.parseUsage === 'function';
       const proc = spawn(cliConfig.command, args, {
-        stdio: cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
+        stdio: captureUsage
+          ? [cliConfig.stdinPrompt ? 'pipe' : 'inherit', 'pipe', 'pipe']
+          : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
       });
+
+      // Tail buffer for usage parsing (cap to keep memory bounded)
+      const OUTPUT_TAIL_MAX = 256 * 1024;
+      let outputTail = '';
+      if (captureUsage) {
+        const append = (chunk: Buffer) => {
+          outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
+        };
+        proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
+        proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+      }
 
       // For stdinPrompt providers (e.g. Ollama), pipe the prompt via stdin
       if (cliConfig.stdinPrompt && proc.stdin) {
@@ -1042,6 +1061,31 @@ export async function executeWithProvider(
       }
 
       proc.on('close', async (code) => {
+        // Observability: every run gets a record, whatever the provider (#824).
+        // Token/cost figures come from the provider's own output when parseable.
+        const startMs = options.startMs || timestamp;
+        const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        logObservability({
+          ts: new Date().toISOString(),
+          id: options.executionId || generateExecutionId(),
+          squad: squadName,
+          agent: agentName,
+          provider,
+          model: options.model || 'unknown',
+          trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+          status: code === 0 ? 'completed' : 'failed',
+          duration_ms: Date.now() - startMs,
+          input_tokens: usage?.input_tokens || 0,
+          output_tokens: usage?.output_tokens || 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: usage?.cost_usd || 0,
+          context_tokens: 0,
+          error: code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined,
+        });
+        if (usage && options.verbose) {
+          writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
+        }
         // Harvest regardless of exit code — partial work from a failed run
         // must not evaporate either.
         let harvest: HarvestOutcome = { outcome: 'in-place' };

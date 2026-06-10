@@ -155,6 +155,13 @@ export function parseAgentFrontmatter(agentPath: string): AgentFrontmatter {
     result.cooldown = cooldownMatch[1].trim();
   }
 
+  // model: "deepseek-chat" — declared in AgentFrontmatter but was never
+  // extracted; needed so provider observability records carry the real model
+  const modelMatch = yaml.match(/^model:\s*["']?([^"'\n]+)["']?/m);
+  if (modelMatch) {
+    result.model = modelMatch[1].trim();
+  }
+
   // role: <free-text>
   // Primary signal for mapping to context role (scanner/worker/lead/verifier).
   for (const line of yamlLines) {
