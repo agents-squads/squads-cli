@@ -137,6 +137,7 @@ export function getApiUrl(): string {
   return getEnv().api_url;
 }
 
+// Bridge = the HTTP gateway fronting Postgres; clients speak HTTP, never touch the DB directly.
 export function getBridgeUrl(): string {
   return getEnv().bridge_url;
 }

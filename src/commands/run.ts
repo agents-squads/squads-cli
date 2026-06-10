@@ -72,6 +72,22 @@ function showScheduleHint(squadName: string): void {
   } catch { /* best effort */ }
 }
 
+/**
+ * Interactive [y/N] confirmation for the org-run cost gate. Defaults to No on
+ * empty/other input. Uses dynamic import to avoid a top-level readline dep.
+ */
+async function confirmProceed(n: number, est: number): Promise<boolean> {
+  const readline = await import('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) =>
+      rl.question(`  Proceed with ${n} agents (~$${est.toFixed(2)})? [y/N] `, resolve));
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
 export async function runCommand(
   target: string | null,
   options: RunOptions
@@ -128,6 +144,31 @@ export async function runCommand(
     if (options.dryRun) {
       writeLine(`  ${colors.dim}[dry-run] Would run ${plan.length} squad leads in order above.${RESET}\n`);
       return;
+    }
+
+    // Pre-run cost estimate — pull avg-per-agent from recent local history
+    // (executions.jsonl), fall back to ~$0.75/agent with no history. Local-first.
+    {
+      const { avgCostPerRun, todayCostUsd } = await import('../lib/observability.js');
+      const avg = avgCostPerRun();
+      const n = plan.length;
+      const est = avg * n;
+      const usedToday = todayCostUsd();
+      writeLine(`  ${colors.dim}est. ~$${est.toFixed(2)} for ${n} agents (avg $${avg.toFixed(2)}/agent from recent runs) · $${usedToday.toFixed(2)} used today${RESET}`);
+      writeLine();
+
+      // Cost gate (org cycle = the expensive path): require a deliberate go.
+      // Interactive (TTY) → confirm prompt; non-interactive (Chief/cron) → must
+      // pass --yes. Stops a blind cycle from firing a full org run unattended.
+      if (!options.yes) {
+        if (process.stdin.isTTY === true) {
+          const ok = await confirmProceed(n, est);
+          if (!ok) { writeLine(`  ${colors.dim}Aborted — no agents run.${RESET}\n`); return; }
+        } else {
+          writeLine(`  ${colors.yellow}Org run needs confirmation — re-run with --yes to proceed (~$${est.toFixed(2)} for ${n} agents).${RESET}\n`);
+          return;
+        }
+      }
     }
 
     // Step 3: EXECUTE — all planned squads run in parallel
@@ -215,6 +256,7 @@ export async function runCommand(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
           focus: (options.focus as ConversationOptions['focus']) || undefined,
         };
 
@@ -360,6 +402,7 @@ export async function runCommand(
       }
       writeLine();
       writeLine(`  ${colors.dim}Usage: squads run <squad>${RESET}`);
+      writeLine(`  ${colors.dim}Run all squads as one cycle: squads run --org${RESET}`);
     }
     writeLine();
     return;
@@ -599,6 +642,7 @@ async function runSquad(
           costCeiling: options.costCeiling,
           verbose: options.verbose,
           model: options.model,
+          timeout: options.timeout,
         };
 
         // Report execution start to API (fire-and-forget on failure)
