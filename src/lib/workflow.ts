@@ -23,6 +23,7 @@ import {
   type AgentRole,
   type Transcript,
   classifyAgent,
+  isQuotaMessage,
   modelForRole,
   createTranscript,
   serializeTranscript,
@@ -327,7 +328,7 @@ ${squadContext}
       // Preserve the contract: still RETURN the agent's response text (now from
       // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
       // downstream plan/convergence parsing depends on.
-      if (text.includes('hit your limit') || text.includes('rate limit')) {
+      if (isQuotaMessage(text)) {
         resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes });
       } else if (isError && text.length > 0) {
         // is_error:true — return the error text as before, but keep real usage.
@@ -477,7 +478,10 @@ export async function runConversation(
 
   log(`  plan: ${lead.name}...`);
 
-  const workerNames = workers.map(w => w.name).join(', ') || '(no workers — do the work yourself)';
+  const workerNames = workers.map(w => w.name).join(', ')
+    || (scanners.length > 0
+      ? '(no workers — dispatch scanners with "- scanner: [name] | task: [...]" lines, or do the work yourself)'
+      : '(no workers — do the work yourself)');
   const scannerNames = scanners.map(s => s.name).join(', ');
 
   // Load focus-specific instructions from .agents/config/cycle-focus.md
@@ -514,7 +518,7 @@ export async function runConversation(
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Quota detection — if plan hit the API limit, stop immediately
-  if (planOutput.includes('[QUOTA]') || planOutput.includes('hit your limit')) {
+  if (isQuotaMessage(planOutput)) {
     logObservability({
       ts: new Date().toISOString(),
       id: executionId,
@@ -573,11 +577,40 @@ export async function runConversation(
   // ═══════════════════════════════════════════════════════════════════
 
   // Parse task assignments from lead's plan
-  const taskAssignments = parseTaskAssignments(planOutput, [...workers, ...scanners]);
+  let taskAssignments = parseTaskAssignments(planOutput, [...workers, ...scanners]);
+
+  // Zero parsed tasks with agents available = format failure, not "nothing to do".
+  // Fail the turn loudly: re-prompt the lead ONCE with the exact dispatch format
+  // before falling back to lead-works-directly (hq#452 — intelligence stalled here).
+  if (taskAssignments.length === 0 && workers.length + scanners.length > 0) {
+    writeLine(`  ${colors.yellow}[WARN] ${lead.name}: plan had no parseable task assignments — retrying with format reminder${RESET}`);
+    const formatReminder = `Your previous plan could not be parsed into task assignments — no worker received any work. Re-emit ONLY the task list, one line per task, in EXACTLY this format (no prose around it):
+
+- worker: [worker-name] | task: [specific instruction]
+- scanner: [scanner-name] | task: [specific instruction]
+
+Available workers: ${workers.map(w => w.name).join(', ') || '(none)'}
+Available scanners: ${scanners.map(s => s.name).join(', ') || '(none)'}
+
+Your previous plan, for reference:
+
+${planOutput.slice(0, 3000)}`;
+    const retryResult = await runIndependentAgent({
+      agentName: lead.name, agentPath: lead.path, role: 'lead',
+      squadName: squad.name, model: options.model || modelForRole('lead'),
+      task: formatReminder, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+    });
+    cycleUsage = addUsage(cycleUsage, retryResult.usage);
+    cycleOutcomes = addOutcomes(cycleOutcomes, retryResult.outcomes);
+    if (!isQuotaMessage(retryResult.text)) {
+      addTurn(transcript, lead.name, 'lead', retryResult.text, estimateTurnCost(options.model || 'sonnet'));
+      taskAssignments = parseTaskAssignments(retryResult.text, [...workers, ...scanners]);
+    }
+  }
 
   if (taskAssignments.length === 0) {
     // No tasks parsed — lead does the work directly
-    log(`  execute: no task assignments found, lead works directly`);
+    writeLine(`  ${colors.yellow}[WARN] ${lead.name}: no parseable task assignments after retry — lead works directly, ${workers.length + scanners.length} agents idle${RESET}`);
     addTurn(transcript, lead.name, 'lead', '[Lead produced plan but no parseable task assignments. Lead should do the work directly in the review phase.]', estimateTurnCost('sonnet'));
   } else {
     log(`  execute: ${taskAssignments.length} tasks in parallel...`);
@@ -768,17 +801,9 @@ function parseTaskAssignments(planOutput: string, availableAgents: ClassifiedAge
     }
   }
 
-  // If no assignments parsed but workers exist, assign all workers the lead's full plan
-  if (assignments.length === 0 && availableAgents.length > 0) {
-    const workers = availableAgents.filter(a => a.role === 'worker');
-    for (const worker of workers) {
-      assignments.push({
-        agent: worker,
-        task: `The lead produced this plan. Execute the most important task:\n\n${planOutput.slice(0, 3000)}`,
-      });
-    }
-  }
-
+  // No silent fallback on parse failure — the caller re-prompts the lead once
+  // with the exact format, then fails loudly (hq#452). The old behavior (assign
+  // every worker the full plan) hid format failures and ignored scanner-only squads.
   return assignments;
 }
 

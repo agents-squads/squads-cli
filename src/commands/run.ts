@@ -27,6 +27,7 @@ import {
 } from '../lib/terminal.js';
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
+import { isQuotaMessage } from '../lib/conversation.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
@@ -309,7 +310,7 @@ export async function runCommand(
           const files = readdirSync(convDir).sort().reverse();
           if (files.length > 0) {
             const latest = readFileSync(join(convDir, files[0]), 'utf-8');
-            return latest.includes('hit your limit') || latest.includes('rate limit') || latest.includes('[QUOTA]') || latest.includes('Quota limit reached');
+            return isQuotaMessage(latest);
           }
         } catch { /* no transcript */ }
         return false;
