@@ -1,6 +1,7 @@
 # Agent Instructions
 
-Guidance for AI coding agents working on this repository.
+Guidance for AI coding agents working on this repository. This is the single
+source of truth — `CLAUDE.md` imports it.
 
 ## What This Is
 
@@ -25,10 +26,12 @@ Key files by concern:
 |---------|------|
 | Squad/agent discovery | `src/lib/squad-parser.ts` |
 | Context injection | `src/lib/run-context.ts` |
-| Agent execution | `src/commands/run.ts` |
+| Agent execution | `src/commands/run.ts`, `src/lib/execution-engine.ts` |
 | Multi-agent conversation | `src/lib/conversation.ts`, `src/lib/workflow.ts` |
-| Provider CLIs | `src/lib/llm-clis.ts` |
+| Provider CLIs | `src/lib/llm-clis.ts` (integration), `src/lib/providers.ts` (registry + pricing) |
 | Memory read/write | `src/lib/memory.ts` |
+| Git / GitHub | `src/lib/git.ts`, `src/lib/github.ts` (gh CLI + bot identity) |
+| Observability | `src/lib/observability.ts`, `src/lib/telemetry.ts` |
 | Terminal output | `src/lib/terminal.ts` |
 | Command registration | `src/cli.ts` |
 
@@ -36,17 +39,31 @@ Key files by concern:
 
 ```bash
 npm install
-npm run build     # Required before committing — must pass
-npm test          # 1700+ tests, all must pass
+npm run build     # tsup → dist/ — required before committing, must pass
+npm run typecheck # tsc — build does NOT typecheck; run this for behavior/type changes
+npm test          # vitest, 1900+ tests, all must pass
 npm run lint      # ESLint
+npm link          # test globally as `squads`
 ```
+
+```bash
+npx vitest run test/commands/run.test.ts   # Single file
+```
+
+E2E tests in `test/e2e/` run actual CLI commands against temp directories.
 
 ## How to Make Changes
 
 ### Adding a command
 
 1. Create `src/commands/<name>.ts` exporting an async function
-2. Register in `src/cli.ts` with lazy import
+2. Register in `src/cli.ts` with a lazy dynamic import — commands load only when invoked:
+   ```typescript
+   .action(async (name, options) => {
+     const { createCommand } = await import('./commands/create.js');
+     return createCommand(name, options);
+   });
+   ```
 3. Add `--json` flag for machine output
 4. Add tests in `test/commands/<name>.test.ts`
 
@@ -61,7 +78,7 @@ program.command('old-name', { hidden: true })
 
 ### Modifying squad/agent parsing
 
-All filesystem discovery goes through `squad-parser.ts`. Never hardcode paths to `.agents/` — use `findSquadsDir()`, `findProjectRoot()`, `loadSquad()`.
+All filesystem discovery goes through `squad-parser.ts`. Never hardcode paths to `.agents/` — use `findSquadsDir()`, `findProjectRoot()`, `loadSquad()`, `listSquads()`.
 
 ## Conventions
 
@@ -71,19 +88,9 @@ All filesystem discovery goes through `squad-parser.ts`. Never hardcode paths to
 - **`--json` on every command.** Agents parse CLI output programmatically.
 - **No new dependencies** without explicit approval.
 - **No hardcoded repos, orgs, or file paths.** Everything discovered at runtime.
-- **Graceful degradation.** Missing files, unavailable APIs — handle gracefully, never crash.
+- **Graceful degradation.** Missing files, unavailable APIs — show local data, never crash on missing optional data.
 - **Conventional Commits.** `feat:`, `fix:`, `docs:`, `chore:`.
-
-## Testing
-
-Tests use vitest. Run the full suite before submitting changes:
-
-```bash
-npm test                    # All tests
-npx vitest run test/commands/run.test.ts  # Single file
-```
-
-E2E tests in `test/e2e/` run actual CLI commands against temp directories.
+- **Feature branches for non-trivial changes.** PRs target `develop`. See `RELEASING.md` for the release flow.
 
 ## What Not to Do
 
@@ -91,4 +98,4 @@ E2E tests in `test/e2e/` run actual CLI commands against temp directories.
 - Don't use `console.log` in command implementations
 - Don't hardcode GitHub as the only git provider
 - Don't break `--json` output formats (agents depend on them)
-- Don't skip the build step — `npm run build` is the quality gate
+- Don't skip the build step — `npm run build` is the quality gate (and `typecheck` for type changes)
