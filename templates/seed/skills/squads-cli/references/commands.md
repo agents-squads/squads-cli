@@ -111,6 +111,8 @@
 | `squads providers` | Show available LLM CLI providers (claude, gemini, codex, etc.) |
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
+| `squads runs` | List live background agent runs (pid-file inventory) |
+| `squads kill [target]` | Stop a background run gracefully (pid, squad, or squad/agent) |
 | `squads commands` | List the live command tree (machine-readable with --json) |
 
 ## Options Discovery

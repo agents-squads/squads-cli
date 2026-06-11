@@ -1,0 +1,92 @@
+/**
+ * `squads runs` / `squads kill` — see and control detached background runs
+ * (hq#450 D4). Completes the containment loop: spool records what happened,
+ * the watchdog bounds it, this surfaces it.
+ */
+import { getProjectRoot } from '../lib/run-utils.js';
+import {
+  listDetachedRuns,
+  cleanStaleRuns,
+  killDetachedRun,
+  type DetachedRun,
+} from '../lib/runs-inventory.js';
+import { reconcileDetachedRuns } from '../lib/spool.js';
+import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
+
+function elapsed(startedAt: number): string {
+  const ms = Date.now() - startedAt;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
+}
+
+export async function runsCommand(options: { json?: boolean; clean?: boolean }): Promise<void> {
+  const projectRoot = getProjectRoot();
+  const runs = listDetachedRuns(projectRoot);
+  const live = runs.filter((r) => r.alive);
+  const stale = runs.filter((r) => !r.alive);
+
+  let cleaned = { removedPidFiles: 0, salvaged: [] as Array<{ squad: string; agent: string; outcome: string }> };
+  if (options.clean) {
+    cleaned = await cleanStaleRuns(projectRoot);
+    reconcileDetachedRuns(projectRoot);
+  }
+
+  if (options.json) {
+    writeLine(JSON.stringify({ live, stale: options.clean ? [] : stale, cleaned }, null, 2));
+    return;
+  }
+
+  writeLine();
+  if (live.length === 0) {
+    writeLine(`  ${colors.dim}No live background runs${RESET}`);
+  } else {
+    writeLine(`  ${bold}Live background runs${RESET}`);
+    for (const r of live) {
+      writeLine(`  ${colors.green}●${RESET} ${r.squad}/${r.agent}  ${colors.dim}pid ${r.pid} · up ${elapsed(r.startedAt)} · ${r.logFile}${RESET}`);
+    }
+  }
+  if (options.clean) {
+    if (cleaned.removedPidFiles > 0) {
+      writeLine(`  ${colors.dim}cleaned ${cleaned.removedPidFiles} stale pid file(s)${RESET}`);
+    }
+    for (const s of cleaned.salvaged) {
+      writeLine(`  ${colors.yellow}salvaged${RESET} ${s.squad}/${s.agent} ${colors.dim}(${s.outcome})${RESET}`);
+    }
+  } else if (stale.length > 0) {
+    writeLine(`  ${colors.dim}${stale.length} stale pid file(s) — run: squads runs --clean${RESET}`);
+  }
+  writeLine();
+}
+
+export async function killCommand(target: string | undefined, options: { all?: boolean }): Promise<void> {
+  const projectRoot = getProjectRoot();
+  const live = listDetachedRuns(projectRoot).filter((r) => r.alive);
+
+  let victims: DetachedRun[];
+  if (options.all) {
+    victims = live;
+  } else if (target && /^\d+$/.test(target)) {
+    victims = live.filter((r) => r.pid === parseInt(target, 10));
+  } else if (target && target.includes('/')) {
+    const [squad, agent] = target.split('/');
+    victims = live.filter((r) => r.squad === squad && r.agent === agent);
+  } else if (target) {
+    victims = live.filter((r) => r.squad === target);
+  } else {
+    writeLine(`  ${colors.dim}Usage: squads kill <pid|squad|squad/agent> | squads kill --all${RESET}`);
+    return;
+  }
+
+  if (victims.length === 0) {
+    writeLine(`  ${colors.dim}No matching live runs${RESET}`);
+    return;
+  }
+  for (const run of victims) {
+    const res = killDetachedRun(run);
+    const how = res.method === 'children-term'
+      ? 'executor stopped — wrapper will harvest + report'
+      : res.method === 'wrapper-term' ? 'wrapper stopped' : 'was not running';
+    writeLine(`  ${colors.yellow}kill${RESET} ${run.squad}/${run.agent} ${colors.dim}pid ${run.pid} — ${how}${RESET}`);
+  }
+}
