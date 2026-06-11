@@ -1144,6 +1144,18 @@ program
     writeLine(`squads-cli ${version}`);
   });
 
+// Commands introspection — the live command tree as data. Docs generation and
+// the skill drift-guard consume this; it can never drift from the registry.
+program
+  .command('commands')
+  .description('List the live command tree (machine-readable with --json)')
+  .option('--json', 'Output as JSON')
+  .option('--all', 'Include hidden/removed commands')
+  .action(async (options) => {
+    const { commandsCommand } = await import('./commands/commands.js');
+    return commandsCommand(program, options);
+  });
+
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
 program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));
