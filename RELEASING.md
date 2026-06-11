@@ -6,7 +6,9 @@ versions, tags, or workflows.
 ## TL;DR
 
 1. **Prep PR to `develop`**: bump `package.json` + `package-lock.json`, add a
-   `CHANGELOG.md` entry. No source changes in this PR.
+   `CHANGELOG.md` entry, and regenerate the seed skill reference
+   (`npm run build && npm run gen:skill`) — it embeds the version, so a bump
+   without regen fails the drift guard. No source changes in this PR.
 2. **Release PR to `main`**: branch `release/vX.Y.Z` cut **from `main`**,
    tree set to `develop`'s exact tree (see [Squash divergence](#trap-squash-merge-divergence)).
    Verify `git diff develop` is empty. A maintainer reviews and squash-merges.
