@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.8.0",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
+  "description": "Your AI workforce. Every user gets an AI manager that runs their team \u2014 finance, marketing, engineering, operations \u2014 for the cost of API calls.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsup && cp -r templates dist/",
-    "gen:client": "openapi-ts",
+    "gen:client": "openapi-ts -f openapi/openapi-ts.config.ts",
     "dev": "tsup --watch",
     "start": "node dist/cli.js",
     "lint": "eslint src",
