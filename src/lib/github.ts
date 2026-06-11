@@ -21,19 +21,22 @@ const APP_CONFIG_PATH = join(homedir(), '.squads', 'secrets', 'github-app.json')
 const BOT_NAME = 'agents-squads[bot]';
 const BOT_EMAIL = '266303152+agents-squads[bot]@users.noreply.github.com';
 
-// Co-author trailers that resolve to real GitHub profiles with avatars.
-// These show up in the Contributors section of repos.
+// Co-author trailers marking machine authorship. ONE identity per provider —
+// these surface in commit views and contributor counts, so any variation
+// (claude[bot] vs Claude vs model-named) multiplies phantom contributors.
+// Anthropic's canonical trailer is `Claude <noreply@anthropic.com>` — the same
+// one Claude Code emits and seed SYSTEM.md / init commits instruct (#837).
 const AI_COAUTHORS: Record<string, string> = {
-  anthropic: 'Co-Authored-By: claude[bot] <209825114+claude[bot]@users.noreply.github.com>',
-  claude: 'Co-Authored-By: claude[bot] <209825114+claude[bot]@users.noreply.github.com>',
+  anthropic: 'Co-Authored-By: Claude <noreply@anthropic.com>',
+  claude: 'Co-Authored-By: Claude <noreply@anthropic.com>',
   gemini: 'Co-Authored-By: gemini-code-assist <200291788+gemini-code-assist@users.noreply.github.com>',
   google: 'Co-Authored-By: gemini-code-assist <200291788+gemini-code-assist@users.noreply.github.com>',
   openai: 'Co-Authored-By: GPT <noreply@openai.com>',
+  deepseek: 'Co-Authored-By: DeepSeek <noreply@deepseek.com>',
 };
 
 /**
  * Get the Co-Authored-By trailer for the model that wrote the code.
- * Uses GitHub's noreply emails so avatars show in contributor graph.
  */
 export function getCoAuthorTrailer(provider: string): string {
   const key = provider.toLowerCase().replace(/-.*$/, ''); // "claude-sonnet" → "claude"
