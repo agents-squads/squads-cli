@@ -5,6 +5,24 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.8.0] — 2026-06-10
+
+Trustworthy execution — multi-provider executors with full run observability.
+(Jumps from 0.3.3: `0.4.x`–`0.7.0` were consumed by pre-reset publishes and
+versions are forward-only — see `RELEASING.md`.)
+
+### Added
+- **DeepSeek provider via aider delegation** (#822) — `provider: deepseek` in agent frontmatter (or `--provider` flag, or squad `providers.default`) delegates execution to aider with `--model deepseek/deepseek-chat`. File-based roles only (no web tools); the OpenAI-compatible seam makes further providers a config swap.
+- **Per-run outcome capture** (#818) — observability records now capture what each run actually produced: actions, commits, PRs, issues.
+- **Provider run observability** (#826) — every foreground provider run writes an observability record; real token/cost figures parsed from executor output via the new `CLIConfig.parseUsage` seam (implemented for `aider`/`deepseek`); agent `model:` frontmatter is now parsed so records carry the agent's real model.
+
+### Fixed
+- **Executor work can never be lost** (#825) — provider-executor output is harvested from the isolated worktree (commit → ff-merge into the project root, guarded by the secret/PII staged-diff scan) instead of being destroyed with it. On divergence the `agent/*` branch is preserved with the manual-merge command printed; harvest runs on failed exits too, so partial work survives.
+- **Tag pushes produce GitHub Releases again** (#819) — `release.yml` dropped its always-failing npm-publish step (only `publish.yml` is the OIDC trusted publisher), which had been blocking GitHub Release creation.
+
+### Docs
+- **`RELEASING.md`** (#827) — in-repo release procedure: publish path, version ladder, squash-divergence recipe, known traps.
+
 ## [0.3.3] — 2026-06-08
 
 Runtime reliability — `squads run` is safe and pleasant to leave unattended.
