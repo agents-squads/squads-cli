@@ -58,53 +58,28 @@ jobs:
         run: npm audit --audit-level=critical
         continue-on-error: false
 
-  publish:
+  # npm publishing does NOT happen here — publish.yml is the only OIDC trusted
+  # publisher configured on npmjs.com. A publish attempt from this workflow
+  # always fails (404 PUT) and used to block the GitHub Release step (#819).
+  # See RELEASING.md for the full release procedure.
+  github-release:
     runs-on: ubuntu-latest
     needs: [ci, security]
     permissions:
       contents: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          registry-url: 'https://registry.npmjs.org'
-
-      # Upgrade npm to a version that supports OIDC trusted publishing (>= 11.5.1).
-      # --force bypasses the self-upgrade MODULE_NOT_FOUND bug where mid-upgrade
-      # npm fails to resolve its own internal modules (e.g. 'promise-retry').
-      - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest --force
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Determine npm dist-tag
+      - name: Determine prerelease
         id: dist_tag
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
           if [[ "$TAG" == *-* ]]; then
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "Publishing pre-release $TAG to @next"
           else
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "Publishing $TAG to @latest"
           fi
-
-      # Authentication via OIDC trusted publisher (configured on npmjs.com).
-      # No NPM_TOKEN needed.
-      - name: Publish to npm
-        run: npm publish --provenance --access public --tag ${{ steps.dist_tag.outputs.npm_tag }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1

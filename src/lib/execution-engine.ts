@@ -7,7 +7,7 @@ import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -431,7 +431,11 @@ export function createAgentWorktree(projectRoot: string, squadName: string, agen
 }
 
 /** Remove a worktree and its branch after agent execution completes */
-export function cleanupWorktree(worktreePath: string, projectRoot: string): void {
+export function cleanupWorktree(
+  worktreePath: string,
+  projectRoot: string,
+  opts: { keepBranch?: boolean } = {},
+): void {
   if (worktreePath === projectRoot) return; // fallback mode, nothing to clean
 
   try {
@@ -452,12 +456,91 @@ export function cleanupWorktree(worktreePath: string, projectRoot: string): void
     // Remove worktree
     execSync(`git -C '${projectRoot}' worktree remove '${worktreePath}' --force`, { stdio: 'pipe' });
 
-    // Delete the agent branch (only agent/* branches, safety check)
-    if (branchName && branchName.startsWith('agent/')) {
+    // Delete the agent branch (only agent/* branches, safety check).
+    // keepBranch preserves harvested-but-unmerged work for manual recovery.
+    if (!opts.keepBranch && branchName && branchName.startsWith('agent/')) {
       execSync(`git -C '${projectRoot}' branch -D '${branchName}'`, { stdio: 'pipe' });
     }
   } catch {
     // Non-critical — worktree prune will catch it later
+  }
+}
+
+// ── Provider work harvest ─────────────────────────────────────────────
+
+export type HarvestOutcome =
+  | { outcome: 'in-place' }          // ran in projectRoot directly — nothing to move
+  | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
+  | { outcome: 'merged' }            // committed + fast-forwarded into projectRoot
+  | { outcome: 'branch-preserved'; branch: string }  // committed but projectRoot diverged/dirty — branch kept
+  | { outcome: 'blocked'; detail: string };          // secret/PII scan refused the commit — worktree kept
+
+/**
+ * Harvest file changes a non-anthropic executor left in its worktree.
+ *
+ * Claude agents commit and push their own work (per the gh workflow they are
+ * prompted with), so the engine historically never harvested — and provider
+ * executors like aider, which only edit files, silently lost ALL output when
+ * the worktree was cleaned (#823). This commits whatever the executor wrote
+ * (after the same secret/PII scan autoCommitAgentWork uses) and fast-forwards
+ * the project root; when that isn't safe the agent branch is preserved and
+ * reported instead. Work must never evaporate behind a green run.
+ */
+export async function harvestProviderWork(
+  workDir: string,
+  projectRoot: string,
+  branchName: string,
+  info: { squadName: string; agentName: string; provider: string },
+): Promise<HarvestOutcome> {
+  if (workDir === projectRoot) return { outcome: 'in-place' };
+
+  const run = (cmd: string, cwd: string) =>
+    execSync(cmd, { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+
+  // 1. Commit any uncommitted changes the executor left behind
+  const dirty = run('git status --porcelain', workDir).trim();
+  if (dirty) {
+    const botEnv = await getBotGitEnv();
+    const env = { ...process.env, ...botEnv };
+    execSync('git add -A', { cwd: workDir, env, stdio: 'pipe' });
+
+    // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
+    const stagedDiff = execSync('git diff --cached', {
+      encoding: 'utf-8', cwd: workDir, maxBuffer: 32 * 1024 * 1024,
+    });
+    const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
+    if (findings.length > 0) {
+      try { execSync('git reset', { cwd: workDir, stdio: 'pipe' }); } catch { /* refuse regardless */ }
+      return {
+        outcome: 'blocked',
+        detail: `${findings.length} secret/PII finding(s) — ${summarizeFindings(findings)}`,
+      };
+    }
+
+    const coAuthor = getCoAuthorTrailer(info.provider);
+    const msgFile = join(tmpdir(), `squads-harvest-${Date.now()}.txt`);
+    writeFileSync(msgFile, `feat(${info.squadName}/${info.agentName}): agent work via ${info.provider}\n\n${coAuthor}\n`);
+    try {
+      execSync(`git commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
+    } finally {
+      try { unlinkSync(msgFile); } catch { /* ignore */ }
+    }
+  }
+
+  // 2. Anything to integrate?
+  let ahead = '0';
+  try {
+    ahead = run(`git rev-list --count '${branchName}' '^HEAD'`, projectRoot).trim();
+  } catch { /* branch missing — treat as nothing */ }
+  if (ahead === '0') return { outcome: 'nothing' };
+
+  // 3. Fast-forward the project root. --ff-only refuses on divergence and
+  //    aborts (preserving local changes) rather than producing a merge state.
+  try {
+    execSync(`git merge --ff-only '${branchName}'`, { cwd: projectRoot, stdio: 'pipe' });
+    return { outcome: 'merged' };
+  } catch {
+    return { outcome: 'branch-preserved', branch: branchName };
   }
 }
 
@@ -872,6 +955,9 @@ export async function executeWithProvider(
     squadName?: string;
     agentName?: string;
     model?: string;
+    executionId?: string;
+    trigger?: ExecutionContext['trigger'];
+    startMs?: number;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -946,11 +1032,27 @@ export async function executeWithProvider(
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
+      // When the provider prints usage (aider et al), pipe output through so
+      // it can be parsed for observability — still streamed live to the user.
+      const captureUsage = typeof cliConfig.parseUsage === 'function';
       const proc = spawn(cliConfig.command, args, {
-        stdio: cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
+        stdio: captureUsage
+          ? [cliConfig.stdinPrompt ? 'pipe' : 'inherit', 'pipe', 'pipe']
+          : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
       });
+
+      // Tail buffer for usage parsing (cap to keep memory bounded)
+      const OUTPUT_TAIL_MAX = 256 * 1024;
+      let outputTail = '';
+      if (captureUsage) {
+        const append = (chunk: Buffer) => {
+          outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
+        };
+        proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
+        proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+      }
 
       // For stdinPrompt providers (e.g. Ollama), pipe the prompt via stdin
       if (cliConfig.stdinPrompt && proc.stdin) {
@@ -958,8 +1060,61 @@ export async function executeWithProvider(
         proc.stdin.end();
       }
 
-      proc.on('close', (code) => {
-        cleanupWorktree(workDir, projectRoot);
+      proc.on('close', async (code) => {
+        // Observability: every run gets a record, whatever the provider (#824).
+        // Token/cost figures come from the provider's own output when parseable.
+        const startMs = options.startMs || timestamp;
+        const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        logObservability({
+          ts: new Date().toISOString(),
+          id: options.executionId || generateExecutionId(),
+          squad: squadName,
+          agent: agentName,
+          provider,
+          model: options.model || 'unknown',
+          trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+          status: code === 0 ? 'completed' : 'failed',
+          duration_ms: Date.now() - startMs,
+          input_tokens: usage?.input_tokens || 0,
+          output_tokens: usage?.output_tokens || 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: usage?.cost_usd || 0,
+          context_tokens: 0,
+          error: code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined,
+        });
+        if (usage && options.verbose) {
+          writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
+        }
+        // Harvest regardless of exit code — partial work from a failed run
+        // must not evaporate either.
+        let harvest: HarvestOutcome = { outcome: 'in-place' };
+        try {
+          harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
+            squadName, agentName, provider,
+          });
+        } catch (e) {
+          writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+        }
+
+        switch (harvest.outcome) {
+          case 'merged':
+            writeLine(`  ${colors.green}Harvested agent work${RESET} ${colors.dim}(fast-forwarded ${branchName})${RESET}`);
+            cleanupWorktree(workDir, projectRoot);
+            break;
+          case 'branch-preserved':
+            writeLine(`  ${colors.yellow}Agent work preserved on branch ${harvest.branch}${RESET}`);
+            writeLine(`  ${colors.dim}Project root diverged or has conflicting changes — merge manually: git merge ${harvest.branch}${RESET}`);
+            cleanupWorktree(workDir, projectRoot, { keepBranch: true });
+            break;
+          case 'blocked':
+            writeLine(`  ${colors.red}Harvest blocked: ${harvest.detail}${RESET}`);
+            writeLine(`  ${colors.dim}Worktree kept for inspection: ${workDir}${RESET}`);
+            break; // keep worktree AND branch — nothing is lost, nothing leaks
+          default:
+            cleanupWorktree(workDir, projectRoot);
+        }
+
         if (code === 0) {
           resolve('Session completed');
         } else {
@@ -985,8 +1140,18 @@ export async function executeWithProvider(
 
   const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
   const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
+  // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
+  // the executor wrote, fast-forward the project root, and only delete the
+  // agent branch when its work is integrated or empty — never lose output.
   const cleanupCmd = workDir !== projectRoot
-    ? `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null; git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null`
+    ? `; git -C '${workDir}' add -A 2>/dev/null` +
+      `; git -C '${workDir}' -c user.name='squads-agent' -c user.email='agents@agents-squads.com' commit -m 'feat(${squadName}/${agentName}): agent work via ${provider}' >/dev/null 2>&1` +
+      `; KEEP_BRANCH=''` +
+      `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
+      ` git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 || KEEP_BRANCH=1; fi` +
+      `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null` +
+      `; if [ -z "$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
+      ` else echo "agent work preserved on branch ${branchName} (merge manually)" >> '${logFile}'; fi`
     : '';
   const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;

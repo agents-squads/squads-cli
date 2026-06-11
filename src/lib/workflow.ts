@@ -62,7 +62,10 @@ import {
   StreamJsonAccumulator,
   emptyUsage,
   addUsage,
+  emptyOutcomes,
+  addOutcomes,
   type StreamUsage,
+  type RunOutcomes,
 } from './stream-json.js';
 
 // =============================================================================
@@ -130,6 +133,18 @@ interface AgentRunConfig {
 export interface AgentRunResult {
   text: string;
   usage: StreamUsage;
+  outcomes: RunOutcomes;
+}
+
+/** Spread the accumulated outcomes into an ObservabilityRecord. */
+function outcomeFields(o: RunOutcomes) {
+  return {
+    actions: o.actions,
+    files_edited: o.files_edited,
+    commits: o.commits,
+    prs_created: o.prs_created,
+    issues_created: o.issues_created,
+  };
 }
 
 /**
@@ -289,7 +304,7 @@ ${squadContext}
       if (forceKillTimer) clearTimeout(forceKillTimer);
       accumulator.push(decoder.decode()); // flush bytes held back for a split multi-byte char
       accumulator.flush();
-      const { text, usage: rawUsage, isError } = accumulator.getResult();
+      const { text, usage: rawUsage, isError, outcomes } = accumulator.getResult();
       // Cut-off runs (no terminal `result` event) carry real assistant-event
       // tokens but cost_usd == 0. Derive a notional cost from tokens × pricing
       // so the observability record still shows a cost — tokens are the real
@@ -305,7 +320,7 @@ ${squadContext}
       // expects, but with the salvaged assistant-event usage (real tokens; cost
       // derived above) instead of zero — cut-off cost is no longer invisible.
       if (timedOut) {
-        resolve({ text: `[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`, usage });
+        resolve({ text: `[ERROR] ${agentName} timed out after ${timeoutMinutes} minutes`, usage, outcomes });
         return;
       }
 
@@ -313,22 +328,22 @@ ${squadContext}
       // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
       // downstream plan/convergence parsing depends on.
       if (text.includes('hit your limit') || text.includes('rate limit')) {
-        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage });
+        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes });
       } else if (isError && text.length > 0) {
         // is_error:true — return the error text as before, but keep real usage.
-        resolve({ text, usage });
+        resolve({ text, usage, outcomes });
       } else if (text.length > 0) {
-        resolve({ text: text.trim(), usage });
+        resolve({ text: text.trim(), usage, outcomes });
       } else if (code !== 0) {
-        resolve({ text: `[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`, usage });
+        resolve({ text: `[ERROR] ${agentName} exited with code ${code}${stderr ? ': ' + stderr.slice(0, 200) : ''}`, usage, outcomes });
       } else {
-        resolve({ text: `[${agentName} completed with no output]`, usage });
+        resolve({ text: `[${agentName} completed with no output]`, usage, outcomes });
       }
     });
 
     child.on('error', (err) => {
       clearTimeout(timeout);
-      resolve({ text: `[ERROR] ${agentName} failed to spawn: ${err.message}`, usage: emptyUsage() });
+      resolve({ text: `[ERROR] ${agentName} failed to spawn: ${err.message}`, usage: emptyUsage(), outcomes: emptyOutcomes() });
     });
   });
 }
@@ -444,6 +459,8 @@ export async function runConversation(
   // Accumulate REAL cost/usage across every agent spawn in this conversation
   // (plan + workers + review + verify) — captured from stream-json result events.
   let cycleUsage: StreamUsage = emptyUsage();
+  // Accumulate what every agent in this conversation actually DID (real output).
+  let cycleOutcomes: RunOutcomes = emptyOutcomes();
 
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
@@ -493,6 +510,7 @@ export async function runConversation(
   });
   const planOutput = planResult.text;
   cycleUsage = addUsage(cycleUsage, planResult.usage);
+  cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Quota detection — if plan hit the API limit, stop immediately
@@ -513,6 +531,7 @@ export async function runConversation(
       cache_write_tokens: cycleUsage.cache_write_tokens,
       cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
       error: 'Quota limit reached',
       task: options.task,
     });
@@ -540,6 +559,7 @@ export async function runConversation(
       cache_write_tokens: cycleUsage.cache_write_tokens,
       cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
       task: options.task,
       goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
       goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
@@ -569,13 +589,14 @@ export async function runConversation(
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
         task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
-      }).then(result => ({ agent, output: result.text, usage: result.usage }));
+      }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes }));
     });
 
     const workerResults = await Promise.all(workerPromises);
 
-    for (const { agent, output, usage } of workerResults) {
+    for (const { agent, output, usage, outcomes } of workerResults) {
       cycleUsage = addUsage(cycleUsage, usage);
+      cycleOutcomes = addOutcomes(cycleOutcomes, outcomes);
       if (output.startsWith('[ERROR]')) {
         writeLine(`  ${colors.yellow}[WARN] ${agent.name}: ${output.slice(0, 80)}${RESET}`);
       }
@@ -608,6 +629,7 @@ Summary: [what was achieved]`;
   });
   const reviewOutput = reviewResult.text;
   cycleUsage = addUsage(cycleUsage, reviewResult.usage);
+  cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
   // Goals.md staleness check — warn if goals were not updated during review
@@ -646,6 +668,7 @@ or
     });
     const verifyOutput = verifyResult.text;
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
+    cycleOutcomes = addOutcomes(cycleOutcomes, verifyResult.outcomes);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
   }
 
@@ -677,6 +700,7 @@ or
     cache_write_tokens: cycleUsage.cache_write_tokens,
     cost_usd: cycleUsage.cost_usd,
     context_tokens: 0,
+    ...outcomeFields(cycleOutcomes),
     task: options.task,
     goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
     goals_after: Object.keys(goalsAfterFinal).length > 0 ? goalsAfterFinal : undefined,
