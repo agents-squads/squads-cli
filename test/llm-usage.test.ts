@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { parseAiderUsage, LLM_CLIS } from '../src/lib/llm-clis.js';
 
 describe('parseAiderUsage (#824 — provider runs must be observable)', () => {
@@ -27,5 +27,32 @@ describe('parseAiderUsage (#824 — provider runs must be observable)', () => {
   it('is wired into the aider-backed registry entries', () => {
     expect(LLM_CLIS.aider.parseUsage).toBe(parseAiderUsage);
     expect(LLM_CLIS.deepseek.parseUsage).toBe(parseAiderUsage);
+  });
+});
+
+describe('aider map-tokens knob (#845)', () => {
+  afterEach(() => {
+    delete process.env.SQUADS_AIDER_MAP_TOKENS;
+  });
+
+  it('unset env keeps aider defaults (no --map-tokens)', () => {
+    delete process.env.SQUADS_AIDER_MAP_TOKENS;
+    const args = LLM_CLIS.deepseek.buildArgs('hi');
+    expect(args).not.toContain('--map-tokens');
+  });
+
+  it('caps the repo map when SQUADS_AIDER_MAP_TOKENS is set', () => {
+    process.env.SQUADS_AIDER_MAP_TOKENS = '2048';
+    for (const provider of ['deepseek', 'aider']) {
+      const args = LLM_CLIS[provider].buildArgs('hi');
+      const i = args.indexOf('--map-tokens');
+      expect(i).toBeGreaterThan(-1);
+      expect(args[i + 1]).toBe('2048');
+    }
+  });
+
+  it('rejects non-integer values (no flag emitted)', () => {
+    process.env.SQUADS_AIDER_MAP_TOKENS = 'lots';
+    expect(LLM_CLIS.deepseek.buildArgs('hi')).not.toContain('--map-tokens');
   });
 });
