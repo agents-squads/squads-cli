@@ -85,7 +85,7 @@ export function listDetachedRuns(projectRoot: string): DetachedRun[] {
         const m = f.match(/^(.+)-(\d+)\.pid$/);
         if (!m) continue;
         const pidFile = join(dir, f);
-        let pid = NaN;
+        let pid: number;
         try {
           pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10);
         } catch { continue; }
