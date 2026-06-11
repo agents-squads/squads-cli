@@ -7,6 +7,7 @@
  */
 
 import { localUsageSummary, type UsageBucket } from '../lib/observability.js';
+import { reconcileDetachedRuns } from '../lib/spool.js';
 import { readClaudeSessions, totalTokens, type SessionBucket } from '../lib/claude-sessions.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
@@ -48,6 +49,12 @@ function splitLine(label: string, split: { interactive: SessionBucket; squad: Se
 }
 
 export async function usageCommand(options: UsageOptions = {}): Promise<void> {
+  // hq#450 D2: ingest done-files from detached runs before reading any ledger.
+  try {
+    const { getProjectRoot } = await import('../lib/run-utils.js');
+    const n = reconcileDetachedRuns(getProjectRoot());
+    if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
+  } catch { /* read paths never break on spool issues */ }
   await track(Events.CLI_COST, { action: 'usage' });
 
   const windowHours = Math.max(1, parseInt(String(options.window ?? 5), 10) || 5);
