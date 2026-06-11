@@ -174,7 +174,7 @@ vi.mock('../../src/lib/run-context.js', () => ({
 }));
 
 // ── Imports (after mocks) ──────────────────────────────────────────────────
-import { runCommand, runSquadCommand } from '../../src/commands/run.js';
+import { runCommand, runSquadCommand, mergeAgentPositional } from '../../src/commands/run.js';
 import { findSquadsDir, loadSquad, listAgents, findSimilarSquads } from '../../src/lib/squad-parser.js';
 import { writeLine } from '../../src/lib/terminal.js';
 import { isProviderCLIAvailable } from '../../src/lib/llm-clis.js';
@@ -494,5 +494,42 @@ describe('runSquadCommand', () => {
     expect(mockWriteLine).toHaveBeenCalledWith(
       expect.stringContaining('--cloud requires a specific agent')
     );
+  });
+});
+
+// ── mergeAgentPositional (#858) ────────────────────────────────────────────
+describe('mergeAgentPositional', () => {
+  it('rewrites squad + agent positionals to slash notation', () => {
+    expect(mergeAgentPositional('research', 'weekly-reporter', undefined))
+      .toEqual({ target: 'research/weekly-reporter' });
+  });
+
+  it('passes target through when no agent positional given', () => {
+    expect(mergeAgentPositional('research', undefined, undefined))
+      .toEqual({ target: 'research' });
+    expect(mergeAgentPositional(null, undefined, undefined))
+      .toEqual({ target: null });
+  });
+
+  it('errors when positional conflicts with --agent flag', () => {
+    const result = mergeAgentPositional('research', 'weekly-reporter', 'housekeeper');
+    expect(result.target).toBe('research');
+    expect(result.error).toContain('Conflicting agents');
+  });
+
+  it('rewrites when positional and --agent flag name the same agent', () => {
+    expect(mergeAgentPositional('research', 'weekly-reporter', 'weekly-reporter'))
+      .toEqual({ target: 'research/weekly-reporter' });
+  });
+
+  it('errors when target already has a different agent via slash', () => {
+    const result = mergeAgentPositional('research/housekeeper', 'weekly-reporter', undefined);
+    expect(result.target).toBe('research/housekeeper');
+    expect(result.error).toContain('already names an agent');
+  });
+
+  it('accepts a redundant positional matching the slash agent', () => {
+    expect(mergeAgentPositional('research/weekly-reporter', 'weekly-reporter', undefined))
+      .toEqual({ target: 'research/weekly-reporter' });
   });
 });

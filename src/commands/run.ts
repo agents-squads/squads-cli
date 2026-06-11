@@ -91,6 +91,28 @@ async function confirmProceed(n: number, est: number): Promise<boolean> {
   }
 }
 
+// `squads run <squad> <agent>` used to silently drop the agent positional and
+// run the whole squad (#858). Merge the 2nd positional into slash notation,
+// erroring loudly when it conflicts with --agent or an agent already in target.
+export function mergeAgentPositional(
+  target: string | null,
+  positionalAgent: string | undefined,
+  flagAgent: string | undefined
+): { target: string | null; error?: string } {
+  if (!positionalAgent || !target) return { target };
+  if (flagAgent && flagAgent !== positionalAgent) {
+    return { target, error: `Conflicting agents: "${positionalAgent}" (positional) vs "${flagAgent}" (--agent). Use one.` };
+  }
+  if (target.includes('/')) {
+    const slashAgent = target.split('/')[1];
+    if (slashAgent && slashAgent !== positionalAgent) {
+      return { target, error: `Target "${target}" already names an agent — drop the extra positional "${positionalAgent}".` };
+    }
+    return { target };
+  }
+  return { target: `${target}/${positionalAgent}` };
+}
+
 export async function runCommand(
   target: string | null,
   options: RunOptions
