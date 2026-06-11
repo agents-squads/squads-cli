@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   buildSpoolWriterShell,
+  buildWatchdogShell,
   reconcileDetachedRuns,
   spoolDir,
   type SpoolRecord,
@@ -151,5 +152,62 @@ describe('reconcileDetachedRuns', () => {
     expect(n).toBe(1);
     expect(readExecutionsJsonl()).toHaveLength(1);
     expect(existsSync(join(dir, 'broken.json'))).toBe(false);
+  });
+});
+
+describe('buildWatchdogShell (#450 D3)', () => {
+  it('reaps a hung executor at the deadline, flag set, wrapper survives', () => {
+    const flag = join(root, 'run.timeout');
+    const out = join(root, 'after.txt');
+    const snippet = buildWatchdogShell('sleep 30 > /dev/null 2>&1', 1, flag);
+    const t0 = Date.now();
+    // The wrapper must SURVIVE the reaping to run what follows (harvest/spool).
+    execSync(`${snippet}; echo "exit=$EXIT" > '${out}'`, { shell: '/bin/sh' });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(10_000); // not the full sleep 30
+    expect(existsSync(flag)).toBe(true);
+    const after = readFileSync(out, 'utf8');
+    expect(after).toMatch(/exit=(143|137)/);
+  });
+
+  it('fast executor finishes untouched — no flag, exit 0, no lingering wait', () => {
+    const flag = join(root, 'fast.timeout');
+    const out = join(root, 'fast.txt');
+    const snippet = buildWatchdogShell('true', 30, flag);
+    const t0 = Date.now();
+    execSync(`${snippet}; echo "exit=$EXIT" > '${out}'`, { shell: '/bin/sh' });
+    expect(Date.now() - t0).toBeLessThan(5_000); // watchdog killed, not awaited for 30s
+    expect(existsSync(flag)).toBe(false);
+    expect(readFileSync(out, 'utf8')).toContain('exit=0');
+  });
+
+  it('spool snippet records timedOut from the flag file and removes it', () => {
+    const flag = join(root, 'spooled.timeout');
+    writeFileSync(flag, '');
+    const snippet = buildSpoolWriterShell({
+      obsRoot: root,
+      execId: 'exec_timeout_1',
+      squad: 's',
+      agent: 'a',
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      trigger: 'scheduled',
+      logFile: join(root, 'run.log'),
+      timeoutFlag: flag,
+    });
+    execSync(`EXIT=143; START=1700000000; true ${snippet}`, { shell: '/bin/sh' });
+    const parsed = JSON.parse(readFileSync(join(spoolDir(root), 'exec_timeout_1.json'), 'utf8'));
+    expect(parsed.timedOut).toBe(true);
+    expect(parsed.exitCode).toBe(143);
+    expect(existsSync(flag)).toBe(false); // flag consumed
+  });
+
+  it('reconcile maps a timedOut done-file to status timeout', () => {
+    writeFileSync(join(root, 'run.log'), 'Tokens: 5k sent, 100 received. Cost: $0.002 message, $0.002 session.\n');
+    writeSpoolFile({ execId: 'exec_to_2', exitCode: 143, timedOut: true });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('timeout');
+    expect(String(rec.error)).toContain('watchdog');
   });
 });

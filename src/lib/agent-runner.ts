@@ -370,6 +370,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             executionId,
             trigger: options.trigger || 'manual',
             startMs,
+            timeoutMinutes: options.timeout,
           });
         }
 
