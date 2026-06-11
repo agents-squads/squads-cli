@@ -82,6 +82,34 @@ jobs:
             exit 1
           fi
 
+  skill-reference:
+    name: Seed skill reference (drift guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build CLI
+        run: npm run build
+
+      - name: Regenerate seed skill reference from the command registry
+        run: npm run gen:skill
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- templates/seed/skills/squads-cli/references/commands.md; then
+            echo "::error::seed skill reference is out of date. Run 'npm run build && npm run gen:skill' and commit the result."
+            exit 1
+          fi
+
   security:
     runs-on: ubuntu-latest
     steps:
