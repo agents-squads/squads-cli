@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { reconcileDetachedRuns } from '../lib/spool.js';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import {
@@ -92,6 +93,12 @@ export async function runCommand(
   target: string | null,
   options: RunOptions
 ): Promise<void> {
+  // hq#450 D2: ingest done-files from detached runs before reading any ledger.
+  try {
+    const { getProjectRoot } = await import('../lib/run-utils.js');
+    const n = reconcileDetachedRuns(getProjectRoot());
+    if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
+  } catch { /* read paths never break on spool issues */ }
   // Prerequisites check: Node >= 18, Claude CLI available (#675)
   checkPrerequisites();
 
