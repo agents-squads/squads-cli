@@ -4,6 +4,7 @@
  */
 
 import { spawn, execSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
