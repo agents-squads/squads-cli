@@ -28,6 +28,7 @@ import {
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { isQuotaMessage } from '../lib/conversation.js';
+import { probeQuota, waitForQuota } from '../lib/quota-probe.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
@@ -295,6 +296,39 @@ export async function runCommand(
       writeLine();
       writeLine(`  ${bold}Wave ${waveNum}${RESET} ${colors.dim}(${waveSquads.join(', ')})${RESET}`);
 
+      // Pre-flight quota probe (#856): never dispatch a wave into an exhausted
+      // session window — the 2026-06-11 cycle launched 15 squads into a dead
+      // window and burned every conversation on quota errors. One haiku ping.
+      let preflight = await probeQuota();
+      if (preflight.capped && options.waitForQuota) {
+        writeLine(`  ${colors.yellow}Quota window exhausted${preflight.resetHint ? ` · resets ${preflight.resetHint}` : ''} — waiting (--wait-for-quota, polling every 10m)${RESET}`);
+        const reopened = await waitForQuota({
+          onPoll: (p, waitedMs) => writeLine(`  ${colors.dim}${p.capped ? 'still capped' : 'window open'} after ${Math.round(waitedMs / 60_000)}m${p.resetHint ? ` · resets ${p.resetHint}` : ''}${RESET}`),
+        });
+        if (reopened) {
+          writeLine(`  ${colors.green}Window reopened — dispatching.${RESET}`);
+          preflight = { capped: false, raw: '' };
+        }
+      }
+      if (preflight.capped) {
+        const notDispatched = waves.slice(waveIdx).flat().filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
+        writeLine(`\n  ${colors.red}Quota limit reached before dispatch${preflight.resetHint ? ` — resets ${preflight.resetHint}` : ''}.${RESET} ${notDispatched.length} squads NOT dispatched (nothing burned).`);
+        writeLine(`  ${colors.dim}Resume later: squads run --org --resume  ·  or re-run with --wait-for-quota${RESET}`);
+        for (const s of notDispatched) {
+          results.push({ squad: s, agent: 'unknown', status: 'quota-skipped', durationMs: 0 });
+        }
+        try {
+          const obsDir = join(process.cwd(), '.agents', 'observability');
+          if (!existsSync(obsDir)) mkdirSync(obsDir, { recursive: true });
+          writeFileSync(resumeFile, JSON.stringify({
+            squads: notDispatched,
+            stoppedAt: new Date().toISOString(),
+            waveIdx,
+          }));
+        } catch { /* best effort */ }
+        break;
+      }
+
       // Run all squads in this wave in parallel
       const waveResults = await Promise.all(
         waveSquads.map(s => runSquadConversation(s))
@@ -319,6 +353,17 @@ export async function runCommand(
       if (quotaHit) {
         const remainingWaves = waves.slice(waveIdx + 1).flat().filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
         if (remainingWaves.length > 0) {
+          // Mid-cycle cap with --wait-for-quota: hold for the window instead of skipping
+          if (options.waitForQuota) {
+            writeLine(`\n  ${colors.yellow}Quota hit mid-cycle — waiting for the window before ${remainingWaves.length} remaining squads (--wait-for-quota)${RESET}`);
+            const reopened = await waitForQuota({
+              onPoll: (p, waitedMs) => writeLine(`  ${colors.dim}${p.capped ? 'still capped' : 'window open'} after ${Math.round(waitedMs / 60_000)}m${p.resetHint ? ` · resets ${p.resetHint}` : ''}${RESET}`),
+            });
+            if (reopened) {
+              writeLine(`  ${colors.green}Window reopened — continuing.${RESET}`);
+              continue;
+            }
+          }
           writeLine(`\n  ${colors.red}Quota limit reached.${RESET} Skipping ${remainingWaves.length} remaining squads.`);
           writeLine(`  ${colors.dim}Resume later: squads run --org --resume${RESET}`);
           for (const s of remainingWaves) {
