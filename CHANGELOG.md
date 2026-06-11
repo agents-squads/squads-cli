@@ -5,6 +5,30 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.8.1] — 2026-06-11
+
+Run containment + introspection — background runs are recorded, bounded,
+and controllable; the command tree is machine-readable.
+
+### Added
+- **Detached-run observability** (#849) — background/scheduled runs write an atomic done-file on exit; the next CLI invocation reconciles it into `executions.jsonl` with real token/cost usage. Detached runs were previously invisible to `squads usage` and budgets.
+- **Watchdog timeout** (#850) — detached executors are reaped at their deadline (`SQUADS_AGENT_TIMEOUT_MINUTES` > `--timeout` > 15 min); the wrapper survives the kill, so a reaped run still harvests its work and reports `status: timeout`. Built from live evidence of an executor deadlocking post-completion.
+- **`squads runs` / `squads kill`** (#852) — live background-run inventory across all squad repos; graceful stop (executor first, so the run still reports); `runs --clean` salvages crashed runs and clears stale pid files.
+- **`squads commands --json`** (#842) — the live command tree as data, from the Commander registry; feeds the docs site, the seed skill, and agent discovery.
+- **`SQUADS_AIDER_MAP_TOKENS`** (#847) — cap the aider executors' repo-map token budget (measured ~4.6k overhead on a small repo, far more on monorepos).
+- **Release → docs dispatch** (#843) — releases notify the docs repo to regenerate its CLI reference (requires `DOCS_DISPATCH_TOKEN`; weekly cron otherwise).
+
+### Fixed
+- **Provider runs route to the squad's bound repo** (#846) — single-agent provider runs ignored `SQUAD.md repo:` and worktree'd/harvested onto whatever repo dispatched them. Live-validated both directions.
+- **One canonical commit identity per AI provider** (#839) — `Claude <noreply@anthropic.com>` everywhere; detached harvests author as the user's git identity instead of a hardcoded bot email (was inflating contributor counts with phantom entries).
+- **Seed skill reference generated, never hand-written** (#848, #851) — built from `squads commands --json` with a CI drift-guard; ships in `squads init` so new users get a current capability map.
+
+### Security
+- Cleared all 9 dependabot alerts (6 high) — lockfile-only transitive bumps (#833).
+
+### Docs
+- README rewritten: 640-line manual → 105-line front door + 8-page `docs/` (#836); `openapi-ts` config co-located with its spec (#835); `AGENTS.md` is the single agent-instructions source, `CLAUDE.md` imports it (#841).
+
 ## [0.8.0] — 2026-06-10
 
 Trustworthy execution — multi-provider executors with full run observability.
