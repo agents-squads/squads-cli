@@ -1143,9 +1143,14 @@ export async function executeWithProvider(
   // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
   // the executor wrote, fast-forward the project root, and only delete the
   // agent branch when its work is integrated or empty — never lose output.
+  // Author = the user's git identity (same as the TS-side harvest), with the
+  // provider co-author trailer marking machine authorship; a neutral local
+  // identity is the fallback ONLY when no git identity is configured (#837).
+  const harvestMsg = `-m 'feat(${squadName}/${agentName}): agent work via ${provider}' -m '${getCoAuthorTrailer(provider)}'`;
   const cleanupCmd = workDir !== projectRoot
     ? `; git -C '${workDir}' add -A 2>/dev/null` +
-      `; git -C '${workDir}' -c user.name='squads-agent' -c user.email='agents@agents-squads.com' commit -m 'feat(${squadName}/${agentName}): agent work via ${provider}' >/dev/null 2>&1` +
+      `; { git -C '${workDir}' commit ${harvestMsg}` +
+      ` || git -C '${workDir}' -c user.name='squads-agent' -c user.email='squads-agent@localhost' commit ${harvestMsg}; } >/dev/null 2>&1` +
       `; KEEP_BRANCH=''` +
       `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
       ` git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 || KEEP_BRANCH=1; fi` +

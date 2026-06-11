@@ -34,20 +34,24 @@ beforeEach(() => {
 });
 
 describe('getCoAuthorTrailer', () => {
-  it('returns claude trailer for anthropic provider', () => {
+  it('returns the canonical Claude trailer for anthropic provider', () => {
     const result = getCoAuthorTrailer('anthropic');
-    expect(result).toContain('claude[bot]');
-    expect(result).toContain('Co-Authored-By:');
+    expect(result).toBe('Co-Authored-By: Claude <noreply@anthropic.com>');
   });
 
-  it('returns claude trailer for claude provider', () => {
+  it('returns the canonical Claude trailer for claude provider', () => {
     const result = getCoAuthorTrailer('claude');
-    expect(result).toContain('claude[bot]');
+    expect(result).toBe('Co-Authored-By: Claude <noreply@anthropic.com>');
   });
 
   it('strips model suffix from provider name (claude-sonnet → claude)', () => {
     const result = getCoAuthorTrailer('claude-sonnet-4');
-    expect(result).toContain('claude[bot]');
+    expect(result).toContain('Claude <noreply@anthropic.com>');
+  });
+
+  it('returns the DeepSeek trailer for deepseek provider', () => {
+    const result = getCoAuthorTrailer('deepseek');
+    expect(result).toContain('DeepSeek');
   });
 
   it('returns gemini trailer for gemini provider', () => {
@@ -74,7 +78,7 @@ describe('getCoAuthorTrailer', () => {
 
   it('handles uppercase provider names by lowercasing', () => {
     const result = getCoAuthorTrailer('Anthropic');
-    expect(result).toContain('claude[bot]');
+    expect(result).toContain('Claude <noreply@anthropic.com>');
   });
 });
 
