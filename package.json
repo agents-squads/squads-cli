@@ -1,6 +1,6 @@
 {
   "name": "squads-cli",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
   "type": "module",
   "bin": {
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsup && cp -r templates dist/",
-    "gen:client": "openapi-ts",
+    "gen:client": "openapi-ts -f openapi/openapi-ts.config.ts",
     "dev": "tsup --watch",
     "start": "node dist/cli.js",
     "lint": "eslint src",
@@ -28,7 +28,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "gen:skill": "node scripts/gen-skill-reference.mjs"
   },
   "keywords": [
     "ai-workforce",

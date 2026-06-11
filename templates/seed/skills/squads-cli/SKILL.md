@@ -314,7 +314,7 @@ squads context --squad engineering --json  # Full context
 
 ## Full Command Reference
 
-See `references/commands.md` for complete command listing with all flags.
+See `references/commands.md` for the complete command listing (generated from the live registry). For the authoritative surface on YOUR installed version, run `squads commands --json`.
 
 ## Troubleshooting
 

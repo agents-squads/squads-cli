@@ -88,3 +88,22 @@ jobs:
           prerelease: ${{ steps.dist_tag.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docs freshness binding (agents-squads/docs#2): tell the docs repo a
+      # release happened so it regenerates its CLI reference + changelog.
+      # DOCS_DISPATCH_TOKEN = fine-grained PAT scoped to agents-squads/docs
+      # (contents: write). Without it, the docs repo's weekly cron still
+      # catches up — this step just makes freshness same-day.
+      - name: Notify docs site
+        env:
+          DOCS_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DOCS_TOKEN" ]; then
+            echo "::notice::DOCS_DISPATCH_TOKEN not set — docs regen rides the weekly cron instead"
+            exit 0
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $DOCS_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/agents-squads/docs/dispatches \
+            -d "{\"event_type\":\"cli-released\",\"client_payload\":{\"version\":\"${GITHUB_REF#refs/tags/v}\"}}"
