@@ -20,6 +20,7 @@ import { getCLIConfig } from './llm-clis.js';
 import {
   logObservability,
   captureSessionUsage,
+  captureSessionUsageById,
   type ObservabilityRecord,
 } from './observability.js';
 import { updateExecutionStatus } from './execution-log.js';
@@ -42,6 +43,13 @@ export interface SpoolRecord {
   harvest: string;
   /** Watchdog fired (hq#450 D3) — run was reaped at its deadline. */
   timedOut?: boolean;
+  /**
+   * Claude session id the run was launched with (`--session-id`, #857).
+   * Lets reconcile read exactly this run's session JSONL instead of guessing
+   * by time window — concurrent runs each attributed the whole machine's
+   * usage before this. Empty/absent on provider runs and legacy spools.
+   */
+  sessionId?: string;
 }
 
 export function spoolDir(obsRoot: string): string {
@@ -75,6 +83,8 @@ export function buildSpoolWriterShell(fields: {
   logFile: string;
   /** Watchdog flag file (hq#450 D3); when present at spool time → timedOut:true, then removed. */
   timeoutFlag?: string;
+  /** Claude session id the executor was launched with (#857) — '' for provider runs. */
+  sessionId?: string;
 }): string {
   const q = (s: string) => s.replace(/'/g, '');
   // execIds are CLI-generated, but the done-file name and embedded id are
@@ -90,7 +100,7 @@ export function buildSpoolWriterShell(fields: {
   return (
     `; mkdir -p '${dir}'` +
     `; SPOOL_TMP=$(mktemp '${dir}/.tmp.XXXXXX')` +
-    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s","timedOut":%s}' ` +
+    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","sessionId":"${q(fields.sessionId || '').replace(/[^A-Za-z0-9-]/g, '')}","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s","timedOut":%s}' ` +
     `'${safeId}' '${q(fields.squad)}' '${q(fields.agent)}' '${q(fields.provider)}' '${q(fields.model)}' '${q(fields.trigger)}' '${q(fields.logFile)}' ` +
     `"\${START:-0}" "$(date +%s)" "\${EXIT:-1}" "\${HARVEST:-}" ${timedOutExpr} > "$SPOOL_TMP"` +
     `; mv "$SPOOL_TMP" '${file}'${flagCleanup}`
@@ -163,8 +173,15 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
         cost = usage.cost_usd;
       }
     }
-  } else if (spool.startEpoch > 0) {
-    const session = captureSessionUsage(spool.startEpoch * 1000);
+  } else {
+    // Claude run: exact session-id attribution when the wrapper recorded one
+    // (#857); legacy fallback = mtime-window scan BOUNDED by endEpoch so a
+    // session still active after this run can't absorb the attribution.
+    const session = spool.sessionId
+      ? captureSessionUsageById(spool.sessionId)
+      : spool.startEpoch > 0
+        ? captureSessionUsage(spool.startEpoch * 1000, spool.endEpoch > 0 ? spool.endEpoch * 1000 : undefined)
+        : null;
     if (session) {
       input = session.input_tokens;
       output = session.output_tokens;
