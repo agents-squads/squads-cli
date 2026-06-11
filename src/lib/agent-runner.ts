@@ -20,6 +20,7 @@ import {
   detectTaskType,
   formatDuration,
   checkClaudeCliAvailable,
+  getProjectRoot,
 } from './run-utils.js';
 import {
   logExecution,
@@ -33,6 +34,7 @@ import {
 import {
   executeWithClaude,
   executeWithProvider,
+  resolveTargetRepoRoot,
   verifyExecution,
 } from './execution-engine.js';
 import {
@@ -358,6 +360,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
           result = await executeWithProvider(provider, currentPrompt, {
             verbose: options.verbose,
             foreground: !isBackground,
+            // Route to the squad's bound repo (SQUAD.md repo: → sibling dir).
+            // Without this the executor worktrees + harvests onto whatever
+            // repo the dispatch ran from (#844).
+            cwd: resolveTargetRepoRoot(getProjectRoot(), squad),
             squadName,
             agentName,
             model: options.model || frontmatter.model,
