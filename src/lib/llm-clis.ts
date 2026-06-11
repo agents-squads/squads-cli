@@ -27,6 +27,12 @@ export interface CLIConfig {
 
   /** If true, pipe prompt via stdin instead of CLI arg (avoids shell arg length limits) */
   stdinPrompt?: boolean;
+
+  /**
+   * Extract token/cost usage from the CLI's captured output, if the provider
+   * prints it. Enables observability records for non-anthropic runs (#824).
+   */
+  parseUsage?: (output: string) => ProviderUsage | null;
 }
 
 export interface RunOptions {
@@ -38,6 +44,43 @@ export interface RunOptions {
 
   /** Dry run - just show what would execute */
   dryRun?: boolean;
+}
+
+export interface ProviderUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+/** Parse "57k" / "2.3k" / "1,234" / "1.2M" style counts into integers */
+function parseTokenCount(raw: string): number {
+  const cleaned = raw.replace(/,/g, '');
+  const match = cleaned.match(/^([\d.]+)([kM]?)$/);
+  if (!match) return 0;
+  const base = parseFloat(match[1]);
+  const mult = match[2] === 'k' ? 1_000 : match[2] === 'M' ? 1_000_000 : 1;
+  return Math.round(base * mult);
+}
+
+/**
+ * Parse aider's usage lines, e.g.:
+ *   "Tokens: 57k sent, 1.7k received. Cost: $0.02 message, $0.02 session."
+ * Multi-message sessions print one line per message — token counts are summed,
+ * cost uses the last (cumulative) session figure. Cost may be absent.
+ */
+export function parseAiderUsage(output: string): ProviderUsage | null {
+  const re = /Tokens:\s*([\d.,]+[kM]?)\s*sent,\s*([\d.,]+[kM]?)\s*received\.(?:\s*Cost:\s*\$([\d.]+)\s*message,\s*\$([\d.]+)\s*session\.)?/g;
+  let input = 0;
+  let output_ = 0;
+  let sessionCost = 0;
+  let found = false;
+  for (const m of output.matchAll(re)) {
+    found = true;
+    input += parseTokenCount(m[1]);
+    output_ += parseTokenCount(m[2]);
+    if (m[4] !== undefined) sessionCost = parseFloat(m[4]);
+  }
+  return found ? { input_tokens: input, output_tokens: output_, cost_usd: sessionCost } : null;
 }
 
 /**
@@ -81,6 +124,26 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     buildArgs: (prompt) => ['exec', prompt],
   },
 
+  // DeepSeek has no first-party agentic CLI; delegate to aider, which speaks
+  // DeepSeek's chat-completions API natively via DEEPSEEK_API_KEY. (codex was
+  // considered but recent versions dropped chat-completions wire support, and
+  // DeepSeek does not implement the Responses API.)
+  deepseek: {
+    provider: 'deepseek',
+    displayName: 'DeepSeek (via aider)',
+    command: 'aider',
+    install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--model',
+      opts?.model ? `deepseek/${opts.model.replace(/^deepseek\//, '')}` : 'deepseek/deepseek-chat',
+      '--message',
+      prompt,
+      '--yes',
+      '--no-auto-commits',
+    ],
+    parseUsage: parseAiderUsage,
+  },
+
   mistral: {
     provider: 'mistral',
     displayName: 'Mistral',
@@ -103,6 +166,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     command: 'aider',
     install: 'pip install aider-install && aider-install',
     buildArgs: (prompt) => ['--message', prompt, '--yes'],
+    parseUsage: parseAiderUsage,
   },
 
   ollama: {

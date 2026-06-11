@@ -50,11 +50,37 @@ describe('parseStreamJsonLine', () => {
     expect(parsed.text).toBe('ab');
   });
 
-  it('ignores non-text content blocks (tool_use)', () => {
+  it('ignores non-text content blocks (tool_use) for TEXT', () => {
     const parsed = parseStreamJsonLine(
       JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read' }] } })
     );
     expect(parsed.text).toBeUndefined();
+  });
+
+  it('counts outcomes from tool_use blocks (commits, PRs, issues, files, actions)', () => {
+    const parsed = parseStreamJsonLine(
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', name: 'Bash', input: { command: "git commit -m 'x'" } },
+        { type: 'tool_use', name: 'Bash', input: { command: 'gh pr create --base develop' } },
+        { type: 'tool_use', name: 'Bash', input: { command: 'gh issue create --title y' } },
+        { type: 'tool_use', name: 'Edit', input: { file_path: '/a' } },
+        { type: 'text', text: 'done' },
+      ] } })
+    );
+    expect(parsed.outcomes).toEqual({ actions: 4, files_edited: 1, commits: 1, prs_created: 1, issues_created: 1 });
+    expect(parsed.text).toBe('done');
+  });
+
+  it('accumulates outcomes across a full stream via parseStreamJson', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'git commit -m a' } }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gh pr create' } }] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    const res = parseStreamJson(jsonl);
+    expect(res.outcomes.commits).toBe(1);
+    expect(res.outcomes.prs_created).toBe(1);
+    expect(res.outcomes.actions).toBe(2);
   });
 
   it('captures result text + usage + cost from the result event', () => {

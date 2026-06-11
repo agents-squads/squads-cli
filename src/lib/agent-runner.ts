@@ -360,6 +360,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             foreground: !isBackground,
             squadName,
             agentName,
+            model: options.model || frontmatter.model,
+            executionId,
+            trigger: options.trigger || 'manual',
+            startMs,
           });
         }
 
