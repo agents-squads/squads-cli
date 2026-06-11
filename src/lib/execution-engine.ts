@@ -587,7 +587,9 @@ export function buildDetachedShellScript(config: {
   const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
-  return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}`;
+  // pid file removed on clean wrapper exit — a surviving pid file with a dead
+  // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
+  return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
 }
 
 /** Prepare log directory and file paths for detached execution */
@@ -1208,7 +1210,7 @@ export async function executeWithProvider(
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes || 15);
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
-  const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}`;
+  const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,

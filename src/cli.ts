@@ -1144,6 +1144,28 @@ program
     writeLine(`squads-cli ${version}`);
   });
 
+// Detached-run inventory + control (containment D4): list live background
+// runs from pid files, stop one gracefully (executor first, wrapper survives
+// to harvest + report), clean stale/orphaned leftovers.
+program
+  .command('runs')
+  .description('List live background agent runs (pid-file inventory)')
+  .option('--json', 'Output as JSON')
+  .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
+  .action(async (options) => {
+    const { runsCommand } = await import('./commands/runs.js');
+    return runsCommand(options);
+  });
+
+program
+  .command('kill [target]')
+  .description('Stop a background run gracefully (pid, squad, or squad/agent)')
+  .option('--all', 'Stop all live background runs')
+  .action(async (target, options) => {
+    const { killCommand } = await import('./commands/runs.js');
+    return killCommand(target, options);
+  });
+
 // Commands introspection — the live command tree as data. Docs generation and
 // the skill drift-guard consume this; it can never drift from the registry.
 program
