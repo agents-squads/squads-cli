@@ -290,8 +290,9 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 
 // Run command - execute squads or individual agents
 program
-  .command('run [target]')
+  .command('run [target] [agent]')
   .description('Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle.')
+  .allowExcessArguments(false)
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -330,6 +331,7 @@ Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
   $ squads run engineering --task "fix CI"  Conversation with founder directive
   $ squads run engineering/code-review  Run specific agent (slash notation)
+  $ squads run engineering code-review  Same as above (space notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run
   $ squads run engineering --parallel   Run all agents in parallel (tmux)
@@ -343,9 +345,14 @@ Examples:
   $ squads run --once --dry-run         Preview one autopilot cycle
   $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)
-  .action(async (target, options) => {
-    const { runCommand } = await import('./commands/run.js');
-    return runCommand(target || null, { ...options, timeout: options.timeout != null ? parseInt(options.timeout, 10) : undefined });
+  .action(async (target, agent, options) => {
+    const { runCommand, mergeAgentPositional } = await import('./commands/run.js');
+    const merged = mergeAgentPositional(target || null, agent, options.agent);
+    if (merged.error) {
+      console.error(chalk.red(`\n  ${merged.error}\n`));
+      process.exit(1);
+    }
+    return runCommand(merged.target, { ...options, timeout: options.timeout != null ? parseInt(options.timeout, 10) : undefined });
   });
 
 // List command — alias for status
