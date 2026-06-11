@@ -40,6 +40,8 @@ export interface SpoolRecord {
   exitCode: number;
   /** 'merged' | 'preserved' | 'none' — provider harvest outcome, '' for claude runs */
   harvest: string;
+  /** Watchdog fired (hq#450 D3) — run was reaped at its deadline. */
+  timedOut?: boolean;
 }
 
 export function spoolDir(obsRoot: string): string {
@@ -71,6 +73,8 @@ export function buildSpoolWriterShell(fields: {
   model: string;
   trigger: string;
   logFile: string;
+  /** Watchdog flag file (hq#450 D3); when present at spool time → timedOut:true, then removed. */
+  timeoutFlag?: string;
 }): string {
   const q = (s: string) => s.replace(/'/g, '');
   // execIds are CLI-generated, but the done-file name and embedded id are
@@ -78,14 +82,46 @@ export function buildSpoolWriterShell(fields: {
   const safeId = fields.execId.replace(/[^A-Za-z0-9_-]/g, '');
   const dir = spoolDir(fields.obsRoot);
   const file = join(dir, `${safeId}.json`);
+  const timedOutExpr = fields.timeoutFlag
+    ? `"$([ -f '${q(fields.timeoutFlag)}' ] && echo true || echo false)"`
+    : `"false"`;
+  const flagCleanup = fields.timeoutFlag ? `; rm -f '${q(fields.timeoutFlag)}'` : '';
   // printf %s with embedded JSON skeleton; EXIT/START/HARVEST interpolated by sh.
   return (
     `; mkdir -p '${dir}'` +
     `; SPOOL_TMP=$(mktemp '${dir}/.tmp.XXXXXX')` +
-    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s"}' ` +
+    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s","timedOut":%s}' ` +
     `'${safeId}' '${q(fields.squad)}' '${q(fields.agent)}' '${q(fields.provider)}' '${q(fields.model)}' '${q(fields.trigger)}' '${q(fields.logFile)}' ` +
-    `"\${START:-0}" "$(date +%s)" "\${EXIT:-1}" "\${HARVEST:-}" > "$SPOOL_TMP"` +
-    `; mv "$SPOOL_TMP" '${file}'`
+    `"\${START:-0}" "$(date +%s)" "\${EXIT:-1}" "\${HARVEST:-}" ${timedOutExpr} > "$SPOOL_TMP"` +
+    `; mv "$SPOOL_TMP" '${file}'${flagCleanup}`
+  );
+}
+
+/**
+ * Watchdog wrapper for a detached executor command (hq#450 D3).
+ *
+ * Runs the executor in the background and arms a killer subshell: at the
+ * deadline it touches the timeout flag, TERMs the executor, and after a grace
+ * period KILLs it. Crucially it targets the executor's PID only — never the
+ * process group — so the wrapper survives to run harvest + spool (the whole
+ * point of containment is that a killed run still reports and keeps its work).
+ *
+ * The watchdog subshell's stdio is detached to /dev/null; otherwise its
+ * orphaned `sleep` would inherit the wrapper's descriptors and keep pipes
+ * open long after the run finished.
+ *
+ * Leaves `$EXIT` set to the executor's exit code (143/137 when reaped).
+ * Evidence this is needed: a live aider executor finished its work, then
+ * deadlocked without a TTY and held its worktree forever at 0% CPU.
+ */
+export function buildWatchdogShell(executorCmd: string, timeoutSecs: number, timeoutFlag: string): string {
+  const flag = timeoutFlag.replace(/'/g, '');
+  const KILL_GRACE_SECS = 10;
+  return (
+    `${executorCmd} & EXEC_PID=$!` +
+    `; ( sleep ${Math.max(1, Math.floor(timeoutSecs))}; touch '${flag}'; kill -TERM $EXEC_PID 2>/dev/null; sleep ${KILL_GRACE_SECS}; kill -9 $EXEC_PID 2>/dev/null ) > /dev/null 2>&1 & WATCH_PID=$!` +
+    `; wait $EXEC_PID; EXIT=$?` +
+    `; kill $WATCH_PID 2>/dev/null; wait $WATCH_PID 2>/dev/null`
   );
 }
 
@@ -110,7 +146,9 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
   const durationMs = spool.endEpoch > spool.startEpoch && spool.startEpoch > 0
     ? (spool.endEpoch - spool.startEpoch) * 1000
     : 0;
-  const status: ObservabilityRecord['status'] = spool.exitCode === 0 ? 'completed' : 'failed';
+  const status: ObservabilityRecord['status'] = spool.timedOut
+    ? 'timeout'
+    : spool.exitCode === 0 ? 'completed' : 'failed';
 
   let input = 0, output = 0, cost = 0;
   let model = spool.model || 'unknown';
@@ -151,7 +189,9 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
     cache_write_tokens: 0,
     cost_usd: cost,
     context_tokens: 0,
-    error: spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined,
+    error: spool.timedOut
+      ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
+      : spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined,
   };
 }
 

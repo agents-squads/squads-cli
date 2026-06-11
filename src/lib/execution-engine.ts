@@ -38,7 +38,7 @@ import {
 } from './execution-log.js';
 import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
 import { findMemoryDir } from './memory.js';
-import { buildSpoolWriterShell } from './spool.js';
+import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
@@ -561,6 +561,8 @@ export function buildDetachedShellScript(config: {
   obsRoot?: string;
   executionId?: string;
   trigger?: string;
+  /** Watchdog cap for the executor (hq#450 D3). */
+  timeoutMinutes?: number;
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
@@ -568,6 +570,7 @@ export function buildDetachedShellScript(config: {
   const cleanup = `if [ "\${WORK_DIR}" != '${config.projectRoot}' ]; then git -C '${config.projectRoot}' worktree remove "\${WORK_DIR}" --force 2>/dev/null; BRANCH='${branchName}'; git -C '${config.projectRoot}' branch -D "\${BRANCH}" 2>/dev/null; fi`;
   // Spool done-file: the wrapper outlives the CLI, so it records completion
   // facts itself; the next CLI invocation reconciles them into observability.
+  const timeoutFlag = `${config.pidFile}.timeout`;
   const spool = config.obsRoot && config.executionId
     ? buildSpoolWriterShell({
         obsRoot: config.obsRoot,
@@ -578,9 +581,12 @@ export function buildDetachedShellScript(config: {
         model: config.claudeModelAlias || '',
         trigger: config.trigger || 'manual',
         logFile: config.logFile,
+        timeoutFlag,
       })
     : '';
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1; EXIT=$?; ${cleanup}${spool}`;
+  const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}`;
 }
 
@@ -916,10 +922,13 @@ export async function executeWithClaude(
     effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken,
   });
 
+  const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
+  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : _timeoutMinutes;
   const wrapperScript = buildDetachedShellScript({
     projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
     obsRoot: projectRoot, executionId: execContext.executionId, trigger,
+    timeoutMinutes: watchdogMinutes,
   });
 
   if (runInWatch) {
@@ -978,6 +987,7 @@ export async function executeWithProvider(
     executionId?: string;
     trigger?: ExecutionContext['trigger'];
     startMs?: number;
+    timeoutMinutes?: number;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -1180,6 +1190,7 @@ export async function executeWithProvider(
     : '';
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.
+  const timeoutFlag = `${pidFile}.timeout`;
   const spoolCmd = options.executionId
     ? buildSpoolWriterShell({
         obsRoot: getProjectRoot(),
@@ -1190,9 +1201,13 @@ export async function executeWithProvider(
         model: options.model || '',
         trigger: options.trigger || 'manual',
         logFile,
+        timeoutFlag,
       })
     : '';
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1; EXIT=$?${cleanupCmd}${spoolCmd}`;
+  const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
+  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes || 15);
+  const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
