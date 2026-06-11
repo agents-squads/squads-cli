@@ -99,6 +99,19 @@ export function commandExists(command: string): boolean {
  * LLM CLI registry
  * Maps provider IDs to their CLI configurations
  */
+
+// Repo-map budget for aider-backed executors. The map is what lets a
+// file-based agent see the repo's file structure, but it scales with repo
+// size (measured: ~4.6k tokens on a small repo, tens of k on a monorepo —
+// #845). SQUADS_AIDER_MAP_TOKENS caps it; unset keeps aider's default.
+function aiderMapTokensArgs(): string[] {
+  const v = process.env.SQUADS_AIDER_MAP_TOKENS;
+  if (v === undefined || v === '') return [];
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) return [];
+  return ['--map-tokens', String(n)];
+}
+
 export const LLM_CLIS: Record<string, CLIConfig> = {
   anthropic: {
     provider: 'anthropic',
@@ -140,6 +153,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       prompt,
       '--yes',
       '--no-auto-commits',
+      ...aiderMapTokensArgs(),
     ],
     parseUsage: parseAiderUsage,
   },
@@ -165,7 +179,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     displayName: 'Aider (Multi)',
     command: 'aider',
     install: 'pip install aider-install && aider-install',
-    buildArgs: (prompt) => ['--message', prompt, '--yes'],
+    buildArgs: (prompt) => ['--message', prompt, '--yes', ...aiderMapTokensArgs()],
     parseUsage: parseAiderUsage,
   },
 
