@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'fs';
+import { reconcileDetachedRuns } from '../lib/spool.js';
 import { join } from 'path';
 import {
   findSquadsDir,
@@ -43,6 +44,12 @@ export async function statusCommand(
   squadName?: string,
   options: StatusOptions = {}
 ): Promise<void> {
+  // hq#450 D2: ingest done-files from detached runs before reading any ledger.
+  try {
+    const { getProjectRoot } = await import('../lib/run-utils.js');
+    const n = reconcileDetachedRuns(getProjectRoot());
+    if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
+  } catch { /* read paths never break on spool issues */ }
   await track(Events.CLI_STATUS, { squad: squadName || 'all', verbose: options.verbose });
   const squadsDir = findSquadsDir();
 

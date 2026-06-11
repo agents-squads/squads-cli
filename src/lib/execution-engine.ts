@@ -38,6 +38,7 @@ import {
 } from './execution-log.js';
 import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
 import { findMemoryDir } from './memory.js';
+import { buildSpoolWriterShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
@@ -556,13 +557,31 @@ export function buildDetachedShellScript(config: {
   escapedPrompt: string;
   logFile: string;
   pidFile: string;
+  /** Dispatch project root (where executions.jsonl lives) + run identity for the spool done-file (hq#450 D1). */
+  obsRoot?: string;
+  executionId?: string;
+  trigger?: string;
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
   const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
   const cleanup = `if [ "\${WORK_DIR}" != '${config.projectRoot}' ]; then git -C '${config.projectRoot}' worktree remove "\${WORK_DIR}" --force 2>/dev/null; BRANCH='${branchName}'; git -C '${config.projectRoot}' branch -D "\${BRANCH}" 2>/dev/null; fi`;
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1; ${cleanup}`;
-  return `echo $$ > '${config.pidFile}'; ${script}`;
+  // Spool done-file: the wrapper outlives the CLI, so it records completion
+  // facts itself; the next CLI invocation reconciles them into observability.
+  const spool = config.obsRoot && config.executionId
+    ? buildSpoolWriterShell({
+        obsRoot: config.obsRoot,
+        execId: config.executionId,
+        squad: config.squadName,
+        agent: config.agentName,
+        provider: 'anthropic',
+        model: config.claudeModelAlias || '',
+        trigger: config.trigger || 'manual',
+        logFile: config.logFile,
+      })
+    : '';
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1; EXIT=$?; ${cleanup}${spool}`;
+  return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}`;
 }
 
 /** Prepare log directory and file paths for detached execution */
@@ -900,6 +919,7 @@ export async function executeWithClaude(
   const wrapperScript = buildDetachedShellScript({
     projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
+    obsRoot: projectRoot, executionId: execContext.executionId, trigger,
   });
 
   if (runInWatch) {
@@ -1151,15 +1171,29 @@ export async function executeWithProvider(
     ? `; git -C '${workDir}' add -A 2>/dev/null` +
       `; { git -C '${workDir}' commit ${harvestMsg}` +
       ` || git -C '${workDir}' -c user.name='squads-agent' -c user.email='squads-agent@localhost' commit ${harvestMsg}; } >/dev/null 2>&1` +
-      `; KEEP_BRANCH=''` +
+      `; KEEP_BRANCH=''; HARVEST=none` +
       `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
-      ` git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 || KEEP_BRANCH=1; fi` +
+      ` { git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 && HARVEST=merged; } || { KEEP_BRANCH=1; HARVEST=preserved; }; fi` +
       `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null` +
       `; if [ -z "$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
       ` else echo "agent work preserved on branch ${branchName} (merge manually)" >> '${logFile}'; fi`
     : '';
-  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1${cleanupCmd}`;
-  const wrapperScript = `echo $$ > '${pidFile}'; ${shellScript}`;
+  // Spool done-file (hq#450 D1): record completion facts for the reconcile
+  // sweep — the CLI that spawned this wrapper is long gone when it finishes.
+  const spoolCmd = options.executionId
+    ? buildSpoolWriterShell({
+        obsRoot: getProjectRoot(),
+        execId: options.executionId,
+        squad: squadName,
+        agent: agentName,
+        provider,
+        model: options.model || '',
+        trigger: options.trigger || 'manual',
+        logFile,
+      })
+    : '';
+  const shellScript = `cd '${workDir}' && ${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1; EXIT=$?${cleanupCmd}${spoolCmd}`;
+  const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}`;
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,
