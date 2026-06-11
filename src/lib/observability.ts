@@ -150,12 +150,17 @@ interface SessionUsage {
 /**
  * Find the most recently modified Claude Code session JSONL file.
  * Claude Code writes sessions to ~/.claude/projects/<hash>/*.jsonl
+ *
+ * `beforeTimestamp` (optional) excludes files still being written after the
+ * run ended — without it a concurrent long-lived session (e.g. interactive)
+ * absorbs the attribution (#857). 2-minute grace for the final flush.
  */
-function findRecentSessionFile(afterTimestamp: number): string | null {
+function findRecentSessionFile(afterTimestamp: number, beforeTimestamp?: number): string | null {
   const home = process.env.HOME || '';
   const projectsDir = join(home, '.claude', 'projects');
   if (!existsSync(projectsDir)) return null;
 
+  const GRACE_MS = 2 * 60_000;
   let newest: { path: string; mtime: number } | null = null;
 
   try {
@@ -170,8 +175,10 @@ function findRecentSessionFile(afterTimestamp: number): string | null {
         const filePath = join(projPath, file);
         try {
           const mtime = statSync(filePath).mtimeMs;
-          // Only consider files modified after the run started
-          if (mtime > afterTimestamp && (!newest || mtime > newest.mtime)) {
+          // Only consider files modified within the run's window
+          if (mtime <= afterTimestamp) continue;
+          if (beforeTimestamp !== undefined && mtime > beforeTimestamp + GRACE_MS) continue;
+          if (!newest || mtime > newest.mtime) {
             newest = { path: filePath, mtime };
           }
         } catch { continue; }
@@ -180,6 +187,28 @@ function findRecentSessionFile(afterTimestamp: number): string | null {
   } catch { /* projects dir read error */ }
 
   return newest?.path || null;
+}
+
+/**
+ * Find a session JSONL by its exact session id (the file basename), across
+ * all project dirs. Used for detached runs launched with `--session-id` —
+ * deterministic attribution, immune to concurrent sessions (#857).
+ */
+function findSessionFileById(sessionId: string): string | null {
+  const home = process.env.HOME || '';
+  const projectsDir = join(home, '.claude', 'projects');
+  if (!existsSync(projectsDir)) return null;
+  // Defense in depth: ids are CLI-generated UUIDs, never path fragments.
+  const safe = sessionId.replace(/[^A-Za-z0-9-]/g, '');
+  if (!safe) return null;
+
+  try {
+    for (const projDir of readdirSync(projectsDir)) {
+      const candidate = join(projectsDir, projDir, `${safe}.jsonl`);
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch { /* projects dir read error */ }
+  return null;
 }
 
 /**
@@ -297,10 +326,23 @@ export function diffGoals(
 
 /**
  * Capture usage from the most recent Claude Code session.
- * Call this after a foreground run completes.
+ * Call this after a foreground run completes. Pass `runEndedAt` for runs that
+ * finished in the past (spool reconcile) so sessions still active after the
+ * run can't absorb the attribution (#857).
  */
-export function captureSessionUsage(runStartedAt: number): SessionUsage | null {
-  const sessionFile = findRecentSessionFile(runStartedAt);
+export function captureSessionUsage(runStartedAt: number, runEndedAt?: number): SessionUsage | null {
+  const sessionFile = findRecentSessionFile(runStartedAt, runEndedAt);
+  if (!sessionFile) return null;
+  return parseSessionUsage(sessionFile);
+}
+
+/**
+ * Capture usage for an exact session id — the run's own session JSONL,
+ * recorded by the detached wrapper at launch (#857). Deterministic; never
+ * picks up a concurrent session.
+ */
+export function captureSessionUsageById(sessionId: string): SessionUsage | null {
+  const sessionFile = findSessionFileById(sessionId);
   if (!sessionFile) return null;
   return parseSessionUsage(sessionFile);
 }

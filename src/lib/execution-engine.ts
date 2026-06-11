@@ -563,8 +563,12 @@ export function buildDetachedShellScript(config: {
   trigger?: string;
   /** Watchdog cap for the executor (hq#450 D3). */
   timeoutMinutes?: number;
+  /** Claude session id for this run (#857) — pins the session JSONL so reconcile attributes exactly this run's usage. */
+  sessionId?: string;
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
+  const safeSessionId = config.sessionId ? config.sessionId.replace(/[^A-Za-z0-9-]/g, '') : '';
+  const sessionFlag = safeSessionId ? `--session-id ${safeSessionId} ` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
   const worktreeDir = `${config.projectRoot}/../.worktrees/${config.squadName}-${config.agentName}-${config.timestamp}`;
   const cleanup = `if [ "\${WORK_DIR}" != '${config.projectRoot}' ]; then git -C '${config.projectRoot}' worktree remove "\${WORK_DIR}" --force 2>/dev/null; BRANCH='${branchName}'; git -C '${config.projectRoot}' branch -D "\${BRANCH}" 2>/dev/null; fi`;
@@ -582,9 +586,10 @@ export function buildDetachedShellScript(config: {
         trigger: config.trigger || 'manual',
         logFile: config.logFile,
         timeoutFlag,
+        sessionId: safeSessionId,
       })
     : '';
-  const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
@@ -931,6 +936,7 @@ export async function executeWithClaude(
     claudeModelAlias, escapedPrompt, logFile, pidFile,
     obsRoot: projectRoot, executionId: execContext.executionId, trigger,
     timeoutMinutes: watchdogMinutes,
+    sessionId: randomUUID(),
   });
 
   if (runInWatch) {
