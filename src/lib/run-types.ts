@@ -47,6 +47,7 @@ export interface RunOptions {
   resume?: boolean; // Resume org cycle from quota-skipped squads
   focus?: string; // Cycle focus: create, resolve, review, ship, research, cost
   yes?: boolean; // Skip the org-run cost confirmation gate (deliberate trigger)
+  waitForQuota?: boolean; // Org cycle: on quota cap, poll until the window reopens instead of stopping
 }
 
 /**

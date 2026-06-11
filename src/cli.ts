@@ -322,6 +322,7 @@ program
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
   .option('--force', 'Force re-run squads that already completed today')
   .option('--resume', 'Resume org cycle from where quota stopped it')
+  .option('--wait-for-quota', 'Org cycle: on quota cap, poll until the session window reopens instead of stopping')
   .option('-y, --yes', 'Skip the org-run cost confirmation (for deliberate/non-interactive triggers)')
   .option('--focus <mode>', 'Cycle focus: create, resolve, review, ship, research, cost (default: create)')
   .addHelpText('after', `

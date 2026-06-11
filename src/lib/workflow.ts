@@ -635,6 +635,33 @@ ${planOutput.slice(0, 3000)}`;
       }
       addTurn(transcript, agent.name, agent.role, output, estimateTurnCost(options.model || 'sonnet'));
     }
+
+    // Fail-fast (#856): every dispatched agent came back quota-capped — the
+    // window died mid-cycle. Review/verify would cap too; stop burning turns.
+    if (workerResults.length > 0 && workerResults.every(r => isQuotaMessage(r.output))) {
+      writeLine(`  ${colors.red}${squad.name}: all ${workerResults.length} dispatched agents hit the session limit — aborting cycle (skipping review/verify)${RESET}`);
+      logObservability({
+        ts: new Date().toISOString(),
+        id: executionId,
+        squad: squad.name,
+        agent: lead.name,
+        provider: 'anthropic',
+        model: options.model || modelForRole('lead'),
+        trigger: 'scheduled',
+        status: 'failed',
+        duration_ms: Date.now() - cycleStartMs,
+        input_tokens: cycleUsage.input_tokens,
+        output_tokens: cycleUsage.output_tokens,
+        cache_read_tokens: cycleUsage.cache_read_tokens,
+        cache_write_tokens: cycleUsage.cache_write_tokens,
+        cost_usd: cycleUsage.cost_usd,
+        context_tokens: 0,
+        ...outcomeFields(cycleOutcomes),
+        error: 'Quota limit reached',
+        task: options.task,
+      });
+      return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -664,6 +691,32 @@ Summary: [what was achieved]`;
   cycleUsage = addUsage(cycleUsage, reviewResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
+  if (isQuotaMessage(reviewOutput)) {
+    writeLine(`  ${colors.red}${squad.name}: review turn hit the session limit — aborting cycle (skipping verify)${RESET}`);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: lead.name,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
+      context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
+      error: 'Quota limit reached',
+      task: options.task,
+    });
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
+  }
 
   // Goals.md staleness check — warn if goals were not updated during review
   const goalsAfterReview = snapshotGoals(squad.name);
