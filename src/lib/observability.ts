@@ -424,6 +424,53 @@ async function pushToBridge(record: ObservabilityRecord): Promise<void> {
   }
 }
 
+/**
+ * Fire-and-forget ingest trigger ping.
+ *
+ * After the execution record is written to JSONL, POST to
+ * `${SQUADS_API_URL}/ingest/trigger` so the local squads-api defers an
+ * immediate `ingest_usage` run — providing near-real-time substrate data
+ * instead of waiting for the 2-minute periodic sweep.
+ *
+ * Safety contract:
+ *   - NEVER throws or rejects — failure must never affect the run path.
+ *   - Skipped silently when SQUADS_API_URL or SCHEDULER_API_KEY is unset.
+ *   - 2-second AbortController timeout so a dead API doesn't stall the process.
+ *   - Errors caught and discarded (debug-level: no console output in production).
+ *
+ * Uses process.env.SQUADS_API_URL directly (same source getApiUrl() reads) to
+ * avoid pulling the env-config module into the call path and to keep the
+ * function easily testable without dynamic-import mocking.
+ */
+async function pingIngestTrigger(): Promise<void> {
+  try {
+    const apiUrl = process.env.SQUADS_API_URL;
+    if (!apiUrl) return; // SQUADS_API_URL unset — skip silently
+
+    const apiKey = process.env.SCHEDULER_API_KEY;
+    if (!apiKey) return; // key unset — skip silently
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      await fetch(`${apiUrl}/ingest/trigger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify({ source: 'squads-cli' }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Silent — API down, key missing, timeout, or any other error.
+    // The periodic sweep (every 2 minutes) will cover the gap.
+  }
+}
+
 export function logObservability(record: ObservabilityRecord): void {
   const logPath = getLogPath();
   if (!logPath) return;
@@ -440,6 +487,8 @@ export function logObservability(record: ObservabilityRecord): void {
   pushToApi(record).catch(() => {});
   // Best-effort Bridge push (no-op/silent if Bridge unset or down).
   pushToBridge(record).catch(() => {});
+  // Real-time ingest trigger: notify local squads-api immediately (fire-and-forget).
+  pingIngestTrigger().catch(() => {});
 }
 
 // ── Read ─────────────────────────────────────────────────────────────
