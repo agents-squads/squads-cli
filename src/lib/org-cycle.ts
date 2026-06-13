@@ -13,7 +13,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { spawnSync, spawn } from 'child_process';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { findSquadsDir, loadSquad, findProjectRoot } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, bold, RESET, writeLine } from './terminal.js';
