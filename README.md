@@ -39,11 +39,11 @@ squads run research/analyst
 │   ├── research/
 │   ├── product/
 │   └── company/           # Evaluates outputs, closes the feedback loop
-└── memory/                # State: learnings, priorities, feedback
+└── memory/                # State: strategy, goals, learnings, feedback
 ```
 
-Before every run, an agent loads a **context cascade** — squad identity,
-current priorities, feedback from the last cycle, active work across the
+Before every run, an agent loads a **context cascade** — company strategy,
+squad goals, feedback from the last cycle, active work across the
 team — tuned by role so scanners stay lightweight and leads get the full
 picture. Agents that know what's been done don't duplicate work; agents
 that see their own feedback stop producing noise.

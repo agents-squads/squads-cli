@@ -23,7 +23,7 @@ squads run research --parallel
 ```
 
 **Autonomous dispatch** — let Squads decide what to run, when, and in
-what order. Autopilot reads priorities and feedback, respects phase
+what order. Autopilot reads goals and feedback, respects phase
 ordering, and manages budget constraints. This is the hands-off mode for
 continuous operations.
 

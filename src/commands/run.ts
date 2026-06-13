@@ -253,12 +253,10 @@ export async function runCommand(
       const memoryDir = findMemoryDir();
       if (memoryDir) {
         const goalsPath = join(memoryDir, squadName, 'goals.md');
-        const priPath = join(memoryDir, squadName, 'priorities.md');
         try {
           const lastRunMs = new Date(lastRun).getTime();
           const goalsMtime = existsSync(goalsPath) ? statSync(goalsPath).mtimeMs : 0;
-          const priMtime = existsSync(priPath) ? statSync(priPath).mtimeMs : 0;
-          if (goalsMtime > lastRunMs || priMtime > lastRunMs) return false;
+          if (goalsMtime > lastRunMs) return false;
         } catch { return false; }
       }
       return true;
