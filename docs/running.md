@@ -8,8 +8,13 @@ Execution modes, local limits, and scaling.
 context cascade, executes autonomously, and writes results to GitHub
 and memory. This is the building block.
 
+Three equivalent ways to target a specific agent:
+
 ```bash
-squads run research/analyst
+squads run research/analyst           # slash notation
+squads run research analyst           # space notation (same result)
+squads run research -a analyst        # flag notation (same result)
+
 squads run intelligence --task "Scan competitor pricing changes"
 ```
 
