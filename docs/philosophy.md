@@ -54,8 +54,8 @@ commands (like `squads env prompt`) prioritize composability.
 Most agent frameworks focus on tool calling. Squads focuses on **what the
 agent knows before it starts working**.
 
-Every agent execution loads a layered context cascade — squad identity,
-current priorities, feedback from last cycle, active work across the team —
+Every agent execution loads a layered context cascade — company strategy,
+squad goals, feedback from last cycle, active work across the team —
 tuned by role so scanners stay lightweight and leads get the full picture.
 
 The desired result: agents that don't duplicate work, don't ignore

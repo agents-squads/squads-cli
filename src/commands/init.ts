@@ -723,7 +723,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       await writeIfNew(path.join(cwd, dest), loadSeedTemplate(template, variables));
     }
 
-    // Squad-level priorities and goals (all squads including use-case squads)
+    // Squad-level goals (all squads including use-case squads)
     const reviewDate = new Date();
     reviewDate.setDate(reviewDate.getDate() + 14);
     const allSquads = [
@@ -745,10 +745,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
         SQUAD_LEAD: squad.lead,
         REVIEW_DATE: reviewDate.toISOString().split('T')[0],
       };
-      await writeIfNew(
-        path.join(cwd, `.agents/memory/${squad.name}/priorities.md`),
-        loadSeedTemplate('memory/_squad/priorities.md', squadVars),
-      );
       await writeIfNew(
         path.join(cwd, `.agents/memory/${squad.name}/goals.md`),
         loadSeedTemplate('memory/_squad/goals.md', squadVars),

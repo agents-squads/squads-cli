@@ -117,7 +117,7 @@ interface AgentRunConfig {
   model: string;
   /** The specific task for this agent (from lead's plan) */
   task: string;
-  /** Full squad context (goals, feedback, priorities, etc.) */
+  /** Full squad context (goals, feedback, strategy, etc.) */
   squadContext: string;
   cwd: string;
   /** Stream this agent's output live (prefixed) — set under squad-run --verbose (#791) */

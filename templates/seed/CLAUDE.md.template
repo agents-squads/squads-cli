@@ -34,7 +34,7 @@ This project uses [Agents Squads](https://agents-squads.com) to run an AI workfo
 ├── memory/
 │   ├── company/
 │   │   ├── manager/state.md
-│   │   └── directives.md       # Strategic overlay (Layer 3)
+│   │   └── strategy.md         # Company strategic context (Layer 1 primary)
 │   ├── research/lead/state.md
 │   ├── intelligence/intel-lead/state.md
 │   └── product/lead/state.md
@@ -49,13 +49,12 @@ Every agent execution loads context in this order (higher layers always load, lo
 | Layer | File | Purpose |
 |-------|------|---------|
 | 0 | `config/SYSTEM.md` | Immutable rules — git, memory, escalation |
-| 1 | `squads/{squad}/SQUAD.md` | Mission, goals, output format |
-| 2 | `memory/{squad}/priorities.md` | Current operational focus |
-| 3 | `memory/company/directives.md` | Company-wide strategic overlay |
-| 4 | `memory/{squad}/active-work.md` | Open PRs/issues — prevent duplication |
-| 5 | `memory/{squad}/{agent}/state.md` | What the agent already knows |
-| 6 | `memory/{squad}/feedback.md` | Last cycle evaluation |
-| 7 | `memory/daily-briefing.md` | Cross-squad context |
+| 1 | `memory/company/strategy.md` | Company strategic context (falls back to `company.md` → `directives.md`) |
+| 2 | `memory/{squad}/goals.md` | Measurable targets for this squad |
+| 3 | `memory/{squad}/active-work.md` | Open PRs/issues — prevent duplication |
+| 4 | `memory/{squad}/{agent}/state.md` | What the agent already knows |
+| 5 | `memory/{squad}/feedback.md` | Last cycle evaluation |
+| 6 | `memory/daily-briefing.md` | Cross-squad context |
 
 ## Updating Business Goals
 
@@ -68,31 +67,22 @@ What does the business do? Who are the customers? What market?
 What should agents research first? Who are the competitors?
 ```
 
-### 2. Directives (what matters now)
-Edit `.agents/memory/company/directives.md` — this overrides squad goals.
+### 2. Strategy (what matters now)
+Edit `.agents/memory/company/strategy.md` — company strategic context that shapes all agent decisions.
 ```
 What is the P0 priority? What metric are we optimizing?
 What constraints apply? What should agents NOT do?
 ```
 
 ### 3. Squad Goals (what each team does)
-Edit `## Goals` in each `squads/{squad}/SQUAD.md`:
+Edit `.agents/memory/{squad}/goals.md`, or use the CLI:
 ```bash
-# Or use the CLI:
 squads goal set intelligence "Monitor competitor X's pricing weekly"
 squads goal set research "Deep dive on Y market segment"
 squads goal set product "Write spec for Z feature"
 ```
 
-### 4. Priorities (what to do this week)
-Create or edit `.agents/memory/{squad}/priorities.md`:
-```
-- Fix issue #123 (blocking users)
-- Research competitor's new feature launch
-- Update roadmap based on last cycle's feedback
-```
-
-**Rule**: Goals are aspirational (stable). Priorities are operational (updated frequently). Directives are strategic (updated less frequently).
+**Rule**: Strategy is stable direction (updated infrequently by the founder). Goals are measurable targets (updated each cycle).
 
 ## For Humans
 
@@ -106,7 +96,7 @@ Common commands:
 
 ## For Agents
 
-- Read `BUSINESS_BRIEF.md` and `directives.md` before starting work
+- Read `memory/company/strategy.md` (or `BUSINESS_BRIEF.md`) before starting work
 - Read your state from `memory/{squad}/{agent}/state.md`
 - Update state after every run
 - Use the `squads-cli` skill for CLI operations

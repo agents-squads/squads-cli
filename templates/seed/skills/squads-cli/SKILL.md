@@ -16,7 +16,7 @@ The `squads` CLI is the operating system for your AI workforce. Agents are the p
 | **Agent** | A markdown file (`{agent}.md`) inside a squad directory |
 | **Memory** | Persistent state in `.agents/memory/{squad}/{agent}/` — survives across runs |
 | **Target** | `squad/agent` notation (e.g., `engineering/issue-solver`) |
-| **Context cascade** | Layered context injection: SYSTEM → SQUAD → priorities → directives → state |
+| **Context cascade** | Layered context injection: SYSTEM → strategy → goals → agent → state |
 
 ## File Structure
 
@@ -28,13 +28,13 @@ The `squads` CLI is the operating system for your AI workforce. Agents are the p
 │   └── {agent}.md                # Agent definition
 └── memory/
     ├── {squad}/
-    │   ├── priorities.md          # Current operational focus
+    │   ├── goals.md               # Measurable targets (primary squad context)
     │   ├── feedback.md            # Last cycle evaluation
     │   ├── active-work.md         # Open PRs/issues
     │   └── {agent}/
     │       ├── state.md           # Agent's persistent state
     │       └── learnings.md       # Accumulated insights
-    ├── company/directives.md      # Strategic overlay
+    ├── company/strategy.md        # Company strategic context (primary L1)
     └── daily-briefing.md          # Cross-squad context
 ```
 
@@ -199,9 +199,9 @@ squads eval engineering/scanner  # Agent readiness score
 
 ---
 
-## Goals & Priorities
+## Goals & Strategy
 
-Goals are aspirational (in SQUAD.md). Priorities are operational (in priorities.md).
+Goals are measurable targets (in `memory/{squad}/goals.md`). Strategy is company direction (in `memory/company/strategy.md`).
 
 ### Set Goals
 
