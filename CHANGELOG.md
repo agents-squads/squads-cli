@@ -14,6 +14,7 @@ Quota-aware org runner + agent-positional fix — org runs survive quota walls;
 - **Quota-aware org runner** (#861) — `squads run --org` probes quota before dispatching; `--wait-for-quota` polls until the session window reopens instead of stopping. Pre-flight `--dry-run` prints which squads would run without spending quota.
 
 ### Fixed
+- **No silent loss of run deliverables** (#875) — a squad run whose lead ended BLOCKED on git/gh write-approval left its deliverable uncommitted in the per-run worktree, which cleanup then destroyed with `git worktree remove --force`. Cleanup now auto-commits any uncommitted/untracked work to the run branch (recoverable from the shared `.git`) and best-effort pushes it before removing the directory; if the work can't be preserved, the worktree is left in place instead of deleted.
 - **`squads run SQUAD AGENT` now routes to the agent** (#866) — passing the agent as a second positional (`squads run engineering code-review`) was silently ignored and ran the whole squad. All three notations now produce identical results: `SQUAD/AGENT`, `SQUAD AGENT`, and `SQUAD -a AGENT`.
 - **Session-limit quota variant detected** (#860) — loud failure printed when quota hits mid-conversation instead of a silent empty result.
 - **Detached runs pinned to their own session id** (#862) — background runs that escaped their session were attributed to the wrong squad's usage budget.
