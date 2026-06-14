@@ -321,7 +321,7 @@ program
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
-  .option('--force', 'Force re-run squads that already completed today')
+  .option('--force', 'Force re-run squads that already completed today; bypasses pause enforcement')
   .option('--resume', 'Resume org cycle from where quota stopped it')
   .option('--wait-for-quota', 'Org cycle: on quota cap, poll until the session window reopens instead of stopping')
   .option('-y, --yes', 'Skip the org-run cost confirmation (for deliberate/non-interactive triggers)')
@@ -360,6 +360,33 @@ program.command('list').description('List squads (alias for: squads status)').ac
   const { statusCommand } = await import('./commands/status.js');
   return statusCommand();
 });
+
+// Pause command - suspend a squad (enforced by runner + org planner + cron)
+program
+  .command('pause <squad>')
+  .description('Pause a squad — run/org/cron dispatch will refuse until resumed')
+  .option('-r, --reason <text>', 'Reason for pausing')
+  .option('-j, --json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads pause engineering                         Pause without reason
+  $ squads pause engineering --reason "waiting for design sign-off"
+  $ squads resume engineering                        Resume a paused squad
+`)
+  .action(async (squad, options) => {
+    const { pauseCommand } = await import('./commands/pause.js');
+    return pauseCommand(squad, options);
+  });
+
+// Resume command - reactivate a paused squad
+program
+  .command('resume <squad>')
+  .description('Resume a paused squad')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (squad, options) => {
+    const { resumeCommand } = await import('./commands/pause.js');
+    return resumeCommand(squad, options);
+  });
 
 // Orchestrate command - lead-coordinated squad execution
 registerOrchestrateCommand(program);
