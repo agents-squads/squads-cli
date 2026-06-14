@@ -5,6 +5,19 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.8.2] — Unreleased
+
+Quota-aware org runner + agent-positional fix — org runs survive quota walls;
+`squads run SQUAD AGENT` space notation now works correctly.
+
+### Added
+- **Quota-aware org runner** (#861) — `squads run --org` probes quota before dispatching; `--wait-for-quota` polls until the session window reopens instead of stopping. Pre-flight `--dry-run` prints which squads would run without spending quota.
+
+### Fixed
+- **`squads run SQUAD AGENT` now routes to the agent** (#866) — passing the agent as a second positional (`squads run engineering code-review`) was silently ignored and ran the whole squad. All three notations now produce identical results: `SQUAD/AGENT`, `SQUAD AGENT`, and `SQUAD -a AGENT`.
+- **Session-limit quota variant detected** (#860) — loud failure printed when quota hits mid-conversation instead of a silent empty result.
+- **Detached runs pinned to their own session id** (#862) — background runs that escaped their session were attributed to the wrong squad's usage budget.
+
 ## [0.8.1] — 2026-06-11
 
 Run containment + introspection — background runs are recorded, bounded,
