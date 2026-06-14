@@ -12,6 +12,8 @@
 | `squads add <name>` | Add a new squad with directory structure and starter files |
 | `squads run [target] [agent]` | Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle. |
 | `squads list` | List squads (alias for: squads status) |
+| `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
+| `squads resume <squad>` | Resume a paused squad |
 | `squads orchestrate <squad>` | Run squad with lead agent orchestration |
 | `squads env show <squad>` | Show execution environment for a squad |
 | `squads env prompt <squad>` | Output ready-to-use prompt for Claude Code execution |

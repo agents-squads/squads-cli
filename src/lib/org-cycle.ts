@@ -62,6 +62,16 @@ export function scanOrg(): OrgScanResult[] {
       }
     }
 
+    // Check if the squad is explicitly paused via SQUAD.md frontmatter
+    if (squad?.status === 'paused') {
+      result.status = 'frozen';
+      const pauseReason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
+      const since = squad.paused_since ? ` since ${squad.paused_since.slice(0, 10)}` : '';
+      result.reason = `Paused${since}${pauseReason}`;
+      results.push(result);
+      continue;
+    }
+
     // Check goals
     const goalsPath = join(memoryDir, squadName, 'goals.md');
     if (existsSync(goalsPath)) {

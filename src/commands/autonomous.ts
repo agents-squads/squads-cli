@@ -28,7 +28,7 @@ import {
 import { join } from "path";
 import { homedir } from "os";
 import { spawn, execSync } from "child_process";
-import { findSquadsDir, listSquads, Routine } from "../lib/squad-parser.js";
+import { findSquadsDir, listSquads, loadSquad, Routine } from "../lib/squad-parser.js";
 import {
   cronMatches,
   getNextCronRun,
@@ -416,6 +416,13 @@ async function daemonLoop(): Promise<void> {
       // 4. Evaluate cron schedules
       for (const routine of routines) {
         if (!cronMatches(routine.schedule, now)) continue;
+
+        // Skip paused squads — do not dispatch any agents for them
+        const routineSquad = loadSquad(routine.squad);
+        if (routineSquad?.status === 'paused') {
+          daemonLog(`SKIP: ${routine.squad} is paused — skipping scheduled routine "${routine.name}"`);
+          continue;
+        }
 
         for (const agentName of routine.agents) {
           const key = `${routine.squad}/${agentName}`;
