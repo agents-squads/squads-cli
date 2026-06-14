@@ -11,9 +11,15 @@
  * Design: ONE worktree per squad RUN (not per agent). All agents in a single
  * squad conversation (plan → execute → review → verify) share the same worktree
  * so the worker's changes are visible to the reviewer/verifier within that run.
- * The original checkout is never touched. Any branch the agents pushed is
- * preserved on the remote; only the local worktree directory is removed on
- * cleanup.
+ * The original checkout is never touched.
+ *
+ * No silent data loss (#875): cleanup never force-removes a worktree that still
+ * holds uncommitted/untracked work. A run whose lead ended BLOCKED on git/gh
+ * write-approval leaves its deliverable only in the worktree — earlier this was
+ * destroyed by `worktree remove --force`. Cleanup now auto-commits any dirty
+ * tree to the run branch (which lives in the shared .git object store and
+ * survives worktree removal) and best-effort pushes it before removing the
+ * directory. If the work cannot be preserved, the worktree is left in place.
  *
  * Graceful degradation: if the dir isn't a git repo, or `worktree add` fails,
  * we fall back to running in-place (the original cwd) with a dim warning. We
@@ -33,8 +39,9 @@ import { colors, RESET, writeLine } from './terminal.js';
  * Result of attempting to create a per-run worktree.
  * - `cwd`     — directory the squad's agents should run in (worktree path,
  *               or the original repoDir if isolation was skipped/failed).
- * - `cleanup` — idempotent, never-throwing function that removes the worktree.
- *               A no-op when isolation was skipped or fell back in-place.
+ * - `cleanup` — idempotent, never-throwing function that preserves any
+ *               uncommitted work (auto-commit to the run branch) then removes
+ *               the worktree. A no-op when isolation was skipped/fell back.
  */
 export interface RunWorktree {
   cwd: string;
@@ -143,11 +150,62 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
 
   const cleanup = () => {
     try {
-      // --force removes the worktree even with uncommitted changes. Safe:
-      // any branch the agents pushed lives on the remote; this only drops the
-      // local worktree dir. The branch ref is left for inspection (it shares
-      // objects with the main repo and is cheap; `git worktree prune` + branch
-      // cleanup can reclaim it later).
+      // No silent data loss (#875): a worktree may still hold uncommitted or
+      // untracked deliverables — e.g. the lead ended BLOCKED on git/gh
+      // write-approval and never committed. `worktree remove --force` would
+      // destroy them. Preserve first, remove second.
+      let dirty = '';
+      try {
+        dirty = execSync(`git -C '${worktreePath}' status --porcelain`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch {
+        // status failed (worktree dir already gone / corrupt) — nothing to
+        // preserve; fall through to the removal attempt below.
+      }
+
+      if (dirty) {
+        try {
+          // Commit everything to the run branch. That branch ref lives in the
+          // shared .git object store, so the commit survives worktree removal
+          // and is recoverable with `git checkout <branch>`. The `-c` identity
+          // makes the commit succeed even when the sandbox has no configured
+          // git user; --no-verify skips hooks during cleanup.
+          execSync(`git -C '${worktreePath}' add -A`, { stdio: 'pipe' });
+          execSync(
+            `git -C '${worktreePath}' -c user.name='squads-run[bot]' -c user.email='squads-run@agents-squads.local' commit --no-verify -m 'squads run: auto-save uncommitted deliverables on cleanup (#875)'`,
+            { stdio: 'pipe' }
+          );
+          writeLine(
+            `  ${colors.yellow}saved uncommitted work to branch ${branchName} before cleanup (#875). Recover: git -C '${repoDir}' checkout ${branchName}${RESET}`
+          );
+          // Best-effort push so the deliverable is recoverable off-machine too.
+          // Never block or fail cleanup on this (no remote / no auth / offline);
+          // the local commit on the branch already guarantees no loss.
+          // GIT_TERMINAL_PROMPT=0 + timeout prevent a credential prompt hanging
+          // the run's exit path.
+          try {
+            execSync(`git -C '${worktreePath}' push -u origin '${branchName}'`, {
+              stdio: 'pipe',
+              timeout: 30_000,
+              env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+            });
+          } catch {
+            // Local branch commit already preserves the work.
+          }
+        } catch (e) {
+          // Could not preserve the work — DO NOT delete it. Leave the worktree
+          // in place and tell the operator exactly where the deliverable is.
+          writeLine(
+            `  ${colors.red}WARN: could not auto-save uncommitted work in ${worktreePath} (#875) — leaving worktree in place to avoid data loss: ${e instanceof Error ? e.message : String(e)}${RESET}`
+          );
+          return;
+        }
+      }
+
+      // Safe now: the tree is clean (or its changes were committed to the run
+      // branch above). --force is fine — there is nothing left to lose.
       execSync(`git -C '${repoDir}' worktree remove '${worktreePath}' --force`, {
         stdio: 'pipe',
       });
