@@ -16,7 +16,13 @@ squads doctor                  # Check tools and readiness
 
 # Execute
 squads run <squad/agent>       # Run an agent or full squad
-squads autopilot               # Autonomous scheduling with budget control
+squads autonomous start        # Start the scheduling daemon (reads SQUAD.md routines)
+squads autonomous stop         # Stop the daemon
+squads autonomous status       # Show daemon status, running agents, next runs
+
+# Squad lifecycle
+squads pause <squad>           # Pause a squad (run/org/cron will refuse until resumed)
+squads resume <squad>          # Resume a paused squad
 
 # Monitor
 squads status [squad]          # Overview of all squads
@@ -53,6 +59,42 @@ squads feedback add <squad> <rating> "text"  # Write evaluation
 squads exec list               # Own execution history
 squads kpi record <squad> <kpi> <value>  # Record a metric
 ```
+
+## Pause and Resume
+
+Pause a squad to prevent it from being dispatched by `squads run`, org cycles,
+and the autonomous daemon. The squad definition is preserved — only execution
+is blocked.
+
+```bash
+# Pause a squad (optionally with a reason)
+squads pause engineering
+squads pause engineering --reason "waiting for design sign-off"
+
+# Resume a paused squad
+squads resume engineering
+
+# Force-run a paused squad (bypasses the pause guard)
+squads run engineering --force
+```
+
+**Options**
+
+| Command | Option | Description |
+|---------|--------|-------------|
+| `pause` | `-r, --reason <text>` | Record why the squad is paused |
+| `pause` | `-j, --json` | Machine-readable output |
+| `resume` | `-j, --json` | Machine-readable output |
+
+**Behavior when a squad is paused**
+
+- `squads run <squad>` exits with an error and shows the pause reason
+- `squads run --org` silently skips the squad
+- The autonomous daemon skips scheduled routines for the squad
+- `squads status` marks the squad as `paused`
+- All state, memory, and goals are preserved
+
+Resume with `squads resume <squad>` to restore normal dispatch.
 
 Everything above works locally — no login, no cloud, no API.
 Every command supports `--json` for machine consumption.
