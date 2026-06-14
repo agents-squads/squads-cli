@@ -158,6 +158,8 @@ async function showOverallStatus(
 
   for (const squadName of squads) {
     const agents = listAgents(squadsDir, squadName);
+    const squadData = loadSquad(squadName);
+    const isPaused = squadData?.status === 'paused';
 
     // Check memory
     let memoryStatus = `${colors.dim}none${RESET}`;
@@ -198,11 +200,20 @@ async function showOverallStatus(
       }
     }
 
+    // Paused squads shown in yellow with a ⏸ indicator
+    const nameDisplay = isPaused
+      ? `${colors.yellow}${padEnd(squadName, w.name)}${RESET}`
+      : `${colors.cyan}${padEnd(squadName, w.name)}${RESET}`;
+
+    const activityDisplay = isPaused
+      ? padEnd(`${colors.yellow}⏸ paused${RESET}`, w.activity)
+      : padEnd(`${activityColor}${lastActivity}${RESET}`, w.activity);
+
     const row = `  ${colors.purple}${box.vertical}${RESET} ` +
-      `${colors.cyan}${padEnd(squadName, w.name)}${RESET}` +
+      nameDisplay +
       `${padEnd(String(agents.length), w.agents)}` +
       `${padEnd(memoryStatus, w.memory)}` +
-      `${padEnd(`${activityColor}${lastActivity}${RESET}`, w.activity)}` +
+      activityDisplay +
       `${colors.purple}${box.vertical}${RESET}`;
 
     writeLine(row);
@@ -319,6 +330,17 @@ async function showSquadStatus(
 
   writeLine(`  ${gradient('squads')} ${colors.dim}status${RESET} ${colors.cyan}${squad.name}${RESET}`);
   writeLine();
+
+  // Paused banner
+  if (squad.status === 'paused') {
+    const since = squad.paused_since
+      ? ` since ${new Date(squad.paused_since).toLocaleDateString()}`
+      : '';
+    const reason = squad.paused_reason ? ` — ${squad.paused_reason}` : '';
+    writeLine(`  ${colors.yellow}⏸  PAUSED${since}${reason}${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads resume ${squadName}\` to reactivate, or \`squads run ${squadName} --force\` to override.${RESET}`);
+    writeLine();
+  }
 
   // Mission
   if (squad.mission) {

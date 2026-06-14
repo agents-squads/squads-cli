@@ -373,6 +373,86 @@ describe('runCommand', () => {
     });
   });
 
+  describe('paused squad enforcement', () => {
+    function makePausedSquad(reason?: string) {
+      return {
+        name: 'engineering',
+        dir: 'engineering',
+        mission: 'Build things',
+        agents: [],
+        pipelines: [],
+        triggers: { scheduled: [], event: [], manual: [] },
+        routines: [],
+        dependencies: [],
+        outputPath: '',
+        goals: [],
+        status: 'paused',
+        paused_since: '2026-06-14T10:00:00.000Z',
+        paused_reason: reason,
+        frontmatter: {},
+      };
+    }
+
+    it('exits with code 1 when squad is paused without --force', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('shows paused message when squad is paused', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('paused'))).toBe(true);
+    });
+
+    it('shows reason in paused message when paused_reason is set', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad('waiting for design') as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('waiting for design'))).toBe(true);
+    });
+
+    it('shows --force override hint in paused message', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('--force'))).toBe(true);
+    });
+
+    it('proceeds with warning when --force overrides a paused squad', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      // With --force + dryRun, should NOT call exit(1) for pause enforcement;
+      // may still exit for other reasons (no agents found etc.) — just check
+      // that the pause-enforcement exit path was NOT taken.
+      try {
+        await runCommand('engineering', { dryRun: true, force: true });
+      } catch {
+        // May throw for unrelated reasons — just ensure no "paused" exit
+      }
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      // The force-warning line is shown but process should not have been exited
+      // for the pause check (may still exit for dry-run/no-agents reasons)
+      const showedForceWarning = calls.some(msg => msg?.toString().includes('Warning: running paused squad'));
+      expect(showedForceWarning).toBe(true);
+    });
+  });
+
   describe('preflight check', () => {
     it('exits with code 1 when non-anthropic provider CLI not found', async () => {
       delete process.env.SQUADS_SKIP_CHECKS;

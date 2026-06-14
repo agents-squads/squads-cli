@@ -512,6 +512,22 @@ export async function runCommand(
   // Check if target is a squad or an agent
   const squad = loadSquad(squadName);
 
+  // Paused-squad enforcement: refuse to run a paused squad unless --force is set
+  if (squad && squad.status === 'paused' && !options.force) {
+    const since = squad.paused_since ? ` (paused ${new Date(squad.paused_since).toLocaleDateString()})` : '';
+    const reason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
+    writeLine();
+    writeLine(`  ${colors.yellow}⏸  Squad "${squadName}" is paused${since}${reason}.${RESET}`);
+    writeLine(`  ${colors.dim}To run anyway: squads run ${squadName} --force${RESET}`);
+    writeLine(`  ${colors.dim}To resume:     squads resume ${squadName}${RESET}`);
+    writeLine();
+    process.exit(1);
+  }
+
+  if (squad && squad.status === 'paused' && options.force) {
+    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squadName}" (--force override).${RESET}`);
+  }
+
   // Pre-flight executor check: verify CLI and auth before attempting execution
   // Only runs when we're actually going to execute (not dry-run)
   if (options.execute && !options.dryRun) {
