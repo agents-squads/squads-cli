@@ -327,6 +327,27 @@ function safeRead(path: string): string {
   }
 }
 
+/**
+ * Staleness caveat derived from a file's mtime (#721, extended in the
+ * 2026-06 context audit). Returns a markdown note when the file was last
+ * modified more than `staleDays` ago, otherwise ''.
+ *
+ * Applied to memory layers an agent is told to ACT ON (state.md, feedback.md):
+ * without it, a correction from months ago is injected as if it were current
+ * (the audit found March feedback under "act on this first" in June runs).
+ */
+function stalenessNote(filePath: string, staleDays = 0): string {
+  try {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const mtime = statSync(filePath).mtimeMs;
+    const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
+    if (daysAgo > staleDays) {
+      return `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
+    }
+  } catch { /* mtime unavailable — skip the caveat */ }
+  return '';
+}
+
 function stripYamlFrontmatter(markdown: string): string {
   const lines = markdown.split('\n');
   let dashCount = 0;
@@ -543,7 +564,9 @@ export function gatherSquadContext(
     const feedbackFile = join(memoryDir, squadName, 'feedback.md');
     const content = safeRead(feedbackFile);
     if (content) {
-      addLayer(6, 'Feedback (act on this first)', content);
+      // Caveat stale feedback (audit F1): without it, a correction from months
+      // ago is injected under "act on this first" as if it were current.
+      addLayer(6, 'Feedback (act on this first)', stalenessNote(feedbackFile) + content);
     }
   }
 
@@ -563,15 +586,8 @@ export function gatherSquadContext(
     if (content) {
       const body = stripYamlFrontmatter(content);
       const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
-      // Add staleness caveat (#721) so agents know if their memory is outdated
-      let staleNote = '';
-      try {
-        const MS_PER_DAY = 24 * 60 * 60 * 1000;
-        const mtime = statSync(stateFile).mtimeMs;
-        const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
-        if (daysAgo > 0) staleNote = `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
-      } catch { /* */ }
-      addLayer(5, 'Previous State', staleNote + body, stateCap);
+      // Staleness caveat (#721) so agents know if their memory is outdated.
+      addLayer(5, 'Previous State', stalenessNote(stateFile) + body, stateCap);
     }
   }
 
