@@ -55,7 +55,7 @@ reasoning model builds, a mid-tier model verifies.
 ```bash
 squads run research --parallel                  # squad conversation
 squads run intelligence --task "Scan X"         # directed run
-squads autopilot --interval 30 --budget 50      # autonomous dispatch
+squads run --interval 30 --budget 50            # autopilot: autonomous dispatch
 ```
 
 ## Documentation
