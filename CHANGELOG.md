@@ -7,14 +7,18 @@ Releases are also published as [GitHub Releases](https://github.com/agents-squad
 
 ## [0.8.2] — Unreleased
 
-Quota-aware org runner + agent-positional fix — org runs survive quota walls;
-`squads run SQUAD AGENT` space notation now works correctly.
+Trustworthy execution — per-squad pause/resume enforcement, no silent loss of
+deliverables, a verified context-injection layer (strategy.md as L1), and a
+quota-aware org runner that survives quota walls.
 
 ### Added
+- **Per-squad pause / resume enforcement** (#877) — `squads pause <squad>` makes `run`, `--org`, and cron dispatch refuse that squad until `squads resume <squad>`; the runner prints how to resume or override with `--force`. Activation state is enforced by the runner and honored by the org planner, so a paused squad can't be dispatched by accident.
+- **Context loader: `strategy.md` is the L1 company layer** (#876) — the Squad Context System now reads `memory/company/strategy.md` as the primary "why" layer (falling back to `company.md` → `directives.md`), matching the single-strategy-file model. Context-layer docs updated.
 - **Quota-aware org runner** (#861) — `squads run --org` probes quota before dispatching; `--wait-for-quota` polls until the session window reopens instead of stopping. Pre-flight `--dry-run` prints which squads would run without spending quota.
 
 ### Fixed
 - **No silent loss of run deliverables** (#875) — a squad run whose lead ended BLOCKED on git/gh write-approval left its deliverable uncommitted in the per-run worktree, which cleanup then destroyed with `git worktree remove --force`. Cleanup now auto-commits any uncommitted/untracked work to the run branch (recoverable from the shared `.git`) and best-effort pushes it before removing the directory; if the work can't be preserved, the worktree is left in place instead of deleted.
+- **Stale memory no longer reads as current** (#893) — `feedback.md` was injected under "act on this first" with no age caveat (only `state.md` had one), so a months-old correction looked current. A shared staleness helper now caveats both layers (`Last updated N days ago — verify before relying on this`). Adds real fixture-based tests for the context loader's layer order, role gating, `strategy.md`-as-L1, and budget behavior (previously asserted nothing).
 - **`squads run SQUAD AGENT` now routes to the agent** (#866) — passing the agent as a second positional (`squads run engineering code-review`) was silently ignored and ran the whole squad. All three notations now produce identical results: `SQUAD/AGENT`, `SQUAD AGENT`, and `SQUAD -a AGENT`.
 - **Session-limit quota variant detected** (#860) — loud failure printed when quota hits mid-conversation instead of a silent empty result.
 - **Detached runs pinned to their own session id** (#862) — background runs that escaped their session were attributed to the wrong squad's usage budget.
