@@ -48,6 +48,17 @@ squads run -i 30 --budget 50        # Autopilot: 30-minute cycles, $50/day cap
 squads run --once --dry-run         # Preview one autopilot cycle
 ```
 
+**Pausing an individual squad** — pause a single squad so `run`, `--org`, and
+cron dispatch refuse it until you resume (distinct from pausing the whole
+daemon above). Useful for parking a squad without deleting its definition; the
+runner prints how to override or resume.
+
+```bash
+squads pause intelligence            # run/org/cron refuse this squad until resumed
+squads resume intelligence           # re-enable dispatch
+squads run intelligence --force      # run once without resuming
+```
+
 ## Local execution
 
 Squads runs locally by default — your machine, your API keys, your
