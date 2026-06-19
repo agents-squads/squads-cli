@@ -210,7 +210,7 @@ ${squadContext}
   // pr-create — the lead lands workers' reviewed code but never authors/ships its own.
   const leadGitGh = ['Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git fetch:*)', 'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)', 'Bash(gh issue view:*)', 'Bash(gh issue list:*)', 'Bash(gh issue create:*)'];
   const readTools = [...readBase, 'Bash(git:*)', 'Bash(gh:*)'];
-  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
+  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(bash:*)', 'Bash(sh:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
   const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
 
   const toolsByRole: Record<string, string[]> = {

@@ -878,6 +878,7 @@ export async function executeWithClaude(
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
         'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
         'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+        'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
         'Bash(docker:*)', 'Bash(duckdb:*)',
         'Bash(bq:*)', 'Bash(gcloud:*)',
         'Bash(gws:*)', 'Bash(stripe:*)',
