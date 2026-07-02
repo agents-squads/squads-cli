@@ -770,11 +770,17 @@ export function executeForeground(config: {
   });
 }
 
-/** Execute Claude in watch mode (background + tail log) */
+/**
+ * Execute Claude in watch mode: background run + LIVE event feed (#903).
+ * Since #902 the detached log is a stream-json event stream, so watch renders
+ * the human activity feed through the provider adapter instead of raw
+ * `tail -f` (which would show JSON). SQUADS_WATCH_RAW=1 restores raw lines.
+ */
 export async function executeWatch(config: {
   projectRoot: string;
   agentEnv: Record<string, string>;
   logFile: string;
+  pidFile?: string;
   wrapperScript: string;
 }): Promise<string> {
   const child = spawn('sh', ['-c', config.wrapperScript], {
@@ -787,24 +793,23 @@ export async function executeWatch(config: {
 
   await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
 
-  writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
+  writeLine(`  ${colors.dim}Watching live (Ctrl+C to stop watching, agent continues)...${RESET}`);
   writeLine();
 
-  const tail = spawn('tail', ['-f', config.logFile], { stdio: 'inherit' });
+  const { followProviderLog } = await import('./event-follow.js');
+  const follower = followProviderLog(config.logFile, { pidFile: config.pidFile });
 
   process.on('SIGINT', () => {
-    tail.kill();
+    follower.stop();
     writeLine();
     writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
-    writeLine(`  ${colors.dim}Resume: tail -f ${config.logFile}${RESET}`);
+    writeLine(`  ${colors.dim}Raw log: ${config.logFile}${RESET}`);
     process.exit(0);
   });
 
-  return new Promise((resolve) => {
-    tail.on('close', () => {
-      resolve(`Agent running in background. Log: ${config.logFile}`);
-    });
-  });
+  await follower.done;
+  writeLine();
+  return `Run finished. Log: ${config.logFile}`;
 }
 
 // ── Main execution functions ─────────────────────────────────────────
@@ -1024,7 +1029,7 @@ export async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, wrapperScript });
+    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, pidFile, wrapperScript });
   }
 
   // ── Background mode ──────────────────────────────────────────────────

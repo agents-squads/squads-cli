@@ -3,6 +3,8 @@
  * (hq#450 D4). Completes the containment loop: spool records what happened,
  * the watchdog bounds it, this surfaces it.
  */
+import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
+import { join } from 'path';
 import { getProjectRoot } from '../lib/run-utils.js';
 import {
   listDetachedRuns,
@@ -11,6 +13,8 @@ import {
   type DetachedRun,
 } from '../lib/runs-inventory.js';
 import { reconcileDetachedRuns } from '../lib/spool.js';
+import { execEventsFile } from '../lib/exec-events.js';
+import { renderPersistedEvent, parsePersistedLine } from '../lib/event-render.js';
 import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
 
 function elapsed(startedAt: number): string {
@@ -20,8 +24,66 @@ function elapsed(startedAt: number): string {
   return `${(ms / 3_600_000).toFixed(1)}h`;
 }
 
-export async function runsCommand(options: { json?: boolean; clean?: boolean }): Promise<void> {
+/**
+ * `squads runs --replay <execId>` — re-render a finished run's activity feed
+ * from its persisted events file (#903). Consumer of the #902 event stream:
+ * the same feed watch mode shows live, replayable after the fact.
+ */
+export function replayRun(execId: string, projectRoot: string): void {
+  const eventsDir = join(projectRoot, '.agents', 'observability', 'events');
+  const file = execEventsFile(projectRoot, execId);
+
+  if (!existsSync(file)) {
+    writeLine();
+    writeLine(`  ${colors.red}No events recorded for '${execId}'${RESET}`);
+    // Help the user find a replayable run: most recent events files.
+    try {
+      const available = readdirSync(eventsDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({ id: f.replace(/\.jsonl$/, ''), mtime: statSync(join(eventsDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 10);
+      if (available.length > 0) {
+        writeLine(`  ${colors.dim}Recent runs with events:${RESET}`);
+        for (const a of available) {
+          writeLine(`    ${colors.cyan}${a.id}${RESET}`);
+        }
+      } else {
+        writeLine(`  ${colors.dim}No runs have recorded events yet (events land in ${eventsDir}).${RESET}`);
+      }
+    } catch {
+      writeLine(`  ${colors.dim}No events directory yet (${eventsDir}).${RESET}`);
+    }
+    writeLine();
+    return;
+  }
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  const parsed = lines.map(parsePersistedLine).filter((l): l is NonNullable<typeof l> => l !== null);
+  if (parsed.length === 0) {
+    writeLine(`  ${colors.dim}Events file for '${execId}' is empty or unreadable.${RESET}`);
+    return;
+  }
+
+  const t0 = Date.parse(parsed[0].ts);
+  writeLine();
+  writeLine(`  ${bold}Replay: ${execId}${RESET} ${colors.dim}(${parsed.length} events)${RESET}`);
+  writeLine();
+  for (const line of parsed) {
+    const rendered = renderPersistedEvent(line, t0);
+    if (rendered !== null) writeLine(rendered);
+  }
+  writeLine();
+}
+
+export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string }): Promise<void> {
   const projectRoot = getProjectRoot();
+
+  if (options.replay) {
+    replayRun(options.replay, projectRoot);
+    return;
+  }
+
   const runs = listDetachedRuns(projectRoot);
   const live = runs.filter((r) => r.alive);
   const stale = runs.filter((r) => !r.alive);
