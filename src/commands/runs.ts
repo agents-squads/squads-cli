@@ -13,8 +13,9 @@ import {
   type DetachedRun,
 } from '../lib/runs-inventory.js';
 import { reconcileDetachedRuns } from '../lib/spool.js';
-import { execEventsFile } from '../lib/exec-events.js';
+import { execEventsFile, type PersistedExecEvent } from '../lib/exec-events.js';
 import { renderPersistedEvent, parsePersistedLine } from '../lib/event-render.js';
+import { buildContextReport, renderContextReport } from '../lib/context-report.js';
 import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
 
 function elapsed(startedAt: number): string {
@@ -25,11 +26,10 @@ function elapsed(startedAt: number): string {
 }
 
 /**
- * `squads runs --replay <execId>` — re-render a finished run's activity feed
- * from its persisted events file (#903). Consumer of the #902 event stream:
- * the same feed watch mode shows live, replayable after the fact.
+ * Load a run's persisted events; on a missing file, print help (recent
+ * replayable runs) and return null. Shared by --replay and --report.
  */
-export function replayRun(execId: string, projectRoot: string): void {
+function loadRunEvents(execId: string, projectRoot: string): PersistedExecEvent[] | null {
   const eventsDir = join(projectRoot, '.agents', 'observability', 'events');
   const file = execEventsFile(projectRoot, execId);
 
@@ -55,15 +55,26 @@ export function replayRun(execId: string, projectRoot: string): void {
       writeLine(`  ${colors.dim}No events directory yet (${eventsDir}).${RESET}`);
     }
     writeLine();
-    return;
+    return null;
   }
 
   const lines = readFileSync(file, 'utf8').split('\n');
   const parsed = lines.map(parsePersistedLine).filter((l): l is NonNullable<typeof l> => l !== null);
   if (parsed.length === 0) {
     writeLine(`  ${colors.dim}Events file for '${execId}' is empty or unreadable.${RESET}`);
-    return;
+    return null;
   }
+  return parsed;
+}
+
+/**
+ * `squads runs --replay <execId>` — re-render a finished run's activity feed
+ * from its persisted events file (#903). Consumer of the #902 event stream:
+ * the same feed watch mode shows live, replayable after the fact.
+ */
+export function replayRun(execId: string, projectRoot: string): void {
+  const parsed = loadRunEvents(execId, projectRoot);
+  if (!parsed) return;
 
   const t0 = Date.parse(parsed[0].ts);
   writeLine();
@@ -76,11 +87,27 @@ export function replayRun(execId: string, projectRoot: string): void {
   writeLine();
 }
 
-export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string }): Promise<void> {
+/**
+ * `squads runs --report <execId>` — context-economy report (#904): per-agent
+ * tokens/cost + cache-hit ratio (exact), per-tool activity, per-layer
+ * assembly cost (estimated). Where did the context go?
+ */
+export function reportRun(execId: string, projectRoot: string): void {
+  const parsed = loadRunEvents(execId, projectRoot);
+  if (!parsed) return;
+  const report = buildContextReport(parsed);
+  for (const line of renderContextReport(report)) writeLine(line);
+}
+
+export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string; report?: string }): Promise<void> {
   const projectRoot = getProjectRoot();
 
   if (options.replay) {
     replayRun(options.replay, projectRoot);
+    return;
+  }
+  if (options.report) {
+    reportRun(options.report, projectRoot);
     return;
   }
 
