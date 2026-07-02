@@ -19,7 +19,8 @@ import {
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
-import { parseAgentFrontmatter } from './run-context.js';
+import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
+import { ExecEventWriter, execEventsFile } from './exec-events.js';
 import {
   type ExecutionContext,
 } from './run-types.js';
@@ -107,6 +108,8 @@ export interface ExecuteWithClaudeOptions {
   squadName: string;
   agentName: string;
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  /** Assembly-time context stats from gatherSquadContext — emitted as the run's `context_assembled` event (#902). */
+  contextStats?: ContextStats;
 }
 
 // ── Auto-commit ──────────────────────────────────────────────────────
@@ -590,7 +593,12 @@ export function buildDetachedShellScript(config: {
         sessionId: safeSessionId,
       })
     : '';
-  const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  // stream-json (#902): the detached log is a LIVE event stream instead of a
+  // buffer that stays empty until exit — `--print` alone emits nothing until
+  // the run ends, which is exactly the black box this kills. `--verbose` is
+  // required for stream-json to emit events. The reconcile sweep normalizes
+  // this raw log into the run's events file (exec-events.ts).
+  const executorCmd = `claude --print --output-format stream-json --verbose --dangerously-skip-permissions --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
@@ -624,6 +632,8 @@ export function executeForeground(config: {
   execContext: ExecutionContext;
   startMs: number;
   provider?: string;
+  /** Exec-event stream (#902) — run_end/token_usage emitted here on close. */
+  events?: ExecEventWriter;
 }): Promise<string> {
   const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
 
@@ -669,6 +679,34 @@ export function executeForeground(config: {
         goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
       };
       logObservability(obsRecord);
+
+      // Exec events (#902): foreground runs use inherited stdio (no stream to
+      // tee), so the event record is the aggregate — session usage + outcome.
+      if (config.events) {
+        config.events.emit({
+          type: 'token_usage',
+          input: sessionUsage?.input_tokens || 0,
+          output: sessionUsage?.output_tokens || 0,
+          cacheRead: sessionUsage?.cache_read_tokens || 0,
+          cacheWrite: sessionUsage?.cache_write_tokens || 0,
+          costEst: sessionUsage?.cost_usd || 0,
+          model: sessionUsage?.model || '',
+        }, config.agentName);
+        config.events.emit({
+          type: 'run_end',
+          ok: code === 0,
+          durationMs,
+          totalUsage: {
+            input: sessionUsage?.input_tokens || 0,
+            output: sessionUsage?.output_tokens || 0,
+            cacheRead: sessionUsage?.cache_read_tokens || 0,
+            cacheWrite: sessionUsage?.cache_write_tokens || 0,
+            costEst: sessionUsage?.cost_usd || 0,
+          },
+          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+        });
+        config.events.close();
+      }
 
       if (code === 0) {
         updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'completed', {
@@ -716,6 +754,16 @@ export function executeForeground(config: {
         error: String(err),
         durationMs,
       });
+      if (config.events) {
+        config.events.emit({
+          type: 'run_end',
+          ok: false,
+          durationMs,
+          totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0 },
+          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+        });
+        config.events.close();
+      }
       cleanupWorktree(workDir, config.projectRoot);
       reject(err);
     });
@@ -847,6 +895,29 @@ export async function executeWithClaude(
 
   await registerContextWithBridge(execContext);
 
+  // Exec-event stream (#902): run_start + context_assembled are written by the
+  // CLI at dispatch (only we know the layers); the run's tool activity follows —
+  // live for foreground, appended at reconcile for detached (from the raw
+  // stream-json log the executor writes).
+  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId);
+  events.emit({
+    type: 'run_start',
+    squad: squadName,
+    agent: agentName,
+    mode: runInForeground ? 'foreground' : runInWatch ? 'watch' : 'background',
+    model: claudeModelAlias || resolvedModel || '',
+    role: options.contextStats?.role || '',
+    startedAt: new Date(startMs).toISOString(),
+  });
+  if (options.contextStats) {
+    events.emit({
+      type: 'context_assembled',
+      layers: options.contextStats.layers,
+      totalTokensEst: options.contextStats.totalTokensEst,
+      budgetTokens: Math.ceil(options.contextStats.budgetChars / 4),
+    }, agentName);
+  }
+
   // Get bot token so agents create PRs/issues as bot identity (not user's personal gh auth)
   let botGhToken: string | undefined;
   try {
@@ -920,7 +991,7 @@ export async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
-      squadName, agentName, execContext, startMs, provider,
+      squadName, agentName, execContext, startMs, provider, events,
     });
   }
 
@@ -940,6 +1011,10 @@ export async function executeWithClaude(
     timeoutMinutes: watchdogMinutes,
     sessionId: randomUUID(),
   });
+
+  // Detached: run_start/context_assembled are already on disk; the run's tool
+  // events are normalized from the raw stream-json log at reconcile (spool.ts).
+  events.close();
 
   if (runInWatch) {
     if (verbose) {

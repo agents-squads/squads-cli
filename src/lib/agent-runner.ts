@@ -39,6 +39,7 @@ import {
 } from './execution-engine.js';
 import {
   type ContextRole,
+  type ContextStats,
   parseAgentFrontmatter,
   extractMcpServersFromDefinition,
   loadSystemProtocol,
@@ -249,9 +250,13 @@ export async function runAgent(
   if (options.verbose && agentFrontmatter.max_context_tokens) {
     writeLine(`  ${colors.dim}Context budget: ${agentFrontmatter.max_context_tokens} tokens (agent override)${RESET}`);
   }
+  // Capture per-layer assembly stats — emitted as the run's `context_assembled`
+  // exec-event (#902). Only assembly knows the layers; the provider never does.
+  let contextStats: ContextStats | undefined;
   const squadContext = gatherSquadContext(squadName, agentName, {
     verbose: options.verbose, agentPath, role: contextRole,
     maxTokens: agentFrontmatter.max_context_tokens,
+    onStats: (stats) => { contextStats = stats; },
   });
 
   // Fetch cognition beliefs for prompt injection (Reflexion pattern)
@@ -355,6 +360,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             squadName,
             agentName,
             model: options.model,
+            contextStats,
           });
         } else {
           result = await executeWithProvider(provider, currentPrompt, {

@@ -24,9 +24,19 @@ import {
   type ObservabilityRecord,
 } from './observability.js';
 import { updateExecutionStatus } from './execution-log.js';
+import { parseStreamJson } from './stream-json.js';
+import { normalizeDetachedLog } from './exec-events.js';
 
 /** Tail cap when parsing executor logs — matches the #826 live-stream buffer. */
 const LOG_TAIL_CAP_BYTES = 256 * 1024;
+
+/**
+ * Read cap for a detached claude run's raw stream-json log (#902). Larger than
+ * the provider tail cap because the event stream's early lines carry the run's
+ * tool activity; the terminal `result` event sits at the end, so tail-reading
+ * keeps it when a log exceeds the cap.
+ */
+const STREAM_LOG_CAP_BYTES = 16 * 1024 * 1024;
 
 export interface SpoolRecord {
   execId: string;
@@ -135,10 +145,10 @@ export function buildWatchdogShell(executorCmd: string, timeoutSecs: number, tim
   );
 }
 
-function readLogTail(logFile: string): string {
+function readLogTail(logFile: string, capBytes: number = LOG_TAIL_CAP_BYTES): string {
   try {
     const size = statSync(logFile).size;
-    const start = Math.max(0, size - LOG_TAIL_CAP_BYTES);
+    const start = Math.max(0, size - capBytes);
     const fd = openSync(logFile, 'r');
     try {
       const buf = Buffer.alloc(size - start);
@@ -152,7 +162,7 @@ function readLogTail(logFile: string): string {
   }
 }
 
-function toRecord(spool: SpoolRecord): ObservabilityRecord {
+function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
   const durationMs = spool.endEpoch > spool.startEpoch && spool.startEpoch > 0
     ? (spool.endEpoch - spool.startEpoch) * 1000
     : 0;
@@ -160,8 +170,9 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
     ? 'timeout'
     : spool.exitCode === 0 ? 'completed' : 'failed';
 
-  let input = 0, output = 0, cost = 0;
+  let input = 0, output = 0, cost = 0, cacheRead = 0, cacheWrite = 0;
   let model = spool.model || 'unknown';
+  let outcomes: ReturnType<typeof parseStreamJson>['outcomes'] | undefined;
 
   if (spool.provider && spool.provider !== 'anthropic') {
     const parse = getCLIConfig(spool.provider)?.parseUsage;
@@ -174,9 +185,17 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
       }
     }
   } else {
-    // Claude run: exact session-id attribution when the wrapper recorded one
-    // (#857); legacy fallback = mtime-window scan BOUNDED by endEpoch so a
-    // session still active after this run can't absorb the attribution.
+    // Claude run: the log IS the raw stream-json event stream (#902) — parse
+    // it for what the agent actually DID (outcomes, previously always zero on
+    // detached runs) and as the usage fallback; normalize it into the run's
+    // events file so the black box stays killed after the log rotates.
+    const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
+    const stream = rawLog ? parseStreamJson(rawLog) : null;
+    if (stream && stream.outcomes.actions > 0) outcomes = stream.outcomes;
+
+    // Exact session-id attribution when the wrapper recorded one (#857);
+    // legacy fallback = mtime-window scan BOUNDED by endEpoch so a session
+    // still active after this run can't absorb the attribution.
     const session = spool.sessionId
       ? captureSessionUsageById(spool.sessionId)
       : spool.startEpoch > 0
@@ -186,7 +205,36 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
       input = session.input_tokens;
       output = session.output_tokens;
       cost = session.cost_usd;
+      cacheRead = session.cache_read_tokens || 0;
+      cacheWrite = session.cache_write_tokens || 0;
       if (session.model) model = session.model;
+    } else if (stream && stream.sawResult) {
+      // No session JSONL visible — the stream's terminal result event still
+      // carries the run's canonical usage (incl. cache), so use it.
+      input = stream.usage.input_tokens;
+      output = stream.usage.output_tokens;
+      cost = stream.usage.cost_usd;
+      cacheRead = stream.usage.cache_read_tokens;
+      cacheWrite = stream.usage.cache_write_tokens;
+      if (stream.usage.model) model = stream.usage.model;
+    }
+
+    if (rawLog) {
+      try {
+        normalizeDetachedLog(rawLog, obsRoot, spool.execId, spool.agent, {
+          type: 'run_end',
+          ok: status === 'completed',
+          durationMs,
+          totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
+          outcomes: {
+            actions: outcomes?.actions || 0,
+            files_edited: outcomes?.files_edited || 0,
+            commits: outcomes?.commits || 0,
+            prs_created: outcomes?.prs_created || 0,
+            issues_created: outcomes?.issues_created || 0,
+          },
+        });
+      } catch { /* events are best-effort; the obs record below is the source of truth */ }
     }
   }
 
@@ -202,10 +250,17 @@ function toRecord(spool: SpoolRecord): ObservabilityRecord {
     duration_ms: durationMs,
     input_tokens: input,
     output_tokens: output,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
     cost_usd: cost,
     context_tokens: 0,
+    ...(outcomes ? {
+      actions: outcomes.actions,
+      files_edited: outcomes.files_edited,
+      commits: outcomes.commits,
+      prs_created: outcomes.prs_created,
+      issues_created: outcomes.issues_created,
+    } : {}),
     error: spool.timedOut
       ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
       : spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined,
@@ -236,7 +291,7 @@ export function reconcileDetachedRuns(obsRoot: string): number {
     const path = join(dir, entry);
     try {
       const spool = JSON.parse(readFileSync(path, 'utf8')) as SpoolRecord;
-      const record = toRecord(spool);
+      const record = toRecord(spool, obsRoot);
       logObservability(record);
       try {
         updateExecutionStatus(spool.squad, spool.agent, spool.execId, record.status === 'completed' ? 'completed' : 'failed', {

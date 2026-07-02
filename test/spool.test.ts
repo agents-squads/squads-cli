@@ -286,3 +286,77 @@ describe('session-id attribution (#857)', () => {
     expect(rec.output_tokens).toBe(0);
   });
 });
+
+// ── #902: exec-event normalization + outcomes for detached claude runs ──
+
+describe('stream-json log normalization (#902)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    // Hermetic HOME so captureSessionUsage finds no session JSONL and the
+    // stream result event is exercised as the usage fallback.
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeStreamJsonLog(): void {
+    const lines = [
+      JSON.stringify({ type: 'system', subtype: 'init' }),
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git add -A && git commit -m "feat: x"' } },
+        { type: 'tool_use', id: 't2', name: 'Write', input: { file_path: '/repo/x.ts', content: 'abc' } },
+      ], model: 'claude-haiku-4-5' } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'done', is_error: false,
+        total_cost_usd: 0.05, num_turns: 2, model: 'claude-haiku-4-5',
+        usage: { input_tokens: 500, output_tokens: 80, cache_read_input_tokens: 2000, cache_creation_input_tokens: 100 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+  }
+
+  it('detached claude run gets outcomes + stream-usage fallback + a normalized events file', () => {
+    writeStreamJsonLog();
+    writeSpoolFile({ execId: 'exec_ev_1', provider: 'anthropic', model: 'haiku' });
+    const n = reconcileDetachedRuns(root);
+    expect(n).toBe(1);
+
+    const [rec] = readExecutionsJsonl();
+    // Usage fell back to the stream's terminal result event (no session JSONL).
+    expect(rec.input_tokens).toBe(500);
+    expect(rec.output_tokens).toBe(80);
+    expect(rec.cache_read_tokens).toBe(2000);
+    expect(rec.cache_write_tokens).toBe(100);
+    expect(rec.model).toBe('claude-haiku-4-5');
+    // Outcomes previously always zero on detached runs — now real.
+    expect(rec.actions).toBe(2);
+    expect(rec.files_edited).toBe(1);
+    expect(rec.commits).toBe(1);
+
+    // The raw provider log was normalized into the run's events file.
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_ev_1.jsonl');
+    expect(existsSync(eventsPath)).toBe(true);
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const types = events.map((e) => e.event.type);
+    expect(types).toContain('tool_call');
+    expect(types).toContain('artifact');
+    expect(types).toContain('file_write');
+    expect(types).toContain('token_usage');
+    expect(types[types.length - 1]).toBe('run_end');
+    expect(events.every((e) => e.runId === 'exec_ev_1')).toBe(true);
+  });
+
+  it('legacy plain-text logs reconcile as before — no events file fabricated', () => {
+    writeFileSync(join(root, 'run.log'), 'plain old buffered output\n');
+    writeSpoolFile({ execId: 'exec_ev_legacy', provider: 'anthropic', model: 'haiku' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.input_tokens).toBe(0);
+    expect(existsSync(join(root, '.agents', 'observability', 'events', 'exec_ev_legacy.jsonl'))).toBe(false);
+  });
+});
