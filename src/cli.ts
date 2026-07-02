@@ -1188,6 +1188,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
   .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
+  .option('--report <execId>', 'Context-economy report for a finished run (per-agent cost, cache hits, per-layer)')
   .action(async (options) => {
     const { runsCommand } = await import('./commands/runs.js');
     return runsCommand(options);
