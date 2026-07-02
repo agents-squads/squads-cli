@@ -1187,6 +1187,7 @@ program
   .description('List live background agent runs (pid-file inventory)')
   .option('--json', 'Output as JSON')
   .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
+  .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
   .action(async (options) => {
     const { runsCommand } = await import('./commands/runs.js');
     return runsCommand(options);
