@@ -99,7 +99,50 @@ export function reportRun(execId: string, projectRoot: string): void {
   for (const line of renderContextReport(report)) writeLine(line);
 }
 
-export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string; report?: string }): Promise<void> {
+/**
+ * `squads runs --outcome <execId>` — did the run's output LAND? (#817)
+ * Resolves the run's artifact refs live against GitHub: merged/open/closed.
+ * The evaluation question activity counters can't answer.
+ */
+export async function outcomeRun(execId: string, projectRoot: string, json?: boolean): Promise<void> {
+  const parsed = loadRunEvents(execId, projectRoot);
+  if (!parsed) return;
+  const { resolveRunOutcome } = await import('../lib/outcome-resolve.js');
+  const outcome = resolveRunOutcome(parsed);
+
+  if (json) {
+    writeLine(JSON.stringify(outcome, null, 2));
+    return;
+  }
+
+  writeLine();
+  const hasArtifacts = outcome.artifacts.length > 0 || outcome.unconfirmed.length > 0 || outcome.summary.commits > 0;
+  const verdict = outcome.landed
+    ? `${colors.green}LANDED${RESET}`
+    : hasArtifacts ? `${colors.yellow}NOT LANDED YET${RESET}` : `${colors.dim}NO ARTIFACTS${RESET}`;
+  writeLine(`  ${bold}Outcome: ${execId}${RESET}  ${verdict}`);
+  writeLine();
+
+  for (const a of outcome.artifacts) {
+    const state = a.state === 'merged' ? `${colors.green}merged${RESET}`
+      : a.state === 'open' ? `${colors.cyan}open${RESET}`
+      : a.state === 'closed' ? `${colors.red}closed${RESET}`
+      : `${colors.dim}unknown${RESET}`;
+    writeLine(`    ${a.kind.toUpperCase().padEnd(5)} ${state}  ${colors.dim}${a.ref}${a.agent ? ` · ${a.agent}` : ''}${RESET}`);
+  }
+  if (outcome.summary.commits > 0) {
+    writeLine(`    ${colors.dim}+ ${outcome.summary.commits} commit${outcome.summary.commits > 1 ? 's' : ''} recorded (not individually resolved)${RESET}`);
+  }
+  for (const u of outcome.unconfirmed) {
+    writeLine(`    ${colors.yellow}? ${u.kind}${RESET} ${colors.dim}create seen but no URL captured: ${u.ref.slice(0, 80)}${RESET}`);
+  }
+  if (!hasArtifacts) {
+    writeLine(`    ${colors.dim}This run created no commits, PRs, or issues — spend without output.${RESET}`);
+  }
+  writeLine();
+}
+
+export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string; report?: string; outcome?: string }): Promise<void> {
   const projectRoot = getProjectRoot();
 
   if (options.replay) {
@@ -108,6 +151,10 @@ export async function runsCommand(options: { json?: boolean; clean?: boolean; re
   }
   if (options.report) {
     reportRun(options.report, projectRoot);
+    return;
+  }
+  if (options.outcome) {
+    await outcomeRun(options.outcome, projectRoot, options.json);
     return;
   }
 

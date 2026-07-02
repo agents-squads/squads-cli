@@ -138,17 +138,29 @@ function eventsFromToolUse(block: ClaudeContentBlock): ExecEvent[] {
   return events;
 }
 
-/** Short human summary of a tool_result content payload. */
-function summarizeToolResult(content: unknown): string {
-  if (typeof content === 'string') return content.slice(0, INPUT_SUMMARY_MAX);
+/** Full text of a tool_result content payload (untruncated — for extraction). */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    const text = content
+    return content
       .filter((b): b is { type: string; text: string } => !!b && typeof b === 'object' && (b as { type?: string }).type === 'text' && typeof (b as { text?: string }).text === 'string')
       .map((b) => b.text)
       .join(' ');
-    return text.slice(0, INPUT_SUMMARY_MAX);
   }
   return '';
+}
+
+/**
+ * Extract the created artifact's canonical URL from a `gh pr create` /
+ * `gh issue create` result — gh prints the new artifact's URL on success.
+ * This is what turns "the agent RAN a create command" (activity) into "the
+ * agent CREATED this artifact" (a resolvable ref) — the basis of outcome
+ * capture (#817): a URL ref can later be checked for merged/closed state.
+ */
+function extractArtifactUrl(text: string, kind: 'pr' | 'issue'): string | undefined {
+  const path = kind === 'pr' ? 'pull' : 'issues';
+  const match = text.match(new RegExp(`https://github\\.com/[\\w.-]+/[\\w.-]+/${path}/\\d+`));
+  return match?.[0];
 }
 
 /**
@@ -158,8 +170,12 @@ function summarizeToolResult(content: unknown): string {
  * tool_use_id) back to the tool name, and Agent/Task spawns to subagent_done.
  */
 export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
-  /** tool_use id → tool name, so results can be labeled. */
-  const pendingTools = new Map<string, string>();
+  /**
+   * tool_use id → tool name (so results can be labeled) + the artifact kind
+   * when the call was a `gh pr/issue create` (so the RESULT can be mined for
+   * the created artifact's URL — the resolvable ref outcome capture needs).
+   */
+  const pendingTools = new Map<string, { name: string; artifact?: 'pr' | 'issue' }>();
 
   return {
     parseLine(raw: string): ExecEvent[] {
@@ -180,7 +196,13 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
           if (!block || block.type !== 'tool_use') continue;
           if (block.id && block.name) {
             if (pendingTools.size >= PENDING_TOOL_MAP_MAX) pendingTools.clear();
-            pendingTools.set(block.id, block.name);
+            let artifact: 'pr' | 'issue' | undefined;
+            if (block.name.toLowerCase() === 'bash') {
+              const cmd = String((block.input as { command?: unknown } | undefined)?.command ?? '');
+              if (/\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) artifact = 'pr';
+              else if (/\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) artifact = 'issue';
+            }
+            pendingTools.set(block.id, { name: block.name, artifact });
           }
           events.push(...eventsFromToolUse(block));
         }
@@ -191,12 +213,20 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
         const events: ExecEvent[] = [];
         for (const block of message.content) {
           if (!block || block.type !== 'tool_result' || !block.tool_use_id) continue;
-          const tool = pendingTools.get(block.tool_use_id) || 'unknown';
+          const pending = pendingTools.get(block.tool_use_id);
+          const tool = pending?.name || 'unknown';
           pendingTools.delete(block.tool_use_id);
           const ok = block.is_error !== true;
-          events.push({ type: 'tool_result', tool, ok, summary: summarizeToolResult(block.content) });
+          const fullText = toolResultText(block.content);
+          events.push({ type: 'tool_result', tool, ok, summary: fullText.slice(0, INPUT_SUMMARY_MAX) });
           if (tool.toLowerCase() === 'agent' || tool.toLowerCase() === 'task') {
             events.push({ type: 'subagent_done', childRunId: block.tool_use_id, agent: tool, ok });
+          }
+          // Artifact-creating command succeeded → mine the result for the
+          // created artifact's canonical URL (the resolvable ref, #817).
+          if (pending?.artifact && ok) {
+            const url = extractArtifactUrl(fullText, pending.artifact);
+            if (url) events.push({ type: 'artifact', kind: pending.artifact, ref: url });
           }
         }
         return events;
