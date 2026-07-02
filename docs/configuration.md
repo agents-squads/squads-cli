@@ -61,20 +61,22 @@ What does your business do? Who are your customers? What market?
 What should agents research first? Who are your competitors?
 ```
 
-### 2. Directives (what matters now)
+### 2. Strategy (what matters now)
 
-Edit `.agents/memory/company/directives.md` — strategic overlay that
-overrides squad-level goals when there's a conflict.
+Edit `.agents/memory/company/strategy.md` — company-wide strategic context
+that shapes every agent's decisions.
 
 ```markdown
 What is the #1 priority right now? What metric are you optimizing?
 What constraints apply? What should agents NOT do?
 ```
 
+Falls back to `memory/company/directives.md` or `.agents/company.md` if `strategy.md` doesn't exist.
+
 ### 3. Squad Goals (what each team does)
 
-Replace the generic goals in each `SQUAD.md` with goals specific to your
-business:
+Replace the generic goals in each `memory/{squad}/goals.md` with goals
+specific to your business:
 
 ```bash
 squads goal set intelligence "Monitor competitor X's pricing weekly"
@@ -82,19 +84,7 @@ squads goal set research "Deep dive on Y market segment"
 squads goal set product "Write spec for Z feature"
 ```
 
-### 4. Priorities (what to do this week)
-
-Create or edit `.agents/memory/{squad}/priorities.md` — operational focus
-that changes frequently:
-
-```markdown
-- Fix issue #123 (blocking users)
-- Research competitor's new feature launch
-- Update roadmap based on last cycle's feedback
-```
-
-**Rule**: Goals are aspirational (stable). Priorities are operational
-(updated frequently). Directives are strategic (updated less frequently).
+**Rule**: Strategy is stable direction (updated infrequently by the founder). Goals are measurable targets (updated each cycle).
 
 ### Agent Instructions
 

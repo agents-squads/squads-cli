@@ -123,4 +123,53 @@ describe('createRunWorktree (#440)', () => {
     expect(branch).toMatch(/^squads\/run-my-squad-name-/);
     cleanup();
   });
+
+  // ── No silent data loss (#875) ──────────────────────────────────────────
+  // A blocked lead leaves its deliverable uncommitted in the worktree. Cleanup
+  // must preserve it (commit to the run branch) — never --force it away.
+
+  it('preserves uncommitted (tracked) changes to the run branch before removal', () => {
+    initRepo(repoDir);
+    const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
+
+    // Modify a tracked file but do NOT commit (simulates a blocked agent).
+    writeFileSync(join(cwd, 'README.md'), '# deliverable the lead could not commit\n');
+
+    cleanup();
+
+    // Worktree directory is gone...
+    expect(existsSync(cwd)).toBe(false);
+    // ...but the work is recoverable from the run branch in the shared .git.
+    const recovered = execSync(`git -C '${repoDir}' show ${branch}:README.md`, { encoding: 'utf-8' });
+    expect(recovered).toContain('deliverable the lead could not commit');
+  });
+
+  it('preserves untracked deliverables to the run branch before removal', () => {
+    initRepo(repoDir);
+    const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
+
+    // Brand-new file the agent wrote but never `git add`ed.
+    writeFileSync(join(cwd, 'redteam-memo.md'), 'STATUS: BLOCKED — run these 5 commands\n');
+
+    cleanup();
+
+    expect(existsSync(cwd)).toBe(false);
+    const recovered = execSync(`git -C '${repoDir}' show ${branch}:redteam-memo.md`, { encoding: 'utf-8' });
+    expect(recovered).toContain('STATUS: BLOCKED');
+  });
+
+  it('removes a clean worktree without creating an auto-save commit', () => {
+    initRepo(repoDir);
+    const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
+    const tipBefore = execSync(`git -C '${repoDir}' rev-parse ${branch}`, { encoding: 'utf-8' }).trim();
+
+    cleanup(); // nothing dirty → no commit, just removal
+
+    expect(existsSync(cwd)).toBe(false);
+    const tipAfter = execSync(`git -C '${repoDir}' rev-parse ${branch}`, { encoding: 'utf-8' }).trim();
+    expect(tipAfter).toBe(tipBefore); // no auto-save commit added
+  });
 });

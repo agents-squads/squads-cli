@@ -8,8 +8,13 @@ Execution modes, local limits, and scaling.
 context cascade, executes autonomously, and writes results to GitHub
 and memory. This is the building block.
 
+Three equivalent ways to target a specific agent:
+
 ```bash
-squads run research/analyst
+squads run research/analyst           # slash notation
+squads run research analyst           # space notation (same result)
+squads run research -a analyst        # flag notation (same result)
+
 squads run intelligence --task "Scan competitor pricing changes"
 ```
 
@@ -22,13 +27,36 @@ multi-agent synergy happens.
 squads run research --parallel
 ```
 
-**Autonomous dispatch** — let Squads decide what to run, when, and in
-what order. Autopilot reads priorities and feedback, respects phase
-ordering, and manages budget constraints. This is the hands-off mode for
-continuous operations.
+**Autonomous dispatch** — a long-lived daemon reads cron schedules defined in
+each squad's `SQUAD.md` and spawns agents automatically. Paused squads are
+skipped. The daemon auto-pauses after repeated spawn failures (e.g., quota
+exhausted) and resumes when you clear the pause.
 
 ```bash
-squads autopilot --interval 30 --budget 50
+squads autonomous start              # Start the scheduling daemon
+squads autonomous stop               # Stop the daemon
+squads autonomous status             # Show daemon status + next runs
+squads autonomous pause "quota hit"  # Pause manually (daemon stays running)
+squads autonomous resume             # Resume after a pause
+```
+
+For timed one-off cycles rather than a persistent daemon, use `squads run`
+interval flags:
+
+```bash
+squads run -i 30 --budget 50        # Autopilot: 30-minute cycles, $50/day cap
+squads run --once --dry-run         # Preview one autopilot cycle
+```
+
+**Pausing an individual squad** — pause a single squad so `run`, `--org`, and
+cron dispatch refuse it until you resume (distinct from pausing the whole
+daemon above). Useful for parking a squad without deleting its definition; the
+runner prints how to override or resume.
+
+```bash
+squads pause intelligence            # run/org/cron refuse this squad until resumed
+squads resume intelligence           # re-enable dispatch
+squads run intelligence --force      # run once without resuming
 ```
 
 ## Local execution
@@ -48,8 +76,8 @@ explicitly pushes to GitHub or another service you've configured.
 | 8–12 | 32 GB+ RAM, 10+ cores (M-series Mac / desktop) |
 
 *Actual capacity depends on your CPU, memory, and which providers you
-use. `squads autopilot --max-parallel 3` controls concurrent executions.
-Monitor with `squads sessions`.*
+use. `SQUADS_MAX_CONCURRENT=3` controls concurrent executions for the
+autonomous daemon. Monitor with `squads sessions`.*
 
 ### Cloud scaling
 

@@ -27,6 +27,8 @@ import {
 } from '../lib/terminal.js';
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
+import { isQuotaMessage } from '../lib/conversation.js';
+import { probeQuota, waitForQuota } from '../lib/quota-probe.js';
 import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
@@ -87,6 +89,28 @@ async function confirmProceed(n: number, est: number): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+// `squads run <squad> <agent>` used to silently drop the agent positional and
+// run the whole squad (#858). Merge the 2nd positional into slash notation,
+// erroring loudly when it conflicts with --agent or an agent already in target.
+export function mergeAgentPositional(
+  target: string | null,
+  positionalAgent: string | undefined,
+  flagAgent: string | undefined
+): { target: string | null; error?: string } {
+  if (!positionalAgent || !target) return { target };
+  if (flagAgent && flagAgent !== positionalAgent) {
+    return { target, error: `Conflicting agents: "${positionalAgent}" (positional) vs "${flagAgent}" (--agent). Use one.` };
+  }
+  if (target.includes('/')) {
+    const slashAgent = target.split('/')[1];
+    if (slashAgent && slashAgent !== positionalAgent) {
+      return { target, error: `Target "${target}" already names an agent — drop the extra positional "${positionalAgent}".` };
+    }
+    return { target };
+  }
+  return { target: `${target}/${positionalAgent}` };
 }
 
 export async function runCommand(
@@ -229,12 +253,10 @@ export async function runCommand(
       const memoryDir = findMemoryDir();
       if (memoryDir) {
         const goalsPath = join(memoryDir, squadName, 'goals.md');
-        const priPath = join(memoryDir, squadName, 'priorities.md');
         try {
           const lastRunMs = new Date(lastRun).getTime();
           const goalsMtime = existsSync(goalsPath) ? statSync(goalsPath).mtimeMs : 0;
-          const priMtime = existsSync(priPath) ? statSync(priPath).mtimeMs : 0;
-          if (goalsMtime > lastRunMs || priMtime > lastRunMs) return false;
+          if (goalsMtime > lastRunMs) return false;
         } catch { return false; }
       }
       return true;
@@ -294,6 +316,39 @@ export async function runCommand(
       writeLine();
       writeLine(`  ${bold}Wave ${waveNum}${RESET} ${colors.dim}(${waveSquads.join(', ')})${RESET}`);
 
+      // Pre-flight quota probe (#856): never dispatch a wave into an exhausted
+      // session window — the 2026-06-11 cycle launched 15 squads into a dead
+      // window and burned every conversation on quota errors. One haiku ping.
+      let preflight = await probeQuota();
+      if (preflight.capped && options.waitForQuota) {
+        writeLine(`  ${colors.yellow}Quota window exhausted${preflight.resetHint ? ` · resets ${preflight.resetHint}` : ''} — waiting (--wait-for-quota, polling every 10m)${RESET}`);
+        const reopened = await waitForQuota({
+          onPoll: (p, waitedMs) => writeLine(`  ${colors.dim}${p.capped ? 'still capped' : 'window open'} after ${Math.round(waitedMs / 60_000)}m${p.resetHint ? ` · resets ${p.resetHint}` : ''}${RESET}`),
+        });
+        if (reopened) {
+          writeLine(`  ${colors.green}Window reopened — dispatching.${RESET}`);
+          preflight = { capped: false, raw: '' };
+        }
+      }
+      if (preflight.capped) {
+        const notDispatched = waves.slice(waveIdx).flat().filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
+        writeLine(`\n  ${colors.red}Quota limit reached before dispatch${preflight.resetHint ? ` — resets ${preflight.resetHint}` : ''}.${RESET} ${notDispatched.length} squads NOT dispatched (nothing burned).`);
+        writeLine(`  ${colors.dim}Resume later: squads run --org --resume  ·  or re-run with --wait-for-quota${RESET}`);
+        for (const s of notDispatched) {
+          results.push({ squad: s, agent: 'unknown', status: 'quota-skipped', durationMs: 0 });
+        }
+        try {
+          const obsDir = join(process.cwd(), '.agents', 'observability');
+          if (!existsSync(obsDir)) mkdirSync(obsDir, { recursive: true });
+          writeFileSync(resumeFile, JSON.stringify({
+            squads: notDispatched,
+            stoppedAt: new Date().toISOString(),
+            waveIdx,
+          }));
+        } catch { /* best effort */ }
+        break;
+      }
+
       // Run all squads in this wave in parallel
       const waveResults = await Promise.all(
         waveSquads.map(s => runSquadConversation(s))
@@ -309,7 +364,7 @@ export async function runCommand(
           const files = readdirSync(convDir).sort().reverse();
           if (files.length > 0) {
             const latest = readFileSync(join(convDir, files[0]), 'utf-8');
-            return latest.includes('hit your limit') || latest.includes('rate limit') || latest.includes('[QUOTA]') || latest.includes('Quota limit reached');
+            return isQuotaMessage(latest);
           }
         } catch { /* no transcript */ }
         return false;
@@ -318,6 +373,17 @@ export async function runCommand(
       if (quotaHit) {
         const remainingWaves = waves.slice(waveIdx + 1).flat().filter(s => plannedSquads.has(s) && (!resumeSquads || resumeSquads.has(s)));
         if (remainingWaves.length > 0) {
+          // Mid-cycle cap with --wait-for-quota: hold for the window instead of skipping
+          if (options.waitForQuota) {
+            writeLine(`\n  ${colors.yellow}Quota hit mid-cycle — waiting for the window before ${remainingWaves.length} remaining squads (--wait-for-quota)${RESET}`);
+            const reopened = await waitForQuota({
+              onPoll: (p, waitedMs) => writeLine(`  ${colors.dim}${p.capped ? 'still capped' : 'window open'} after ${Math.round(waitedMs / 60_000)}m${p.resetHint ? ` · resets ${p.resetHint}` : ''}${RESET}`),
+            });
+            if (reopened) {
+              writeLine(`  ${colors.green}Window reopened — continuing.${RESET}`);
+              continue;
+            }
+          }
           writeLine(`\n  ${colors.red}Quota limit reached.${RESET} Skipping ${remainingWaves.length} remaining squads.`);
           writeLine(`  ${colors.dim}Resume later: squads run --org --resume${RESET}`);
           for (const s of remainingWaves) {
@@ -445,6 +511,22 @@ export async function runCommand(
 
   // Check if target is a squad or an agent
   const squad = loadSquad(squadName);
+
+  // Paused-squad enforcement: refuse to run a paused squad unless --force is set
+  if (squad && squad.status === 'paused' && !options.force) {
+    const since = squad.paused_since ? ` (paused ${new Date(squad.paused_since).toLocaleDateString()})` : '';
+    const reason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
+    writeLine();
+    writeLine(`  ${colors.yellow}⏸  Squad "${squadName}" is paused${since}${reason}.${RESET}`);
+    writeLine(`  ${colors.dim}To run anyway: squads run ${squadName} --force${RESET}`);
+    writeLine(`  ${colors.dim}To resume:     squads resume ${squadName}${RESET}`);
+    writeLine();
+    process.exit(1);
+  }
+
+  if (squad && squad.status === 'paused' && options.force) {
+    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squadName}" (--force override).${RESET}`);
+  }
 
   // Pre-flight executor check: verify CLI and auth before attempting execution
   // Only runs when we're actually going to execute (not dry-run)

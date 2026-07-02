@@ -28,7 +28,10 @@ GOAL: [which goal this cycle advances]
 TASKS:
 - worker: [worker-name] | task: [specific instruction with issue number or PR number]
 - worker: [worker-name] | task: [specific instruction]
+- scanner: [scanner-name] | task: [specific scan/monitor instruction]
 ```
+
+These `- worker:`/`- scanner:` lines are parsed by the runtime to dispatch agents — emit them EXACTLY in this format or nobody receives work. If your squad has no workers, dispatch scanners.
 
 Then end with:
 ## STATUS: CONTINUE

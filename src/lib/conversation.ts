@@ -42,6 +42,19 @@ export function classifyAgent(agentName: string, roleDescription?: string): Agen
   return null; // Unclassified — excluded from conversation
 }
 
+/**
+ * Detect a quota/limit response from the provider.
+ * Live formats observed: "You've hit your limit", "You've hit your session limit ·
+ * resets 3:10am" — the `session` variant slips past a bare 'hit your limit'
+ * substring check, letting capped turns flow into task parsing (hq#452).
+ */
+export function isQuotaMessage(text: string): boolean {
+  return /hit your (?:\w+ )?limit/i.test(text)
+    || /rate.?limit/i.test(text)
+    || text.includes('[QUOTA]')
+    || text.includes('Quota limit reached');
+}
+
 /** Map roles to model tiers for cost routing */
 export function modelForRole(role: AgentRole): string {
   switch (role) {

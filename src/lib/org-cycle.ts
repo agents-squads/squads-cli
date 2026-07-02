@@ -4,7 +4,7 @@
  * squads run --org [--dry-run]
  *
  * Steps:
- * 1. SCAN:    Check all squads — priorities freshness, goal progress, scorecard grades
+ * 1. SCAN:    Check all squads — goal progress, scorecard grades
  * 2. PLAN:    Decide what to run — skip frozen, prioritize by staleness + score
  * 3. EXECUTE: Run leads in dependency order (phased)
  * 4. EVALUATE: COO reviews all outputs
@@ -13,7 +13,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { spawnSync, spawn } from 'child_process';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { findSquadsDir, loadSquad, findProjectRoot } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, bold, RESET, writeLine } from './terminal.js';
@@ -21,7 +21,6 @@ import { colors, bold, RESET, writeLine } from './terminal.js';
 export interface OrgScanResult {
   squad: string;
   status: 'active' | 'frozen' | 'stale' | 'healthy';
-  prioritiesAge: number; // days since last update
   goalsActive: number;
   lastExecution: string | null;
   lead: string | null;
@@ -38,7 +37,6 @@ export function scanOrg(): OrgScanResult[] {
   if (!squadsDir || !memoryDir) return [];
 
   const results: OrgScanResult[] = [];
-  const now = Date.now();
 
   for (const squadName of readdirSync(squadsDir).sort()) {
     const squadPath = join(squadsDir, squadName);
@@ -49,7 +47,6 @@ export function scanOrg(): OrgScanResult[] {
     const result: OrgScanResult = {
       squad: squadName,
       status: 'healthy',
-      prioritiesAge: 999,
       goalsActive: 0,
       lastExecution: null,
       lead: null,
@@ -65,42 +62,37 @@ export function scanOrg(): OrgScanResult[] {
       }
     }
 
-    // Check if frozen
-    const prioritiesPath = join(memoryDir, squadName, 'priorities.md');
-    if (existsSync(prioritiesPath)) {
-      const content = readFileSync(prioritiesPath, 'utf-8');
-      if (content.includes('frozen')) {
-        result.status = 'frozen';
-        result.reason = 'Squad frozen — no work until trigger';
-        results.push(result);
-        continue;
-      }
-
-      // Check freshness from frontmatter
-      const updatedMatch = content.match(/updated:\s*"?(\d{4}-\d{2}-\d{2})"?/);
-      if (updatedMatch) {
-        const updated = new Date(updatedMatch[1]).getTime();
-        result.prioritiesAge = Math.round((now - updated) / (24 * 60 * 60 * 1000));
-      }
+    // Check if the squad is explicitly paused via SQUAD.md frontmatter
+    if (squad?.status === 'paused') {
+      result.status = 'frozen';
+      const pauseReason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
+      const since = squad.paused_since ? ` since ${squad.paused_since.slice(0, 10)}` : '';
+      result.reason = `Paused${since}${pauseReason}`;
+      results.push(result);
+      continue;
     }
 
     // Check goals
     const goalsPath = join(memoryDir, squadName, 'goals.md');
     if (existsSync(goalsPath)) {
       const content = readFileSync(goalsPath, 'utf-8');
+      // Check if frozen
+      if (content.includes('frozen')) {
+        result.status = 'frozen';
+        result.reason = 'Squad frozen — no work until trigger';
+        results.push(result);
+        continue;
+      }
       const activeMatches = content.match(/status: (in-progress|not-started)/g);
       result.goalsActive = activeMatches?.length || 0;
     }
 
     // Determine status
-    if (result.prioritiesAge > 14) {
-      result.status = 'stale';
-      result.reason = `Priorities ${result.prioritiesAge}d old`;
-    } else if (result.goalsActive === 0) {
+    if (result.goalsActive === 0) {
       result.status = 'stale';
       result.reason = 'No active goals';
     } else {
-      result.reason = `${result.goalsActive} active goals, priorities ${result.prioritiesAge}d old`;
+      result.reason = `${result.goalsActive} active goals`;
     }
 
     results.push(result);

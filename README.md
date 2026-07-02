@@ -39,11 +39,11 @@ squads run research/analyst
 │   ├── research/
 │   ├── product/
 │   └── company/           # Evaluates outputs, closes the feedback loop
-└── memory/                # State: learnings, priorities, feedback
+└── memory/                # State: strategy, goals, learnings, feedback
 ```
 
-Before every run, an agent loads a **context cascade** — squad identity,
-current priorities, feedback from the last cycle, active work across the
+Before every run, an agent loads a **context cascade** — company strategy,
+squad goals, feedback from the last cycle, active work across the
 team — tuned by role so scanners stay lightweight and leads get the full
 picture. Agents that know what's been done don't duplicate work; agents
 that see their own feedback stop producing noise.
@@ -55,7 +55,7 @@ reasoning model builds, a mid-tier model verifies.
 ```bash
 squads run research --parallel                  # squad conversation
 squads run intelligence --task "Scan X"         # directed run
-squads autopilot --interval 30 --budget 50      # autonomous dispatch
+squads run --interval 30 --budget 50            # autopilot: autonomous dispatch
 ```
 
 ## Documentation
