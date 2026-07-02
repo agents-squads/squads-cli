@@ -68,6 +68,11 @@ import {
   type StreamUsage,
   type RunOutcomes,
 } from './stream-json.js';
+import {
+  ExecEventWriter,
+  createClaudeStreamJsonAdapter,
+  execEventsFile,
+} from './exec-events.js';
 
 // =============================================================================
 // Configuration
@@ -124,6 +129,8 @@ interface AgentRunConfig {
   verbose?: boolean;
   /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → DEFAULT_TIMEOUT_MINUTES (#438) */
   timeout?: number;
+  /** Cycle-level exec-event stream (#902) — this agent's tool activity is teed into it. */
+  events?: ExecEventWriter;
 }
 
 /**
@@ -254,6 +261,18 @@ ${squadContext}
   if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
   if (claudeModel) claudeArgs.push('--model', claudeModel);
 
+  // Exec-event stream (#902): announce this agent as a lane in the cycle's
+  // fan-out tree, then tee its provider stream through the Claude adapter so
+  // every tool call / file touch / web fetch lands as a normalized event.
+  config.events?.emit({
+    type: 'subagent_spawn',
+    childRunId: execContext.executionId,
+    squad: squadName,
+    agent: agentName,
+    task: task.slice(0, 200),
+  });
+  const eventAdapter = config.events ? createClaudeStreamJsonAdapter() : undefined;
+
   return new Promise<AgentRunResult>((resolve) => {
     const child = spawn('claude', claudeArgs, {
       cwd: spawnCwd, env: agentEnv,
@@ -275,7 +294,10 @@ ${squadContext}
               writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
             }
           }
-        : undefined
+        : undefined,
+      eventAdapter
+        ? (raw: string) => config.events?.ingestProviderLine(eventAdapter, raw, agentName)
+        : undefined,
     );
 
     // Timeout: configurable via env var, defaults from run-types.ts
@@ -317,6 +339,13 @@ ${squadContext}
         : rawUsage;
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
 
+      config.events?.emit({
+        type: 'subagent_done',
+        childRunId: execContext.executionId,
+        agent: agentName,
+        ok: !timedOut && !isError && code === 0,
+      });
+
       // Timed-out agents: return the timeout sentinel the convergence loop
       // expects, but with the salvaged assistant-event usage (real tokens; cost
       // derived above) instead of zero — cut-off cost is no longer invisible.
@@ -344,6 +373,7 @@ ${squadContext}
 
     child.on('error', (err) => {
       clearTimeout(timeout);
+      config.events?.emit({ type: 'subagent_done', childRunId: execContext.executionId, agent: agentName, ok: false });
       resolve({ text: `[ERROR] ${agentName} failed to spawn: ${err.message}`, usage: emptyUsage(), outcomes: emptyOutcomes() });
     });
   });
@@ -465,11 +495,51 @@ export async function runConversation(
 
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
+  // Exec-event stream for this cycle (#902): persists to the dispatch root's
+  // observability dir (survives the per-run worktree by construction). One
+  // file per cycle; each agent's activity is attributed via the envelope.
+  const events = new ExecEventWriter(
+    execEventsFile(findProjectRoot() || process.cwd(), executionId),
+    executionId,
+  );
+  const finishEvents = (ok: boolean) => {
+    events.emit({
+      type: 'run_end',
+      ok,
+      durationMs: Date.now() - cycleStartMs,
+      totalUsage: {
+        input: cycleUsage.input_tokens,
+        output: cycleUsage.output_tokens,
+        cacheRead: cycleUsage.cache_read_tokens,
+        cacheWrite: cycleUsage.cache_write_tokens,
+        costEst: cycleUsage.cost_usd,
+      },
+      outcomes: { ...outcomeFields(cycleOutcomes) },
+    });
+    events.close();
+  };
+
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
   const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
+  events.emit({
+    type: 'run_start',
+    squad: squad.name,
+    agent: lead.name,
+    mode: 'conversation',
+    model: options.model || modelForRole('lead'),
+    role: contextRole,
+    startedAt: new Date(cycleStartMs).toISOString(),
+  });
   const squadContext = gatherSquadContext(squad.name, lead.name, {
     agentPath: lead.path, role: contextRole,
+    // The one event the provider stream can never produce: per-layer cost (#902).
+    onStats: (stats) => events.emit({
+      type: 'context_assembled',
+      layers: stats.layers,
+      totalTokensEst: stats.totalTokensEst,
+      budgetTokens: Math.ceil(stats.budgetChars / 4),
+    }, lead.name),
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -510,7 +580,7 @@ export async function runConversation(
   const planResult = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
-    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
   });
   const planOutput = planResult.text;
   cycleUsage = addUsage(cycleUsage, planResult.usage);
@@ -539,6 +609,7 @@ export async function runConversation(
       error: 'Quota limit reached',
       task: options.task,
     });
+    finishEvents(false);
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: false, reason: 'Quota limit reached' };
   }
 
@@ -569,6 +640,7 @@ export async function runConversation(
       goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
       goals_changed: goalsChangedEarly.length > 0 ? goalsChangedEarly : undefined,
     });
+    finishEvents(true);
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: true, reason: conv.reason };
   }
 
@@ -598,7 +670,7 @@ ${planOutput.slice(0, 3000)}`;
     const retryResult = await runIndependentAgent({
       agentName: lead.name, agentPath: lead.path, role: 'lead',
       squadName: squad.name, model: options.model || modelForRole('lead'),
-      task: formatReminder, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+      task: formatReminder, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
     });
     cycleUsage = addUsage(cycleUsage, retryResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, retryResult.outcomes);
@@ -621,7 +693,7 @@ ${planOutput.slice(0, 3000)}`;
       return runIndependentAgent({
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
-        task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+        task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
       }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes }));
     });
 
@@ -660,6 +732,7 @@ ${planOutput.slice(0, 3000)}`;
         error: 'Quota limit reached',
         task: options.task,
       });
+      finishEvents(false);
       return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
     }
   }
@@ -685,7 +758,7 @@ Summary: [what was achieved]`;
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-    cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+    cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
   });
   const reviewOutput = reviewResult.text;
   cycleUsage = addUsage(cycleUsage, reviewResult.usage);
@@ -715,6 +788,7 @@ Summary: [what was achieved]`;
       error: 'Quota limit reached',
       task: options.task,
     });
+    finishEvents(false);
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
   }
 
@@ -750,7 +824,7 @@ or
       agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
       squadName: squad.name, model: options.model || modelForRole('verifier'),
       task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-      cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+      cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
     });
     const verifyOutput = verifyResult.text;
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
@@ -794,6 +868,7 @@ or
   };
   logObservability(obsRecord);
 
+  finishEvents(true);
   return {
     transcript,
     turnCount: transcript.turns.length,

@@ -33,10 +33,24 @@ import { execSync } from 'child_process';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
+import { type ContextLayerStat } from './exec-events.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export type ContextRole = 'scanner' | 'worker' | 'lead' | 'coo' | 'verifier';
+
+/**
+ * Assembly-time accounting for one context build — the source of the
+ * `context_assembled` exec-event (#902). The provider stream only ever sees
+ * the final prompt; this is the one place that knows the layers.
+ */
+export interface ContextStats {
+  role: ContextRole;
+  layers: ContextLayerStat[];
+  totalChars: number;
+  totalTokensEst: number;
+  budgetChars: number;
+}
 
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
 
@@ -484,7 +498,11 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
 export function gatherSquadContext(
   squadName: string,
   agentName: string,
-  options: { verbose?: boolean; maxTokens?: number; agentPath?: string; role?: ContextRole } = {}
+  options: {
+    verbose?: boolean; maxTokens?: number; agentPath?: string; role?: ContextRole;
+    /** Receives per-layer assembly stats — the `context_assembled` event source (#902). */
+    onStats?: (stats: ContextStats) => void;
+  } = {}
 ): string {
   const squadsDir = findSquadsDir();
   if (!squadsDir) return '';
@@ -494,6 +512,7 @@ export function gatherSquadContext(
   const budget = options.maxTokens ? options.maxTokens * 4 : (ROLE_BUDGETS[role] ?? ROLE_BUDGETS.worker);
   const allowedSections = ROLE_SECTIONS[role] ?? ROLE_SECTIONS.worker;
   const sections: string[] = [];
+  const layerStats: ContextLayerStat[] = [];
   let usedChars = 0;
 
   /** Try to add a layer. Returns true if added (possibly truncated), false if no budget left. */
@@ -508,6 +527,8 @@ export function gatherSquadContext(
       if (options.verbose) {
         writeLine(`  ${colors.dim}Context budget exhausted at layer ${layerNum} (${header})${RESET}`);
       }
+      // Layer had content but the budget refused it — record the eviction.
+      layerStats.push({ layer: layerNum, name: header, chars: 0, tokensEst: 0, evicted: true });
       return false;
     }
 
@@ -523,6 +544,7 @@ export function gatherSquadContext(
 
     sections.push(`## ${header}\n${text}`);
     usedChars += text.length;
+    layerStats.push({ layer: layerNum, name: header, chars: text.length, tokensEst: Math.ceil(text.length / 4), evicted: false });
     return true;
   }
 
@@ -633,6 +655,14 @@ export function gatherSquadContext(
       addLayer(8, 'Cross-Squad Learnings', learningParts.join('\n\n'));
     }
   }
+
+  options.onStats?.({
+    role,
+    layers: layerStats,
+    totalChars: usedChars,
+    totalTokensEst: Math.ceil(usedChars / 4),
+    budgetChars: budget,
+  });
 
   if (sections.length === 0) return '';
 
