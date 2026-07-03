@@ -303,3 +303,26 @@ describe('executions', () => {
     });
   });
 });
+
+// ── #911: no bridge configured → silent no-op, no endpoint leak ──────────
+import { fetchLearnings } from '../src/lib/execution-log.js';
+
+describe('fetchLearnings without a bridge (#911)', () => {
+  it('returns [] silently when bridge_url is unset (fresh local-first install)', async () => {
+    const oldBridge = process.env.SQUADS_BRIDGE_URL;
+    delete process.env.SQUADS_BRIDGE_URL;
+    const warnings: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    // fetchLearnings warns via writeLine(stdout) — capture to assert silence.
+    (process.stdout.write as unknown) = (chunk: string) => { warnings.push(String(chunk)); return true; };
+    try {
+      const result = await fetchLearnings('demo');
+      expect(result).toEqual([]);
+      expect(warnings.join('')).not.toContain('learnings fetch failed');
+      expect(warnings.join('')).not.toContain('/api/learnings');
+    } finally {
+      (process.stdout.write as unknown) = origWrite;
+      if (oldBridge !== undefined) process.env.SQUADS_BRIDGE_URL = oldBridge;
+    }
+  });
+});
