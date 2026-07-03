@@ -109,6 +109,11 @@ export async function checkPreflightGates(squad: string, agent: string): Promise
 export async function fetchLearnings(squad: string, limit = DEFAULT_LEARNINGS_LIMIT): Promise<Learning[]> {
   const bridgeUrl = getBridgeUrl();
 
+  // No bridge configured (the default for a fresh local-first install) →
+  // silent no-op. Warning below is reserved for a CONFIGURED bridge that
+  // fails — a bare install must not print internal endpoints on every run (#911).
+  if (!bridgeUrl) return [];
+
   try {
     const response = await fetch(
       `${bridgeUrl}/api/learnings/relevant?squad=${encodeURIComponent(squad)}&limit=${limit}`,
