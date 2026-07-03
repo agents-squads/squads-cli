@@ -99,6 +99,16 @@ export function mergeAgentPositional(
   positionalAgent: string | undefined,
   flagAgent: string | undefined
 ): { target: string | null; error?: string } {
+  // Catch `--agent` conflicting with a slash-agent in target even when there's
+  // no positional (e.g. `squads run eng/code-review -a other`) — the early
+  // return below would otherwise run the slash-agent and silently drop the
+  // flag, contradicting this function's "error loudly" contract. #905 review.
+  if (target && target.includes('/')) {
+    const slashAgent = target.split('/')[1];
+    if (flagAgent && slashAgent && slashAgent !== flagAgent) {
+      return { target, error: `Conflicting agents: "${slashAgent}" (from target) vs "${flagAgent}" (--agent). Use one.` };
+    }
+  }
   if (!positionalAgent || !target) return { target };
   if (flagAgent && flagAgent !== positionalAgent) {
     return { target, error: `Conflicting agents: "${positionalAgent}" (positional) vs "${flagAgent}" (--agent). Use one.` };
