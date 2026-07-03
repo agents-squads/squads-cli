@@ -512,6 +512,19 @@ export async function runCommand(
   // Check if target is a squad or an agent
   const squad = loadSquad(squadName);
 
+  // Validate the target EXISTS before any executor preflight (#912): a typo'd
+  // squad must report "not found" (with suggestions), not "claude CLI not
+  // found" — without claude installed the old order made typos un-diagnosable.
+  if (!squad && !listAgents(squadsDir).some(a => a.name === target)) {
+    writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
+    const similar = findSimilarSquads(target, listSquads(squadsDir));
+    if (similar.length > 0) {
+      writeLine(`  ${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
+    }
+    writeLine(`  ${colors.dim}Run \`squads status\` to see available squads and agents.${RESET}`);
+    process.exit(1);
+  }
+
   // Paused-squad enforcement: refuse to run a paused squad unless --force is set
   if (squad && squad.status === 'paused' && !options.force) {
     const since = squad.paused_since ? ` (paused ${new Date(squad.paused_since).toLocaleDateString()})` : '';
