@@ -96,9 +96,9 @@ describe('file I/O (the path the ESM-require bug broke at runtime)', () => {
 describe('sandboxEnabled', () => {
   const prev = process.env.SQUADS_SANDBOX;
   afterEach(() => { if (prev === undefined) delete process.env.SQUADS_SANDBOX; else process.env.SQUADS_SANDBOX = prev; });
-  it('reads SQUADS_SANDBOX=1', () => {
+  it('defaults ON; SQUADS_SANDBOX=0 is the explicit opt-out (#780 default-on)', () => {
     process.env.SQUADS_SANDBOX = '1'; expect(sandboxEnabled()).toBe(true);
     process.env.SQUADS_SANDBOX = '0'; expect(sandboxEnabled()).toBe(false);
-    delete process.env.SQUADS_SANDBOX; expect(sandboxEnabled()).toBe(false);
+    delete process.env.SQUADS_SANDBOX; expect(sandboxEnabled()).toBe(true);
   });
 });

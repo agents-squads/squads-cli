@@ -47,7 +47,7 @@ import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled,
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 import {
   colors,
@@ -598,8 +598,11 @@ export function buildDetachedShellScript(config: {
   sessionId?: string;
   /** Compiled tool allowlist (#920). When present, replaces --dangerously-skip-permissions on the detached executor. */
   allowedTools?: string[];
+  /** Settings file for the executor (#780): sandbox + guardrail hooks. Detached runs previously got NEITHER. */
+  settingsFile?: string;
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
+  const settingsFlag = config.settingsFile ? `--settings '${config.settingsFile.replace(/'/g, '')}' ` : '';
   const safeSessionId = config.sessionId ? config.sessionId.replace(/[^A-Za-z0-9-]/g, '') : '';
   const sessionFlag = safeSessionId ? `--session-id ${safeSessionId} ` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
@@ -636,7 +639,7 @@ export function buildDetachedShellScript(config: {
   const permissionFlags = config.allowedTools && config.allowedTools.length > 0
     ? `--allowedTools ${config.allowedTools.map((t) => `'${t.replace(/'/g, '')}'`).join(' ')}`
     : '--dangerously-skip-permissions';
-  const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} ${settingsFlag}--disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
@@ -1010,6 +1013,7 @@ export async function executeWithClaude(
         writeScope: memDir ? [memDir] : [],
         guardrailHooks: readGuardrailHooks(guardrailPath),
         guardrailPermissions: readGuardrailPermissions(guardrailPath),
+        strict: sandboxStrict(),
       });
       const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
       claudeArgs.push('--settings', settingsPath);
@@ -1040,6 +1044,28 @@ export async function executeWithClaude(
 
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : _timeoutMinutes;
+
+  // Settings for the detached executor (#780): sandbox (default-on) + guardrail
+  // hooks. Detached runs previously received NEITHER — the sandbox flip also
+  // brings the governance denylist to the path that needed it most. The file
+  // lives in the repo's .git (shared across a repo's runs — same content).
+  const detachedGuardrail = resolveGuardrailSettings(targetRepoRoot);
+  let detachedSettingsFile: string | undefined;
+  if (sandboxEnabled()) {
+    const memDirDetached = findMemoryDir();
+    const settings = buildSandboxSettings({
+      cwd: targetRepoRoot,
+      writeScope: memDirDetached ? [memDirDetached] : [],
+      guardrailHooks: readGuardrailHooks(detachedGuardrail),
+      guardrailPermissions: readGuardrailPermissions(detachedGuardrail),
+      strict: sandboxStrict(),
+    });
+    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+    agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+  } else if (detachedGuardrail) {
+    detachedSettingsFile = detachedGuardrail;
+  }
+
   const wrapperScript = buildDetachedShellScript({
     projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
@@ -1051,6 +1077,7 @@ export async function executeWithClaude(
     allowedTools: process.env.SQUADS_SKIP_PERMISSIONS === '1'
       ? undefined
       : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
+    settingsFile: detachedSettingsFile,
   });
 
   // Detached: run_start/context_assembled are already on disk; the run's tool

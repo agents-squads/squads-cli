@@ -9,8 +9,10 @@
  * `@anthropic-ai/sandbox-runtime`. We just feed it settings (merged with the
  * existing guardrail PreToolUse hooks) via the spawn's `--settings` flag.
  *
- * Gated behind `SQUADS_SANDBOX=1` for now: when off, behavior is unchanged; when
- * on, agents run sandboxed. Flip the default after a real `squads run` smoke.
+ * DEFAULT ON since P2 default-on (#780): agents run sandboxed unless
+ * `SQUADS_SANDBOX=0` (explicit opt-out — CI images without Seatbelt/bubblewrap,
+ * debugging). `SQUADS_SANDBOX_STRICT=1` additionally hard-fails when the
+ * sandbox is unavailable and removes the unsandboxed-retry escape hatch.
  *
  * Gotchas baked in (from Anthropic's docs): `gh`/`gcloud`/`terraform` (Go TLS)
  * and `docker` are incompatible with Seatbelt → `excludedCommands` (run outside
@@ -114,7 +116,16 @@ export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir:
   return path;
 }
 
-/** Whether sandboxing is opt-in enabled for spawns. */
+/**
+ * Whether spawns run inside the OS sandbox. DEFAULT ON (#780 — P2 default-on);
+ * `SQUADS_SANDBOX=0` is the explicit opt-out for environments without
+ * Seatbelt/bubblewrap or when debugging agent behavior.
+ */
 export function sandboxEnabled(): boolean {
-  return process.env.SQUADS_SANDBOX === '1';
+  return process.env.SQUADS_SANDBOX !== '0';
+}
+
+/** Strict posture: hard-fail if the sandbox is unavailable, no unsandboxed retry. */
+export function sandboxStrict(): boolean {
+  return process.env.SQUADS_SANDBOX_STRICT === '1';
 }
