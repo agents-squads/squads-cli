@@ -73,6 +73,7 @@ import {
   createClaudeStreamJsonAdapter,
   execEventsFile,
 } from './exec-events.js';
+import { compileAllowedTools } from './agent-contract.js';
 
 // =============================================================================
 // Configuration
@@ -239,8 +240,9 @@ ${squadContext}
   if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
     claudeArgs.push('--dangerously-skip-permissions');
   } else {
-    const tools = toolsByRole[role] || [...readTools, ...writeTools];
-    claudeArgs.push('--allowedTools', ...tools);
+    // Explicit contract grants win over the role surface (#920).
+    const fallback = toolsByRole[role] || [...readTools, ...writeTools];
+    claudeArgs.push('--allowedTools', ...compileAllowedTools(agentPath, fallback).tools);
   }
   claudeArgs.push('--disable-slash-commands');
 

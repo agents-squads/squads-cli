@@ -55,6 +55,8 @@ export type ExecEvent =
 export interface PersistedExecEvent {
   v: 1;
   runId: string;
+  /** Root of the dispatch chain (#920) — present only when ≠ runId (nested run). */
+  root?: string;
   seq: number;
   ts: string;
   /** Which agent in the run produced this event (fan-out attribution). */
@@ -309,9 +311,14 @@ export class ExecEventWriter {
       this.dropped++;
       return;
     }
+    // Audit chain (#920): a nested run stamps its root so a cascade's events
+    // are queryable by one id. Read per-emit (cheap) — the env is set by
+    // buildAgentEnv on the process that spawned this CLI.
+    const root = process.env.SQUADS_ROOT_RUN_ID;
     const line: PersistedExecEvent = {
       v: 1,
       runId: this.runId,
+      ...(root && root !== this.runId ? { root } : {}),
       seq: this.seq,
       ts: new Date().toISOString(),
       ...(agent ? { agent } : {}),
