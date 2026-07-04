@@ -1195,6 +1195,16 @@ program
     return runsCommand(options);
   });
 
+// Review queue Child 0 (#924): everything waiting on a human, one screen.
+program
+  .command('inbox')
+  .description('Everything waiting on a human decision: open PRs, stranded run branches, unreviewed run output')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    const { inboxCommand } = await import('./commands/inbox.js');
+    return inboxCommand(options);
+  });
+
 // Executor referee (outcome-driven routing §3.2): quality-per-cost per
 // task class × provider × model, from the execution ledger. Read-only.
 program
