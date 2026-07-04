@@ -110,3 +110,33 @@ describe('root_run_id chain (#920)', () => {
     }
   });
 });
+
+// ── P2 default-on (#780) ────────────────────────────────────────────────
+
+describe('sandbox default-on (#780)', () => {
+  const OLD = process.env.SQUADS_SANDBOX;
+  afterEach(() => {
+    if (OLD === undefined) delete process.env.SQUADS_SANDBOX;
+    else process.env.SQUADS_SANDBOX = OLD;
+  });
+
+  it('sandboxEnabled defaults ON; SQUADS_SANDBOX=0 is the explicit opt-out', async () => {
+    const { sandboxEnabled } = await import('../src/lib/sandbox-settings.js');
+    delete process.env.SQUADS_SANDBOX;
+    expect(sandboxEnabled()).toBe(true);
+    process.env.SQUADS_SANDBOX = '0';
+    expect(sandboxEnabled()).toBe(false);
+    process.env.SQUADS_SANDBOX = '1';
+    expect(sandboxEnabled()).toBe(true);
+  });
+
+  it('detached executor carries --settings when a settings file is provided', () => {
+    const script = buildDetachedShellScript({
+      projectRoot: '/proj', squadName: 'demo', agentName: 'hello', timestamp: 1,
+      escapedPrompt: 'x', logFile: '/tmp/l.log', pidFile: '/tmp/l.pid',
+      allowedTools: ['Read'],
+      settingsFile: '/proj/.git/squads-sandbox-settings.json',
+    });
+    expect(script).toContain(`--settings '/proj/.git/squads-sandbox-settings.json'`);
+  });
+});

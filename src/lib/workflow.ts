@@ -74,6 +74,11 @@ import {
   execEventsFile,
 } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
+import { findMemoryDir } from './memory.js';
+import {
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions,
+  writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+} from './sandbox-settings.js';
 
 // =============================================================================
 // Configuration
@@ -260,7 +265,22 @@ ${squadContext}
   }
 
   const guardrailPath = resolveGuardrailSettings(spawnCwd);
-  if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
+  if (sandboxEnabled()) {
+    // P2 default-on (#780): conversation agents run inside the OS sandbox too —
+    // same settings shape as the single-agent paths, guardrail hooks merged in.
+    const memDir = findMemoryDir();
+    const settings = buildSandboxSettings({
+      cwd: spawnCwd,
+      writeScope: memDir ? [memDir] : [],
+      guardrailHooks: readGuardrailHooks(guardrailPath),
+      guardrailPermissions: readGuardrailPermissions(guardrailPath),
+      strict: sandboxStrict(),
+    });
+    claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(spawnCwd, '.git')));
+    agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+  } else if (guardrailPath) {
+    claudeArgs.push('--settings', guardrailPath);
+  }
   if (claudeModel) claudeArgs.push('--model', claudeModel);
 
   // Exec-event stream (#902): announce this agent as a lane in the cycle's
