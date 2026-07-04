@@ -1195,6 +1195,19 @@ program
     return runsCommand(options);
   });
 
+// Executor referee (outcome-driven routing §3.2): quality-per-cost per
+// task class × provider × model, from the execution ledger. Read-only.
+program
+  .command('scoreboard')
+  .description('Executor quality-per-cost ranking from real runs (read-only, provenance-labeled)')
+  .option('--json', 'Output as JSON')
+  .option('--days <n>', 'Window in days (default 30)')
+  .option('--resolve', 'Check recent PR artifacts live against GitHub for landed-rate (slower)')
+  .action(async (options) => {
+    const { scoreboardCommand } = await import('./commands/scoreboard.js');
+    return scoreboardCommand(options);
+  });
+
 program
   .command('kill [target]')
   .description('Stop a background run gracefully (pid, squad, or squad/agent)')

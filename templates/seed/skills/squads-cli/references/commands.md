@@ -114,6 +114,7 @@
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
 | `squads runs` | List live background agent runs (pid-file inventory) |
+| `squads scoreboard` | Executor quality-per-cost ranking from real runs (read-only, provenance-labeled) |
 | `squads kill [target]` | Stop a background run gracefully (pid, squad, or squad/agent) |
 | `squads commands` | List the live command tree (machine-readable with --json) |
 
