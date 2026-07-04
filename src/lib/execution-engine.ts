@@ -21,6 +21,7 @@ import {
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
 import { ExecEventWriter, execEventsFile } from './exec-events.js';
+import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
 } from './run-types.js';
@@ -64,6 +65,27 @@ export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+
+/**
+ * The default agent tool surface — the compiler fallback when an agent
+ * declares no explicit contract grants (#920). Shared by the foreground and
+ * detached spawn paths so P1 closes the detached bypass with the SAME proven
+ * surface foreground runs have exercised for months.
+ */
+export const DEFAULT_AGENT_TOOLS: string[] = [
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
+  'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+  'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
+  'Bash(docker:*)', 'Bash(duckdb:*)',
+  'Bash(bq:*)', 'Bash(gcloud:*)',
+  'Bash(gws:*)', 'Bash(stripe:*)',
+  'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
+  'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
+  'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
+  'Bash(squads:*)',
+  'Agent', 'WebFetch', 'WebSearch',
+];
 
 // ── Guardrail settings ────────────────────────────────────────────────
 
@@ -353,6 +375,11 @@ export function buildAgentEnv(
     SQUADS_TASK_TYPE: execContext.taskType,
     SQUADS_TRIGGER: execContext.trigger,
     SQUADS_EXECUTION_ID: execContext.executionId,
+    // Audit chain (#920): the root anchors aggregate cost/traceability across
+    // nested dispatches (an agent running `squads run` inherits these). Root
+    // propagates unchanged; parent is always the run doing THIS spawn.
+    SQUADS_ROOT_RUN_ID: baseEnv.SQUADS_ROOT_RUN_ID || execContext.executionId,
+    SQUADS_PARENT_RUN_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };
 
@@ -569,6 +596,8 @@ export function buildDetachedShellScript(config: {
   timeoutMinutes?: number;
   /** Claude session id for this run (#857) — pins the session JSONL so reconcile attributes exactly this run's usage. */
   sessionId?: string;
+  /** Compiled tool allowlist (#920). When present, replaces --dangerously-skip-permissions on the detached executor. */
+  allowedTools?: string[];
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
   const safeSessionId = config.sessionId ? config.sessionId.replace(/[^A-Za-z0-9-]/g, '') : '';
@@ -598,7 +627,16 @@ export function buildDetachedShellScript(config: {
   // the run ends, which is exactly the black box this kills. `--verbose` is
   // required for stream-json to emit events. The reconcile sweep normalizes
   // this raw log into the run's events file (exec-events.ts).
-  const executorCmd = `claude --print --output-format stream-json --verbose --dangerously-skip-permissions --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  //
+  // Permissions (#920 / P1): detached runs ran --dangerously-skip-permissions
+  // since inception — the last ungoverned spawn surface. They now get the same
+  // compiled allowlist as foreground; SQUADS_SKIP_PERMISSIONS=1 remains the
+  // explicit sandboxed-environment opt-out (checked by the CALLER, which then
+  // omits allowedTools).
+  const permissionFlags = config.allowedTools && config.allowedTools.length > 0
+    ? `--allowedTools ${config.allowedTools.map((t) => `'${t.replace(/'/g, '')}'`).join(' ')}`
+    : '--dangerously-skip-permissions';
+  const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
@@ -852,16 +890,16 @@ export async function executeWithClaude(
   const mergedSkills = [...new Set([...(skills || []), ...squadSkills])];
   const taskType = detectTaskType(agentName);
 
+  // Agent definition path — used for frontmatter model AND contract grants (#920).
+  const squadsDirForAgent = findSquadsDir();
+  const agentPath = squadsDirForAgent ? join(squadsDirForAgent, squadName, `${agentName}.md`) : '';
+
   // Read agent frontmatter model if no explicit CLI flag
   let effectiveModel = model;
-  if (!effectiveModel) {
-    const squadsDir = findSquadsDir();
-    if (squadsDir) {
-      const agentPath = join(squadsDir, squadName, `${agentName}.md`);
-      const frontmatter = parseAgentFrontmatter(agentPath);
-      if (frontmatter.model) {
-        effectiveModel = frontmatter.model;
-      }
+  if (!effectiveModel && agentPath) {
+    const frontmatter = parseAgentFrontmatter(agentPath);
+    if (frontmatter.model) {
+      effectiveModel = frontmatter.model;
     }
   }
 
@@ -950,20 +988,13 @@ export async function executeWithClaude(
       // Explicit opt-in for sandboxed environments (Docker, CI)
       claudeArgs.push('--dangerously-skip-permissions');
     } else {
-      claudeArgs.push('--allowedTools',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
-        'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
-        'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
-        'Bash(docker:*)', 'Bash(duckdb:*)',
-        'Bash(bq:*)', 'Bash(gcloud:*)',
-        'Bash(gws:*)', 'Bash(stripe:*)',
-        'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
-        'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
-        'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
-        'Bash(squads:*)',
-        'Agent', 'WebFetch', 'WebSearch',
-      );
+      // Contract grants win when the agent declares them; the tuned default
+      // surface otherwise (#920 — deny-by-omission where declared).
+      const compiled = compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS);
+      if (verbose && compiled.source === 'contract') {
+        writeLine(`  ${colors.dim}Tool grants: ${compiled.tools.length} from agent contract${RESET}`);
+      }
+      claudeArgs.push('--allowedTools', ...compiled.tools);
     }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
@@ -1015,6 +1046,11 @@ export async function executeWithClaude(
     obsRoot: projectRoot, executionId: execContext.executionId, trigger,
     timeoutMinutes: watchdogMinutes,
     sessionId: randomUUID(),
+    // #920: same compiled surface as foreground; SQUADS_SKIP_PERMISSIONS=1
+    // keeps the legacy bypass for sandboxed environments.
+    allowedTools: process.env.SQUADS_SKIP_PERMISSIONS === '1'
+      ? undefined
+      : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
   });
 
   // Detached: run_start/context_assembled are already on disk; the run's tool
