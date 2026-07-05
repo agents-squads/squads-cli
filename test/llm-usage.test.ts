@@ -56,3 +56,41 @@ describe('aider map-tokens knob (#845)', () => {
     expect(LLM_CLIS.deepseek.buildArgs('hi')).not.toContain('--map-tokens');
   });
 });
+
+describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)', () => {
+  afterEach(() => {
+    delete process.env.GLM_API_KEY;
+    delete process.env.GLM_BASE_URL;
+    delete process.env.GLM_MODEL;
+  });
+
+  it('delegates to the claude CLI in non-interactive print mode', () => {
+    expect(LLM_CLIS.glm.command).toBe('claude');
+    const args = LLM_CLIS.glm.buildArgs('do the thing');
+    expect(args[0]).toBe('--print');
+    expect(args).toContain('do the thing');
+  });
+
+  it('defaults the model and honors override precedence (opts > GLM_MODEL)', () => {
+    expect(LLM_CLIS.glm.buildArgs('hi')).toContain('glm-4.7');
+    process.env.GLM_MODEL = 'glm-4.6';
+    expect(LLM_CLIS.glm.buildArgs('hi')).toContain('glm-4.6');
+    expect(LLM_CLIS.glm.buildArgs('hi', { model: 'glm-4.7-air' })).toContain('glm-4.7-air');
+  });
+
+  it('maps GLM_API_KEY to ANTHROPIC_AUTH_TOKEN and removes shadowing vars', () => {
+    process.env.GLM_API_KEY = 'zai-test-key';
+    const env = LLM_CLIS.glm.env!();
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.z.ai/api/anthropic');
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('zai-test-key');
+    // undefined = the runner must DELETE these from the child env, or an
+    // inherited ANTHROPIC_API_KEY silently routes the run to Anthropic
+    expect(env).toHaveProperty('ANTHROPIC_API_KEY', undefined);
+    expect(env).toHaveProperty('ANTHROPIC_MODEL', undefined);
+  });
+
+  it('honors GLM_BASE_URL override', () => {
+    process.env.GLM_BASE_URL = 'https://proxy.example/anthropic';
+    expect(LLM_CLIS.glm.env!().ANTHROPIC_BASE_URL).toBe('https://proxy.example/anthropic');
+  });
+});

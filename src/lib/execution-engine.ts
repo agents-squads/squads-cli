@@ -1158,14 +1158,20 @@ export async function executeWithProvider(
   const agentName = options.agentName || 'unknown';
   const timestamp = Date.now();
 
-  // Build clean env: remove CLAUDECODE to allow nesting, pass squad context
+  // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
+  // Provider env hooks (cliConfig.env) inject endpoint/auth overrides; a key
+  // set to undefined removes the inherited variable from the child env.
   const { CLAUDECODE: _claudeCode, ...cleanEnv } = process.env;
-  const providerEnv = {
+  const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
+    ...(cliConfig.env?.() ?? {}),
     SQUADS_SQUAD: squadName,
     SQUADS_AGENT: agentName,
     SQUADS_PROVIDER: provider,
   };
+  for (const key of Object.keys(providerEnv)) {
+    if (providerEnv[key] === undefined) delete providerEnv[key];
+  }
 
   // Create isolated worktree for this agent (same pattern as executeWithClaude)
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
