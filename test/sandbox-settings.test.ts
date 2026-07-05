@@ -74,6 +74,30 @@ describe('file I/O (the path the ESM-require bug broke at runtime)', () => {
     expect((parsed.sandbox as { enabled: boolean }).enabled).toBe(true);
   });
 
+  it('follows the gitdir pointer when .git is a linked-worktree FILE (#931)', () => {
+    const wt = mkdtempSync(join(tmpdir(), 'sbx-wt-'));
+    const realGitDir = mkdtempSync(join(tmpdir(), 'sbx-gitdir-'));
+    writeFileSync(join(wt, '.git'), `gitdir: ${realGitDir}\n`);
+    const path = writeSandboxSettingsFile(buildSandboxSettings({ cwd: wt }), join(wt, '.git'));
+    expect(path.startsWith(realGitDir)).toBe(true);
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toBeTruthy();
+  });
+
+  it('resolves a RELATIVE gitdir pointer against the worktree root', () => {
+    const wt = mkdtempSync(join(tmpdir(), 'sbx-rel-'));
+    writeFileSync(join(wt, '.git'), 'gitdir: sub/gitdir\n');
+    const path = writeSandboxSettingsFile(buildSandboxSettings({ cwd: wt }), join(wt, '.git'));
+    expect(path.startsWith(join(wt, 'sub', 'gitdir'))).toBe(true);
+  });
+
+  it('falls back to a tmpdir instead of throwing when .git is garbage (#931)', () => {
+    const wt = mkdtempSync(join(tmpdir(), 'sbx-bad-'));
+    writeFileSync(join(wt, '.git'), 'not a pointer');
+    const path = writeSandboxSettingsFile(buildSandboxSettings({ cwd: wt }), join(wt, '.git'));
+    expect(path.includes('squads-sandbox-')).toBe(true);
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toBeTruthy();
+  });
+
   it('readGuardrailHooks pulls .hooks out of a settings file (and is safe on missing)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gr-'));
     const p = join(dir, 'guardrail.json');
