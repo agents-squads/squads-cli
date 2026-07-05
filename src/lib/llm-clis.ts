@@ -33,6 +33,13 @@ export interface CLIConfig {
    * prints it. Enables observability records for non-anthropic runs (#824).
    */
   parseUsage?: (output: string) => ProviderUsage | null;
+
+  /**
+   * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
+   * Anthropic-compatible endpoint). A key set to undefined is REMOVED from the
+   * child env — needed when an inherited variable would shadow the injected one.
+   */
+  env?: () => Record<string, string | undefined>;
 }
 
 export interface RunOptions {
@@ -156,6 +163,28 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       ...aiderMapTokensArgs(),
     ],
     parseUsage: parseAiderUsage,
+  },
+
+  // GLM (z.ai) serves an Anthropic-compatible endpoint, so the claude CLI is
+  // the agentic harness: point it at z.ai and auth with GLM_API_KEY.
+  // ANTHROPIC_API_KEY is removed so an inherited key can't shadow the token.
+  glm: {
+    provider: 'glm',
+    displayName: 'GLM (z.ai via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set GLM_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--print',
+      '--model',
+      opts?.model || process.env.GLM_MODEL || 'glm-4.7',
+      prompt,
+    ],
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.GLM_BASE_URL || 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
   },
 
   mistral: {
