@@ -1195,14 +1195,17 @@ program
     return runsCommand(options);
   });
 
-// Review queue Child 0 (#924): everything waiting on a human, one screen.
+// Review queue (#924 list, #933 decision verbs): everything waiting on a
+// human, one screen — and the three things a human can say to each item.
 program
-  .command('inbox')
-  .description('Everything waiting on a human decision: open PRs, stranded run branches, unreviewed run output')
+  .command('inbox [action] [id]')
+  .description('Everything waiting on a human decision — list, or approve/reject/defer <id>')
   .option('--json', 'Output as JSON')
-  .action(async (options) => {
+  .option('--reason <text>', 'Why (required for reject; written through to squads feedback)')
+  .option('--days <n>', 'Defer window in days (default 7)')
+  .action(async (action, id, options) => {
     const { inboxCommand } = await import('./commands/inbox.js');
-    return inboxCommand(options);
+    return inboxCommand(action, id, options);
   });
 
 // Executor referee (outcome-driven routing §3.2): quality-per-cost per

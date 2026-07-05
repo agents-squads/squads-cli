@@ -13,6 +13,7 @@ import { execSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { parsePersistedLine } from './event-render.js';
+import { activeDeferrals } from './inbox-decisions.js';
 
 export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts';
 
@@ -149,10 +150,17 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15): InboxItem[] 
  * The queue, newest-risk-first: open PRs (oldest = most overdue, first),
  * then stranded branches (the silent-loss class), then artifact runs.
  * Scanners are independent; one failing never empties the others.
+ *
+ * Actively-deferred items (Child A, #933) are hidden until their snooze
+ * expires — approve/reject decisions are NOT filtered here: an approved PR
+ * that is somehow still open should stay in your face, not vanish.
  */
-export function buildInbox(repoRoot: string, obsRoot: string): InboxItem[] {
+export function buildInbox(repoRoot: string, obsRoot: string, opts?: { includeDeferred?: boolean }): InboxItem[] {
   const prs = scanOpenPrs(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const branches = scanStrandedBranches(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const runs = scanRunsWithArtifacts(obsRoot).sort((a, b) => b.ageDays - a.ageDays);
-  return [...prs, ...branches, ...runs];
+  const all = [...prs, ...branches, ...runs];
+  if (opts?.includeDeferred) return all;
+  const deferred = activeDeferrals(obsRoot);
+  return deferred.size === 0 ? all : all.filter((i) => !deferred.has(i.id));
 }
