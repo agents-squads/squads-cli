@@ -43,6 +43,10 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   appendFileSync: vi.fn(),
+  // writeSandboxSettingsFile (#931) stats the .git target and falls back to a
+  // tmpdir on failure — treat the mocked path as a plain directory.
+  statSync: vi.fn().mockReturnValue({ isDirectory: () => true }),
+  mkdtempSync: vi.fn().mockReturnValue('/mock/tmp/squads-sandbox-x'),
 }));
 
 // Mock child_process before import — workflow.ts uses spawn for agent execution
