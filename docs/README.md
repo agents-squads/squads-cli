@@ -3,7 +3,7 @@
 | Page | What's in it |
 |------|--------------|
 | [Philosophy](philosophy.md) | Why Squads exists, who uses the CLI, why CLI-first, skills + tools |
-| [Architecture](architecture.md) | Files-first design, the context cascade, roles, goals vs priorities, phases, the feedback loop |
+| [Architecture](architecture.md) | Files-first design, the context cascade, roles, goals and strategy, phases, the feedback loop |
 | [Configuration](configuration.md) | Starter squads, building your own, customizing context layers, secrets |
 | [Running Agents](running.md) | Execution modes, local limits, scaling |
 | [Commands](commands.md) | Command reference for humans and for agents |

@@ -174,7 +174,7 @@ vi.mock('../../src/lib/run-context.js', () => ({
 }));
 
 // ── Imports (after mocks) ──────────────────────────────────────────────────
-import { runCommand, runSquadCommand } from '../../src/commands/run.js';
+import { runCommand, runSquadCommand, mergeAgentPositional } from '../../src/commands/run.js';
 import { findSquadsDir, loadSquad, listAgents, findSimilarSquads } from '../../src/lib/squad-parser.js';
 import { writeLine } from '../../src/lib/terminal.js';
 import { isProviderCLIAvailable } from '../../src/lib/llm-clis.js';
@@ -373,6 +373,86 @@ describe('runCommand', () => {
     });
   });
 
+  describe('paused squad enforcement', () => {
+    function makePausedSquad(reason?: string) {
+      return {
+        name: 'engineering',
+        dir: 'engineering',
+        mission: 'Build things',
+        agents: [],
+        pipelines: [],
+        triggers: { scheduled: [], event: [], manual: [] },
+        routines: [],
+        dependencies: [],
+        outputPath: '',
+        goals: [],
+        status: 'paused',
+        paused_since: '2026-06-14T10:00:00.000Z',
+        paused_reason: reason,
+        frontmatter: {},
+      };
+    }
+
+    it('exits with code 1 when squad is paused without --force', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('shows paused message when squad is paused', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('paused'))).toBe(true);
+    });
+
+    it('shows reason in paused message when paused_reason is set', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad('waiting for design') as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('waiting for design'))).toBe(true);
+    });
+
+    it('shows --force override hint in paused message', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      await expect(runCommand('engineering', { dryRun: true })).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      expect(calls.some(msg => msg?.toString().includes('--force'))).toBe(true);
+    });
+
+    it('proceeds with warning when --force overrides a paused squad', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makePausedSquad() as ReturnType<typeof mockLoadSquad>);
+
+      // With --force + dryRun, should NOT call exit(1) for pause enforcement;
+      // may still exit for other reasons (no agents found etc.) — just check
+      // that the pause-enforcement exit path was NOT taken.
+      try {
+        await runCommand('engineering', { dryRun: true, force: true });
+      } catch {
+        // May throw for unrelated reasons — just ensure no "paused" exit
+      }
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]);
+      // The force-warning line is shown but process should not have been exited
+      // for the pause check (may still exit for dry-run/no-agents reasons)
+      const showedForceWarning = calls.some(msg => msg?.toString().includes('Warning: running paused squad'));
+      expect(showedForceWarning).toBe(true);
+    });
+  });
+
   describe('preflight check', () => {
     it('exits with code 1 when non-anthropic provider CLI not found', async () => {
       delete process.env.SQUADS_SKIP_CHECKS;
@@ -494,5 +574,42 @@ describe('runSquadCommand', () => {
     expect(mockWriteLine).toHaveBeenCalledWith(
       expect.stringContaining('--cloud requires a specific agent')
     );
+  });
+});
+
+// ── mergeAgentPositional (#858) ────────────────────────────────────────────
+describe('mergeAgentPositional', () => {
+  it('rewrites squad + agent positionals to slash notation', () => {
+    expect(mergeAgentPositional('research', 'weekly-reporter', undefined))
+      .toEqual({ target: 'research/weekly-reporter' });
+  });
+
+  it('passes target through when no agent positional given', () => {
+    expect(mergeAgentPositional('research', undefined, undefined))
+      .toEqual({ target: 'research' });
+    expect(mergeAgentPositional(null, undefined, undefined))
+      .toEqual({ target: null });
+  });
+
+  it('errors when positional conflicts with --agent flag', () => {
+    const result = mergeAgentPositional('research', 'weekly-reporter', 'housekeeper');
+    expect(result.target).toBe('research');
+    expect(result.error).toContain('Conflicting agents');
+  });
+
+  it('rewrites when positional and --agent flag name the same agent', () => {
+    expect(mergeAgentPositional('research', 'weekly-reporter', 'weekly-reporter'))
+      .toEqual({ target: 'research/weekly-reporter' });
+  });
+
+  it('errors when target already has a different agent via slash', () => {
+    const result = mergeAgentPositional('research/housekeeper', 'weekly-reporter', undefined);
+    expect(result.target).toBe('research/housekeeper');
+    expect(result.error).toContain('already names an agent');
+  });
+
+  it('accepts a redundant positional matching the slash agent', () => {
+    expect(mergeAgentPositional('research/weekly-reporter', 'weekly-reporter', undefined))
+      .toEqual({ target: 'research/weekly-reporter' });
   });
 });

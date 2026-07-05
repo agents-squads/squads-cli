@@ -67,6 +67,12 @@ export interface SquadFrontmatter {
   depends_on?: string[];
   /** Agents that participate in conversations. Others run on schedules. */
   conversation_agents?: string[];
+  /** Activation state: 'active' (default) or 'paused' */
+  status?: string;
+  /** ISO 8601 timestamp when the squad was paused */
+  paused_since?: string;
+  /** Human-readable reason the squad was paused */
+  paused_reason?: string;
 }
 
 export interface Agent {
@@ -153,6 +159,12 @@ export interface Squad {
   frontmatter?: Record<string, unknown>;
   /** Squad names this squad must wait for (phase ordering) */
   depends_on?: string[];
+  /** Activation state: 'active' (default) or 'paused' */
+  status?: string;
+  /** ISO 8601 timestamp when the squad was paused */
+  paused_since?: string;
+  /** Human-readable reason the squad was paused */
+  paused_reason?: string;
 }
 
 /**
@@ -419,6 +431,10 @@ export function parseSquadFile(filePath: string): Squad {
     frontmatter: frontmatter as Record<string, unknown>,
     // Phase ordering: which squads must complete before this one
     depends_on: Array.isArray(fm.depends_on) ? fm.depends_on : undefined,
+    // Pause/resume state
+    status: typeof fm.status === 'string' ? fm.status : undefined,
+    paused_since: typeof fm.paused_since === 'string' ? fm.paused_since : undefined,
+    paused_reason: typeof fm.paused_reason === 'string' ? fm.paused_reason : undefined,
   };
 
   let currentSection = '';
@@ -1033,4 +1049,49 @@ export function resolveExecutionContext(
       memoryPaths,
     },
   };
+}
+
+/**
+ * Write pause/resume state into a squad's SQUAD.md frontmatter.
+ *
+ * When pausing: sets `status: paused`, `paused_since`, and optionally `paused_reason`.
+ * When resuming: removes `status`, `paused_since`, and `paused_reason` fields.
+ *
+ * Uses gray-matter stringify to preserve the rest of the file exactly.
+ *
+ * @param squadName - Squad directory name
+ * @param paused - true to pause, false to resume
+ * @param reason - Optional reason (only used when pausing)
+ * @returns true if successful, false if squad not found
+ */
+export function setSquadPauseState(
+  squadName: string,
+  paused: boolean,
+  reason?: string
+): boolean {
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) return false;
+
+  const squadFile = join(squadsDir, squadName, 'SQUAD.md');
+  if (!existsSync(squadFile)) return false;
+
+  const raw = readFileSync(squadFile, 'utf-8');
+  const parsed = matter(raw);
+
+  if (paused) {
+    parsed.data.status = 'paused';
+    parsed.data.paused_since = new Date().toISOString();
+    if (reason) {
+      parsed.data.paused_reason = reason;
+    } else {
+      delete parsed.data.paused_reason;
+    }
+  } else {
+    delete parsed.data.status;
+    delete parsed.data.paused_since;
+    delete parsed.data.paused_reason;
+  }
+
+  writeFileSync(squadFile, matter.stringify(parsed.content, parsed.data));
+  return true;
 }

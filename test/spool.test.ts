@@ -211,3 +211,78 @@ describe('buildWatchdogShell (#450 D3)', () => {
     expect(String(rec.error)).toContain('watchdog');
   });
 });
+
+// ── #857: detached-claude usage attribution ──────────────────────────
+
+describe('session-id attribution (#857)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  const SESSION_ID = '11111111-2222-3333-4444-555555555555';
+
+  function writeSessionFile(projDir: string, name: string, inputTokens: number, outputTokens: number): string {
+    const dir = join(home, '.claude', 'projects', projDir);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${name}.jsonl`);
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-haiku-4-5', usage: { input_tokens: inputTokens, output_tokens: outputTokens } },
+    });
+    writeFileSync(path, `${line}\n`);
+    return path;
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('buildSpoolWriterShell embeds the (sanitized) session id in the done-file', () => {
+    const snippet = buildSpoolWriterShell({
+      obsRoot: root,
+      execId: 'exec_sid_1',
+      squad: 's',
+      agent: 'a',
+      provider: 'anthropic',
+      model: 'haiku',
+      trigger: 'scheduled',
+      logFile: '/tmp/x.log',
+      sessionId: `${SESSION_ID}'; touch /tmp/pwned; '`,
+    });
+    execSync(`EXIT=0; START=1700000000; true ${snippet}`, { shell: '/bin/sh' });
+    const parsed = JSON.parse(readFileSync(join(spoolDir(root), 'exec_sid_1.json'), 'utf8'));
+    expect(parsed.sessionId).toBe(`${SESSION_ID}touchtmppwned`);
+    expect(existsSync('/tmp/pwned')).toBe(false);
+  });
+
+  it('reconcile attributes exactly the pinned session, not a bigger concurrent one', () => {
+    writeSessionFile('proj-run', SESSION_ID, 100, 50);
+    // A concurrent giant session (e.g. interactive) — newer mtime, way bigger
+    writeSessionFile('proj-interactive', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 118_000, 9_000);
+
+    writeSpoolFile({ execId: 'exec_sid_2', provider: 'anthropic', model: 'haiku', sessionId: SESSION_ID });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.input_tokens).toBe(100);
+    expect(rec.output_tokens).toBe(50);
+    expect(rec.model).toBe('claude-haiku-4-5');
+  });
+
+  it('legacy records (no sessionId) bound the mtime window by endEpoch', () => {
+    // Session file modified NOW — far after the legacy run's endEpoch
+    // (1.7e9 ≈ 2023). The old global newest-after-start scan would grab it.
+    writeSessionFile('proj-later', 'ffffffff-1111-2222-3333-444444444444', 118_000, 9_000);
+
+    writeSpoolFile({ execId: 'exec_sid_3', provider: 'anthropic', model: 'haiku' });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.input_tokens).toBe(0);
+    expect(rec.output_tokens).toBe(0);
+  });
+});

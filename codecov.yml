@@ -1,0 +1,27 @@
+# Codecov tuned for signal over noise (#864).
+#
+# Philosophy: coverage is a TREND we watch, not a GATE we fail. The lib layer
+# (src/lib) carries the logic and the tests; src/commands are thin CLI
+# wrappers exercised by the E2E/smoke jobs, not unit tests — counting them in
+# patch status made every substantive PR a red X nobody acted on.
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true # never block; badge + trend only
+    patch:
+      default:
+        informational: true
+        target: 70% # the bar the comment reports against
+
+comment:
+  require_changes: true # comment only when coverage actually moves
+  layout: "condensed_header, diff, files"
+  hide_project_coverage: false
+
+ignore:
+  - "src/commands/**" # thin CLI wrappers — covered by E2E/smoke, not unit tests
+  - "templates/**"
+  - "test/**"
+  - "scripts/**"

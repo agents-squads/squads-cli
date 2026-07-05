@@ -59,13 +59,12 @@ execution, in strict priority order:
 | # | Layer | Source | Purpose |
 |---|-------|--------|---------|
 | 0 | System Protocol | `config/SYSTEM.md` | Immutable rules every agent follows |
-| 1 | Squad Identity | `squads/{squad}/SQUAD.md` | Mission, goals, output format |
-| 2 | Priorities | `memory/{squad}/priorities.md` | Current operational focus |
-| 3 | Directives | `memory/company/directives.md` | Company-wide strategic overlay |
-| 4 | Active Work | `memory/{squad}/active-work.md` | Open PRs and issues — prevent duplication |
-| 5 | Agent State | `memory/{squad}/{agent}/state.md` | What the agent already knows |
-| 6 | Feedback | `memory/{squad}/feedback.md` | Last cycle evaluation |
-| 7 | Briefings | `memory/daily-briefing.md` | Cross-squad context |
+| 1 | Company Strategy | `memory/company/strategy.md` | Company identity and strategic direction (falls back to `company.md` → `directives.md`) |
+| 2 | Goals | `memory/{squad}/goals.md` | Measurable targets for this squad |
+| 3 | Active Work | `memory/{squad}/active-work.md` | Open PRs and issues — prevent duplication |
+| 4 | Agent State | `memory/{squad}/{agent}/state.md` | What the agent already knows |
+| 5 | Feedback | `memory/{squad}/feedback.md` | Last cycle evaluation |
+| 6 | Briefings | `memory/daily-briefing.md` | Cross-squad context |
 
 The order matters. When the token budget runs out, lower layers drop
 first. An agent that loses briefings still knows its mission and what
@@ -80,12 +79,12 @@ or what feedback other agents received. A lead coordinating across squads
 needs everything. Loading unnecessary context wastes tokens and can
 confuse the agent with irrelevant information.
 
-- **Scanners** get identity, priorities, and their own state — they discover, don't decide
-- **Workers** add directives, feedback, and active work — they execute with awareness of what exists
+- **Scanners** get company strategy, goals, and their own state — they discover, don't decide
+- **Workers** add feedback and active work — they execute with awareness of what exists
 - **Leads** get all layers including cross-squad briefings — they orchestrate with full visibility
 - **Evaluators** get all layers with org-wide summaries — they assess and generate feedback
 
-## Goals vs Priorities
+## Goals and Strategy
 
 A common failure mode in autonomous systems is conflating direction with
 execution. An agent that only sees "Fix #461 this week" doesn't know
@@ -94,14 +93,11 @@ execution. An agent that only sees "Fix #461 this week" doesn't know
 
 Squads separates aspiration from execution:
 
-- **Goals** live in `SQUAD.md` — atemporal, aspirational ("Zero friction first-run experience")
-- **Priorities** live in `priorities.md` — temporal, operational ("Fix #461 this week")
+- **Strategy** lives in `memory/company/strategy.md` — company identity and the "why" behind all work
+- **Goals** live in `memory/{squad}/goals.md` — measurable targets with deadlines and status tracking
 
-Goals give agents purpose and judgment. Priorities give them focus. Both
-are injected — goals as identity context that shapes decision-making,
-priorities as immediate operational focus. `squads goal set` writes
-aspirational goals. Priorities are updated between cycles by the human
-operator or the evaluator agent.
+Strategy gives agents purpose and alignment. Goals give them specific, measurable targets.
+`squads goal set` writes aspirational goals. Strategy is updated by the founder between cycles.
 
 ## Phase Ordering
 

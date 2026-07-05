@@ -1,6 +1,6 @@
 # Squads CLI — Full Command Reference
 
-> GENERATED from `squads commands --json` (squads-cli v0.8.1) — do not edit.
+> GENERATED from `squads commands --json` (squads-cli v0.8.2) — do not edit.
 > Regenerate: `npm run build && npm run gen:skill`. For the live tree on any
 > installed version, run `squads commands --json` directly.
 
@@ -10,8 +10,10 @@
 |---------|-------------|
 | `squads init` | Plant the seed: create manager agent, CLI skill, and starter squads |
 | `squads add <name>` | Add a new squad with directory structure and starter files |
-| `squads run [target]` | Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle. |
+| `squads run [target] [agent]` | Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle. |
 | `squads list` | List squads (alias for: squads status) |
+| `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
+| `squads resume <squad>` | Resume a paused squad |
 | `squads orchestrate <squad>` | Run squad with lead agent orchestration |
 | `squads env show <squad>` | Show execution environment for a squad |
 | `squads env prompt <squad>` | Output ready-to-use prompt for Claude Code execution |

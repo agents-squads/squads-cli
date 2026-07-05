@@ -290,8 +290,9 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 
 // Run command - execute squads or individual agents
 program
-  .command('run [target]')
+  .command('run [target] [agent]')
   .description('Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle.')
+  .allowExcessArguments(false)
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
@@ -320,8 +321,9 @@ program
   .option('--phased', 'Autopilot: use dependency-based phase ordering (from SQUAD.md depends_on)')
   .option('--no-eval', 'Skip post-run COO evaluation')
   .option('--org', 'Run all squads as a coordinated org cycle (scan → plan → execute → report)')
-  .option('--force', 'Force re-run squads that already completed today')
+  .option('--force', 'Force re-run squads that already completed today; bypasses pause enforcement')
   .option('--resume', 'Resume org cycle from where quota stopped it')
+  .option('--wait-for-quota', 'Org cycle: on quota cap, poll until the session window reopens instead of stopping')
   .option('-y, --yes', 'Skip the org-run cost confirmation (for deliberate/non-interactive triggers)')
   .option('--focus <mode>', 'Cycle focus: create, resolve, review, ship, research, cost (default: create)')
   .addHelpText('after', `
@@ -329,6 +331,7 @@ Examples:
   $ squads run engineering              Run squad conversation (lead → scan → work → review)
   $ squads run engineering --task "fix CI"  Conversation with founder directive
   $ squads run engineering/code-review  Run specific agent (slash notation)
+  $ squads run engineering code-review  Same as above (space notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run
   $ squads run engineering --parallel   Run all agents in parallel (tmux)
@@ -342,9 +345,14 @@ Examples:
   $ squads run --once --dry-run         Preview one autopilot cycle
   $ squads run -i 15 --budget 50       Autopilot: 15min cycles, $50/day cap
 `)
-  .action(async (target, options) => {
-    const { runCommand } = await import('./commands/run.js');
-    return runCommand(target || null, { ...options, timeout: options.timeout != null ? parseInt(options.timeout, 10) : undefined });
+  .action(async (target, agent, options) => {
+    const { runCommand, mergeAgentPositional } = await import('./commands/run.js');
+    const merged = mergeAgentPositional(target || null, agent, options.agent);
+    if (merged.error) {
+      console.error(chalk.red(`\n  ${merged.error}\n`));
+      process.exit(1);
+    }
+    return runCommand(merged.target, { ...options, timeout: options.timeout != null ? parseInt(options.timeout, 10) : undefined });
   });
 
 // List command — alias for status
@@ -352,6 +360,33 @@ program.command('list').description('List squads (alias for: squads status)').ac
   const { statusCommand } = await import('./commands/status.js');
   return statusCommand();
 });
+
+// Pause command - suspend a squad (enforced by runner + org planner + cron)
+program
+  .command('pause <squad>')
+  .description('Pause a squad — run/org/cron dispatch will refuse until resumed')
+  .option('-r, --reason <text>', 'Reason for pausing')
+  .option('-j, --json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads pause engineering                         Pause without reason
+  $ squads pause engineering --reason "waiting for design sign-off"
+  $ squads resume engineering                        Resume a paused squad
+`)
+  .action(async (squad, options) => {
+    const { pauseCommand } = await import('./commands/pause.js');
+    return pauseCommand(squad, options);
+  });
+
+// Resume command - reactivate a paused squad
+program
+  .command('resume <squad>')
+  .description('Resume a paused squad')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (squad, options) => {
+    const { resumeCommand } = await import('./commands/pause.js');
+    return resumeCommand(squad, options);
+  });
 
 // Orchestrate command - lead-coordinated squad execution
 registerOrchestrateCommand(program);

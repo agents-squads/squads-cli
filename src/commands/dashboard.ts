@@ -28,9 +28,11 @@ interface SquadMetrics {
   mission: string;
   goals: Goal[];
   lastActivity: string;
-  status: 'active' | 'stale' | 'needs-goal';
+  status: 'active' | 'stale' | 'needs-goal' | 'paused';
   github: SquadGitHubStats | null;
   goalProgress: number; // 0-100
+  pausedSince?: string;
+  pausedReason?: string;
 }
 
 function getLastActivityDate(squadName: string): string {
@@ -135,7 +137,9 @@ function collectSquadMetrics(
 
     let status: SquadMetrics['status'] = 'active';
     const activeGoals = squad.goals.filter(g => !g.completed);
-    if (activeGoals.length === 0) {
+    if (squad.status === 'paused') {
+      status = 'paused';
+    } else if (activeGoals.length === 0) {
       status = 'needs-goal';
     } else if (lastActivity.includes('w') || lastActivity === '—') {
       status = 'stale';
@@ -178,6 +182,8 @@ function collectSquadMetrics(
       status,
       github: githubStats,
       goalProgress,
+      pausedSince: squad.paused_since,
+      pausedReason: squad.paused_reason,
     });
   }
 
@@ -293,12 +299,19 @@ function renderSquadsTable(squadData: SquadMetrics[]): void {
     const completedCount = squad.goals.filter(g => g.completed).length;
     const totalCount = squad.goals.length;
 
+    const isPaused = squad.status === 'paused';
+    const nameColor = isPaused ? colors.yellow : colors.cyan;
     const commitColor = commits > 10 ? colors.green : commits > 0 ? colors.cyan : colors.dim;
     const prColor = prs > 0 ? colors.green : colors.dim;
     const issueColor = issuesClosed > 0 ? colors.green : colors.dim;
 
+    const pausedSuffix = isPaused ? `${colors.yellow}⏸${RESET}` : '';
+    const nameField = isPaused
+      ? `${nameColor}${padEnd(squad.name, w.name - 1)}${RESET}${pausedSuffix}`
+      : `${nameColor}${padEnd(squad.name, w.name)}${RESET}`;
+
     writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +
-      `${colors.cyan}${padEnd(squad.name, w.name)}${RESET}` +
+      nameField +
       `${commitColor}${padEnd(String(commits), w.commits)}${RESET}` +
       `${prColor}${padEnd(String(prs), w.prs)}${RESET}` +
       `${issueColor}${padEnd(`${issuesClosed}/${issuesOpen}`, w.issues)}${RESET}` +

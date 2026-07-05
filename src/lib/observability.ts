@@ -150,12 +150,17 @@ interface SessionUsage {
 /**
  * Find the most recently modified Claude Code session JSONL file.
  * Claude Code writes sessions to ~/.claude/projects/<hash>/*.jsonl
+ *
+ * `beforeTimestamp` (optional) excludes files still being written after the
+ * run ended — without it a concurrent long-lived session (e.g. interactive)
+ * absorbs the attribution (#857). 2-minute grace for the final flush.
  */
-function findRecentSessionFile(afterTimestamp: number): string | null {
+function findRecentSessionFile(afterTimestamp: number, beforeTimestamp?: number): string | null {
   const home = process.env.HOME || '';
   const projectsDir = join(home, '.claude', 'projects');
   if (!existsSync(projectsDir)) return null;
 
+  const GRACE_MS = 2 * 60_000;
   let newest: { path: string; mtime: number } | null = null;
 
   try {
@@ -170,8 +175,10 @@ function findRecentSessionFile(afterTimestamp: number): string | null {
         const filePath = join(projPath, file);
         try {
           const mtime = statSync(filePath).mtimeMs;
-          // Only consider files modified after the run started
-          if (mtime > afterTimestamp && (!newest || mtime > newest.mtime)) {
+          // Only consider files modified within the run's window
+          if (mtime <= afterTimestamp) continue;
+          if (beforeTimestamp !== undefined && mtime > beforeTimestamp + GRACE_MS) continue;
+          if (!newest || mtime > newest.mtime) {
             newest = { path: filePath, mtime };
           }
         } catch { continue; }
@@ -180,6 +187,28 @@ function findRecentSessionFile(afterTimestamp: number): string | null {
   } catch { /* projects dir read error */ }
 
   return newest?.path || null;
+}
+
+/**
+ * Find a session JSONL by its exact session id (the file basename), across
+ * all project dirs. Used for detached runs launched with `--session-id` —
+ * deterministic attribution, immune to concurrent sessions (#857).
+ */
+function findSessionFileById(sessionId: string): string | null {
+  const home = process.env.HOME || '';
+  const projectsDir = join(home, '.claude', 'projects');
+  if (!existsSync(projectsDir)) return null;
+  // Defense in depth: ids are CLI-generated UUIDs, never path fragments.
+  const safe = sessionId.replace(/[^A-Za-z0-9-]/g, '');
+  if (!safe) return null;
+
+  try {
+    for (const projDir of readdirSync(projectsDir)) {
+      const candidate = join(projectsDir, projDir, `${safe}.jsonl`);
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch { /* projects dir read error */ }
+  return null;
 }
 
 /**
@@ -297,10 +326,23 @@ export function diffGoals(
 
 /**
  * Capture usage from the most recent Claude Code session.
- * Call this after a foreground run completes.
+ * Call this after a foreground run completes. Pass `runEndedAt` for runs that
+ * finished in the past (spool reconcile) so sessions still active after the
+ * run can't absorb the attribution (#857).
  */
-export function captureSessionUsage(runStartedAt: number): SessionUsage | null {
-  const sessionFile = findRecentSessionFile(runStartedAt);
+export function captureSessionUsage(runStartedAt: number, runEndedAt?: number): SessionUsage | null {
+  const sessionFile = findRecentSessionFile(runStartedAt, runEndedAt);
+  if (!sessionFile) return null;
+  return parseSessionUsage(sessionFile);
+}
+
+/**
+ * Capture usage for an exact session id — the run's own session JSONL,
+ * recorded by the detached wrapper at launch (#857). Deterministic; never
+ * picks up a concurrent session.
+ */
+export function captureSessionUsageById(sessionId: string): SessionUsage | null {
+  const sessionFile = findSessionFileById(sessionId);
   if (!sessionFile) return null;
   return parseSessionUsage(sessionFile);
 }
@@ -382,6 +424,53 @@ async function pushToBridge(record: ObservabilityRecord): Promise<void> {
   }
 }
 
+/**
+ * Fire-and-forget ingest trigger ping.
+ *
+ * After the execution record is written to JSONL, POST to
+ * `${SQUADS_API_URL}/ingest/trigger` so the local squads-api defers an
+ * immediate `ingest_usage` run — providing near-real-time substrate data
+ * instead of waiting for the 2-minute periodic sweep.
+ *
+ * Safety contract:
+ *   - NEVER throws or rejects — failure must never affect the run path.
+ *   - Skipped silently when SQUADS_API_URL or SCHEDULER_API_KEY is unset.
+ *   - 2-second AbortController timeout so a dead API doesn't stall the process.
+ *   - Errors caught and discarded (debug-level: no console output in production).
+ *
+ * Uses process.env.SQUADS_API_URL directly (same source getApiUrl() reads) to
+ * avoid pulling the env-config module into the call path and to keep the
+ * function easily testable without dynamic-import mocking.
+ */
+async function pingIngestTrigger(): Promise<void> {
+  try {
+    const apiUrl = process.env.SQUADS_API_URL;
+    if (!apiUrl) return; // SQUADS_API_URL unset — skip silently
+
+    const apiKey = process.env.SCHEDULER_API_KEY;
+    if (!apiKey) return; // key unset — skip silently
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      await fetch(`${apiUrl}/ingest/trigger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify({ source: 'squads-cli' }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Silent — API down, key missing, timeout, or any other error.
+    // The periodic sweep (every 2 minutes) will cover the gap.
+  }
+}
+
 export function logObservability(record: ObservabilityRecord): void {
   const logPath = getLogPath();
   if (!logPath) return;
@@ -398,6 +487,8 @@ export function logObservability(record: ObservabilityRecord): void {
   pushToApi(record).catch(() => {});
   // Best-effort Bridge push (no-op/silent if Bridge unset or down).
   pushToBridge(record).catch(() => {});
+  // Real-time ingest trigger: notify local squads-api immediately (fire-and-forget).
+  pingIngestTrigger().catch(() => {});
 }
 
 // ── Read ─────────────────────────────────────────────────────────────

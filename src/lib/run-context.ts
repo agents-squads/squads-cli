@@ -4,15 +4,14 @@
  * Squad Context System — context assembly for agent execution.
  *
  * Layers flow from general to particular (no overrides, each answers a different question):
- *   L0:  SYSTEM.md             — How    (system, tools, principles — immutable, outside budget)
- *   L1:  company.md            — Why    (company identity, alignment)
- *   L2:  priorities.md         — Where  (current focus, urgency)
- *   L3:  goals.md              — What   (measurable targets)
- *   L4:  agent.md              — You    (agent role, specific instructions)
- *   L5:  state.md              — Memory (continuity from last run)
- *   L6+: Supporting            — feedback, daily-briefing, cross-squad learnings
- *   L9:  founder-context.md    — Live strategic state (universal, all squads see)
- *   L10: founder-alignment.md  — Per-squad contribution to founder's current pipeline
+ *   L0:  SYSTEM.md                    — How    (system, tools, principles — immutable, outside budget)
+ *   L1:  memory/company/strategy.md   — Why    (company identity, alignment; falls back to company.md → directives.md)
+ *   L2:  goals.md                     — What   (measurable targets)
+ *   L3:  agent.md                     — You    (agent role, specific instructions)
+ *   L4:  state.md                     — Memory (continuity from last run)
+ *   L5+: Supporting                   — feedback, daily-briefing, cross-squad learnings
+ *   L9:  founder-context.md           — Live strategic state (universal, all squads see)
+ *   L10: founder-alignment.md         — Per-squad contribution to founder's current pipeline
  *
  * L9 + L10 are auto-generated (e.g. by hq/.claude/hooks/founder-context-digest.py) from
  * interactive sessions, git activity, and open PRs/issues. They translate the
@@ -51,20 +50,20 @@ export const ROLE_BUDGETS: Record<ContextRole, number> = {
 
 /**
  * Which layers each role gets access to.
- * Numbers correspond to layer order in the Squad Context System:
- *   1=company, 2=priorities, 3=goals, 4=agent, 5=state, 6=feedback,
- *   7=daily-briefing, 8=cross-squad, 9=founder-context, 10=founder-alignment
+ * Numbers correspond to layer IDs in the Squad Context System:
+ *   1=company (strategy.md → company.md → directives.md), 3=goals, 4=agent, 5=state,
+ *   6=feedback, 7=daily-briefing, 8=cross-squad, 9=founder-context, 10=founder-alignment
  *
  * Layers 9 and 10 are visible to ALL roles (including scanners): live strategic
  * context is always relevant, regardless of role. Without it, agents invent
  * generic work disconnected from the founder's current pipeline.
  */
 export const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
-  scanner:  new Set([1, 2, 3, 4, 5,             9, 10]),   // identity + focus + role + memory + founder ctx + alignment
-  worker:   new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // + feedback + founder ctx + alignment
-  lead:     new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + founder ctx + alignment
-  coo:      new Set([1, 2, 3, 4, 5, 6, 7, 8,    9, 10]),   // all layers + expanded budget + founder ctx + alignment
-  verifier: new Set([1, 2, 3, 4, 5, 6,          9, 10]),   // same as worker + founder ctx + alignment
+  scanner:  new Set([1, 3, 4, 5,          9, 10]),   // company + goals + role + memory + founder ctx + alignment
+  worker:   new Set([1, 3, 4, 5, 6,       9, 10]),   // + feedback + founder ctx + alignment
+  lead:     new Set([1, 3, 4, 5, 6, 7, 8, 9, 10]),   // all layers + founder ctx + alignment
+  coo:      new Set([1, 3, 4, 5, 6, 7, 8, 9, 10]),   // all layers + expanded budget + founder ctx + alignment
+  verifier: new Set([1, 3, 4, 5, 6,       9, 10]),   // same as worker + founder ctx + alignment
 };
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
@@ -264,17 +263,28 @@ export function loadSystemProtocol(): string {
 }
 
 /**
- * Load company.md (L1) — company context and strategic direction.
- * Path: .agents/company.md
+ * Load company context (L1) — company identity and strategic direction.
  * This is the "why" layer — frames everything that follows.
+ *
+ * Read order (first non-empty wins):
+ *   1. memory/company/strategy.md  — new primary (canonical strategic brief)
+ *   2. .agents/company.md          — legacy primary
+ *   3. memory/company/directives.md — legacy fallback (backward compat)
  */
 export function loadCompanyContext(): string {
-  // Primary: .agents/company.md
+  // Primary: memory/company/strategy.md
+  const memoryDir = findMemoryDir();
+  if (memoryDir) {
+    const strategyFile = join(memoryDir, 'company', 'strategy.md');
+    const strategyContent = safeRead(strategyFile);
+    if (strategyContent) return strategyContent;
+  }
+
+  // Fallback 1: .agents/company.md (legacy primary)
   const companyMd = readAgentsFile('company.md', 'company.md');
   if (companyMd) return companyMd;
 
-  // Fallback: legacy directives.md (for backward compat during migration)
-  const memoryDir = findMemoryDir();
+  // Fallback 2: legacy directives.md (for backward compat during migration)
   if (memoryDir) {
     const directivesFile = join(memoryDir, 'company', 'directives.md');
     const content = safeRead(directivesFile);
@@ -315,6 +325,27 @@ function safeRead(path: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Staleness caveat derived from a file's mtime (#721, extended in the
+ * 2026-06 context audit). Returns a markdown note when the file was last
+ * modified more than `staleDays` ago, otherwise ''.
+ *
+ * Applied to memory layers an agent is told to ACT ON (state.md, feedback.md):
+ * without it, a correction from months ago is injected as if it were current
+ * (the audit found March feedback under "act on this first" in June runs).
+ */
+function stalenessNote(filePath: string, staleDays = 0): string {
+  try {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const mtime = statSync(filePath).mtimeMs;
+    const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
+    if (daysAgo > staleDays) {
+      return `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
+    }
+  } catch { /* mtime unavailable — skip the caveat */ }
+  return '';
 }
 
 function stripYamlFrontmatter(markdown: string): string {
@@ -430,14 +461,13 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
  * Gather context for agent execution.
  *
  * Layers flow general → particular (each adds a unique dimension):
- *    1. company.md             — Why    (company identity, alignment)
- *    2. priorities.md          — Where  (current focus, urgency)
- *    3. goals.md               — What   (measurable targets)
- *    4. agent.md               — You    (agent role, instructions)
- *    5. state.md               — Memory (continuity from last run)
- *    6. feedback.md            — Supporting (squad feedback)
- *    7. daily-briefing         — Supporting (org pulse, leads+coo only)
- *    8. cross-squad            — Supporting (learnings from other squads)
+ *    1. strategy.md            — Why    (company identity; falls back to company.md → directives.md)
+ *    2. goals.md               — What   (measurable targets)
+ *    3. agent.md               — You    (agent role, instructions)
+ *    4. state.md               — Memory (continuity from last run)
+ *    5. feedback.md            — Supporting (squad feedback)
+ *    6. daily-briefing         — Supporting (org pulse, leads+coo only)
+ *    7. cross-squad            — Supporting (learnings from other squads)
  *    9. founder-context.md     — Live strategic state (universal, all roles)
  *   10. founder-alignment.md   — Per-squad contribution to current pipeline
  *
@@ -534,7 +564,9 @@ export function gatherSquadContext(
     const feedbackFile = join(memoryDir, squadName, 'feedback.md');
     const content = safeRead(feedbackFile);
     if (content) {
-      addLayer(6, 'Feedback (act on this first)', content);
+      // Caveat stale feedback (audit F1): without it, a correction from months
+      // ago is injected under "act on this first" as if it were current.
+      addLayer(6, 'Feedback (act on this first)', stalenessNote(feedbackFile) + content);
     }
   }
 
@@ -554,24 +586,8 @@ export function gatherSquadContext(
     if (content) {
       const body = stripYamlFrontmatter(content);
       const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
-      // Add staleness caveat (#721) so agents know if their memory is outdated
-      let staleNote = '';
-      try {
-        const MS_PER_DAY = 24 * 60 * 60 * 1000;
-        const mtime = statSync(stateFile).mtimeMs;
-        const daysAgo = Math.floor((Date.now() - mtime) / MS_PER_DAY);
-        if (daysAgo > 0) staleNote = `*(Last updated ${daysAgo} day${daysAgo > 1 ? 's' : ''} ago — verify before relying on this)*\n\n`;
-      } catch { /* */ }
-      addLayer(5, 'Previous State', staleNote + body, stateCap);
-    }
-  }
-
-  // ── L2: priorities.md — Where to focus ──
-  if (memoryDir) {
-    const prioritiesFile = join(memoryDir, squadName, 'priorities.md');
-    const content = safeRead(prioritiesFile);
-    if (content) {
-      addLayer(2, 'Priorities', stripYamlFrontmatter(content));
+      // Staleness caveat (#721) so agents know if their memory is outdated.
+      addLayer(5, 'Previous State', stalenessNote(stateFile) + body, stateCap);
     }
   }
 
@@ -584,7 +600,7 @@ export function gatherSquadContext(
     }
   }
 
-  // ── L1: company.md — Who we are (reference) ──
+  // ── L1: company context — Who we are (strategy.md → company.md → directives.md) ──
   const companyContext = loadCompanyContext();
   if (companyContext) {
     addLayer(1, 'Company', stripYamlFrontmatter(companyContext));
