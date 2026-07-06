@@ -109,3 +109,19 @@ describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)'
     expect(LLM_CLIS.glm.env!().ANTHROPIC_BASE_URL).toBe('https://proxy.example/anthropic');
   });
 });
+
+describe('detectProviderFatalError (#936 — exit-0 API failures must fail loud)', () => {
+  it('catches the real failure classes seen in production', async () => {
+    const { detectProviderFatalError } = await import('../src/lib/llm-clis.js');
+    expect(detectProviderFatalError('litellm.BadRequestError: DeepseekException - {"error":...}')).toContain('litellm.BadRequestError');
+    expect(detectProviderFatalError('The supported API model names are deepseek-v4-pro')).toBeTruthy();
+    expect(detectProviderFatalError('[1113][Insufficient balance or no resource package. Please recharge.]')).toBeTruthy();
+    expect(detectProviderFatalError('You exceeded your current quota, please check your plan')).toBeTruthy();
+    expect(detectProviderFatalError('Error: invalid api key provided')).toBeTruthy();
+  });
+  it('stays quiet on healthy output', async () => {
+    const { detectProviderFatalError } = await import('../src/lib/llm-clis.js');
+    expect(detectProviderFatalError('Applied edit to docs/commands.md\nTokens: 57k sent, 1.7k received.')).toBeNull();
+    expect(detectProviderFatalError('discussed error handling in the docs')).toBeNull();
+  });
+});

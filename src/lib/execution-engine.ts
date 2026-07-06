@@ -47,6 +47,7 @@ import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
+import { detectProviderFatalError } from './llm-clis.js';
 import {
   buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
@@ -1258,6 +1259,12 @@ export async function executeWithProvider(
         // Token/cost figures come from the provider's own output when parseable.
         const startMs = options.startMs || timestamp;
         const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        // #936: providers can exit 0 after printing a fatal API error — detect
+        // from output so the ledger never credits a failed run as completed.
+        const fatal = detectProviderFatalError(outputTail);
+        if (fatal) {
+          writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
+        }
         logObservability({
           ts: new Date().toISOString(),
           id: options.executionId || generateExecutionId(),
@@ -1266,7 +1273,7 @@ export async function executeWithProvider(
           provider,
           model: options.model || 'unknown',
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
-          status: code === 0 ? 'completed' : 'failed',
+          status: code === 0 && !fatal ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
           input_tokens: usage?.input_tokens || 0,
           output_tokens: usage?.output_tokens || 0,
@@ -1274,7 +1281,7 @@ export async function executeWithProvider(
           cache_write_tokens: 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
-          error: code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined,
+          error: fatal ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);

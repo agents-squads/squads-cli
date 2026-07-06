@@ -16,7 +16,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
-import { getCLIConfig } from './llm-clis.js';
+import { getCLIConfig, detectProviderFatalError } from './llm-clis.js';
 import {
   logObservability,
   captureSessionUsage,
@@ -166,18 +166,27 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
   const durationMs = spool.endEpoch > spool.startEpoch && spool.startEpoch > 0
     ? (spool.endEpoch - spool.startEpoch) * 1000
     : 0;
-  const status: ObservabilityRecord['status'] = spool.timedOut
+  let status: ObservabilityRecord['status'] = spool.timedOut
     ? 'timeout'
     : spool.exitCode === 0 ? 'completed' : 'failed';
+  let fatalError: string | undefined;
 
   let input = 0, output = 0, cost = 0, cacheRead = 0, cacheWrite = 0;
   let model = spool.model || 'unknown';
   let outcomes: ReturnType<typeof parseStreamJson>['outcomes'] | undefined;
 
   if (spool.provider && spool.provider !== 'anthropic') {
+    const tail = spool.logFile ? readLogTail(spool.logFile) : '';
+    // #936: providers exit 0 after printing fatal API errors — never credit
+    // a failed run as completed in the ledger the scoreboard reads.
+    const fatal = tail ? detectProviderFatalError(tail) : null;
+    if (fatal && status === 'completed') {
+      status = 'failed';
+      fatalError = fatal;
+    }
     const parse = getCLIConfig(spool.provider)?.parseUsage;
-    if (parse && spool.logFile) {
-      const usage = parse(readLogTail(spool.logFile));
+    if (parse && tail) {
+      const usage = parse(tail);
       if (usage) {
         input = usage.input_tokens;
         output = usage.output_tokens;
@@ -263,7 +272,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
     } : {}),
     error: spool.timedOut
       ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
-      : spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined,
+      : fatalError ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
   };
 }
 
