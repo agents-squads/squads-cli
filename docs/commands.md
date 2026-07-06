@@ -36,6 +36,47 @@ squads results [squad]         # Git activity + KPI actuals
 squads stats [squad]           # Workforce scorecard + ROI
 ```
 
+## Inbox
+
+`squads inbox` lists everything waiting on a human operator — open pull
+requests, stranded run branches, and runs that produced artifacts. Each
+line shows an identifier you can use with the decision verbs below.
+
+**Item types and identifiers**
+
+| Type | Example identifier |
+|------|-------------------|
+| Pull request | `pr-12` |
+| Stranded run branch | `branch-squads/run-x` |
+| Run with artifacts | `run-exec_y` |
+
+`run-artifacts` items are pointers only in v1 — inspect them with
+`squads runs --outcome <execId>`.
+
+**Verbs**
+
+```bash
+# Approve an item
+squads inbox approve pr-12
+#   - PRs: queues CI-gated squash auto-merge
+#   - Branches: pushes the branch, opens a PR, queues merge
+#   - Decisions are recorded in .agents/observability/reviewed.jsonl
+
+squads inbox reject pr-12 --reason "Draft superseded by PR #15"
+#   - PRs: closes with the given reason
+#   - Branches: archive tag archive/<branch>, then deletes the branch
+#   - Reason is written to squads feedback for the owning squad
+
+squads inbox defer pr-12 --days 14
+#   - Snooze for N days (default 7). Item resurfaces automatically
+#     when the delay expires.
+```
+
+Decisions (approve/reject/defer) are written append-only to
+`.agents/observability/reviewed.jsonl`. Approved and rejected items are
+never hidden from the list; deferred items are hidden until their snooze
+period expires.
+
 ## For Agents
 
 Agents are the primary consumers of this CLI. After `squads run`
