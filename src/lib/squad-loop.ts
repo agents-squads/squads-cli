@@ -466,7 +466,14 @@ export function checkPrForIssue(
       { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
     );
     const prs = JSON.parse(raw) as Array<{ number: number; title: string; body: string; state: string }>;
-    const pattern = new RegExp('#' + issueNumber + '\\b');
+    // Closing keywords ONLY (#971): a bare `#N` matched casual cross-references
+    // ("tracked in #957", "the A4 gate false-positive (#971)") and stopped runs
+    // whose work nobody had done — including, recursively, the run dispatched
+    // to fix this very bug. Same keyword family as close-linked-issues.yml.
+    const pattern = new RegExp(
+      '\\b(?:clos(?:e|es|ed)|fix(?:es|ed)?|resolv(?:e|es|ed))\\s*:?\\s+#' + issueNumber + '\\b',
+      'i',
+    );
     const match = prs.find(
       pr => (pr.state === 'OPEN' || pr.state === 'MERGED') &&
         (pattern.test(pr.title) || pattern.test(pr.body || '')),
