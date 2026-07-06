@@ -85,7 +85,7 @@ vi.mock('../../src/lib/conversation.js', async () => {
 });
 
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
 import { runConversation, saveTranscript, buildAgentRoster } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
@@ -95,6 +95,7 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
 const mockSpawn = vi.mocked(spawn);
+const mockExecSync = vi.mocked(execSync);
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
 
 // Minimal squad fixture
@@ -264,6 +265,39 @@ describe('runConversation', () => {
     // Should converge without crashing on the unclassifiable agent
     expect(result.converged).toBe(true);
   });
+
+  it('deliver-and-stop gate: stops when a PR already addresses the --task issue, even though turn/cost ceilings alone would not', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (String(cmd).includes('gh pr list')) {
+        return JSON.stringify([
+          { number: 951, title: 'fix: issue-951 gate', body: 'Closes #951', state: 'MERGED' },
+        ]);
+      }
+      return '';
+    });
+
+    // Every turn is non-convergent — proves the gate (not the turn/cost ceiling,
+    // both far from being hit) is what stops the run.
+    mockSpawn.mockImplementation(() => createMockChild('Still working on it.') as any);
+
+    const squad = makeSquad({
+      repo: 'agents-squads/squads-cli',
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const result = await runConversation(squad, {
+      task: 'Fix #951',
+      maxTurns: 100,
+      costCeiling: 999,
+      verbose: false,
+    });
+
+    expect(result.converged).toBe(true);
+    expect(result.reason).toContain('951');
+  });
 });
 
 // ─── buildAgentRoster (lead detection robustness, #449) ─────────────────────────
@@ -353,6 +387,25 @@ describe('buildAgentRoster', () => {
     expect(leads).toHaveLength(1);
     expect(leads[0].name).toBe('real-orchestrator');
     expect(roster.find(a => a.name === 'worker-bot')!.role).toBe('worker');
+  });
+
+  it('taskMode trims the roster to lead + first non-eval/critic/tester worker, dropping scanners/verifiers (#951)', () => {
+    const squad = makeSquad({
+      name: 'cli',
+      dir: 'cli',
+      agents: [
+        { name: 'cli-lead', role: 'orchestrates the team', model: undefined } as any,
+        // Eval/critic/tester agents come FIRST here so the test actually
+        // exercises the exclusion regex — if it were a no-op, one of these
+        // (not issue-solver) would win as "first worker".
+        { name: 'code-eval', role: 'evaluates code quality', model: undefined } as any,
+        { name: 'cli-critic', role: 'critiques output', model: undefined } as any,
+        { name: 'ux-tester', role: 'tests the UX', model: undefined } as any,
+        { name: 'issue-solver', role: 'solves issues', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads', { taskMode: true });
+    expect(roster.map(a => a.name)).toEqual(['cli-lead', 'issue-solver']);
   });
 });
 
