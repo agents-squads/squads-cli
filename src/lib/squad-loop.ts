@@ -440,6 +440,44 @@ export function checkNewPRs(
 }
 
 /**
+ * Extract the first `#<digits>` issue reference from a `--task` directive
+ * (e.g. "Fix agents-squads/squads-cli#951 ..." → 951). Returns null if the
+ * task text doesn't reference an issue number.
+ */
+export function parseIssueNumberFromTask(task: string): number | null {
+  const match = task.match(/#(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
+ * Deliver-and-stop gate (#951): check whether a PR already exists (open or
+ * merged) that addresses the given issue number — so a scoped `--task`
+ * conversation can stop once the work has already landed, instead of running
+ * more turns against an issue someone else (or a prior cycle) already closed.
+ */
+export function checkPrForIssue(
+  repo: string,
+  issueNumber: number,
+  ghEnv: Record<string, string> = {},
+): { number: number; title: string } | null {
+  try {
+    const raw = execSync(
+      `gh pr list -R ${repo} --state all --json number,title,body,state --limit 30`,
+      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
+    );
+    const prs = JSON.parse(raw) as Array<{ number: number; title: string; body: string; state: string }>;
+    const pattern = new RegExp('#' + issueNumber + '\\b');
+    const match = prs.find(
+      pr => (pr.state === 'OPEN' || pr.state === 'MERGED') &&
+        (pattern.test(pr.title) || pattern.test(pr.body || '')),
+    );
+    return match ? { number: match.number, title: match.title } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get open PRs with unaddressed review comments (from Gemini, humans, etc).
  * Skips comments from our own bot to avoid feedback loops.
  */

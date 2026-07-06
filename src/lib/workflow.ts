@@ -49,6 +49,7 @@ import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
 import { getBotGhEnv } from './github.js';
+import { parseIssueNumberFromTask, checkPrForIssue } from './squad-loop.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
 import { createRunWorktree } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
@@ -98,6 +99,8 @@ export interface ConversationOptions {
   tokenBudget?: number;
   /** Cycle focus — changes the lead's planning behavior */
   focus?: CycleFocus;
+  /** Scoped, single-issue conversation (roster trimmed, PR-gate stop enabled) — derived from `task` when omitted */
+  scoped?: boolean;
 }
 
 /** Load focus instructions from .agents/config/cycle-focus.md */
@@ -437,7 +440,11 @@ interface ClassifiedAgent {
   path: string;
 }
 
-export function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+export function buildAgentRoster(
+  squad: Squad,
+  squadsDir: string,
+  opts: { taskMode?: boolean } = {},
+): ClassifiedAgent[] {
   // If squad defines conversation_agents, only include those in the conversation.
   // Other agents run on their own schedules, not in the squad conversation.
   const conversationFilter = squad.conversation_agents;
@@ -462,6 +469,19 @@ export function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAge
         a.name.toLowerCase().endsWith('-lead')
     );
     if (byName) byName.role = 'lead';
+  }
+
+  // Scoped --task mode (#951): a `--task` dispatch (e.g. issue-solver working
+  // one issue) doesn't need the full squad roster — scanners/verifiers add
+  // turns and cost without adding value to a single bounded fix. Keep the
+  // lead(s) plus the first worker that isn't an eval/critic/tester/bench
+  // agent (those are quality-gate roles, not delegates that build).
+  if (opts.taskMode) {
+    const leads = agents.filter(a => a.role === 'lead');
+    const delegate = agents.find(
+      a => a.role === 'worker' && !/-eval$|-critic|-tester$|-bench$/i.test(a.name),
+    );
+    return delegate ? [...leads, delegate] : leads;
   }
 
   return agents;
@@ -494,7 +514,30 @@ export async function runConversation(
   const tokenBudget = options.tokenBudget || projectConfig.token_budget || DEFAULT_TOKEN_BUDGET;
   const costCeiling = options.costCeiling || projectConfig.cost_ceiling || DEFAULT_COST_CEILING;
   const maxTurns = options.maxTurns || 100;
+  const scoped = options.scoped ?? Boolean(options.task);
+  const issueNumberFromTask = options.task ? parseIssueNumberFromTask(options.task) : null;
   const transcript = createTranscript(squad.name);
+
+  // Deliver-and-stop gate (#951): in a scoped single-issue conversation, stop
+  // as soon as a PR already addresses the target issue — even if the turn/cost
+  // ceiling hasn't been hit. Wraps detectConvergence (kept pure/IO-free) with
+  // one extra IO check; the bot's gh auth is fetched once, lazily, only when
+  // the gate can actually fire.
+  let prGateGhEnv: Record<string, string> | undefined;
+  const checkConvergence = async () => {
+    const base = detectConvergence(transcript, maxTurns, costCeiling);
+    if (base.converged) return base;
+    if (!scoped || issueNumberFromTask === null || !squad.repo) return base;
+    if (!prGateGhEnv) prGateGhEnv = await getBotGhEnv().catch(() => ({}));
+    const pr = checkPrForIssue(squad.repo, issueNumberFromTask, prGateGhEnv);
+    if (pr) {
+      return {
+        converged: true,
+        reason: `PR #${pr.number} already addresses issue #${issueNumberFromTask} — stopping (${pr.title})`,
+      };
+    }
+    return base;
+  };
 
   // Resolve squad's working directory
   let squadCwd = process.cwd();
@@ -517,7 +560,7 @@ export async function runConversation(
   squadCwd = worktree.cwd;
 
   try {
-  const allAgents = buildAgentRoster(squad, squadsDir);
+  const allAgents = buildAgentRoster(squad, squadsDir, { taskMode: scoped });
   const leads = allAgents.filter(a => a.role === 'lead');
   const scanners = allAgents.filter(a => a.role === 'scanner');
   const workers = allAgents.filter(a => a.role === 'worker');
@@ -662,7 +705,7 @@ export async function runConversation(
   }
 
   // Check if lead declared done immediately (nothing to do)
-  const conv = detectConvergence(transcript, maxTurns, costCeiling);
+  const conv = await checkConvergence();
   if (conv.converged) {
     const goalsAfterEarly = snapshotGoals(squad.name);
     const goalsChangedEarly = diffGoals(goalsBefore, goalsAfterEarly);
@@ -881,7 +924,7 @@ or
   }
 
   // Determine final convergence
-  const finalConv = detectConvergence(transcript, maxTurns, costCeiling);
+  const finalConv = await checkConvergence();
 
   // ═══════════════════════════════════════════════════════════════════
   // Observability — log conversation cycle as a single record
