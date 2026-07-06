@@ -15,9 +15,11 @@
 
 import { execSync } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { userInfo } from 'os';
 import { dirname, join } from 'path';
 import type { InboxItem } from './inbox.js';
 import { appendFeedbackEntry } from './feedback-store.js';
+import { loadSession } from './auth.js';
 
 /** Injectable command runner so tests never hit gh/network. */
 export type CommandRunner = (cmd: string, cwd: string) => string;
@@ -38,6 +40,9 @@ export interface InboxDecisionRecord {
   until?: string;
   /** What concretely happened (merge queued / tag created / PR closed). */
   result: string;
+  /** Who decided (C1a, company-os §Identity): login email, OS user, or the
+   *  actor a bridge passes through from another decision surface. */
+  by?: string;
 }
 
 export interface DecisionContext {
@@ -46,6 +51,9 @@ export interface DecisionContext {
   run?: CommandRunner;
   /** Injectable feedback write-through (defaults to squads feedback append). */
   feedbackWriter?: (squad: string, rating: number, text: string) => boolean;
+  /** Decision actor override (`--by`) — a bridge executing an API decision
+   *  passes the real decider; otherwise the local operator is stamped. */
+  by?: string;
 }
 
 export interface DecisionOutcome {
@@ -55,6 +63,22 @@ export interface DecisionOutcome {
 
 export function reviewedLedgerPath(obsRoot: string): string {
   return join(obsRoot, '.agents', 'observability', 'reviewed.jsonl');
+}
+
+/** Local operator identity: `squads login` email when a session exists, else
+ *  the OS user. Never throws — attribution must not block a decision. */
+export function operatorIdentity(): string {
+  try {
+    const email = loadSession()?.email;
+    if (email) return email;
+  } catch {
+    // fall through to OS user
+  }
+  try {
+    return userInfo().username;
+  } catch {
+    return 'unknown';
+  }
 }
 
 export function readDecisions(obsRoot: string): InboxDecisionRecord[] {
@@ -154,7 +178,7 @@ export function approveItem(item: InboxItem, ctx: DecisionContext): DecisionOutc
 
   recordDecision(ctx.obsRoot, {
     v: 1, ts: new Date().toISOString(), id: item.id, kind: item.kind, ref: item.ref,
-    decision: 'approve', result: outcome.message,
+    decision: 'approve', result: outcome.message, by: ctx.by ?? operatorIdentity(),
   });
   return outcome;
 }
@@ -238,7 +262,7 @@ export function rejectItem(item: InboxItem, reason: string, ctx: DecisionContext
 
   recordDecision(ctx.obsRoot, {
     v: 1, ts: new Date().toISOString(), id: item.id, kind: item.kind, ref: item.ref,
-    decision: 'reject', reason, result: outcome.message,
+    decision: 'reject', reason, result: outcome.message, by: ctx.by ?? operatorIdentity(),
   });
   return outcome;
 }
@@ -271,6 +295,7 @@ export function deferItem(item: InboxItem, days: number, ctx: DecisionContext): 
   recordDecision(ctx.obsRoot, {
     v: 1, ts: new Date().toISOString(), id: item.id, kind: item.kind, ref: item.ref,
     decision: 'defer', until, result: `snoozed ${d}d (resurfaces ${until.slice(0, 10)})`,
+    by: ctx.by ?? operatorIdentity(),
   });
   return { ok: true, message: `deferred ${d}d — resurfaces ${until.slice(0, 10)}` };
 }
