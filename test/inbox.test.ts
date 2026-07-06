@@ -100,3 +100,32 @@ describe('buildInbox ordering', () => {
     expect(items.some((i) => i.ref === 'exec_c')).toBe(true);
   });
 });
+
+describe('scanner correctness (#929)', () => {
+  it('pickScanBase prefers develop normally, but main when develop is vestigial', async () => {
+    const { pickScanBase } = await import('../src/lib/inbox.js');
+    initRepo(); // repo born on develop
+    expect(pickScanBase(dir)).toBe('develop');
+
+    // main forks ahead: 2 direct-push commits develop never saw → main is the trunk
+    git('checkout -q -b main');
+    writeFileSync(join(dir, 'm1.txt'), '1'); git('add -A'); git('commit -qm direct1');
+    writeFileSync(join(dir, 'm2.txt'), '2'); git('add -A'); git('commit -qm direct2');
+    git('checkout -q develop');
+    expect(pickScanBase(dir)).toBe('main');
+  });
+
+  it('hides branches whose commits squash-landed (patch-id equivalent)', () => {
+    initRepo();
+    git('checkout -q -b squads/run-x-ab12cd-0');
+    writeFileSync(join(dir, 'brief.md'), 'deliverable');
+    git('add -A'); git('commit -qm "brief"');
+    git('checkout -q develop');
+    expect(scanStrandedBranches(dir)).toHaveLength(1); // genuinely unlanded
+
+    // simulate the squash merge: same patch, new SHA, on develop
+    writeFileSync(join(dir, 'brief.md'), 'deliverable');
+    git('add -A'); git('commit -qm "brief (squashed #99)"');
+    expect(scanStrandedBranches(dir)).toHaveLength(0); // landed → not waiting on a human
+  });
+});
