@@ -40,6 +40,57 @@ function sh(cmd: string, cwd: string): string {
   return execSync(cmd, { encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
 }
 
+/**
+ * Refresh remote refs before scanning (#929): stale local refs made already-
+ * landed branches read as "N commits ahead". Best-effort — offline/no-remote
+ * repos scan against whatever is local. SQUADS_INBOX_NO_FETCH=1 opts out
+ * (tests, air-gapped).
+ */
+function refreshRefs(repoRoot: string): void {
+  if (process.env.SQUADS_INBOX_NO_FETCH === '1') return;
+  try {
+    sh('git fetch --prune --quiet origin', repoRoot);
+  } catch {
+    // no remote / offline — local refs are all we have
+  }
+}
+
+/**
+ * The branch this repo actually integrates to (#929). develop-by-existence is
+ * wrong when develop is vestigial: if main holds more commits develop lacks
+ * than vice versa, main is the real trunk (the intelligence/research case —
+ * 61 direct-push commits develop never saw).
+ */
+export function pickScanBase(repoRoot: string): string {
+  const exists = (ref: string): boolean => {
+    try { sh(`git rev-parse --verify --quiet ${ref}`, repoRoot); return true; } catch { return false; }
+  };
+  const count = (range: string): number => {
+    try { return parseInt(sh(`git rev-list --count ${range}`, repoRoot).trim(), 10) || 0; } catch { return 0; }
+  };
+  const develop = ['origin/develop', 'develop'].find(exists);
+  const main = ['origin/main', 'main', 'origin/master', 'master'].find(exists);
+  if (develop && main) {
+    return count(`${develop}..${main}`) > count(`${main}..${develop}`) ? main : develop;
+  }
+  return develop ?? main ?? 'HEAD';
+}
+
+/**
+ * Squash-merge blindness (#929): content merged via squash gets a new SHA, so
+ * rev-list stays ≥1 forever. `git cherry` compares PATCH IDs — when every
+ * commit ahead is already equivalent upstream ('-' lines only), the branch
+ * has landed and is not waiting on anyone.
+ */
+function hasUnlandedCommits(branch: string, base: string, repoRoot: string): boolean {
+  try {
+    const cherry = sh(`git cherry ${base} '${branch.replace(/'/g, '')}'`, repoRoot);
+    return cherry.split('\n').some((l) => l.startsWith('+'));
+  } catch {
+    return true; // can't tell — keep it visible rather than hide real work
+  }
+}
+
 /** Open PRs to develop in the repo at `repoRoot` (needs gh; empty on failure). */
 export function scanOpenPrs(repoRoot: string): InboxItem[] {
   try {
@@ -72,9 +123,7 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
   } catch {
     return items;
   }
-  const base = (() => {
-    try { sh('git rev-parse --verify develop', repoRoot); return 'develop'; } catch { return 'HEAD'; }
-  })();
+  const base = pickScanBase(repoRoot);
   for (const line of refs.split('\n')) {
     if (!line.trim()) continue;
     const [branch, epoch, ...subjectParts] = line.split('|');
@@ -84,6 +133,7 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
       ahead = parseInt(sh(`git rev-list --count '${branch.replace(/'/g, '')}' ^${base}`, repoRoot).trim(), 10) || 0;
     } catch { continue; }
     if (ahead === 0) continue;
+    if (!hasUnlandedCommits(branch, base, repoRoot)) continue; // squash-landed (#929)
     items.push({
       id: `branch-${branch}`,
       kind: 'run_branch',
@@ -156,6 +206,7 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15): InboxItem[] 
  * that is somehow still open should stay in your face, not vanish.
  */
 export function buildInbox(repoRoot: string, obsRoot: string, opts?: { includeDeferred?: boolean }): InboxItem[] {
+  refreshRefs(repoRoot);
   const prs = scanOpenPrs(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const branches = scanStrandedBranches(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const runs = scanRunsWithArtifacts(obsRoot).sort((a, b) => b.ageDays - a.ageDays);
