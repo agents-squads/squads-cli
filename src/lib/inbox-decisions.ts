@@ -152,12 +152,46 @@ function repoHasDevelop(repoRoot: string, run: CommandRunner): boolean {
   }
 }
 
+/** No `origin` remote at all — the solo, no-infra repo (#979). */
+function hasOrigin(repoRoot: string, run: CommandRunner): boolean {
+  try {
+    run('git remote get-url origin', repoRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `gh` CLI missing/unauthenticated — same graceful-degradation trigger as no origin (#979). */
+function hasWorkingGh(repoRoot: string, run: CommandRunner): boolean {
+  try {
+    run('gh auth status', repoRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Local trunk to land into when there's no remote to ask (#979): `develop` if it
+ *  exists locally, else whatever branch is currently checked out. */
+function resolveLocalTrunk(repoRoot: string, run: CommandRunner): string {
+  if (repoHasDevelop(repoRoot, run)) return 'develop';
+  try {
+    return run('git rev-parse --abbrev-ref HEAD', repoRoot).trim() || 'HEAD';
+  } catch {
+    return 'HEAD';
+  }
+}
+
 /**
  * approve — executes the item's approve semantics through the EXISTING paths:
  *  - pr: queue the CI-gated auto-merge (`gh pr merge --squash --delete-branch
  *    --auto`); when the repo has no auto-merge (no protection), fall back to a
  *    plain squash merge — CI wasn't gating there anyway.
  *  - run_branch: push if needed, open a PR from the branch, queue auto-merge.
+ *    No origin remote or no working `gh` (#979, solo no-infra journey): land
+ *    locally instead — `git merge --squash` + commit into the repo's trunk,
+ *    then delete the run branch. Nothing assumes GitHub exists.
  *  - run_artifacts: not a v1 verb — those items are pointers to `runs --outcome`.
  */
 export function approveItem(item: InboxItem, ctx: DecisionContext): DecisionOutcome {
@@ -202,6 +236,9 @@ function mergePr(number: string, url: string, repoRoot: string, run: CommandRunn
 }
 
 function approveBranch(branch: string, repoRoot: string, run: CommandRunner): DecisionOutcome {
+  if (!hasOrigin(repoRoot, run) || !hasWorkingGh(repoRoot, run)) {
+    return mergeBranchLocally(branch, repoRoot, run);
+  }
   try {
     if (!remoteHasBranch(branch, repoRoot, run)) {
       run(`git push -u origin ${shq(branch)}`, repoRoot);
@@ -220,6 +257,25 @@ function approveBranch(branch: string, repoRoot: string, run: CommandRunner): De
     return { ok: true, message: `PR opened from ${branch}: ${url}` };
   } catch (e) {
     return { ok: false, message: `could not land ${branch}: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** No GitHub remote/`gh` (#979): squash-merge the run branch into the local
+ *  trunk directly, so a solo no-infra user can still land what they can see. */
+function mergeBranchLocally(branch: string, repoRoot: string, run: CommandRunner): DecisionOutcome {
+  const trunk = resolveLocalTrunk(repoRoot, run);
+  try {
+    const current = run('git rev-parse --abbrev-ref HEAD', repoRoot).trim();
+    if (current !== trunk) run(`git checkout ${shq(trunk)}`, repoRoot);
+    run(`git merge --squash ${shq(branch)}`, repoRoot);
+    run(`git commit -m ${shq(`land stranded run deliverable: ${branch}`)}`, repoRoot);
+    run(`git branch -D ${shq(branch)}`, repoRoot);
+    return { ok: true, message: `merged locally to ${trunk} (no GitHub remote/gh — squash-merged, ${branch} deleted)` };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `local merge into ${trunk} failed (branch kept, ${trunk} left as-is — resolve any conflict manually, or 'git reset --hard' to discard): ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
 }
 
