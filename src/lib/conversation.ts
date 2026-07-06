@@ -55,6 +55,16 @@ export function isQuotaMessage(text: string): boolean {
     || text.includes('Quota limit reached');
 }
 
+/**
+ * Detect an unauthenticated/invalid-credential response from the provider CLI.
+ * A missing login or invalid key fails EVERY turn identically — unlike a quota
+ * wall, it never clears mid-run, so this must abort the whole conversation
+ * loud rather than exhaust turns until "no signals" prints a cryptic stop (#956).
+ */
+export function isAuthFailureMessage(text: string): boolean {
+  return /not logged in|please run \/login|invalid api key/i.test(text);
+}
+
 /** Map roles to model tiers for cost routing */
 export function modelForRole(role: AgentRole): string {
   switch (role) {
