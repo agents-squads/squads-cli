@@ -3,6 +3,7 @@
  * Extracted from commands/run.ts to reduce its size.
  */
 
+import { track } from './telemetry.js';
 import ora from 'ora';
 import { join, basename, extname } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -458,6 +459,8 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
       const cliConfig = getCLIConfig(provider);
       writeLine();
       writeLine(`  ${colors.yellow}${cliConfig?.command || provider} CLI not found${RESET}`);
+      // funnel drop instrument (#964): unknown provider name vs binary absent
+      void track('journey.run.blocked', { reason: cliConfig ? 'cli_missing' : 'provider_unknown', provider });
       writeLine(`  ${colors.dim}Install: ${cliConfig?.install || 'squads providers'}${RESET}`);
       process.exitCode = 1;
     }
