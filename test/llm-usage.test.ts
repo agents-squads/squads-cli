@@ -57,6 +57,21 @@ describe('aider map-tokens knob (#845)', () => {
   });
 });
 
+describe('deepseek model guard (#937 — foreign model names must not reach the API)', () => {
+  afterEach(() => { delete process.env.DEEPSEEK_MODEL; });
+
+  it('ignores anthropic frontmatter models and uses the lane default', () => {
+    const args = LLM_CLIS.deepseek.buildArgs('hi', { model: 'claude-sonnet-4-5' });
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek/deepseek-v4-flash');
+  });
+
+  it('honors real deepseek model overrides and DEEPSEEK_MODEL env', () => {
+    expect(LLM_CLIS.deepseek.buildArgs('hi', { model: 'deepseek/deepseek-v4-pro' })).toContain('deepseek/deepseek-v4-pro');
+    process.env.DEEPSEEK_MODEL = 'deepseek-v4-pro';
+    expect(LLM_CLIS.deepseek.buildArgs('hi')).toContain('deepseek/deepseek-v4-pro');
+  });
+});
+
 describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)', () => {
   afterEach(() => {
     delete process.env.GLM_API_KEY;
