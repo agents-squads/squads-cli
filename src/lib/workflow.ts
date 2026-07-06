@@ -24,6 +24,7 @@ import {
   type Transcript,
   classifyAgent,
   isQuotaMessage,
+  isAuthFailureMessage,
   modelForRole,
   createTranscript,
   serializeTranscript,
@@ -610,6 +611,39 @@ export async function runConversation(
     events.close();
   };
 
+  // Auth-failure fail-fast (#956): a missing/expired login fails every claude
+  // invocation identically — unlike a quota wall it never clears mid-cycle, so
+  // continuing just burns turns until convergence detection prints a cryptic
+  // "no signals" stop at exit 0. Abort loud, nonzero exit, credited as failed
+  // (same family as the #936/#947 exit-0 provider failures).
+  const abortOnAuthFailure = (text: string, agentName: string): ConversationResult | null => {
+    if (!isAuthFailureMessage(text)) return null;
+    writeLine(`  ${colors.red}${squad.name}: Claude is not authenticated — run: claude /login${RESET}`);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: agentName,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
+      context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
+      error: 'Claude is not authenticated — run: claude /login',
+      task: options.task,
+    });
+    finishEvents(false);
+    process.exitCode = 1;
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Claude is not authenticated — run: claude /login' };
+  };
+
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
   const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
@@ -677,6 +711,9 @@ export async function runConversation(
   cycleUsage = addUsage(cycleUsage, planResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
+  if (planAuthAbort) return planAuthAbort;
 
   // Quota detection — if plan hit the API limit, stop immediately
   if (isQuotaMessage(planOutput)) {
@@ -799,6 +836,12 @@ ${planOutput.slice(0, 3000)}`;
       addTurn(transcript, agent.name, agent.role, output, estimateTurnCost(options.model || 'sonnet'));
     }
 
+    const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
+    if (workerAuthFailure) {
+      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
+      if (workerAuthAbort) return workerAuthAbort;
+    }
+
     // Fail-fast (#856): every dispatched agent came back quota-capped — the
     // window died mid-cycle. Review/verify would cap too; stop burning turns.
     if (workerResults.length > 0 && workerResults.every(r => isQuotaMessage(r.output))) {
@@ -855,6 +898,9 @@ Summary: [what was achieved]`;
   cycleUsage = addUsage(cycleUsage, reviewResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
+  if (reviewAuthAbort) return reviewAuthAbort;
 
   // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
   if (isQuotaMessage(reviewOutput)) {

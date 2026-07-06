@@ -266,6 +266,30 @@ describe('runConversation', () => {
     expect(result.converged).toBe(true);
   });
 
+  it('aborts immediately with a nonzero exit code when a turn reports Claude is not authenticated (#956)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+
+    // The lead's first (plan) turn returns the raw CLI auth-failure text —
+    // this must abort the whole conversation, not just get skipped as a turn.
+    mockSpawn.mockImplementation(() => createMockChild('Not logged in · Please run /login') as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+
+      expect(result.converged).toBe(false);
+      expect(result.reason).toContain('not authenticated');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('deliver-and-stop gate: stops when a PR already addresses the --task issue, even though turn/cost ceilings alone would not', async () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);

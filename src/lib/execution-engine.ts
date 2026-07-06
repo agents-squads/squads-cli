@@ -35,6 +35,7 @@ import {
   getProjectRoot,
   generateExecutionId,
   checkClaudeCliAvailable,
+  checkClaudeAuthenticated,
 } from './run-utils.js';
 import {
   registerContextWithBridge,
@@ -310,12 +311,16 @@ ${verifyProtocol}`;
 
 // ── Preflight check ──────────────────────────────────────────────────
 
+// Cached for the process lifetime (#956): a multi-agent run calls this once
+// per spawn, but the login state can't change mid-process, so probe once.
+let cachedAuthProbe: boolean | null = null;
+
 /**
  * Pre-flight check for the executor (Claude Code or other provider CLI).
  * Runs once at the start of `squads run` before any agent execution.
  * Checks:
  *   1. CLI binary is available on PATH
- *   2. Authentication looks configured (credentials file or API key)
+ *   2. For Anthropic without an API key: the CLI is actually logged in (#956)
  * Skippable with SQUADS_SKIP_CHECKS=1 env var (for CI/CD).
  * Returns true if checks pass (or are skipped), false if execution should abort.
  */
@@ -353,9 +358,23 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     return false;
   }
 
-  // Auth check removed: Claude CLI handles its own auth errors with clear messages.
-  // Pre-checking here caused false warnings for OAuth users (keychain auth works
-  // without .credentials.json or ANTHROPIC_API_KEY). See #520.
+  // --- Check 2: Claude authentication (#956) ---
+  // Skipped when ANTHROPIC_API_KEY is set — the CLI will use it directly.
+  // Otherwise probe once (cached): an env/file-based check caused false
+  // warnings for OAuth/keychain users (#520), so this reads the CLI's own
+  // "not logged in" response instead of inferring auth from files/env.
+  if (isAnthropic && !process.env.ANTHROPIC_API_KEY) {
+    if (cachedAuthProbe === null) {
+      cachedAuthProbe = checkClaudeAuthenticated();
+    }
+
+    if (!cachedAuthProbe) {
+      writeLine();
+      writeLine(`  ${icons.error} ${colors.red}Claude is installed but not logged in — run: claude /login${RESET}`);
+      writeLine();
+      return false;
+    }
+  }
 
   return true;
 }
