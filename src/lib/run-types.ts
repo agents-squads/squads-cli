@@ -6,6 +6,22 @@ import type { EffortLevel } from './squad-parser.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 export const DEFAULT_TIMEOUT_MINUTES = 15;
+
+/**
+ * Research-class agents (web scanners, profilers, monitors) research first and
+ * write last — a 15-minute watchdog reaps them at ANY scope before the write
+ * (6/6 company-profilers lost on 2026-07-04, #941). They get a 40m default.
+ * An explicit --timeout / -t or SQUADS_AGENT_TIMEOUT_MINUTES always wins.
+ */
+export const RESEARCH_TIMEOUT_MINUTES = 40;
+const RESEARCH_HINT = /scan|monitor|research|profil|watch|intel|market/i;
+
+export function defaultTimeoutMinutes(agent?: { name?: string; role?: string }): number {
+  if (!agent) return DEFAULT_TIMEOUT_MINUTES;
+  return RESEARCH_HINT.test(`${agent.name ?? ''} ${agent.role ?? ''}`)
+    ? RESEARCH_TIMEOUT_MINUTES
+    : DEFAULT_TIMEOUT_MINUTES;
+}
 export const SOFT_DEADLINE_RATIO = 0.7;
 
 /** Providers that support tool use (sub-agent spawning, conversation orchestration) */
