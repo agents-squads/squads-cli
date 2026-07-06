@@ -19,6 +19,10 @@ function git(cmd: string): string {
 
 function initRepoWithStrandedBranch(branch = 'squads/run-intelligence-abc123-0'): InboxItem {
   git('init -q -b develop');
+  // Local (not just env-per-command) identity: mergeBranchLocally's commit
+  // runs through the plain CommandRunner, not the `git()` test helper's env.
+  git('config user.email t@t');
+  git('config user.name t');
   writeFileSync(join(dir, 'a.txt'), 'a');
   git('add -A');
   git('commit -qm base');
@@ -183,6 +187,8 @@ describe('approve (decision 1: existing auto-merge path)', () => {
   it('pushes + opens a PR from a stranded branch and queues its merge', () => {
     const item = initRepoWithStrandedBranch();
     const { run, calls } = fakeRunner({
+      'git remote get-url origin': 'https://github.com/o/r.git\n',
+      'gh auth status': '',
       'git ls-remote': '',
       'git push': '',
       'git rev-parse --verify --quiet origin/develop': new Error('no'),
@@ -203,5 +209,49 @@ describe('approve (decision 1: existing auto-merge path)', () => {
     expect(out.ok).toBe(false);
     expect(out.message).toContain('runs --outcome');
     expect(existsSync(reviewedLedgerPath(dir))).toBe(false);
+  });
+});
+
+describe('approve — local-first fallback, no GitHub remote/gh (#979)', () => {
+  it('squash-merges the stranded branch into develop locally when there is no origin remote', () => {
+    const item = initRepoWithStrandedBranch();
+    // No origin configured on this repo at all — `git remote get-url origin`
+    // and `gh auth status` both run for real and fail (temp repo, no remote).
+    const { run, calls } = fakeRunner();
+    const out = approveItem(item, { repoRoot: dir, obsRoot: dir, run });
+    expect(out.ok).toBe(true);
+    expect(out.message).toContain('merged locally to develop');
+    expect(calls.some((c) => c.startsWith('gh ') || c.startsWith('git push'))).toBe(false);
+    expect(git('show develop:brief.md').trim()).toBe('deliverable');
+    expect(git('branch --list "squads/*"').trim()).toBe('');
+    const rec = readDecisions(dir).at(-1)!;
+    expect(rec).toMatchObject({ decision: 'approve', id: item.id });
+  });
+
+  it('falls back locally when origin exists but gh is missing/unauthenticated', () => {
+    const item = initRepoWithStrandedBranch();
+    const { run, calls } = fakeRunner({
+      'git remote get-url origin': 'https://github.com/o/r.git\n',
+      'gh auth status': new Error('gh: command not found'),
+    });
+    const out = approveItem(item, { repoRoot: dir, obsRoot: dir, run });
+    expect(out.ok).toBe(true);
+    expect(out.message).toContain('merged locally to develop');
+    expect(calls.some((c) => c.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('reports failure (branch kept) when the local squash-merge conflicts', () => {
+    const item = initRepoWithStrandedBranch();
+    // A conflicting change on develop that collides with the branch's edit.
+    git('checkout -q develop');
+    writeFileSync(join(dir, 'brief.md'), 'conflicting develop content');
+    git('add -A');
+    git('commit -qm "conflicting develop edit"');
+
+    const { run } = fakeRunner();
+    const out = approveItem(item, { repoRoot: dir, obsRoot: dir, run });
+    expect(out.ok).toBe(false);
+    expect(out.message).toContain('branch kept');
+    expect(git('branch --list "squads/*"').trim()).not.toBe('');
   });
 });
