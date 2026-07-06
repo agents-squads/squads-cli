@@ -91,6 +91,34 @@ export function parseAiderUsage(output: string): ProviderUsage | null {
 }
 
 /**
+ * Fatal provider-API failure signatures (#936). Providers like aider exit 0
+ * after printing an API error, so the run was reported \u2713 completed with an
+ * empty harvest. Output-based detection is the only reliable signal. These are
+ * NON-transient failures — config/credit problems that must fail LOUD, never
+ * retried (the transient class is handled per-turn in workflow.ts, #944).
+ */
+const PROVIDER_FATAL = [
+  /litellm\.\w*Error/i,
+  /BadRequestError|AuthenticationError|PermissionDeniedError|NotFoundError/,
+  /invalid_request_error|authentication_error/,
+  /insufficient balance|please recharge|insufficient_quota|exceeded your current quota/i,
+  /The supported API model names are/,
+  /invalid api key|incorrect api key/i,
+];
+
+/** Returns the matched failure line for logging, or null when output looks healthy. */
+export function detectProviderFatalError(output: string): string | null {
+  for (const re of PROVIDER_FATAL) {
+    const m = output.match(re);
+    if (m) {
+      const line = output.split('\n').find((l) => re.test(l)) ?? m[0];
+      return line.trim().slice(0, 300);
+    }
+  }
+  return null;
+}
+
+/**
  * Check if a command exists in PATH
  */
 export function commandExists(command: string): boolean {
