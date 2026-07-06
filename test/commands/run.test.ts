@@ -113,6 +113,7 @@ vi.mock('../../src/lib/terminal.js', () => ({
 vi.mock('../../src/lib/llm-clis.js', () => ({
   getCLIConfig: vi.fn(() => undefined),
   isProviderCLIAvailable: vi.fn(() => true),
+  normalizeProviderName: vi.fn((provider: string) => provider),
 }));
 
 vi.mock('../../src/lib/providers.js', () => ({

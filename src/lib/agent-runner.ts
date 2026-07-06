@@ -63,6 +63,7 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  normalizeProviderName,
 } from './llm-clis.js';
 import { loadSession } from './auth.js';
 import { getApiUrl } from './env-config.js';
@@ -306,7 +307,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
   const squad = loadSquad(squadName);
   const squadDefaultProvider = squad?.providers?.default;
 
-  const provider = agentProvider || options.provider || squadDefaultProvider || 'anthropic';
+  const provider = normalizeProviderName(agentProvider || options.provider || squadDefaultProvider || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (options.verbose && (agentProvider || squadDefaultProvider)) {

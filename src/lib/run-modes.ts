@@ -65,6 +65,7 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  normalizeProviderName,
 } from './llm-clis.js';
 import { classifyAgent } from './conversation.js';
 import { parseAgentFrontmatter } from './run-context.js';
@@ -573,7 +574,7 @@ export async function runLeadMode(
   }
 
   // Block lead mode for providers without tool use support
-  const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+  const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
   if (!TOOL_USE_PROVIDERS.has(squadProvider)) {
     const cliConfig = getCLIConfig(squadProvider);
     const providerName = cliConfig?.displayName || squadProvider;
@@ -627,7 +628,7 @@ export async function runLeadMode(
     .replaceAll('{{LEAD_PROTOCOL}}', leadProtocol);
 
   // Determine provider
-  const provider = options.provider || squad?.providers?.default || 'anthropic';
+  const provider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (isAnthropic) {
