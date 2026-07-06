@@ -14,6 +14,7 @@ import {
 } from './squad-parser.js';
 import {
   type RunOptions,
+  defaultTimeoutForRole,
 } from './run-types.js';
 import {
   generateExecutionId,
@@ -349,7 +350,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         if (isAnthropic) {
           result = await executeWithClaude(currentPrompt, {
             verbose: options.verbose,
-            timeoutMinutes: options.timeout || 30,
+            timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
             foreground: options.foreground,
             background: options.background,
             watch: options.watch,
@@ -376,7 +377,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             executionId,
             trigger: options.trigger || 'manual',
             startMs,
-            timeoutMinutes: options.timeout,
+            timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
           });
         }
 

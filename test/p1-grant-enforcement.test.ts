@@ -65,6 +65,16 @@ describe('detached executor permissions (#920 — the bypass is closed)', () => 
     expect(script).toContain('--dangerously-skip-permissions');
     expect(script).not.toContain('--allowedTools');
   });
+
+  it('#941: no timeoutMinutes → flat 15-minute watchdog fallback (no role known at this layer)', () => {
+    const script = buildDetachedShellScript(base);
+    expect(script).toContain('sleep 900');
+  });
+
+  it('#941: explicit timeoutMinutes (e.g. per-role default resolved upstream) drives the watchdog', () => {
+    const script = buildDetachedShellScript({ ...base, timeoutMinutes: 40 });
+    expect(script).toContain('sleep 2400');
+  });
 });
 
 describe('root_run_id chain (#920)', () => {

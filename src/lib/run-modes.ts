@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import {
   type RunOptions,
-  DEFAULT_TIMEOUT_MINUTES,
+  defaultTimeoutForRole,
   TOOL_USE_PROVIDERS,
 } from './run-types.js';
 import {
@@ -604,7 +604,7 @@ export async function runLeadMode(
   }
 
   // Build the lead prompt from template (no prompts in TypeScript — CLAUDE.md rule)
-  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
+  const timeoutMins = options.timeout || defaultTimeoutForRole('lead');
   const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
   const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
 

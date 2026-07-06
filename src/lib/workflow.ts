@@ -45,7 +45,7 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
-import { DEFAULT_TIMEOUT_MINUTES } from './run-types.js';
+import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
 import { getBotGhEnv } from './github.js';
@@ -133,7 +133,7 @@ interface AgentRunConfig {
   cwd: string;
   /** Stream this agent's output live (prefixed) — set under squad-run --verbose (#791) */
   verbose?: boolean;
-  /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → DEFAULT_TIMEOUT_MINUTES (#438) */
+  /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → per-role default via defaultTimeoutForRole (#438, #941) */
   timeout?: number;
   /** Cycle-level exec-event stream (#902) — this agent's tool activity is teed into it. */
   events?: ExecEventWriter;
@@ -324,7 +324,7 @@ ${squadContext}
 
     // Timeout: configurable via env var, defaults from run-types.ts
     const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
-    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? DEFAULT_TIMEOUT_MINUTES);
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? defaultTimeoutForRole(config.role));
     let timedOut = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {

@@ -24,6 +24,7 @@ import { ExecEventWriter, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
+  defaultTimeoutForRole,
 } from './run-types.js';
 import {
   selectMcpConfig,
@@ -640,7 +641,7 @@ export function buildDetachedShellScript(config: {
     ? `--allowedTools ${config.allowedTools.map((t) => `'${t.replace(/'/g, '')}'`).join(' ')}`
     : '--dangerously-skip-permissions';
   const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} ${settingsFlag}--disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
-  const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
+  const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes ?? defaultTimeoutForRole()) * 60));
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
   // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
@@ -861,7 +862,7 @@ export async function executeWithClaude(
 ): Promise<string> {
   const {
     verbose,
-    timeoutMinutes: _timeoutMinutes = 30,
+    timeoutMinutes,
     foreground,
     background,
     watch,
@@ -873,6 +874,9 @@ export async function executeWithClaude(
     agentName,
     model,
   } = options;
+  // Unset → per-role default (worker/lead/scanner/verifier); role comes from
+  // the caller's context assembly stats when known, else the flat fallback (#941).
+  const _timeoutMinutes = timeoutMinutes ?? defaultTimeoutForRole(options.contextStats?.role);
 
   // Determine execution mode
   const runInBackground = background === true && !watch;
@@ -1364,7 +1368,7 @@ export async function executeWithProvider(
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
-  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes || 15);
+  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
