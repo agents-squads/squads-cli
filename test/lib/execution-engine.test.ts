@@ -35,6 +35,9 @@ describe('preflightExecutorCheck — auth gate (#956)', () => {
 
   beforeEach(() => {
     vi.resetModules();
+    // Mock instances persist across resetModules — clear their call counts or
+    // assertions like `not.toHaveBeenCalled()` see earlier tests' calls.
+    vi.clearAllMocks();
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.SQUADS_SKIP_CHECKS;
   });
