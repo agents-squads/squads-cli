@@ -57,7 +57,7 @@ describe('env-config', () => {
     it('returns default config and saves it when config file does not exist', () => {
       mockExistsSync.mockReturnValue(false);
       const config = loadConfig();
-      expect(config.current).toBe('prod');
+      expect(config.current).toBe('local'); // local-first default (#959)
       expect(config.environments).toHaveProperty('local');
       expect(config.environments).toHaveProperty('staging');
       expect(config.environments).toHaveProperty('prod');
@@ -100,7 +100,7 @@ describe('env-config', () => {
       mockExistsSync.mockReturnValue(true);
       mockReadFileSync.mockReturnValue('{ invalid json }');
       const config = loadConfig();
-      expect(config.current).toBe('prod');
+      expect(config.current).toBe('local'); // local-first default (#959)
     });
 
     it('falls back to current=local when stored config has no current field', () => {
@@ -241,7 +241,7 @@ describe('env-config', () => {
 
     it('returns current from config when SQUADS_ENV not set', () => {
       delete process.env.SQUADS_ENV;
-      expect(getEnvName()).toBe('prod'); // DEFAULT_CONFIG.current = 'prod'
+      expect(getEnvName()).toBe('local'); // DEFAULT_CONFIG.current = 'local' (#959)
     });
   });
 

@@ -16,7 +16,6 @@ import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync } from 'child_process';
-import { createHash } from 'crypto';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
@@ -955,6 +954,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.dim('See all squads:')} ${chalk.yellow('squads status')}`);
   writeLine(`  ${chalk.dim('Docs:')} ${chalk.dim('https://agents-squads.com/docs/getting-started')}`);
   writeLine();
+  writeLine(`  ${chalk.dim('Telemetry: anonymous usage events (install id, command names, versions, error classes —')}`);
+  writeLine(`  ${chalk.dim('never file contents, paths, or personal data) help us fix what breaks first.')}`);
+  writeLine();
 
   // 7. Opt-in email capture for founder outreach
   // Gracefully wrapped — never blocks init if prompt fails
@@ -962,9 +964,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     if (isInteractive()) {
       const emailInput = await prompt('Email (optional, for updates):', '');
       if (emailInput && emailInput.includes('@')) {
+        // Saved locally only (#959) — nothing derived from the email is
+        // sent to telemetry; the README's "no telemetry surprises" applies.
         saveEmail(emailInput);
-        const emailHash = createHash('sha256').update(emailInput.toLowerCase().trim()).digest('hex');
-        await track(Events.CLI_EMAIL_CAPTURED, { emailHash });
         writeLine(chalk.dim('  Email saved. We will reach out with updates.'));
         writeLine();
       }
