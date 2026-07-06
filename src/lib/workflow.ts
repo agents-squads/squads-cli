@@ -11,6 +11,7 @@
  * Token budget replaces turn limits. Lead plans within the budget.
  */
 
+import { track } from './telemetry.js';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -618,6 +619,7 @@ export async function runConversation(
   // (same family as the #936/#947 exit-0 provider failures).
   const abortOnAuthFailure = (text: string, agentName: string): ConversationResult | null => {
     if (!isAuthFailureMessage(text)) return null;
+    void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
     writeLine(`  ${colors.red}${squad.name}: Claude is not authenticated — run: claude /login${RESET}`);
     logObservability({
       ts: new Date().toISOString(),

@@ -872,6 +872,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     spinner.succeed('Seed planted');
 
     // Track initialization
+    await track('journey.init.completed', { provider: selectedProvider, hasGit: gitStatus.isGitRepo });
     await track(Events.CLI_INIT, {
       success: true,
       hasGit: gitStatus.isGitRepo,

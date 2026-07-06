@@ -208,3 +208,30 @@ describe('telemetry', () => {
     });
   });
 });
+
+// ─── #964: GA4 Measurement Protocol mapping ─────────────────────────────
+import { toMpEvent } from '../src/lib/telemetry.js';
+
+describe('toMpEvent (#964 GA4 MP shape)', () => {
+  it('snake_cases dotted event names and caps at 40 chars', () => {
+    expect(toMpEvent({ event: 'journey.run.blocked', timestamp: 't' }).name).toBe('journey_run_blocked');
+    expect(toMpEvent({ event: 'cli.kpi-show', timestamp: 't' }).name).toBe('cli_kpi_show');
+    expect(toMpEvent({ event: 'x'.repeat(60), timestamp: 't' }).name.length).toBe(40);
+  });
+
+  it('always carries engagement_time_msec and scalarizes params', () => {
+    const e = toMpEvent({ event: 'journey.run.blocked', timestamp: 't',
+      properties: { reason: 'not_logged_in', count: 3, ok: true, skip: undefined } });
+    expect(e.params.engagement_time_msec).toBe(1);
+    expect(e.params.reason).toBe('not_logged_in');
+    expect(e.params.count).toBe(3);
+    expect(e.params.ok).toBe('true');
+    expect('skip' in e.params).toBe(false);
+  });
+
+  it('sanitizes param keys and truncates values to GA4 limits', () => {
+    const e = toMpEvent({ event: 'e', timestamp: 't',
+      properties: { 'bad-key.name': 'v'.repeat(150) } });
+    expect(e.params['bad_key_name']).toHaveLength(100);
+  });
+});

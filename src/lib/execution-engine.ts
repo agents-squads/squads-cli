@@ -3,6 +3,7 @@
  * Extracted from commands/run.ts to separate execution mechanics from command logic.
  */
 
+import { track } from './telemetry.js';
 import { spawn, execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { join, dirname } from 'path';
@@ -371,6 +372,7 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     if (!cachedAuthProbe) {
       writeLine();
       writeLine(`  ${icons.error} ${colors.red}Claude is installed but not logged in — run: claude /login${RESET}`);
+      void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
       writeLine();
       return false;
     }
