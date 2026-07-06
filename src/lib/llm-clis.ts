@@ -153,15 +153,24 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     displayName: 'DeepSeek (via aider)',
     command: 'aider',
     install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
-    buildArgs: (prompt, opts) => [
-      '--model',
-      opts?.model ? `deepseek/${opts.model.replace(/^deepseek\//, '')}` : 'deepseek/deepseek-chat',
-      '--message',
-      prompt,
-      '--yes',
-      '--no-auto-commits',
-      ...aiderMapTokensArgs(),
-    ],
+    buildArgs: (prompt, opts) => {
+      // Agents re-laned to deepseek keep their anthropic `model:` frontmatter,
+      // and DeepSeek's API rejects foreign names (#937) — only honor a model
+      // override that is actually a deepseek model; else the lane default.
+      const requested = opts?.model?.replace(/^deepseek\//, '');
+      const model = requested && /^deepseek/.test(requested)
+        ? requested
+        : process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+      return [
+        '--model',
+        `deepseek/${model}`,
+        '--message',
+        prompt,
+        '--yes',
+        '--no-auto-commits',
+        ...aiderMapTokensArgs(),
+      ];
+    },
     parseUsage: parseAiderUsage,
   },
 
