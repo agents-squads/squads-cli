@@ -1203,6 +1203,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--reason <text>', 'Why (required for reject; written through to squads feedback)')
   .option('--days <n>', 'Defer window in days (default 7)')
+  .option('--by <actor>', 'Who decided (default: squads login email, else OS user) — for bridges executing another surface’s decision')
   .action(async (action, id, options) => {
     const { inboxCommand } = await import('./commands/inbox.js');
     return inboxCommand(action, id, options);

@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 import { scanStrandedBranches, buildInbox, type InboxItem } from '../src/lib/inbox.js';
 import {
   approveItem, rejectItem, deferItem, readDecisions, activeDeferrals,
-  squadFromBranch, reviewedLedgerPath, type CommandRunner,
+  squadFromBranch, reviewedLedgerPath, operatorIdentity, type CommandRunner,
 } from '../src/lib/inbox-decisions.js';
 
 let dir: string;
@@ -68,6 +68,31 @@ describe('ledger (reviewed.jsonl)', () => {
     const decisions = readDecisions(dir);
     expect(decisions).toHaveLength(2);
     expect(decisions.every((d) => d.decision === 'defer')).toBe(true);
+  });
+});
+
+describe('decision attribution (by, C1a)', () => {
+  it('stamps the local operator identity on every record when no override is given', () => {
+    const item = initRepoWithStrandedBranch();
+    deferItem(item, 3, { repoRoot: dir, obsRoot: dir });
+    const [rec] = readDecisions(dir);
+    expect(rec.by).toBe(operatorIdentity());
+    expect(rec.by).toBeTruthy();
+  });
+
+  it('a --by override wins over the auto-stamp (bridge attributing an API decider)', () => {
+    const item = initRepoWithStrandedBranch('squads/run-intelligence-byover-0');
+    const { run } = fakeRunner({ 'git ls-remote': '' });
+    rejectItem(item, 'superseded', {
+      repoRoot: dir, obsRoot: dir, run, feedbackWriter: () => true, by: 'customer@example.com',
+    });
+    const [rec] = readDecisions(dir);
+    expect(rec.decision).toBe('reject');
+    expect(rec.by).toBe('customer@example.com');
+  });
+
+  it('operatorIdentity never returns empty', () => {
+    expect(operatorIdentity().length).toBeGreaterThan(0);
   });
 });
 

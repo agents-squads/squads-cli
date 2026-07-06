@@ -24,6 +24,7 @@ export interface InboxOptions {
   json?: boolean;
   reason?: string;
   days?: string;
+  by?: string;
 }
 
 export async function inboxCommand(action?: string, id?: string, options: InboxOptions = {}): Promise<void> {
@@ -55,7 +56,7 @@ export async function inboxCommand(action?: string, id?: string, options: InboxO
     return;
   }
 
-  const ctx = { repoRoot: projectRoot, obsRoot: projectRoot };
+  const ctx = { repoRoot: projectRoot, obsRoot: projectRoot, by: options.by };
   let outcome: DecisionOutcome;
   if (action === 'approve') {
     outcome = approveItem(item, ctx);
