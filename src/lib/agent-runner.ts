@@ -459,6 +459,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
       writeLine();
       writeLine(`  ${colors.yellow}${cliConfig?.command || provider} CLI not found${RESET}`);
       writeLine(`  ${colors.dim}Install: ${cliConfig?.install || 'squads providers'}${RESET}`);
+      process.exitCode = 1;
     }
 
     writeLine();
