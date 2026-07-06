@@ -129,3 +129,17 @@ describe('scanner correctness (#929)', () => {
     expect(scanStrandedBranches(dir)).toHaveLength(0); // landed → not waiting on a human
   });
 });
+
+describe('partial class (A5 — timed-out runs surface, not archaeology)', () => {
+  it('flags auto-saved (#875) branches as PARTIAL', () => {
+    initRepo();
+    git('checkout -q -b squads/run-intel-tm99x-0');
+    writeFileSync(join(dir, 'half-brief.md'), 'partial work');
+    git('add -A');
+    git('commit -qm "squads run: auto-save uncommitted deliverables on cleanup (#875)"');
+    git('checkout -q develop');
+    const [item] = scanStrandedBranches(dir);
+    expect(item.title).toContain('PARTIAL');
+    expect(item.detail).toContain('inspect before approving');
+  });
+});

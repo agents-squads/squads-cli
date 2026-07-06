@@ -134,14 +134,19 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
     } catch { continue; }
     if (ahead === 0) continue;
     if (!hasUnlandedCommits(branch, base, repoRoot)) continue; // squash-landed (#929)
+    // A5 (hq#470): the #875 auto-save commit message IS the signature of a run
+    // that died before committing its own work (timeout / blocked) — surface it
+    // as a PARTIAL so salvage is a queue decision, not operator archaeology.
+    const subject = subjectParts.join('|') || branch;
+    const isPartial = /auto-save uncommitted deliverables/i.test(subject);
     items.push({
       id: `branch-${branch}`,
       kind: 'run_branch',
       ref: branch,
-      title: (subjectParts.join('|') || branch).slice(0, 90),
+      title: (isPartial ? `PARTIAL (run died before committing) — ${subject}` : subject).slice(0, 110),
       ageDays: ageDaysFrom((parseInt(epoch, 10) || 0) * 1000),
       approveSemantics: `open a PR from ${branch} (has ${ahead} unmerged commit${ahead > 1 ? 's' : ''})`,
-      detail: `${ahead} commit(s) ahead of ${base}`,
+      detail: `${ahead} commit(s) ahead of ${base}${isPartial ? ' · partial run output — inspect before approving' : ''}`,
     });
   }
   return items;
