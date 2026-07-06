@@ -281,17 +281,38 @@ export function getAllCLIStatus(): CLIStatus[] {
 }
 
 /**
+ * `squads init` uses its own provider-selection vocabulary (setup-checks.ts
+ * PROVIDERS — 'claude', 'gemini', ...) and stamps it into every scaffolded
+ * agent's frontmatter and SQUAD.md `providers.default`. That vocabulary
+ * doesn't always match the runtime keys here in LLM_CLIS (#955): init writes
+ * 'claude' but the runner needs 'anthropic'; init writes 'gemini' but the
+ * runner needs 'google'. Maps init vocabulary to runtime keys; anything
+ * already a runtime key (or unrecognized, e.g. 'cursor'/'none', which have
+ * no dispatched CLI) passes through unchanged. Read-time only — existing
+ * scaffolds on disk keep the old vocabulary; init still writes it as-is.
+ */
+const PROVIDER_NAME_ALIASES: Record<string, string> = {
+  claude: 'anthropic',
+  gemini: 'google',
+};
+
+export function normalizeProviderName(provider: string): string {
+  const key = provider.trim().toLowerCase();
+  return PROVIDER_NAME_ALIASES[key] ?? key;
+}
+
+/**
  * Get CLI config for a provider
  */
 export function getCLIConfig(provider: string): CLIConfig | undefined {
-  return LLM_CLIS[provider];
+  return LLM_CLIS[normalizeProviderName(provider)];
 }
 
 /**
  * Check if a provider's CLI is available
  */
 export function isProviderCLIAvailable(provider: string): boolean {
-  const config = LLM_CLIS[provider];
+  const config = getCLIConfig(provider);
   if (!config) return false;
   return commandExists(config.command);
 }

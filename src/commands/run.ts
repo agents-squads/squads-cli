@@ -16,6 +16,7 @@ import {
 import {
   preflightExecutorCheck,
 } from '../lib/execution-engine.js';
+import { normalizeProviderName } from '../lib/llm-clis.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
 import {
   colors,
@@ -545,7 +546,7 @@ export async function runCommand(
   // Only runs when we're actually going to execute (not dry-run)
   if (options.execute && !options.dryRun) {
     // Resolve the provider early so we check the right CLI
-    const provider = options.provider || squad?.providers?.default || 'anthropic';
+    const provider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
     const checksOk = await preflightExecutorCheck(provider);
     if (!checksOk) {
       process.exit(1);
@@ -727,7 +728,7 @@ async function runSquad(
       }
     } else {
       // Determine provider for mode selection
-      const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+      const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
 
       if (options.execute && !TOOL_USE_PROVIDERS.has(squadProvider)) {
         // Sequential mode for providers without tool use (Ollama, Codex, etc.)
@@ -792,7 +793,7 @@ async function runSquad(
         writeLine();
       } else {
         // Dry-run: show what would happen
-        const squadProvider2 = options.provider || squad?.providers?.default || 'anthropic';
+        const squadProvider2 = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
         const modeLabel = TOOL_USE_PROVIDERS.has(squadProvider2)
           ? 'conversation (lead → scan → work → review → verify)'
           : `sequential (${squadProvider2} — agents run one at a time)`;
