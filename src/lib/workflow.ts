@@ -173,7 +173,33 @@ function outcomeFields(o: RunOutcomes) {
  * full response text and real `total_cost_usd` + `usage`, so observability gets
  * true numbers instead of 0.
  */
+/**
+ * Transient API failures (stream cut, connection reset, 5xx/overloaded) lose
+ * the TURN in conversation mode — the verifier's verdict was cut mid-response
+ * on a real run (#944). One re-spawn with backoff recovers them. Quota,
+ * timeout, auth and invalid-model errors must stay LOUD (#936) — never retried.
+ */
+const TRANSIENT_API_ERROR =
+  /connection (closed|error|reset)|api error:.*(closed|reset|interrupted)|overloaded|status (500|502|503|529)|ECONNRESET|ETIMEDOUT|socket hang up/i;
+
+export function isTransientTurnError(text: string): boolean {
+  if (/\[QUOTA\]|timed out after|authentication|invalid.*model|insufficient/i.test(text)) return false;
+  return TRANSIENT_API_ERROR.test(text);
+}
+
 async function runIndependentAgent(config: AgentRunConfig): Promise<AgentRunResult> {
+  const maxRetries = process.env.SQUADS_TURN_RETRIES === '0' ? 0 : 1;
+  const backoffMs = parseInt(process.env.SQUADS_TURN_RETRY_BACKOFF_MS ?? '5000', 10);
+  let result = await runIndependentAgentOnce(config);
+  for (let attempt = 1; attempt <= maxRetries && isTransientTurnError(result.text); attempt++) {
+    writeLine(`  ${colors.yellow}${config.agentName}: transient API error — retrying turn (${attempt}/${maxRetries})${RESET}`);
+    await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    result = await runIndependentAgentOnce(config);
+  }
+  return result;
+}
+
+async function runIndependentAgentOnce(config: AgentRunConfig): Promise<AgentRunResult> {
   const { agentName, agentPath, role, squadName, task, squadContext } = config;
 
   const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
