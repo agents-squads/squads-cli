@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { normalizeProviderName, getCLIConfig, LLM_CLIS } from '../src/lib/llm-clis.js';
 import { PROVIDERS as INIT_PROVIDERS } from '../src/lib/setup-checks.js';
 
@@ -57,5 +60,30 @@ describe('provider:"claude" frontmatter resolves to Anthropic at runtime (#955)'
     const provider = normalizeProviderName('claude');
     const isAnthropic = provider === 'anthropic';
     expect(isAnthropic).toBe(true);
+  });
+});
+
+/**
+ * Source-contract regression for #955: runLeadMode resolves the squad's
+ * provider (options.provider || SQUAD.md providers.default || 'anthropic')
+ * independently of agent-runner.ts and run.ts, so it needs its own
+ * normalizeProviderName() call sites. A full runLeadMode() behavioral test
+ * needs many module mocks (see test/agent-runner-provider-routing.test.ts);
+ * this narrow check covers the actual regression without pinning unrelated
+ * implementation details.
+ */
+describe('run-modes provider resolution wraps normalizeProviderName (#955)', () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'lib', 'run-modes.ts'),
+    'utf8'
+  );
+
+  it('imports normalizeProviderName from llm-clis', () => {
+    expect(source).toMatch(/import \{[^}]*normalizeProviderName[^}]*\} from '\.\/llm-clis\.js'/s);
+  });
+
+  it('runLeadMode wraps both provider resolutions in normalizeProviderName', () => {
+    const matches = source.match(/const (?:squadProvider|provider) = normalizeProviderName\(/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 });
