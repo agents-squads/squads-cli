@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
+import { gitIdentityArgs } from '../lib/git.js';
 import { findSquadsDir, listSquads, parseSquadFile } from '../lib/squad-parser.js';
 import { syncAllCycleData, isPostgresAvailable, closeCycleSyncPool, SyncResult } from '../lib/cycle-sync.js';
 import {
@@ -800,9 +801,11 @@ function gitPushMemory(): { success: boolean; output: string } {
     }).trim();
 
     if (status) {
-      // Stage and commit memory changes
+      // Stage and commit memory changes. Repo-scoped fallback identity (#980)
+      // when no git identity is configured — never touches global/repo config.
       execSync('git add .agents/memory/', { stdio: ['pipe', 'pipe', 'pipe'] });
-      execSync('git commit -m "chore: sync squad memory"', {
+      const identity = gitIdentityArgs(process.cwd());
+      execSync(`git ${identity} commit -m "chore: sync squad memory"`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });

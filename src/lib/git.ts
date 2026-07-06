@@ -2,8 +2,62 @@ import { execSync, exec } from 'child_process';
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { promisify } from 'util';
+import { colors, RESET, writeLine } from './terminal.js';
 
 const execAsync = promisify(exec);
+
+// ── Repo-scoped git identity fallback (#980) ─────────────────────────
+//
+// Fresh machines with no `user.name`/`user.email` configured (locally or
+// globally) make every git write squads performs fail with "Author identity
+// unknown" — `squads init`'s scaffold commit, `squads run`'s worktree/harvest
+// commits, memory sync, etc. Rather than touching the user's git config
+// (never — trust-model law), every write applies this fallback identity
+// commit-scoped via `-c user.name=... -c user.email=...` ONLY when no
+// identity is configured for the repo.
+
+const FALLBACK_GIT_USER_NAME = 'squads';
+const FALLBACK_GIT_USER_EMAIL = 'squads-agent@localhost';
+
+let hasPrintedIdentityFallbackHint = false;
+
+/**
+ * Returns inline `-c user.name=... -c user.email=...` flags for a git
+ * invocation when `repoRoot` has no configured identity (checked the same
+ * way git itself resolves it — repo-local, then global, then system config),
+ * or '' when an identity is already configured. Never writes to any git
+ * config file — the returned flags are scoped to the single invocation they
+ * are passed to.
+ */
+export function gitIdentityArgs(repoRoot: string): string {
+  try {
+    const email = execSync('git config user.email', {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (email) return '';
+  } catch {
+    // `git config user.email` exits non-zero when unset at every level
+    // (local/global/system) — fall through to the fallback identity.
+  }
+
+  printGitIdentityFallbackHintOnce();
+  return `-c user.name='${FALLBACK_GIT_USER_NAME}' -c user.email='${FALLBACK_GIT_USER_EMAIL}'`;
+}
+
+function printGitIdentityFallbackHintOnce(): void {
+  if (hasPrintedIdentityFallbackHint) return;
+  hasPrintedIdentityFallbackHint = true;
+  writeLine(
+    `  ${colors.dim}using fallback git identity for agent commits — set yours: git config --global user.email you@example.com${RESET}`
+  );
+}
+
+/** Test-only: clear the one-time hint flag between test cases. */
+export function resetGitIdentityFallbackHintForTests(): void {
+  hasPrintedIdentityFallbackHint = false;
+}
 
 export interface GitStatus {
   isGitRepo: boolean;

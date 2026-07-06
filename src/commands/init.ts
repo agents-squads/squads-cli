@@ -17,7 +17,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { execSync } from 'child_process';
 import { createInterface } from 'readline';
-import { checkGitStatus, getRepoName } from '../lib/git.js';
+import { checkGitStatus, getRepoName, gitIdentityArgs } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
 import { saveEmail } from '../lib/env-config.js';
 import { existsSync, readFileSync } from 'fs';
@@ -397,6 +397,32 @@ async function writeIfNew(filePath: string, content: string): Promise<boolean> {
 async function writeFile(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content);
+}
+
+/**
+ * Auto-commit the freshly scaffolded project (agents need at least one commit
+ * for worktree isolation). Applies the repo-scoped fallback git identity
+ * (#980) when the repo has none configured — never touches global/repo git
+ * config. Throws if `git commit` still fails with staged changes present, so
+ * the caller can fail loud instead of reporting success over zero commits.
+ */
+export function commitInitScaffold(cwd: string): void {
+  execSync('git add -A', { cwd, stdio: 'pipe' });
+
+  let hasStagedChanges = true;
+  try {
+    execSync('git diff --cached --quiet', { cwd, stdio: 'ignore' });
+    hasStagedChanges = false; // exit 0 → nothing staged
+  } catch {
+    hasStagedChanges = true; // non-zero exit → there is a staged diff
+  }
+  if (!hasStagedChanges) return;
+
+  const identity = gitIdentityArgs(cwd);
+  execSync(
+    `git ${identity} commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
+    { cwd, stdio: 'pipe' }
+  );
 }
 
 /**
@@ -901,14 +927,21 @@ export async function initCommand(options: InitOptions): Promise<void> {
     process.exit(1);
   }
 
-  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees)
-  try {
-    execSync('git add -A && git commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"', {
-      cwd,
-      stdio: 'ignore',
-    });
-  } catch {
-    // Commit may fail if nothing to add or git not configured — non-fatal
+  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees).
+  // This write is REQUIRED (#980): squads run's worktree isolation depends on
+  // it, so a failure here must not report success over zero commits — fail
+  // loud instead of swallowing the error.
+  if (gitStatus.isGitRepo) {
+    try {
+      commitInitScaffold(cwd);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      writeLine();
+      writeLine(chalk.red('  Failed to create the initial commit — agents need at least one commit for worktree isolation.'));
+      writeLine(chalk.dim(`  ${msg.trim()}`));
+      writeLine(chalk.dim('  Commit manually, then re-run: git add -A && git commit -m "init"'));
+      process.exit(1);
+    }
   }
 
   // 6. Success message

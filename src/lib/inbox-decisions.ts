@@ -270,6 +270,8 @@ export function rejectItem(item: InboxItem, reason: string, ctx: DecisionContext
 function archiveBranch(branch: string, repoRoot: string, run: CommandRunner): DecisionOutcome {
   const tag = `archive/${branch}`;
   try {
+    // Lightweight tag (no -a) — creates a ref only, no tag object/author, so
+    // it never needs a git identity (#980 audit: verified, no fallback needed).
     run(`git tag ${shq(tag)} ${shq(branch)}`, repoRoot);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

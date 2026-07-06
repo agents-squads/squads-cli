@@ -34,6 +34,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { colors, RESET, writeLine } from './terminal.js';
+import { gitIdentityArgs } from './git.js';
 
 /**
  * Result of attempting to create a per-run worktree.
@@ -124,8 +125,9 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
 
   try {
     mkdirSync(worktreesRoot, { recursive: true });
+    const identity = gitIdentityArgs(repoDir);
     execSync(
-      `git -C '${repoDir}' worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
+      `git -C '${repoDir}' ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
       { stdio: 'pipe' }
     );
   } catch (e) {
