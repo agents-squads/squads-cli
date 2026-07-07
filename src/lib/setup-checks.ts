@@ -47,7 +47,7 @@ export const PROVIDERS: Record<string, ProviderInfo> = {
     name: 'Gemini (Google)',
     cliCheck: 'gemini',
     envKey: 'GEMINI_API_KEY',
-    installCmd: 'npm install -g @anthropic-ai/claude-code', // Placeholder - gemini CLI
+    installCmd: 'npm install -g @google/gemini-cli',
     requiresSubscription: false,
     requiresApiKey: true,
   },

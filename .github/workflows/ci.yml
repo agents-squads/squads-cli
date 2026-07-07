@@ -155,9 +155,10 @@ jobs:
           git config user.name "Smoke Test"
           node $GITHUB_WORKSPACE/dist/cli.js init --yes --force
 
-          # Verify core files created by seed-based init
-          test -f CLAUDE.md || (echo "CLAUDE.md missing" && exit 1)
-          test -f .claude/settings.json || (echo ".claude/settings.json missing" && exit 1)
+          # Verify core files created by seed-based init.
+          # Bare runner has no AI CLI → headless init falls back to provider
+          # 'none' (#977): vendor-neutral files only, no CLAUDE.md/.claude.
+          test ! -f CLAUDE.md || (echo "CLAUDE.md scaffolded without claude provider" && exit 1)
           test -f .agents/BUSINESS_BRIEF.md || (echo ".agents/BUSINESS_BRIEF.md missing" && exit 1)
           test -f AGENTS.md || (echo "AGENTS.md missing" && exit 1)
 
@@ -177,6 +178,19 @@ jobs:
           test -f .agents/memory/intelligence/intel-lead/state.md || (echo "intelligence state missing" && exit 1)
 
           echo "✓ squads init smoke test passed"
+
+      - name: Test squads init --provider claude (claude-specific scaffold)
+        run: |
+          mkdir -p /tmp/test-init-claude
+          cd /tmp/test-init-claude
+          git init
+          git config user.email "smoke@test.local"
+          git config user.name "Smoke Test"
+          node $GITHUB_WORKSPACE/dist/cli.js init --yes --force --provider claude
+
+          test -f CLAUDE.md || (echo "CLAUDE.md missing" && exit 1)
+          test -f .claude/settings.json || (echo ".claude/settings.json missing" && exit 1)
+          echo "✓ claude-provider scaffold smoke test passed"
 
       - name: Test squads status
         run: |
