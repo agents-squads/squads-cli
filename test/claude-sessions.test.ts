@@ -119,7 +119,7 @@ describe('readClaudeSessions (fixture tree)', () => {
   });
 
   it('attributes interactive vs squad and sums tokens per bucket (window)', async () => {
-    const s = await readClaudeSessions(24);
+    const s = await readClaudeSessions(24, { scope: 'all' });
     expect(s.available).toBe(true);
     expect(s.filesScanned).toBe(2);
 
@@ -144,7 +144,7 @@ describe('readClaudeSessions (fixture tree)', () => {
   });
 
   it('derives a non-zero notional cost (opus pricing) and splits it', async () => {
-    const s = await readClaudeSessions(24);
+    const s = await readClaudeSessions(24, { scope: 'all' });
     expect(s.window.interactive.cost_usd).toBeGreaterThan(0);
     expect(s.window.squad.cost_usd).toBeGreaterThan(0);
     expect(s.window.total.cost_usd).toBeCloseTo(
@@ -159,9 +159,19 @@ describe('readClaudeSessions (fixture tree)', () => {
 
   it('returns available:false (zeroed) when ~/.claude/projects is missing', async () => {
     process.env.HOME = join(ROOT, 'nonexistent-home');
-    const s = await readClaudeSessions(5);
+    const s = await readClaudeSessions(5, { scope: 'all' });
     expect(s.available).toBe(false);
     expect(s.filesScanned).toBe(0);
     expect(totalTokens(s.window.total)).toBe(0);
+  });
+});
+
+// ─── #960: project-scoped session reads ──────────────────────────────────
+import { encodeProjectDir } from '../src/lib/claude-sessions.js';
+
+describe('encodeProjectDir (#960)', () => {
+  it('encodes cwd the way Claude Code names session dirs', () => {
+    expect(encodeProjectDir('/Users/dev/my-app')).toBe('-Users-dev-my-app');
+    expect(encodeProjectDir('/a/b.c/d')).toBe('-a-b-c-d');
   });
 });

@@ -32,7 +32,6 @@ import {
   detectTaskType,
   getClaudeModelAlias,
   resolveModel,
-  ensureProjectTrusted,
   getProjectRoot,
   generateExecutionId,
   checkClaudeCliAvailable,
@@ -917,7 +916,9 @@ export async function executeWithClaude(
 
   const startMs = Date.now();
   const projectRoot = getProjectRoot();
-  ensureProjectTrusted(projectRoot);
+  // #960: the ~/.claude.json trust mutation is GONE — verified unnecessary for
+  // headless `claude -p` (2026-07-06 empirical + docs: trust only gates project
+  // settings allow-rules, and we pass our own --settings via CLI args).
 
   // Resolve model and provider
   // Priority: 1) CLI --model flag  2) agent frontmatter model:  3) SQUAD.md model routing

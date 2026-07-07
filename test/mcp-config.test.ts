@@ -96,15 +96,21 @@ describe('MCP Config', () => {
   describe('resolveMcpConfig', () => {
     // These tests mock the HOME directory to avoid touching real config
     const originalHome = process.env.HOME;
+    const originalCwd = process.cwd();
     const testHome = join(tmpdir(), 'mcp-resolve-test-' + Date.now());
+    const testProject = join(testHome, 'proj');
 
     beforeEach(() => {
       process.env.HOME = testHome;
       mkdirSync(join(testHome, '.claude', 'mcp-configs'), { recursive: true });
-      mkdirSync(join(testHome, '.claude', 'contexts'), { recursive: true });
+      // #960: generated configs are project-local — tests run inside a temp
+      // project (a dir with .agents) so generation never touches the repo.
+      mkdirSync(join(testProject, '.agents'), { recursive: true });
+      process.chdir(testProject);
     });
 
     afterEach(() => {
+      process.chdir(originalCwd);
       process.env.HOME = originalHome;
       if (existsSync(testHome)) {
         rmSync(testHome, { recursive: true, force: true });
@@ -125,6 +131,8 @@ describe('MCP Config', () => {
       expect(result.servers).toEqual([]);
       expect(result.generated).toBe(true);
       expect(result.path).toContain('test-squad.mcp.json');
+      // #960: generated under the PROJECT, never under ~/.claude
+      expect(result.path).toContain(join('.agents', 'runtime', 'mcp'));
 
       // Verify file was created
       expect(existsSync(result.path)).toBe(true);
