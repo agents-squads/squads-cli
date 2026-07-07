@@ -33,6 +33,7 @@ import {
   detectConvergence,
   estimateTurnCost,
   parseHandoff,
+  extractValidationContract,
 } from './conversation.js';
 import {
   type Squad,
@@ -724,6 +725,9 @@ export async function runConversation(
     task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
   });
   const planOutput = planResult.text;
+  // #989: the plan's validation contract is the verifier's checklist — done-ness
+  // defined before code, checked independently of the implementation.
+  const validationContract = extractValidationContract(planOutput);
   cycleUsage = addUsage(cycleUsage, planResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
@@ -972,8 +976,12 @@ Summary: [what was achieved]`;
     const verifier = verifiers[0];
     log(`  verify: ${verifier.name}...`);
 
-    const verifyPrompt = `Verify the work from this cycle. The transcript shows the plan and worker outputs.
+    const contractSection = validationContract
+      ? `\n## VALIDATION CONTRACT (from the plan — check EVERY assertion)\n${validationContract}\n\nReport per-assertion PASS/FAIL. The verdict can only be APPROVED when every assertion passes or the lead explicitly waived it with a reason in the transcript.\n`
+      : '';
 
+    const verifyPrompt = `Verify the work from this cycle. The transcript shows the plan and worker outputs.
+${contractSection}
 Check every PR and deliverable:
 1. Build: does it pass?
 2. Conflicts: is the PR mergeable?

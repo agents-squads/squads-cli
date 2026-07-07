@@ -31,3 +31,25 @@ describe('parseHandoff (#990)', () => {
     expect(h.contradictsDone).toBe(false);
   });
 });
+
+// ─── #989: validation contract extraction ────────────────────────────────
+import { extractValidationContract } from '../src/lib/conversation.js';
+
+describe('extractValidationContract (#989)', () => {
+  it('extracts the contract block from plan output', () => {
+    const plan = `Thinking...\n## VALIDATION CONTRACT\n1. \`squads run demo\` exits 0 and prints the greeting\n2. npm test passes\n\n\`\`\`plan\nGOAL: x\nTASKS:\n- worker: a | task: b | satisfies: 1,2\n\`\`\`\n## STATUS: CONTINUE`;
+    const c = extractValidationContract(plan);
+    expect(c).toContain('exits 0');
+    expect(c).toContain('2. npm test passes');
+    expect(c).not.toContain('GOAL:');
+  });
+
+  it('returns empty string when no contract present (older plans stay valid)', () => {
+    expect(extractValidationContract('## STATUS: CONTINUE')).toBe('');
+  });
+
+  it('stops at the next heading', () => {
+    const c = extractValidationContract('## VALIDATION CONTRACT\n1. one\n## STATUS: CONTINUE');
+    expect(c).toBe('1. one');
+  });
+});

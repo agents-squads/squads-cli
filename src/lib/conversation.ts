@@ -348,6 +348,16 @@ export interface ConvergenceResult {
  * Falls back to keyword detection for agents that don't follow the format.
  */
 /**
+ * Validation contract (#989): the PLAN phase defines done-ness before any code
+ * exists. Extracted verbatim so the verifier checks against the contract, not
+ * against its own reading of the diff.
+ */
+export function extractValidationContract(planOutput: string): string {
+  const m = planOutput.match(/##\s*VALIDATION CONTRACT\s*\n([\s\S]*?)(?=\n##\s|\n```|$)/i);
+  return m ? m[1].trim() : '';
+}
+
+/**
  * Structured handoff (#990): workers report completed/undone/commands+exit
  * codes/issues/procedures before their STATUS line. Parsed so the runtime can
  * flag DONE claims contradicted by the worker's own command log.
