@@ -1021,6 +1021,63 @@ or
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, verifyResult.outcomes);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
+
+    // ── #994: bounded remediation — ONE fix round when the verifier rejects.
+    // Missions production data: every milestone needed 2-4 validation rounds;
+    // one-shot passes are the exception. Our bounded runs get exactly one
+    // remediation round; a second rejection converges not-approved and the
+    // inbox owns the rest.
+    const rejectedFirst = /##\s*VERDICT:\s*REJECTED/i.test(verifyOutput);
+    if (rejectedFirst && workers.length > 0
+        && !isQuotaMessage(verifyOutput) && !isAuthFailureMessage(verifyOutput)) {
+      log(`  remediate: ${lead.name}... (one round, #994)`);
+      const remediationPrompt = `The verifier REJECTED this cycle. Its verdict in the transcript names the exact failures${validationContract ? ' (including per-assertion FAILs against the validation contract)' : ''}.
+
+Emit fix tasks scoped ONLY to the named failures — no new scope, no improvements:
+
+\`\`\`plan
+TASKS:
+- worker: [worker-name] | task: [fix instruction naming the failed check/assertion]
+\`\`\`
+
+Max 2 tasks. If the rejection is not actionable by a worker (needs a human decision or external access), do NOT emit tasks — end with ## STATUS: BLOCKED [reason].`;
+      const remediationResult = await runIndependentAgent({
+        agentName: lead.name, agentPath: lead.path, role: 'lead',
+        squadName: squad.name, model: options.model || modelForRole('lead'),
+        task: remediationPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+        cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+      });
+      cycleUsage = addUsage(cycleUsage, remediationResult.usage);
+      cycleOutcomes = addOutcomes(cycleOutcomes, remediationResult.outcomes);
+      addTurn(transcript, lead.name, 'lead', remediationResult.text, estimateTurnCost(options.model || 'sonnet'));
+
+      const fixAssignments = parseTaskAssignments(remediationResult.text, workers).slice(0, 2);
+      if (fixAssignments.length > 0 && !isQuotaMessage(remediationResult.text)) {
+        log(`  fix: ${fixAssignments.length} task(s), serial...`);
+        // Serial on purpose: fix tasks routinely touch the same files.
+        for (const { agent, task } of fixAssignments) {
+          const fixResult = await runIndependentAgent({
+            agentName: agent.name, agentPath: agent.path, role: agent.role,
+            squadName: squad.name, model: options.model || modelForRole(agent.role),
+            task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+          });
+          cycleUsage = addUsage(cycleUsage, fixResult.usage);
+          cycleOutcomes = addOutcomes(cycleOutcomes, fixResult.outcomes);
+          addTurn(transcript, agent.name, agent.role, fixResult.text, estimateTurnCost(options.model || 'sonnet'));
+        }
+
+        log(`  re-verify: ${verifier.name}...`);
+        const reverifyResult = await runIndependentAgent({
+          agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
+          squadName: squad.name, model: options.model || modelForRole('verifier'),
+          task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+          cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+        });
+        cycleUsage = addUsage(cycleUsage, reverifyResult.usage);
+        cycleOutcomes = addOutcomes(cycleOutcomes, reverifyResult.outcomes);
+        addTurn(transcript, verifier.name, 'verifier', reverifyResult.text, estimateTurnCost(options.model || 'haiku'));
+      }
+    }
   }
 
   // Determine final convergence
