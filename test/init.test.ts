@@ -132,10 +132,12 @@ describe('initCommand', () => {
       expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(false);
     });
 
-    it('exits with the provider list instead of silently scaffolding claude when no CLI is installed', async () => {
+    it('falls back to planning-only scaffold (provider none) instead of silently scaffolding claude when no CLI is installed', async () => {
       mockCommandExists.mockReturnValue(false);
-      await expect(initCommand({ yes: true, force: true })).rejects.toThrow('exit');
-      expect(exitSpy).toHaveBeenCalledWith(1);
+      await initCommand({ yes: true, force: true });
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(existsSync(join(dir, '.agents/squads/company'))).toBe(true);
+      expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(false);
     });
 
     it('does not consult CLI availability when --provider is explicit', async () => {

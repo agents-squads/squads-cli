@@ -333,8 +333,10 @@ const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider'
 /**
  * Headless (non-interactive, no --provider) provider resolution.
  * Never silently scaffolds against a missing binary (#977): picks the first
- * installed CLI-based provider, or exits with the full provider list so the
- * caller can install one or pass --provider explicitly.
+ * installed CLI-based provider. When none is installed, scaffolding must
+ * still succeed on a bare machine (first-run retention gate), so fall back
+ * to the vendor-neutral 'none' provider and say so loudly with the full
+ * provider list — the user picks one later or re-runs with --provider.
  */
 function resolveHeadlessProvider(): Provider {
   for (const id of CLI_PROVIDER_PRIORITY) {
@@ -345,8 +347,8 @@ function resolveHeadlessProvider(): Provider {
   }
 
   writeLine();
-  writeLine(chalk.red('  No supported AI CLI found on this machine.'));
-  writeLine(chalk.dim('  squads init cannot pick a provider for you. Install one, or pass --provider explicitly:'));
+  writeLine(chalk.yellow('  No supported AI CLI found on this machine.'));
+  writeLine(chalk.dim('  Scaffolding in planning-only mode (provider: none). To run agents, install one:'));
   writeLine();
   for (const info of Object.values(PROVIDERS)) {
     if (info.installCmd) {
@@ -356,9 +358,9 @@ function resolveHeadlessProvider(): Provider {
     }
   }
   writeLine();
-  writeLine(chalk.dim('  Or scaffold without execution: squads init --provider none'));
+  writeLine(chalk.dim('  Then switch: squads init --force --provider <id>'));
   writeLine();
-  process.exit(1);
+  return 'none';
 }
 
 async function promptProvider(forceProvider?: string): Promise<Provider> {
