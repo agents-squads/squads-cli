@@ -98,6 +98,20 @@ describe('decision attribution (by, C1a)', () => {
   it('operatorIdentity never returns empty', () => {
     expect(operatorIdentity().length).toBeGreaterThan(0);
   });
+
+  describe('headless attribution (#1021)', () => {
+    // Under vitest stdin is not a TTY — exactly the headless condition.
+    it('stamps agent:headless instead of a login identity when stdin is not a TTY', () => {
+      delete process.env.SQUADS_AGENT;
+      expect(operatorIdentity()).toBe('agent:headless');
+    });
+
+    it('names the agent when SQUADS_AGENT is set', () => {
+      process.env.SQUADS_AGENT = 'coo-tick';
+      expect(operatorIdentity()).toBe('agent:coo-tick');
+      delete process.env.SQUADS_AGENT;
+    });
+  });
 });
 
 describe('defer', () => {
