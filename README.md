@@ -23,10 +23,15 @@ git repo: no database, no server, no DSL.
 
 ```bash
 npm install -g squads-cli
-squads init      # creates .agents/ with 4 starter squads
-squads status
-squads run research/analyst
+mkdir my-workforce && cd my-workforce
+git init                       # squads runs on git — it's the state and audit trail
+squads init                    # scaffolds .agents/ with starter squads
+squads run demo hello-world    # verify your setup end to end
+squads run research/analyst    # your first real agent
 ```
+
+> Claude Code must be installed and logged in (`claude /login`) before the
+> first run — `squads doctor` checks both and tells you exactly what's missing.
 
 ## How it works
 
@@ -53,9 +58,9 @@ mixed-model teams work out of the box: a cheap model scans, a deep
 reasoning model builds, a mid-tier model verifies.
 
 ```bash
-squads run research --parallel                  # squad conversation
-squads run intelligence --task "Scan X"         # directed run
-squads run --interval 30 --budget 50            # autopilot: autonomous dispatch
+squads run research                             # squad conversation (plan → work → review → verify)
+squads run intelligence --task "Scan X"         # directed, bounded run
+squads inbox                                    # everything waiting on YOUR decision — approve / reject / defer
 ```
 
 ## Documentation
