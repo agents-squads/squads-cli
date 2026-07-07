@@ -3,6 +3,17 @@
 Guidance for AI coding agents working on this repository. This is the single
 source of truth — `CLAUDE.md` imports it.
 
+## Specs — read before non-trivial changes
+
+The product is spec'd; changes that contradict a spec need a founder-visible
+issue first, not code. Canonical set:
+
+- `docs/architecture.md` — how squads works under the hood (files, context cascade, roles, feedback loop)
+- `docs/philosophy.md` — what this product is and refuses to be
+- `docs/agent-contract.md` — the typed contract every agent runs under
+- `docs/governance.md` — permission and approval model
+- `templates/seed/skills/squads-cli/SKILL.md` — the operating loop as taught to every scaffolded project
+
 ## What This Is
 
 `squads-cli` is a CLI orchestrator for autonomous AI agent teams. It organizes agents into squads (domain-aligned teams), manages their context and memory, and dispatches them via native AI CLIs (`claude`, `gemini`, etc.).
