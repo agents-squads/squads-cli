@@ -124,6 +124,22 @@ describe('createRunWorktree (#440)', () => {
     cleanup();
   });
 
+  // ── Branch-prefix override (#983 — squads propose) ──────────────────────
+
+  it('uses a custom branch prefix when provided, keeping the default when omitted', () => {
+    initRepo(repoDir);
+    const proposal = createRunWorktree(repoDir, 'growth', 'squads/proposal-');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: proposal.cwd, encoding: 'utf-8' }).trim();
+    expect(branch).toMatch(/^squads\/proposal-growth-/);
+    expect(proposal.cwd).toContain('squads-proposal-growth-');
+    proposal.cleanup();
+
+    const run = createRunWorktree(repoDir, 'growth');
+    const runBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: run.cwd, encoding: 'utf-8' }).trim();
+    expect(runBranch).toMatch(/^squads\/run-growth-/);
+    run.cleanup();
+  });
+
   // ── No silent data loss (#875) ──────────────────────────────────────────
   // A blocked lead leaves its deliverable uncommitted in the worktree. Cleanup
   // must preserve it (commit to the run branch) — never --force it away.

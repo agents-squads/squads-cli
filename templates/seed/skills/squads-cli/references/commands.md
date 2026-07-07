@@ -115,6 +115,7 @@
 | `squads version` | Show version information |
 | `squads runs` | List live background agent runs (pid-file inventory) |
 | `squads inbox [action] [id]` | Everything waiting on a human decision — list, or approve/reject/defer <id> |
+| `squads propose` | Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only) |
 | `squads scoreboard` | Executor quality-per-cost ranking from real runs (read-only, provenance-labeled) |
 | `squads kill [target]` | Stop a background run gracefully (pid, squad, or squad/agent) |
 | `squads commands` | List the live command tree (machine-readable with --json) |
