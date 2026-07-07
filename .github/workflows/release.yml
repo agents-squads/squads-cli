@@ -91,15 +91,26 @@ jobs:
 
       # Docs freshness binding (agents-squads/docs#2): tell the docs repo a
       # release happened so it regenerates its CLI reference + changelog.
-      # DOCS_DISPATCH_TOKEN = fine-grained PAT scoped to agents-squads/docs
-      # (contents: write). Without it, the docs repo's weekly cron still
-      # catches up — this step just makes freshness same-day.
+      # Auth = short-lived GitHub App installation token minted in-run from
+      # the Agents Squads app (DOCS_APP_ID + DOCS_APP_PRIVATE_KEY secrets) —
+      # no long-lived PAT. Without the secrets, the docs repo's weekly cron
+      # still catches up — this step just makes freshness same-day.
+      - name: Mint docs dispatch token
+        id: docs_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DOCS_APP_ID }}
+          private-key: ${{ secrets.DOCS_APP_PRIVATE_KEY }}
+          owner: agents-squads
+          repositories: docs
+
       - name: Notify docs site
         env:
-          DOCS_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          DOCS_TOKEN: ${{ steps.docs_token.outputs.token }}
         run: |
           if [ -z "$DOCS_TOKEN" ]; then
-            echo "::notice::DOCS_DISPATCH_TOKEN not set — docs regen rides the weekly cron instead"
+            echo "::notice::docs app token unavailable — docs regen rides the weekly cron instead"
             exit 0
           fi
           curl -sf -X POST \
