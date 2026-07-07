@@ -326,6 +326,87 @@ describe('runConversation', () => {
 
 // ─── buildAgentRoster (lead detection robustness, #449) ─────────────────────────
 
+describe('remediation cycle (#994)', () => {
+  const remediationSquad = () => makeSquad({
+    agents: [
+      { name: 'squad-lead', role: 'lead', model: undefined },
+      { name: 'builder', role: 'worker', model: undefined },
+      { name: 'critic', role: 'verifier', model: undefined },
+    ],
+  });
+
+  function scriptRun(outputs: string[]) {
+    let call = 0;
+    mockSpawn.mockImplementation(() => createMockChild(outputs[Math.min(call++, outputs.length - 1)]) as any);
+    return () => call;
+  }
+
+  it('REJECTED verdict triggers one remediation round and converges when re-verify approves', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan ready\n```plan\nTASKS:\n- worker: builder | task: build the thing\n```\n## STATUS: CONTINUE', // plan
+      'built\n## HANDOFF\ncompleted: thing\nundone: none\ncommands: `npm test` → 0\nissues: none\nprocedures: followed\n## STATUS: DONE', // worker
+      'reviewed\n## STATUS: DONE', // review
+      'checked\n## VERDICT: REJECTED (assertion 2 fails: missing error path)', // verify
+      'fixes scoped\n```plan\nTASKS:\n- worker: builder | task: fix assertion 2 error path\n```', // remediation lead
+      'fixed\n## HANDOFF\ncompleted: fix\nundone: none\ncommands: `npm test` → 0\nissues: none\nprocedures: followed\n## STATUS: DONE', // fix worker
+      'rechecked\n## VERDICT: APPROVED (all checks pass)', // re-verify
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(7);
+    expect(result.converged).toBe(true);
+  });
+
+  it('APPROVED on first verify never triggers remediation', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: APPROVED (all checks pass)',
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(4);
+    expect(result.converged).toBe(true);
+  });
+
+  it('a second REJECTED ends the run — exactly one remediation round, no loop', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (assertion 1 fails)',
+      'fixes\n```plan\nTASKS:\n- worker: builder | task: fix assertion 1\n```',
+      'fixed\n## STATUS: DONE',
+      'still bad\n## VERDICT: REJECTED (assertion 1 still fails)',
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(7); // no third verification round
+    expect(result.converged).toBe(false);
+  });
+
+  it('lead answering BLOCKED to remediation dispatches no fix workers', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (needs founder decision on schema)',
+      'cannot fix autonomously\n## STATUS: BLOCKED needs founder decision', // remediation lead: no TASKS
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(5); // no fix worker, no re-verify
+    // REJECTED verdict + BLOCKED remediation = not converged: the run ends,
+    // the preserved work surfaces via the inbox, a human owns the decision.
+    expect(result.converged).toBe(false);
+  });
+});
+
 describe('buildAgentRoster', () => {
   beforeEach(() => {
     vi.clearAllMocks();
