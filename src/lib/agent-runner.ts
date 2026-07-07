@@ -472,7 +472,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
       writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --provider=${provider}`);
     }
     writeLine();
-    writeLine(`  ${colors.dim}Or run interactively:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} Run the ${colors.cyan}${agentName}${RESET} agent from ${agentPath}`);
+    writeLine(`  ${colors.dim}Or paste this into an interactive Claude session:${RESET}`);
+    writeLine(`  ${colors.dim}"Run the ${agentName} agent as defined in ${agentPath}"${RESET}`);
   }
 }
