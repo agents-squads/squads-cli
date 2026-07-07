@@ -16,6 +16,7 @@ import {
 import {
   preflightExecutorCheck,
 } from '../lib/execution-engine.js';
+import { normalizeProviderName } from '../lib/llm-clis.js';
 import { track, Events, flushEvents } from '../lib/telemetry.js';
 import {
   colors,
@@ -99,16 +100,6 @@ export function mergeAgentPositional(
   positionalAgent: string | undefined,
   flagAgent: string | undefined
 ): { target: string | null; error?: string } {
-  // Catch `--agent` conflicting with a slash-agent in target even when there's
-  // no positional (e.g. `squads run eng/code-review -a other`) — the early
-  // return below would otherwise run the slash-agent and silently drop the
-  // flag, contradicting this function's "error loudly" contract. #905 review.
-  if (target && target.includes('/')) {
-    const slashAgent = target.split('/')[1];
-    if (flagAgent && slashAgent && slashAgent !== flagAgent) {
-      return { target, error: `Conflicting agents: "${slashAgent}" (from target) vs "${flagAgent}" (--agent). Use one.` };
-    }
-  }
   if (!positionalAgent || !target) return { target };
   if (flagAgent && flagAgent !== positionalAgent) {
     return { target, error: `Conflicting agents: "${positionalAgent}" (positional) vs "${flagAgent}" (--agent). Use one.` };
@@ -513,7 +504,8 @@ export async function runCommand(
       writeLine(`  ${colors.dim}   or: squads run ${squadName}/<agent> --cloud${RESET}`);
       process.exit(1);
     }
-    await track(Events.CLI_RUN, { type: 'cloud', target: `${squadName}/${agentName}` });
+    // #1009 privacy scope: run type only — squad/agent names never ship
+    await track(Events.CLI_RUN, { type: 'cloud' });
     await flushEvents();
     await runCloudDispatch(squadName, agentName, options);
     return;
@@ -521,6 +513,19 @@ export async function runCommand(
 
   // Check if target is a squad or an agent
   const squad = loadSquad(squadName);
+
+  // Validate the target EXISTS before any executor preflight (#912): a typo'd
+  // squad must report "not found" (with suggestions), not "claude CLI not
+  // found" — without claude installed the old order made typos un-diagnosable.
+  if (!squad && !listAgents(squadsDir).some(a => a.name === target)) {
+    writeLine(`  ${colors.red}Squad or agent "${target}" not found${RESET}`);
+    const similar = findSimilarSquads(target, listSquads(squadsDir));
+    if (similar.length > 0) {
+      writeLine(`  ${colors.dim}Did you mean: ${similar.join(', ')}?${RESET}`);
+    }
+    writeLine(`  ${colors.dim}Run \`squads status\` to see available squads and agents.${RESET}`);
+    process.exit(1);
+  }
 
   // Paused-squad enforcement: refuse to run a paused squad unless --force is set
   if (squad && squad.status === 'paused' && !options.force) {
@@ -542,7 +547,7 @@ export async function runCommand(
   // Only runs when we're actually going to execute (not dry-run)
   if (options.execute && !options.dryRun) {
     // Resolve the provider early so we check the right CLI
-    const provider = options.provider || squad?.providers?.default || 'anthropic';
+    const provider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
     const checksOk = await preflightExecutorCheck(provider);
     if (!checksOk) {
       process.exit(1);
@@ -557,7 +562,7 @@ export async function runCommand(
   }
 
   if (squad) {
-    await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
+    await track(Events.CLI_RUN, { type: 'squad' });
     await flushEvents(); // Ensure telemetry is sent before potential exit
     const runStartMs = Date.now();
     let hadError = false;
@@ -724,7 +729,7 @@ async function runSquad(
       }
     } else {
       // Determine provider for mode selection
-      const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+      const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
 
       if (options.execute && !TOOL_USE_PROVIDERS.has(squadProvider)) {
         // Sequential mode for providers without tool use (Ollama, Codex, etc.)
@@ -789,7 +794,7 @@ async function runSquad(
         writeLine();
       } else {
         // Dry-run: show what would happen
-        const squadProvider2 = options.provider || squad?.providers?.default || 'anthropic';
+        const squadProvider2 = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
         const modeLabel = TOOL_USE_PROVIDERS.has(squadProvider2)
           ? 'conversation (lead → scan → work → review → verify)'
           : `sequential (${squadProvider2} — agents run one at a time)`;

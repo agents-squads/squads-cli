@@ -303,3 +303,77 @@ describe('gatherSquadContext — injection contract', () => {
     expect(ctx).not.toContain('Last updated');
   });
 });
+
+// ── gatherSquadContext — onStats: the context_assembled source (#902) ────────
+
+describe('gatherSquadContext — onStats per-layer accounting', () => {
+  let testDir: string;
+  let originalCwd: string;
+  const SQUAD = 'eng';
+  const AGENT = 'builder';
+  let agentPath: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), 'squads-ctx-stats-test-' + Date.now());
+    const root = join(testDir, '.agents');
+    const mem = join(root, 'memory');
+    const sq = join(root, 'squads', SQUAD);
+    mkdirSync(sq, { recursive: true });
+    mkdirSync(join(mem, 'company'), { recursive: true });
+    mkdirSync(join(mem, SQUAD, AGENT), { recursive: true });
+    writeFileSync(join(sq, 'SQUAD.md'), '# Eng Squad\n');
+    agentPath = join(sq, `${AGENT}.md`);
+    writeFileSync(agentPath, '---\nrole: worker\n---\n\n# Builder\nbuild things\n');
+    writeFileSync(join(mem, 'company', 'strategy.md'), '# Strategy\n' + 'S'.repeat(400));
+    writeFileSync(join(mem, SQUAD, 'goals.md'), 'G'.repeat(600));
+    originalCwd = process.cwd();
+    process.chdir(testDir);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('reports every injected layer with chars/tokensEst and the role budget', () => {
+    let stats: import('../src/lib/run-context.js').ContextStats | undefined;
+    const ctx = gatherSquadContext(SQUAD, AGENT, {
+      agentPath, role: 'worker',
+      onStats: (s) => { stats = s; },
+    });
+
+    expect(ctx.length).toBeGreaterThan(0);
+    expect(stats).toBeDefined();
+    expect(stats!.role).toBe('worker');
+    expect(stats!.budgetChars).toBe(60000); // ROLE_BUDGETS.worker
+    // Layers present: 3 (goals), 4 (agent), 1 (company/strategy)
+    const byLayer = Object.fromEntries(stats!.layers.map((l) => [l.layer, l]));
+    expect(byLayer[3]).toMatchObject({ evicted: false });
+    expect(byLayer[3].chars).toBeGreaterThanOrEqual(600);
+    expect(byLayer[1].chars).toBeGreaterThan(0);
+    expect(byLayer[4].chars).toBeGreaterThan(0);
+    // Totals are consistent with the layers.
+    const sumChars = stats!.layers.reduce((a, l) => a + l.chars, 0);
+    expect(stats!.totalChars).toBe(sumChars);
+    expect(stats!.totalTokensEst).toBe(Math.ceil(sumChars / 4));
+  });
+
+  it('records budget-refused layers as evicted instead of dropping them silently', () => {
+    let stats: import('../src/lib/run-context.js').ContextStats | undefined;
+    // 150-char budget: goals (first layer in) consumes it; later layers evict.
+    gatherSquadContext(SQUAD, AGENT, {
+      agentPath, role: 'worker', maxTokens: 38, // ~152 chars
+      onStats: (s) => { stats = s; },
+    });
+
+    expect(stats).toBeDefined();
+    const evicted = stats!.layers.filter((l) => l.evicted);
+    const injected = stats!.layers.filter((l) => !l.evicted);
+    expect(injected.length).toBeGreaterThan(0);
+    expect(evicted.length).toBeGreaterThan(0);
+    for (const l of evicted) {
+      expect(l.chars).toBe(0);
+      expect(l.tokensEst).toBe(0);
+    }
+  });
+});

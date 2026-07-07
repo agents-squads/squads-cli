@@ -33,6 +33,13 @@ export interface CLIConfig {
    * prints it. Enables observability records for non-anthropic runs (#824).
    */
   parseUsage?: (output: string) => ProviderUsage | null;
+
+  /**
+   * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
+   * Anthropic-compatible endpoint). A key set to undefined is REMOVED from the
+   * child env — needed when an inherited variable would shadow the injected one.
+   */
+  env?: () => Record<string, string | undefined>;
 }
 
 export interface RunOptions {
@@ -81,6 +88,34 @@ export function parseAiderUsage(output: string): ProviderUsage | null {
     if (m[4] !== undefined) sessionCost = parseFloat(m[4]);
   }
   return found ? { input_tokens: input, output_tokens: output_, cost_usd: sessionCost } : null;
+}
+
+/**
+ * Fatal provider-API failure signatures (#936). Providers like aider exit 0
+ * after printing an API error, so the run was reported \u2713 completed with an
+ * empty harvest. Output-based detection is the only reliable signal. These are
+ * NON-transient failures — config/credit problems that must fail LOUD, never
+ * retried (the transient class is handled per-turn in workflow.ts, #944).
+ */
+const PROVIDER_FATAL = [
+  /litellm\.\w*Error/i,
+  /BadRequestError|AuthenticationError|PermissionDeniedError|NotFoundError/,
+  /invalid_request_error|authentication_error/,
+  /insufficient balance|please recharge|insufficient_quota|exceeded your current quota/i,
+  /The supported API model names are/,
+  /invalid api key|incorrect api key/i,
+];
+
+/** Returns the matched failure line for logging, or null when output looks healthy. */
+export function detectProviderFatalError(output: string): string | null {
+  for (const re of PROVIDER_FATAL) {
+    const m = output.match(re);
+    if (m) {
+      const line = output.split('\n').find((l) => re.test(l)) ?? m[0];
+      return line.trim().slice(0, 300);
+    }
+  }
+  return null;
 }
 
 /**
@@ -146,16 +181,47 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     displayName: 'DeepSeek (via aider)',
     command: 'aider',
     install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
-    buildArgs: (prompt, opts) => [
-      '--model',
-      opts?.model ? `deepseek/${opts.model.replace(/^deepseek\//, '')}` : 'deepseek/deepseek-chat',
-      '--message',
-      prompt,
-      '--yes',
-      '--no-auto-commits',
-      ...aiderMapTokensArgs(),
-    ],
+    buildArgs: (prompt, opts) => {
+      // Agents re-laned to deepseek keep their anthropic `model:` frontmatter,
+      // and DeepSeek's API rejects foreign names (#937) — only honor a model
+      // override that is actually a deepseek model; else the lane default.
+      const requested = opts?.model?.replace(/^deepseek\//, '');
+      const model = requested && /^deepseek/.test(requested)
+        ? requested
+        : process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+      return [
+        '--model',
+        `deepseek/${model}`,
+        '--message',
+        prompt,
+        '--yes',
+        '--no-auto-commits',
+        ...aiderMapTokensArgs(),
+      ];
+    },
     parseUsage: parseAiderUsage,
+  },
+
+  // GLM (z.ai) serves an Anthropic-compatible endpoint, so the claude CLI is
+  // the agentic harness: point it at z.ai and auth with GLM_API_KEY.
+  // ANTHROPIC_API_KEY is removed so an inherited key can't shadow the token.
+  glm: {
+    provider: 'glm',
+    displayName: 'GLM (z.ai via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set GLM_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--print',
+      '--model',
+      opts?.model || process.env.GLM_MODEL || 'glm-4.7',
+      prompt,
+    ],
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.GLM_BASE_URL || 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
   },
 
   mistral: {
@@ -215,17 +281,38 @@ export function getAllCLIStatus(): CLIStatus[] {
 }
 
 /**
+ * `squads init` uses its own provider-selection vocabulary (setup-checks.ts
+ * PROVIDERS — 'claude', 'gemini', ...) and stamps it into every scaffolded
+ * agent's frontmatter and SQUAD.md `providers.default`. That vocabulary
+ * doesn't always match the runtime keys here in LLM_CLIS (#955): init writes
+ * 'claude' but the runner needs 'anthropic'; init writes 'gemini' but the
+ * runner needs 'google'. Maps init vocabulary to runtime keys; anything
+ * already a runtime key (or unrecognized, e.g. 'cursor'/'none', which have
+ * no dispatched CLI) passes through unchanged. Read-time only — existing
+ * scaffolds on disk keep the old vocabulary; init still writes it as-is.
+ */
+const PROVIDER_NAME_ALIASES: Record<string, string> = {
+  claude: 'anthropic',
+  gemini: 'google',
+};
+
+export function normalizeProviderName(provider: string): string {
+  const key = provider.trim().toLowerCase();
+  return PROVIDER_NAME_ALIASES[key] ?? key;
+}
+
+/**
  * Get CLI config for a provider
  */
 export function getCLIConfig(provider: string): CLIConfig | undefined {
-  return LLM_CLIS[provider];
+  return LLM_CLIS[normalizeProviderName(provider)];
 }
 
 /**
  * Check if a provider's CLI is available
  */
 export function isProviderCLIAvailable(provider: string): boolean {
-  const config = LLM_CLIS[provider];
+  const config = getCLIConfig(provider);
   if (!config) return false;
   return commandExists(config.command);
 }

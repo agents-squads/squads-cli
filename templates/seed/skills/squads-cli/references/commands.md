@@ -1,6 +1,6 @@
 # Squads CLI — Full Command Reference
 
-> GENERATED from `squads commands --json` (squads-cli v0.8.2) — do not edit.
+> GENERATED from `squads commands --json` (squads-cli v0.8.3) — do not edit.
 > Regenerate: `npm run build && npm run gen:skill`. For the live tree on any
 > installed version, run `squads commands --json` directly.
 
@@ -114,6 +114,9 @@
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
 | `squads runs` | List live background agent runs (pid-file inventory) |
+| `squads inbox [action] [id]` | Everything waiting on a human decision — list, or approve/reject/defer <id> |
+| `squads propose` | Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only) |
+| `squads scoreboard` | Executor quality-per-cost ranking from real runs (read-only, provenance-labeled) |
 | `squads kill [target]` | Stop a background run gracefully (pid, squad, or squad/agent) |
 | `squads commands` | List the live command tree (machine-readable with --json) |
 

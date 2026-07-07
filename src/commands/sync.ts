@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { findMemoryDir } from '../lib/memory.js';
+import { gitIdentityArgs } from '../lib/git.js';
 import { findSquadsDir, listSquads, parseSquadFile } from '../lib/squad-parser.js';
 import { syncAllCycleData, isPostgresAvailable, closeCycleSyncPool, SyncResult } from '../lib/cycle-sync.js';
 import {
@@ -800,9 +801,11 @@ function gitPushMemory(): { success: boolean; output: string } {
     }).trim();
 
     if (status) {
-      // Stage and commit memory changes
+      // Stage and commit memory changes. Repo-scoped fallback identity (#980)
+      // when no git identity is configured — never touches global/repo config.
       execSync('git add .agents/memory/', { stdio: ['pipe', 'pipe', 'pipe'] });
-      execSync('git commit -m "chore: sync squad memory"', {
+      const identity = gitIdentityArgs(process.cwd());
+      execSync(`git ${identity} commit -m "chore: sync squad memory"`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -822,7 +825,6 @@ function gitPushMemory(): { success: boolean; output: string } {
 }
 
 export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean; autoLearn?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn });
 
   // If --dimensions flag, sync squad/agent definitions to Postgres dim tables
   if (options.dimensions) {

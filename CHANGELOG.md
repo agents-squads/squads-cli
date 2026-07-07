@@ -5,6 +5,37 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## 0.8.3 — 2026-07-07
+
+The first-run journey release: squads now works on a stranger's machine, verified by clean-room persona tests.
+
+### Journey & truthfulness
+- Fresh `squads init` scaffolds agents that can actually run — init/runtime provider vocabulary unified (#955)
+- Bare machines (no AI CLI installed) init in planning-only mode with the full provider install list — never a silent claude scaffold, never a wall (#977)
+- `squads propose` — one bounded background run turns repo intent into a reviewable proposal branch + inbox card (#983)
+- Every command reports usage via one root hook — command path + flag names + duration + success ONLY; this pass also removed 29 legacy events that leaked squad names and search queries in violation of the telemetry disclosure (#1009)
+- Unauthenticated or missing claude fails LOUD with the exact remedy and a nonzero exit (#956, #957); doctor reports real auth state and exits 1 on missing core tools
+- README quickstart works verbatim: `git init` step, auth note, demo verification; deprecated autopilot example removed (#958, decision tracker #970)
+
+### Local-first trust
+- Fresh installs default to the `local` environment; auto-update is notify-only (opt-in `SQUADS_AUTO_UPDATE=1`); the optional init email stays on your machine (#959)
+- squads never touches your personal Claude settings: the `~/.claude.json` trust mutation is gone, generated MCP configs live in your project, session-usage reads are project-scoped (`squads usage --all-claude` for machine-wide) (#960)
+- Init lists the session hooks it installs and asks before enabling push-on-session-end (#963)
+- Anonymous usage telemetry disclosed at init; journey events with a blocked-reason taxonomy; CI/test runs never phone home (#964)
+
+### Works with just git — no GitHub required
+- `squads inbox approve` lands work locally (squash-merge to your trunk) when there's no remote or gh (#979)
+- Machines with no git identity get a commit-scoped fallback — init commits for real and run isolation survives (#980)
+
+### Smarter conversations (Missions-informed)
+- Structured handoffs: turns report commands + exit codes + undone work; self-contradicted DONE claims are rejected (#990)
+- Validation contracts: plans define done before code; the verifier checks every assertion (#989, persisted per run #995)
+- Bounded remediation: a REJECTED verdict triggers exactly one scoped fix round (#994)
+- Deliver-and-stop gate matches closing keywords only (#971); scoped `--task` runs use a lead+delegate roster (#951)
+
+### Testing
+- Clean-room persona battery (`test/e2e/personas/`): synthetic users — newcomer, unauthenticated, no-git-identity, no-remote — assert the journey on every change (#997)
+
 ## [0.8.2] — 2026-07-01
 
 Trustworthy execution — per-squad pause/resume enforcement, no silent loss of

@@ -34,6 +34,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = resolve(fileURLToPath(import.meta.url), '..');
 const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 
+// Headless init auto-picks an installed AI CLI, or falls back to the
+// vendor-neutral 'none' provider on a bare machine (#977). CLAUDE.md and
+// .claude/ hooks are only scaffolded when claude is the picked provider,
+// so those assertions depend on the test environment.
+const hasClaudeCli = (() => {
+  try {
+    execSync('command -v claude', { stdio: 'ignore', shell: '/bin/sh' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 /** Strip ANSI escape codes for plain-text assertions */
 function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
@@ -170,7 +183,9 @@ describe('E2E: First-Run User Journey (#488)', () => {
 
     // P0: Core directories must be created
     expect(existsSync(join(testDir, '.agents', 'squads'))).toBe(true);
-    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(true);
+    // CLAUDE.md is claude-provider-only (#977); on a bare machine init falls
+    // back to provider 'none' and scaffolds vendor-neutral files instead.
+    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(hasClaudeCli);
 
     // P2: Must complete within 30s
     expect(result.durationMs).toBeLessThan(30000);
@@ -221,8 +236,8 @@ describe('E2E: First-Run User Journey (#488)', () => {
     const system = readFileSync(join(testDir, '.agents', 'config', 'SYSTEM.md'), 'utf-8');
     expect(system).toContain('PLACEHOLDER');
 
-    // Root files must exist
-    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(true);
+    // Root files: AGENTS.md always; CLAUDE.md only for the claude provider (#977)
+    expect(existsSync(join(testDir, 'CLAUDE.md'))).toBe(hasClaudeCli);
     expect(existsSync(join(testDir, 'AGENTS.md'))).toBe(true);
   });
 

@@ -54,19 +54,14 @@ export function probeQuota(timeoutMs = 90_000): Promise<QuotaProbeResult> {
       finish({ capped: false, raw: '[probe timeout]' });
     }, timeoutMs);
 
-    // Stream-decode so a multi-byte UTF-8 char split across a chunk boundary
-    // isn't corrupted (matches workflow.ts/execution-engine.ts). #905 review.
-    const stdoutDecoder = new TextDecoder('utf-8');
-    const stderrDecoder = new TextDecoder('utf-8');
-    child.stdout.on('data', (d) => { out += stdoutDecoder.decode(d, { stream: true }); });
-    child.stderr.on('data', (d) => { out += stderrDecoder.decode(d, { stream: true }); });
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
     child.on('error', () => {
       clearTimeout(timer);
       finish({ capped: false, raw: '[probe spawn failed]' });
     });
     child.on('close', () => {
       clearTimeout(timer);
-      out += stdoutDecoder.decode() + stderrDecoder.decode(); // flush trailing bytes
       const capped = isQuotaMessage(out);
       finish({
         capped,
@@ -75,10 +70,6 @@ export function probeQuota(timeoutMs = 90_000): Promise<QuotaProbeResult> {
       });
     });
 
-    // Guard against EPIPE: if the probe child exits before we finish writing,
-    // an unhandled 'error' on child.stdin crashes the whole CLI — and this fires
-    // exactly when quota is exhausted (the child dies fast). #905 review.
-    child.stdin.on('error', () => {});
     child.stdin.write('Reply with exactly: ok');
     child.stdin.end();
   });

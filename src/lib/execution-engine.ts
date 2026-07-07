@@ -3,6 +3,7 @@
  * Extracted from commands/run.ts to separate execution mechanics from command logic.
  */
 
+import { track } from './telemetry.js';
 import { spawn, execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { join, dirname } from 'path';
@@ -19,19 +20,22 @@ import {
   type EffortLevel,
   type Squad,
 } from './squad-parser.js';
-import { parseAgentFrontmatter } from './run-context.js';
+import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
+import { ExecEventWriter, execEventsFile } from './exec-events.js';
+import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
+  defaultTimeoutForRole,
 } from './run-types.js';
 import {
   selectMcpConfig,
   detectTaskType,
   getClaudeModelAlias,
   resolveModel,
-  ensureProjectTrusted,
   getProjectRoot,
   generateExecutionId,
   checkClaudeCliAvailable,
+  checkClaudeAuthenticated,
 } from './run-utils.js';
 import {
   registerContextWithBridge,
@@ -44,8 +48,9 @@ import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
+import { detectProviderFatalError } from './llm-clis.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled,
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 import {
   colors,
@@ -57,12 +62,34 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from './llm-clis.js';
+import { gitIdentityArgs } from './git.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+
+/**
+ * The default agent tool surface — the compiler fallback when an agent
+ * declares no explicit contract grants (#920). Shared by the foreground and
+ * detached spawn paths so P1 closes the detached bypass with the SAME proven
+ * surface foreground runs have exercised for months.
+ */
+export const DEFAULT_AGENT_TOOLS: string[] = [
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
+  'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+  'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
+  'Bash(docker:*)', 'Bash(duckdb:*)',
+  'Bash(bq:*)', 'Bash(gcloud:*)',
+  'Bash(gws:*)', 'Bash(stripe:*)',
+  'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
+  'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
+  'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
+  'Bash(squads:*)',
+  'Agent', 'WebFetch', 'WebSearch',
+];
 
 // ── Guardrail settings ────────────────────────────────────────────────
 
@@ -107,6 +134,8 @@ export interface ExecuteWithClaudeOptions {
   squadName: string;
   agentName: string;
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  /** Assembly-time context stats from gatherSquadContext — emitted as the run's `context_assembled` event (#902). */
+  contextStats?: ContextStats;
 }
 
 // ── Auto-commit ──────────────────────────────────────────────────────
@@ -170,9 +199,12 @@ export async function autoCommitAgentWork(
     const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
     writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit using --file to avoid shell interpolation
+    // Commit using --file to avoid shell interpolation. Repo-scoped fallback
+    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/
+    // GIT_COMMITTER_* env vars from botEnv (if set) still take precedence.
+    const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git commit --file "${msgFile}"`, execOpts);
+      execSync(`git ${identity} commit --file "${msgFile}"`, execOpts);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -283,12 +315,16 @@ ${verifyProtocol}`;
 
 // ── Preflight check ──────────────────────────────────────────────────
 
+// Cached for the process lifetime (#956): a multi-agent run calls this once
+// per spawn, but the login state can't change mid-process, so probe once.
+let cachedAuthProbe: boolean | null = null;
+
 /**
  * Pre-flight check for the executor (Claude Code or other provider CLI).
  * Runs once at the start of `squads run` before any agent execution.
  * Checks:
  *   1. CLI binary is available on PATH
- *   2. Authentication looks configured (credentials file or API key)
+ *   2. For Anthropic without an API key: the CLI is actually logged in (#956)
  * Skippable with SQUADS_SKIP_CHECKS=1 env var (for CI/CD).
  * Returns true if checks pass (or are skipped), false if execution should abort.
  */
@@ -320,15 +356,31 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     writeLine(`  ${colors.dim}The ${cliName} command is required to run agents but was not found on your PATH.${RESET}`);
     writeLine();
     writeLine(`  ${colors.cyan}Install:${RESET} ${installCmd}`);
+    writeLine(`  ${colors.dim}Or pick another provider: squads providers${RESET}`);
     writeLine();
     writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
     writeLine();
     return false;
   }
 
-  // Auth check removed: Claude CLI handles its own auth errors with clear messages.
-  // Pre-checking here caused false warnings for OAuth users (keychain auth works
-  // without .credentials.json or ANTHROPIC_API_KEY). See #520.
+  // --- Check 2: Claude authentication (#956) ---
+  // Skipped when ANTHROPIC_API_KEY is set — the CLI will use it directly.
+  // Otherwise probe once (cached): an env/file-based check caused false
+  // warnings for OAuth/keychain users (#520), so this reads the CLI's own
+  // "not logged in" response instead of inferring auth from files/env.
+  if (isAnthropic && !process.env.ANTHROPIC_API_KEY) {
+    if (cachedAuthProbe === null) {
+      cachedAuthProbe = checkClaudeAuthenticated();
+    }
+
+    if (!cachedAuthProbe) {
+      writeLine();
+      writeLine(`  ${icons.error} ${colors.red}Claude is installed but not logged in — run: claude /login${RESET}`);
+      void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
+      writeLine();
+      return false;
+    }
+  }
 
   return true;
 }
@@ -350,6 +402,11 @@ export function buildAgentEnv(
     SQUADS_TASK_TYPE: execContext.taskType,
     SQUADS_TRIGGER: execContext.trigger,
     SQUADS_EXECUTION_ID: execContext.executionId,
+    // Audit chain (#920): the root anchors aggregate cost/traceability across
+    // nested dispatches (an agent running `squads run` inherits these). Root
+    // propagates unchanged; parent is always the run doing THIS spawn.
+    SQUADS_ROOT_RUN_ID: baseEnv.SQUADS_ROOT_RUN_ID || execContext.executionId,
+    SQUADS_PARENT_RUN_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };
 
@@ -424,7 +481,8 @@ export function createAgentWorktree(projectRoot: string, squadName: string, agen
 
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const identity = gitIdentityArgs(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     return worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -522,8 +580,10 @@ export async function harvestProviderWork(
     const coAuthor = getCoAuthorTrailer(info.provider);
     const msgFile = join(tmpdir(), `squads-harvest-${Date.now()}.txt`);
     writeFileSync(msgFile, `feat(${info.squadName}/${info.agentName}): agent work via ${info.provider}\n\n${coAuthor}\n`);
+    // Repo-scoped fallback identity (#980) when no git identity is configured.
+    const identity = gitIdentityArgs(workDir);
     try {
-      execSync(`git commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
+      execSync(`git ${identity} commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -566,8 +626,13 @@ export function buildDetachedShellScript(config: {
   timeoutMinutes?: number;
   /** Claude session id for this run (#857) — pins the session JSONL so reconcile attributes exactly this run's usage. */
   sessionId?: string;
+  /** Compiled tool allowlist (#920). When present, replaces --dangerously-skip-permissions on the detached executor. */
+  allowedTools?: string[];
+  /** Settings file for the executor (#780): sandbox + guardrail hooks. Detached runs previously got NEITHER. */
+  settingsFile?: string;
 }): string {
   const modelFlag = config.claudeModelAlias ? `--model ${config.claudeModelAlias}` : '';
+  const settingsFlag = config.settingsFile ? `--settings '${config.settingsFile.replace(/'/g, '')}' ` : '';
   const safeSessionId = config.sessionId ? config.sessionId.replace(/[^A-Za-z0-9-]/g, '') : '';
   const sessionFlag = safeSessionId ? `--session-id ${safeSessionId} ` : '';
   const branchName = `agent/${config.squadName}/${config.agentName}-${config.timestamp}`;
@@ -590,9 +655,26 @@ export function buildDetachedShellScript(config: {
         sessionId: safeSessionId,
       })
     : '';
-  const executorCmd = `claude --print --dangerously-skip-permissions --disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
-  const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes || 15) * 60));
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
+  // stream-json (#902): the detached log is a LIVE event stream instead of a
+  // buffer that stays empty until exit — `--print` alone emits nothing until
+  // the run ends, which is exactly the black box this kills. `--verbose` is
+  // required for stream-json to emit events. The reconcile sweep normalizes
+  // this raw log into the run's events file (exec-events.ts).
+  //
+  // Permissions (#920 / P1): detached runs ran --dangerously-skip-permissions
+  // since inception — the last ungoverned spawn surface. They now get the same
+  // compiled allowlist as foreground; SQUADS_SKIP_PERMISSIONS=1 remains the
+  // explicit sandboxed-environment opt-out (checked by the CALLER, which then
+  // omits allowedTools).
+  const permissionFlags = config.allowedTools && config.allowedTools.length > 0
+    ? `--allowedTools ${config.allowedTools.map((t) => `'${t.replace(/'/g, '')}'`).join(' ')}`
+    : '--dangerously-skip-permissions';
+  const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} ${settingsFlag}--disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
+  const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes ?? defaultTimeoutForRole()) * 60));
+  // Repo-scoped fallback identity (#980) computed once here (TS side) rather
+  // than inline in the shell — single source of truth via gitIdentityArgs.
+  const identity = gitIdentityArgs(config.projectRoot);
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
   // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
   return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
@@ -624,6 +706,8 @@ export function executeForeground(config: {
   execContext: ExecutionContext;
   startMs: number;
   provider?: string;
+  /** Exec-event stream (#902) — run_end/token_usage emitted here on close. */
+  events?: ExecEventWriter;
 }): Promise<string> {
   const workDir = createAgentWorktree(config.projectRoot, config.squadName, config.agentName);
 
@@ -669,6 +753,34 @@ export function executeForeground(config: {
         goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
       };
       logObservability(obsRecord);
+
+      // Exec events (#902): foreground runs use inherited stdio (no stream to
+      // tee), so the event record is the aggregate — session usage + outcome.
+      if (config.events) {
+        config.events.emit({
+          type: 'token_usage',
+          input: sessionUsage?.input_tokens || 0,
+          output: sessionUsage?.output_tokens || 0,
+          cacheRead: sessionUsage?.cache_read_tokens || 0,
+          cacheWrite: sessionUsage?.cache_write_tokens || 0,
+          costEst: sessionUsage?.cost_usd || 0,
+          model: sessionUsage?.model || '',
+        }, config.agentName);
+        config.events.emit({
+          type: 'run_end',
+          ok: code === 0,
+          durationMs,
+          totalUsage: {
+            input: sessionUsage?.input_tokens || 0,
+            output: sessionUsage?.output_tokens || 0,
+            cacheRead: sessionUsage?.cache_read_tokens || 0,
+            cacheWrite: sessionUsage?.cache_write_tokens || 0,
+            costEst: sessionUsage?.cost_usd || 0,
+          },
+          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+        });
+        config.events.close();
+      }
 
       if (code === 0) {
         updateExecutionStatus(config.squadName, config.agentName, config.execContext.executionId, 'completed', {
@@ -716,17 +828,33 @@ export function executeForeground(config: {
         error: String(err),
         durationMs,
       });
+      if (config.events) {
+        config.events.emit({
+          type: 'run_end',
+          ok: false,
+          durationMs,
+          totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0 },
+          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+        });
+        config.events.close();
+      }
       cleanupWorktree(workDir, config.projectRoot);
       reject(err);
     });
   });
 }
 
-/** Execute Claude in watch mode (background + tail log) */
+/**
+ * Execute Claude in watch mode: background run + LIVE event feed (#903).
+ * Since #902 the detached log is a stream-json event stream, so watch renders
+ * the human activity feed through the provider adapter instead of raw
+ * `tail -f` (which would show JSON). SQUADS_WATCH_RAW=1 restores raw lines.
+ */
 export async function executeWatch(config: {
   projectRoot: string;
   agentEnv: Record<string, string>;
   logFile: string;
+  pidFile?: string;
   wrapperScript: string;
 }): Promise<string> {
   const child = spawn('sh', ['-c', config.wrapperScript], {
@@ -739,24 +867,23 @@ export async function executeWatch(config: {
 
   await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
 
-  writeLine(`  ${colors.dim}Tailing log (Ctrl+C to stop watching, agent continues)...${RESET}`);
+  writeLine(`  ${colors.dim}Watching live (Ctrl+C to stop watching, agent continues)...${RESET}`);
   writeLine();
 
-  const tail = spawn('tail', ['-f', config.logFile], { stdio: 'inherit' });
+  const { followProviderLog } = await import('./event-follow.js');
+  const follower = followProviderLog(config.logFile, { pidFile: config.pidFile });
 
   process.on('SIGINT', () => {
-    tail.kill();
+    follower.stop();
     writeLine();
     writeLine(`  ${colors.dim}Stopped watching. Agent continues in background.${RESET}`);
-    writeLine(`  ${colors.dim}Resume: tail -f ${config.logFile}${RESET}`);
+    writeLine(`  ${colors.dim}Raw log: ${config.logFile}${RESET}`);
     process.exit(0);
   });
 
-  return new Promise((resolve) => {
-    tail.on('close', () => {
-      resolve(`Agent running in background. Log: ${config.logFile}`);
-    });
-  });
+  await follower.done;
+  writeLine();
+  return `Run finished. Log: ${config.logFile}`;
 }
 
 // ── Main execution functions ─────────────────────────────────────────
@@ -767,7 +894,7 @@ export async function executeWithClaude(
 ): Promise<string> {
   const {
     verbose,
-    timeoutMinutes: _timeoutMinutes = 30,
+    timeoutMinutes,
     foreground,
     background,
     watch,
@@ -779,6 +906,9 @@ export async function executeWithClaude(
     agentName,
     model,
   } = options;
+  // Unset → per-role default (worker/lead/scanner/verifier); role comes from
+  // the caller's context assembly stats when known, else the flat fallback (#941).
+  const _timeoutMinutes = timeoutMinutes ?? defaultTimeoutForRole(options.contextStats?.role);
 
   // Determine execution mode
   const runInBackground = background === true && !watch;
@@ -787,7 +917,9 @@ export async function executeWithClaude(
 
   const startMs = Date.now();
   const projectRoot = getProjectRoot();
-  ensureProjectTrusted(projectRoot);
+  // #960: the ~/.claude.json trust mutation is GONE — verified unnecessary for
+  // headless `claude -p` (2026-07-06 empirical + docs: trust only gates project
+  // settings allow-rules, and we pass our own --settings via CLI args).
 
   // Resolve model and provider
   // Priority: 1) CLI --model flag  2) agent frontmatter model:  3) SQUAD.md model routing
@@ -799,16 +931,16 @@ export async function executeWithClaude(
   const mergedSkills = [...new Set([...(skills || []), ...squadSkills])];
   const taskType = detectTaskType(agentName);
 
+  // Agent definition path — used for frontmatter model AND contract grants (#920).
+  const squadsDirForAgent = findSquadsDir();
+  const agentPath = squadsDirForAgent ? join(squadsDirForAgent, squadName, `${agentName}.md`) : '';
+
   // Read agent frontmatter model if no explicit CLI flag
   let effectiveModel = model;
-  if (!effectiveModel) {
-    const squadsDir = findSquadsDir();
-    if (squadsDir) {
-      const agentPath = join(squadsDir, squadName, `${agentName}.md`);
-      const frontmatter = parseAgentFrontmatter(agentPath);
-      if (frontmatter.model) {
-        effectiveModel = frontmatter.model;
-      }
+  if (!effectiveModel && agentPath) {
+    const frontmatter = parseAgentFrontmatter(agentPath);
+    if (frontmatter.model) {
+      effectiveModel = frontmatter.model;
     }
   }
 
@@ -847,6 +979,29 @@ export async function executeWithClaude(
 
   await registerContextWithBridge(execContext);
 
+  // Exec-event stream (#902): run_start + context_assembled are written by the
+  // CLI at dispatch (only we know the layers); the run's tool activity follows —
+  // live for foreground, appended at reconcile for detached (from the raw
+  // stream-json log the executor writes).
+  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId);
+  events.emit({
+    type: 'run_start',
+    squad: squadName,
+    agent: agentName,
+    mode: runInForeground ? 'foreground' : runInWatch ? 'watch' : 'background',
+    model: claudeModelAlias || resolvedModel || '',
+    role: options.contextStats?.role || '',
+    startedAt: new Date(startMs).toISOString(),
+  });
+  if (options.contextStats) {
+    events.emit({
+      type: 'context_assembled',
+      layers: options.contextStats.layers,
+      totalTokensEst: options.contextStats.totalTokensEst,
+      budgetTokens: Math.ceil(options.contextStats.budgetChars / 4),
+    }, agentName);
+  }
+
   // Get bot token so agents create PRs/issues as bot identity (not user's personal gh auth)
   let botGhToken: string | undefined;
   try {
@@ -874,20 +1029,13 @@ export async function executeWithClaude(
       // Explicit opt-in for sandboxed environments (Docker, CI)
       claudeArgs.push('--dangerously-skip-permissions');
     } else {
-      claudeArgs.push('--allowedTools',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
-        'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
-        'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
-        'Bash(docker:*)', 'Bash(duckdb:*)',
-        'Bash(bq:*)', 'Bash(gcloud:*)',
-        'Bash(gws:*)', 'Bash(stripe:*)',
-        'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
-        'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
-        'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
-        'Bash(squads:*)',
-        'Agent', 'WebFetch', 'WebSearch',
-      );
+      // Contract grants win when the agent declares them; the tuned default
+      // surface otherwise (#920 — deny-by-omission where declared).
+      const compiled = compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS);
+      if (verbose && compiled.source === 'contract') {
+        writeLine(`  ${colors.dim}Tool grants: ${compiled.tools.length} from agent contract${RESET}`);
+      }
+      claudeArgs.push('--allowedTools', ...compiled.tools);
     }
     claudeArgs.push('--disable-slash-commands');
     if (mcpConfigPath) claudeArgs.push('--mcp-config', mcpConfigPath);
@@ -903,6 +1051,7 @@ export async function executeWithClaude(
         writeScope: memDir ? [memDir] : [],
         guardrailHooks: readGuardrailHooks(guardrailPath),
         guardrailPermissions: readGuardrailPermissions(guardrailPath),
+        strict: sandboxStrict(),
       });
       const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
       claudeArgs.push('--settings', settingsPath);
@@ -920,7 +1069,7 @@ export async function executeWithClaude(
 
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
-      squadName, agentName, execContext, startMs, provider,
+      squadName, agentName, execContext, startMs, provider, events,
     });
   }
 
@@ -933,13 +1082,45 @@ export async function executeWithClaude(
 
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : _timeoutMinutes;
+
+  // Settings for the detached executor (#780): sandbox (default-on) + guardrail
+  // hooks. Detached runs previously received NEITHER — the sandbox flip also
+  // brings the governance denylist to the path that needed it most. The file
+  // lives in the repo's .git (shared across a repo's runs — same content).
+  const detachedGuardrail = resolveGuardrailSettings(targetRepoRoot);
+  let detachedSettingsFile: string | undefined;
+  if (sandboxEnabled()) {
+    const memDirDetached = findMemoryDir();
+    const settings = buildSandboxSettings({
+      cwd: targetRepoRoot,
+      writeScope: memDirDetached ? [memDirDetached] : [],
+      guardrailHooks: readGuardrailHooks(detachedGuardrail),
+      guardrailPermissions: readGuardrailPermissions(detachedGuardrail),
+      strict: sandboxStrict(),
+    });
+    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+    agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+  } else if (detachedGuardrail) {
+    detachedSettingsFile = detachedGuardrail;
+  }
+
   const wrapperScript = buildDetachedShellScript({
     projectRoot: targetRepoRoot, squadName, agentName, timestamp,
     claudeModelAlias, escapedPrompt, logFile, pidFile,
     obsRoot: projectRoot, executionId: execContext.executionId, trigger,
     timeoutMinutes: watchdogMinutes,
     sessionId: randomUUID(),
+    // #920: same compiled surface as foreground; SQUADS_SKIP_PERMISSIONS=1
+    // keeps the legacy bypass for sandboxed environments.
+    allowedTools: process.env.SQUADS_SKIP_PERMISSIONS === '1'
+      ? undefined
+      : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
+    settingsFile: detachedSettingsFile,
   });
+
+  // Detached: run_start/context_assembled are already on disk; the run's tool
+  // events are normalized from the raw stream-json log at reconcile (spool.ts).
+  events.close();
 
   if (runInWatch) {
     if (verbose) {
@@ -949,7 +1130,7 @@ export async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, wrapperScript });
+    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, pidFile, wrapperScript });
   }
 
   // ── Background mode ──────────────────────────────────────────────────
@@ -1015,14 +1196,20 @@ export async function executeWithProvider(
   const agentName = options.agentName || 'unknown';
   const timestamp = Date.now();
 
-  // Build clean env: remove CLAUDECODE to allow nesting, pass squad context
+  // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
+  // Provider env hooks (cliConfig.env) inject endpoint/auth overrides; a key
+  // set to undefined removes the inherited variable from the child env.
   const { CLAUDECODE: _claudeCode, ...cleanEnv } = process.env;
-  const providerEnv = {
+  const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
+    ...(cliConfig.env?.() ?? {}),
     SQUADS_SQUAD: squadName,
     SQUADS_AGENT: agentName,
     SQUADS_PROVIDER: provider,
   };
+  for (const key of Object.keys(providerEnv)) {
+    if (providerEnv[key] === undefined) delete providerEnv[key];
+  }
 
   // Create isolated worktree for this agent (same pattern as executeWithClaude)
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
@@ -1030,7 +1217,8 @@ export async function executeWithProvider(
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const identity = gitIdentityArgs(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -1105,6 +1293,12 @@ export async function executeWithProvider(
         // Token/cost figures come from the provider's own output when parseable.
         const startMs = options.startMs || timestamp;
         const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        // #936: providers can exit 0 after printing a fatal API error — detect
+        // from output so the ledger never credits a failed run as completed.
+        const fatal = detectProviderFatalError(outputTail);
+        if (fatal) {
+          writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
+        }
         logObservability({
           ts: new Date().toISOString(),
           id: options.executionId || generateExecutionId(),
@@ -1113,7 +1307,7 @@ export async function executeWithProvider(
           provider,
           model: options.model || 'unknown',
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
-          status: code === 0 ? 'completed' : 'failed',
+          status: code === 0 && !fatal ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
           input_tokens: usage?.input_tokens || 0,
           output_tokens: usage?.output_tokens || 0,
@@ -1121,7 +1315,7 @@ export async function executeWithProvider(
           cache_write_tokens: 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
-          error: code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined,
+          error: fatal ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
@@ -1183,14 +1377,14 @@ export async function executeWithProvider(
   // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
   // the executor wrote, fast-forward the project root, and only delete the
   // agent branch when its work is integrated or empty — never lose output.
-  // Author = the user's git identity (same as the TS-side harvest), with the
-  // provider co-author trailer marking machine authorship; a neutral local
-  // identity is the fallback ONLY when no git identity is configured (#837).
+  // Author = the user's git identity (same as the TS-side harvest); the
+  // repo-scoped fallback identity (#980, single source of truth via
+  // gitIdentityArgs) applies ONLY when no git identity is configured.
   const harvestMsg = `-m 'feat(${squadName}/${agentName}): agent work via ${provider}' -m '${getCoAuthorTrailer(provider)}'`;
+  const harvestIdentity = gitIdentityArgs(workDir);
   const cleanupCmd = workDir !== projectRoot
     ? `; git -C '${workDir}' add -A 2>/dev/null` +
-      `; { git -C '${workDir}' commit ${harvestMsg}` +
-      ` || git -C '${workDir}' -c user.name='squads-agent' -c user.email='squads-agent@localhost' commit ${harvestMsg}; } >/dev/null 2>&1` +
+      `; git -C '${workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
       `; KEEP_BRANCH=''; HARVEST=none` +
       `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
       ` { git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 && HARVEST=merged; } || { KEEP_BRANCH=1; HARVEST=preserved; }; fi` +
@@ -1215,7 +1409,7 @@ export async function executeWithProvider(
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
-  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes || 15);
+  const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;

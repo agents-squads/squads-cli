@@ -55,6 +55,16 @@ export function isQuotaMessage(text: string): boolean {
     || text.includes('Quota limit reached');
 }
 
+/**
+ * Detect an unauthenticated/invalid-credential response from the provider CLI.
+ * A missing login or invalid key fails EVERY turn identically — unlike a quota
+ * wall, it never clears mid-run, so this must abort the whole conversation
+ * loud rather than exhaust turns until "no signals" prints a cryptic stop (#956).
+ */
+export function isAuthFailureMessage(text: string): boolean {
+  return /not logged in|please run \/login|invalid api key/i.test(text);
+}
+
 /** Map roles to model tiers for cost routing */
 export function modelForRole(role: AgentRole): string {
   switch (role) {
@@ -337,6 +347,52 @@ export interface ConvergenceResult {
  *
  * Falls back to keyword detection for agents that don't follow the format.
  */
+/**
+ * Validation contract (#989): the PLAN phase defines done-ness before any code
+ * exists. Extracted verbatim so the verifier checks against the contract, not
+ * against its own reading of the diff.
+ */
+export function extractValidationContract(planOutput: string): string {
+  const m = planOutput.match(/##\s*VALIDATION CONTRACT\s*\n([\s\S]*?)(?=\n##\s|\n```|$)/i);
+  return m ? m[1].trim() : '';
+}
+
+/**
+ * Structured handoff (#990): workers report completed/undone/commands+exit
+ * codes/issues/procedures before their STATUS line. Parsed so the runtime can
+ * flag DONE claims contradicted by the worker's own command log.
+ */
+export interface ParsedHandoff {
+  present: boolean;
+  undone: string;
+  /** Exit codes found in the commands field (e.g. "`npm test` → 1"). */
+  exitCodes: number[];
+  /** DONE status contradicted by non-empty undone or a nonzero exit code. */
+  contradictsDone: boolean;
+}
+
+export function parseHandoff(text: string): ParsedHandoff {
+  const block = text.match(/##\s*HANDOFF\s*\n([\s\S]*?)(?=\n##\s|$)/i);
+  if (!block) return { present: false, undone: '', exitCodes: [], contradictsDone: false };
+  const body = block[1];
+  const field = (name: string): string => {
+    const m = body.match(new RegExp(`^${name}:\\s*(.*)$`, 'im'));
+    return m ? m[1].trim() : '';
+  };
+  const undone = field('undone');
+  const commands = field('commands');
+  const exitCodes = [...commands.matchAll(/(?:→|->)\s*(\d+)/g)].map(m => parseInt(m[1], 10));
+  const claimsDone = /##\s*STATUS:\s*DONE/i.test(text);
+  const undoneNonEmpty = undone !== '' && !/^(none|n\/a|-)\.?$/i.test(undone);
+  const hasFailingExit = exitCodes.some(c => c !== 0);
+  return {
+    present: true,
+    undone,
+    exitCodes,
+    contradictsDone: claimsDone && (undoneNonEmpty || hasFailingExit),
+  };
+}
+
 export function detectConvergence(
   transcript: Transcript,
   maxTurns: number,

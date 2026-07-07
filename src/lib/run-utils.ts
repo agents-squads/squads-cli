@@ -2,7 +2,7 @@
  * Pure utility functions for the `squads run` command.
  * Extracted from commands/run.ts — no side effects, no state.
  */
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { findSquadsDir, type Squad } from './squad-parser.js';
@@ -161,39 +161,6 @@ export function resolveModel(
 
 // ── Project trust ────────────────────────────────────────────────────
 
-/**
- * Ensure the project directory is trusted in Claude's config.
- * This prevents the workspace trust dialog from blocking autonomous execution.
- */
-export function ensureProjectTrusted(projectPath: string): void {
-  const configPath = join(process.env.HOME || '', '.claude.json');
-
-  if (!existsSync(configPath)) {
-    // No Claude config yet - will be created on first interactive run
-    return;
-  }
-
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-
-    if (!config.projects) {
-      config.projects = {};
-    }
-
-    if (!config.projects[projectPath]) {
-      config.projects[projectPath] = {};
-    }
-
-    // Mark as trusted for autonomous execution
-    if (!config.projects[projectPath].hasTrustDialogAccepted) {
-      config.projects[projectPath].hasTrustDialogAccepted = true;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
-    }
-  } catch (e) {
-    // Don't fail execution if we can't update config — the trust dialog will just appear
-    writeLine(`  ${colors.dim}warn: config update failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-  }
-}
 
 // ── Project root ─────────────────────────────────────────────────────
 
@@ -240,4 +207,29 @@ export async function checkClaudeCliAvailable(): Promise<boolean> {
     check.on('close', (code) => resolve(code === 0));
     check.on('error', () => resolve(false));
   });
+}
+
+export const AUTH_PROBE_TIMEOUT_MS = 10000;
+const NOT_LOGGED_IN_PATTERN = /not logged in|please run \/login/i;
+
+/**
+ * Probe whether the Claude CLI is authenticated by running a trivial prompt.
+ * A stale OAuth/keychain session still answers normally, so this reads the
+ * CLI's own error text rather than checking for an API key or credentials
+ * file — an env/file-based check produced false positives for OAuth users
+ * when it was tried before (#520).
+ */
+export function checkClaudeAuthenticated(): boolean {
+  try {
+    const output = execSync(`claude -p 'ok'`, {
+      encoding: 'utf-8',
+      timeout: AUTH_PROBE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return !NOT_LOGGED_IN_PATTERN.test(output);
+  } catch (error) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    const combined = `${err.stdout ?? ''} ${err.stderr ?? ''} ${err.message ?? ''}`;
+    return !NOT_LOGGED_IN_PATTERN.test(combined);
+  }
 }

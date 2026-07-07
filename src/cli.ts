@@ -47,7 +47,7 @@ for (const envPath of envPaths) {
 import type { SessionSummaryData } from './commands/sessions.js';
 
 // Setup imports (must run on every invocation)
-import { registerExitHandler } from './lib/telemetry.js';
+import { registerExitHandler, installCommandTelemetry } from './lib/telemetry.js';
 import { applyStackConfig } from './lib/stack-config.js';
 
 // Register-pattern commands (must define subcommand structure before parseAsync)
@@ -186,6 +186,10 @@ function handleOutputError(str: string, write: (s: string) => void): void {
 }
 
 const program = new Command();
+
+// #1009: every command reports usage via one root hook pair — no per-command
+// wiring, privacy hard-scoped to command path + flag names in telemetry.ts.
+installCommandTelemetry(program);
 
 program
   .name('squads')
@@ -573,6 +577,7 @@ program
   .command('usage')
   .description('Show local cost/token usage (today, rolling window, by squad)')
   .option('-w, --window <hours>', 'Rolling-window size in hours', '5')
+  .option('--all-claude', 'Include ALL Claude Code sessions on this machine, not just this project (#960)')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     const { usageCommand } = await import('./commands/usage.js');
@@ -1187,9 +1192,58 @@ program
   .description('List live background agent runs (pid-file inventory)')
   .option('--json', 'Output as JSON')
   .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
+  .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
+  .option('--report <execId>', 'Context-economy report for a finished run (per-agent cost, cache hits, per-layer)')
+  .option('--outcome <execId>', 'Did the run\'s output land? Resolve its PRs/issues live: merged/open/closed')
   .action(async (options) => {
     const { runsCommand } = await import('./commands/runs.js');
     return runsCommand(options);
+  });
+
+// Review queue (#924 list, #933 decision verbs): everything waiting on a
+// human, one screen — and the three things a human can say to each item.
+program
+  .command('inbox [action] [id]')
+  .description('Everything waiting on a human decision — list, or approve/reject/defer <id>')
+  .option('--json', 'Output as JSON')
+  .option('--reason <text>', 'Why (required for reject; written through to squads feedback)')
+  .option('--days <n>', 'Defer window in days (default 7)')
+  .option('--by <actor>', 'Who decided (default: squads login email, else OS user) — for bridges executing another surface’s decision')
+  .action(async (action, id, options) => {
+    const { inboxCommand } = await import('./commands/inbox.js');
+    return inboxCommand(action, id, options);
+  });
+
+// Propose — the ambient core (#983): deterministic context assembly + one
+// bounded dispatch that lands on a squads/proposal-* branch for inbox review.
+program
+  .command('propose')
+  .description('Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only)')
+  .option('--squad <name>', 'Squad to dispatch (default: keyword-overlap heuristic against BUSINESS_BRIEF/README/package.json)')
+  .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 5)')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads propose                        Pick the most relevant squad automatically
+  $ squads propose --squad growth         Propose from a specific squad
+  $ squads propose --cost-ceiling 10      Raise the cost ceiling for this dispatch
+`)
+  .action(async (options) => {
+    const { proposeCommand } = await import('./commands/propose.js');
+    return proposeCommand(options);
+  });
+
+// Executor referee (outcome-driven routing §3.2): quality-per-cost per
+// task class × provider × model, from the execution ledger. Read-only.
+program
+  .command('scoreboard')
+  .description('Executor quality-per-cost ranking from real runs (read-only, provenance-labeled)')
+  .option('--json', 'Output as JSON')
+  .option('--days <n>', 'Window in days (default 30)')
+  .option('--resolve', 'Check recent PR artifacts live against GitHub for landed-rate (slower)')
+  .action(async (options) => {
+    const { scoreboardCommand } = await import('./commands/scoreboard.js');
+    return scoreboardCommand(options);
   });
 
 program

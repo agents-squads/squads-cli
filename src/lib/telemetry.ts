@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
+import type { Command } from 'commander';
 import { version as cliVersion } from '../version.js';
 import { loadProjectConfig } from './config.js';
 
@@ -21,21 +22,20 @@ const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
 const EVENTS_PATH = join(TELEMETRY_DIR, 'events.json');
 
-// Telemetry endpoint - locked to Agents Squads infrastructure
-// Users can opt-out but cannot redirect telemetry
-const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT || Buffer.from(
-  'aHR0cHM6Ly9zcXVhZHMtdGVsZW1ldHJ5LTk3ODg3MTgxNzYxMC51cy1jZW50cmFsMS5ydW4uYXBwL3Bpbmc=',
-  'base64'
-).toString();
-
-// Write-only telemetry key — locked to Agents Squads infrastructure.
-// This key can only write events; it cannot read, delete, or access user data.
-// Users can opt out via `squads config set telemetry false`.
-const TELEMETRY_KEY = 'sq_tel_v1_7f8a9b2c3d4e5f6a';
+// Telemetry destination (#964): GA4 Measurement Protocol on a dedicated
+// property — replaced the dead Cloud Run/BQ pipe (endpoint 404, warehouse
+// frozen 2026-03-14). The api_secret is WRITE-only (spam-only risk) and
+// rotatable in the GA admin; shipping it in the bundle is the accepted
+// trade for a zero-infra collector.
+const GA4_MEASUREMENT_ID = 'G-HYNPEBBXEN';
+const GA4_API_SECRET = 'VYozX83RTUS0Hqe7lsi8cw';
+const TELEMETRY_ENDPOINT = process.env.SQUADS_TELEMETRY_ENDPOINT ||
+  `https://www.google-analytics.com/mp/collect?measurement_id=${GA4_MEASUREMENT_ID}&api_secret=${GA4_API_SECRET}`;
 
 // Event queue for batch flushing
 let eventQueue: TelemetryEvent[] = [];
 let flushScheduled = false;
+let isFirstInvoke = false;
 
 // Cached system context (computed once per session)
 let cachedSystemContext: Record<string, string | undefined> | null = null;
@@ -78,6 +78,10 @@ function getSystemContext(): Record<string, string | undefined> {
   if (cachedSystemContext) return cachedSystemContext;
 
   cachedSystemContext = {
+    // Internal-traffic guard (#964): our own machines and the coo-tick must
+    // never read as adoption — GA4 filters on traffic_type=internal.
+    traffic_type: process.env.SQUADS_INTERNAL === '1' ||
+      existsSync(join(homedir(), 'agents-squads', 'hq', '.agents')) ? 'internal' : undefined,
     os: platform(), // darwin, linux, win32
     osVersion: release(),
     nodeVersion: process.version,
@@ -110,6 +114,7 @@ function getConfig(): TelemetryConfig {
       firstRun: new Date().toISOString(),
     };
     writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    isFirstInvoke = true; // journey_first_invoke fires once (#964)
     return config;
   }
 
@@ -135,6 +140,12 @@ function saveConfig(config: TelemetryConfig): void {
  * @returns true if telemetry collection is enabled
  */
 export function isEnabled(): boolean {
+  // CI runners are not users (#964): test suites and pipelines spawn the CLI
+  // hundreds of times and would drown the adoption funnel. VITEST covers
+  // local test runs, which spawn the built CLI e2e.
+  if (process.env.CI === 'true' || process.env.VITEST) {
+    return false;
+  }
   // Check environment variable first (allows CI/testing override)
   if (process.env.SQUADS_TELEMETRY_DISABLED === '1') {
     return false;
@@ -195,6 +206,11 @@ export async function track(event: string, properties?: Record<string, string | 
 
   const config = getConfig();
 
+  if (isFirstInvoke) {
+    isFirstInvoke = false; // before the recursive call — fire exactly once
+    await track('journey.first_invoke', {});
+  }
+
   const telemetryEvent: TelemetryEvent = {
     event,
     timestamp: new Date().toISOString(),
@@ -226,7 +242,7 @@ export async function track(event: string, properties?: Record<string, string | 
  * Flush queued events to the telemetry endpoint
  */
 export async function flushEvents(): Promise<void> {
-  if (!TELEMETRY_ENDPOINT || !TELEMETRY_KEY || eventQueue.length === 0) {
+  if (!TELEMETRY_ENDPOINT || eventQueue.length === 0) {
     flushScheduled = false;
     return;
   }
@@ -235,20 +251,35 @@ export async function flushEvents(): Promise<void> {
   eventQueue = [];
   flushScheduled = false;
 
+  const config = getConfig();
   try {
-    await fetch(TELEMETRY_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Squads-Key': TELEMETRY_KEY,
-      },
-      body: JSON.stringify({ events: batch }),
-      signal: AbortSignal.timeout(5000),
-    });
+    // GA4 MP accepts ≤25 events per request; names snake_case ≤40 chars;
+    // params must be scalars with names ≤40 / values ≤100 chars.
+    for (let i = 0; i < batch.length; i += 25) {
+      const events = batch.slice(i, i + 25).map(toMpEvent);
+      await fetch(TELEMETRY_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: config.anonymousId || 'unknown', events }),
+        signal: AbortSignal.timeout(5000),
+      });
+    }
   } catch {
     // Restore events on failure (will retry on next track)
     eventQueue = [...batch, ...eventQueue].slice(-100); // Keep max 100
   }
+}
+
+/** GA4 Measurement Protocol shape: snake_case name ≤40 chars, scalar params. */
+export function toMpEvent(e: TelemetryEvent): { name: string; params: Record<string, string | number> } {
+  const name = e.event.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
+  const params: Record<string, string | number> = { engagement_time_msec: 1 };
+  for (const [k, v] of Object.entries(e.properties || {})) {
+    if (v === undefined || v === null) continue;
+    const key = k.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+    params[key] = typeof v === 'number' ? v : String(v).slice(0, 100);
+  }
+  return { name, params };
 }
 
 /**
@@ -396,6 +427,71 @@ export const Events = {
  * // ... execute command ...
  * done(); // Records duration
  */
+/**
+ * Full subcommand path of a Commander action command, dot-joined
+ * (e.g. "memory.sync", "goal.set"). Excludes the root program name.
+ */
+export function commandPath(cmd: Command): string {
+  const parts: string[] = [];
+  let c: Command | null = cmd;
+  while (c && c.parent) {
+    parts.unshift(c.name());
+    c = c.parent;
+  }
+  return parts.join('.') || cmd.name();
+}
+
+/**
+ * Names of the flags the caller explicitly passed (option source 'cli'),
+ * sorted. Names ONLY — flag values and positional args never leave the
+ * machine (#1009 privacy scope).
+ */
+export function presentFlagNames(cmd: Command): string[] {
+  const names: string[] = [];
+  for (const opt of cmd.options) {
+    try {
+      if (cmd.getOptionValueSource(opt.attributeName()) === 'cli') {
+        names.push(opt.long ?? opt.short ?? opt.attributeName());
+      }
+    } catch {
+      // telemetry must never break a command
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * Root command instrumentation (#1009): one preAction/postAction pair on
+ * the program covers every command, current and future — no per-command
+ * wiring. preAction emits `cli.<path>` (the usage counter; fires even when
+ * the action later hard-exits — the local store write is synchronous).
+ * postAction emits `cli.done` with duration + success for commands that
+ * complete. Payload is hard-scoped to command path + present flag NAMES;
+ * values and positional args NEVER ship. Routes through track(), so
+ * opt-out / DO_NOT_TRACK / CI+VITEST suppression apply automatically.
+ */
+export function installCommandTelemetry(
+  program: Command,
+  trackFn: typeof track = track
+): void {
+  const startedAt = new WeakMap<Command, number>();
+  program.hook('preAction', async (_root, actionCommand) => {
+    startedAt.set(actionCommand, Date.now());
+    const flags = presentFlagNames(actionCommand).join(',');
+    await trackFn(`cli.${commandPath(actionCommand)}`, {
+      flags: flags || undefined,
+    });
+  });
+  program.hook('postAction', async (_root, actionCommand) => {
+    const start = startedAt.get(actionCommand);
+    await trackFn('cli.done', {
+      command: commandPath(actionCommand),
+      durationMs: start ? Date.now() - start : undefined,
+      success: !process.exitCode,
+    });
+  });
+}
+
 export function trackCommand(command: string): () => void {
   const start = Date.now();
 

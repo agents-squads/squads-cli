@@ -21,6 +21,7 @@ import {
 } from '../lib/terminal.js';
 
 interface UsageOptions {
+  allClaude?: boolean;
   window?: number | string;
   json?: boolean;
 }
@@ -55,13 +56,12 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
     const n = reconcileDetachedRuns(getProjectRoot());
     if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
   } catch { /* read paths never break on spool issues */ }
-  await track(Events.CLI_COST, { action: 'usage' });
 
   const windowHours = Math.max(1, parseInt(String(options.window ?? 5), 10) || 5);
   const summary = localUsageSummary(windowHours);
   // The REAL window: ALL Claude Code sessions (interactive + squad), read
   // straight from ~/.claude/projects. Graceful if the dir is missing/empty.
-  const sessions = await readClaudeSessions(windowHours);
+  const sessions = await readClaudeSessions(windowHours, { scope: options.allClaude ? 'all' : 'project' });
 
   if (options.json) {
     console.log(JSON.stringify({ executions: summary, claudeSessions: sessions }, null, 2));

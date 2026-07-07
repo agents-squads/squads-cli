@@ -11,6 +11,7 @@
  * Token budget replaces turn limits. Lead plans within the budget.
  */
 
+import { track } from './telemetry.js';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -24,12 +25,15 @@ import {
   type Transcript,
   classifyAgent,
   isQuotaMessage,
+  isAuthFailureMessage,
   modelForRole,
   createTranscript,
   serializeTranscript,
   addTurn,
   detectConvergence,
   estimateTurnCost,
+  parseHandoff,
+  extractValidationContract,
 } from './conversation.js';
 import {
   type Squad,
@@ -45,10 +49,11 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
-import { DEFAULT_TIMEOUT_MINUTES } from './run-types.js';
+import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
 import { getBotGhEnv } from './github.js';
+import { parseIssueNumberFromTask, checkPrForIssue } from './squad-loop.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
 import { createRunWorktree } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
@@ -68,6 +73,17 @@ import {
   type StreamUsage,
   type RunOutcomes,
 } from './stream-json.js';
+import {
+  ExecEventWriter,
+  createClaudeStreamJsonAdapter,
+  execEventsFile,
+} from './exec-events.js';
+import { compileAllowedTools } from './agent-contract.js';
+import { findMemoryDir } from './memory.js';
+import {
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions,
+  writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+} from './sandbox-settings.js';
 
 // =============================================================================
 // Configuration
@@ -87,6 +103,10 @@ export interface ConversationOptions {
   tokenBudget?: number;
   /** Cycle focus — changes the lead's planning behavior */
   focus?: CycleFocus;
+  /** Scoped, single-issue conversation (roster trimmed, PR-gate stop enabled) — derived from `task` when omitted */
+  scoped?: boolean;
+  /** Branch namespace override for the per-run worktree (default: 'squads/run-'). E.g. `squads propose` (#983) uses 'squads/proposal-' so its runs land in a distinct namespace the inbox scanner classifies separately. */
+  branchPrefix?: string;
 }
 
 /** Load focus instructions from .agents/config/cycle-focus.md */
@@ -122,8 +142,10 @@ interface AgentRunConfig {
   cwd: string;
   /** Stream this agent's output live (prefixed) — set under squad-run --verbose (#791) */
   verbose?: boolean;
-  /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → DEFAULT_TIMEOUT_MINUTES (#438) */
+  /** Per-agent execution timeout (minutes) — from --timeout. env SQUADS_AGENT_TIMEOUT_MINUTES overrides; unset → per-role default via defaultTimeoutForRole (#438, #941) */
   timeout?: number;
+  /** Cycle-level exec-event stream (#902) — this agent's tool activity is teed into it. */
+  events?: ExecEventWriter;
 }
 
 /**
@@ -160,7 +182,33 @@ function outcomeFields(o: RunOutcomes) {
  * full response text and real `total_cost_usd` + `usage`, so observability gets
  * true numbers instead of 0.
  */
+/**
+ * Transient API failures (stream cut, connection reset, 5xx/overloaded) lose
+ * the TURN in conversation mode — the verifier's verdict was cut mid-response
+ * on a real run (#944). One re-spawn with backoff recovers them. Quota,
+ * timeout, auth and invalid-model errors must stay LOUD (#936) — never retried.
+ */
+const TRANSIENT_API_ERROR =
+  /connection (closed|error|reset)|api error:.*(closed|reset|interrupted)|overloaded|status (500|502|503|529)|ECONNRESET|ETIMEDOUT|socket hang up/i;
+
+export function isTransientTurnError(text: string): boolean {
+  if (/\[QUOTA\]|timed out after|authentication|invalid.*model|insufficient/i.test(text)) return false;
+  return TRANSIENT_API_ERROR.test(text);
+}
+
 async function runIndependentAgent(config: AgentRunConfig): Promise<AgentRunResult> {
+  const maxRetries = process.env.SQUADS_TURN_RETRIES === '0' ? 0 : 1;
+  const backoffMs = parseInt(process.env.SQUADS_TURN_RETRY_BACKOFF_MS ?? '5000', 10);
+  let result = await runIndependentAgentOnce(config);
+  for (let attempt = 1; attempt <= maxRetries && isTransientTurnError(result.text); attempt++) {
+    writeLine(`  ${colors.yellow}${config.agentName}: transient API error — retrying turn (${attempt}/${maxRetries})${RESET}`);
+    await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    result = await runIndependentAgentOnce(config);
+  }
+  return result;
+}
+
+async function runIndependentAgentOnce(config: AgentRunConfig): Promise<AgentRunResult> {
   const { agentName, agentPath, role, squadName, task, squadContext } = config;
 
   const prompt = `You are ${agentName} (${role}) in squad ${squadName}.
@@ -175,11 +223,26 @@ ${squadContext}
 
 ## Output Requirements
 
+- Write the test that reflects INTENDED behavior BEFORE implementing — a test
+  written after the code confirms decisions instead of catching bugs (#995)
 - Commit your work (git add, commit, push)
 - Open PRs targeting develop (product repos) or push to main (domain repos)
 - Run the build before pushing — fix if it fails
 - Report: branch name, PR number, build status, what you changed
-- End with: ## STATUS: DONE or ## STATUS: BLOCKED [reason]`;
+- Before your STATUS line, emit a structured handoff (#990) — the next agent
+  acts on THIS, not on your prose. Every field is mandatory; your own command
+  log must not contradict your status:
+
+## HANDOFF
+completed: [what is genuinely done]
+undone: [what remains, or "none"]
+commands: [key commands you ran, each with its exit code, e.g. \`npm test\` → 0]
+issues: [problems discovered, or "none"]
+procedures: [followed | deviated: reason]
+
+- End with: ## STATUS: DONE or ## STATUS: BLOCKED [reason]
+- NEVER claim DONE with a non-empty undone list or a failing exit code in
+  commands — that is BLOCKED with a reason.`;
 
   const resolvedModel = config.model || modelForRole(role);
   const claudeModel = getClaudeModelAlias(resolvedModel) || resolvedModel;
@@ -232,8 +295,9 @@ ${squadContext}
   if (process.env.SQUADS_SKIP_PERMISSIONS === '1') {
     claudeArgs.push('--dangerously-skip-permissions');
   } else {
-    const tools = toolsByRole[role] || [...readTools, ...writeTools];
-    claudeArgs.push('--allowedTools', ...tools);
+    // Explicit contract grants win over the role surface (#920).
+    const fallback = toolsByRole[role] || [...readTools, ...writeTools];
+    claudeArgs.push('--allowedTools', ...compileAllowedTools(agentPath, fallback).tools);
   }
   claudeArgs.push('--disable-slash-commands');
 
@@ -251,8 +315,35 @@ ${squadContext}
   }
 
   const guardrailPath = resolveGuardrailSettings(spawnCwd);
-  if (guardrailPath) claudeArgs.push('--settings', guardrailPath);
+  if (sandboxEnabled()) {
+    // P2 default-on (#780): conversation agents run inside the OS sandbox too —
+    // same settings shape as the single-agent paths, guardrail hooks merged in.
+    const memDir = findMemoryDir();
+    const settings = buildSandboxSettings({
+      cwd: spawnCwd,
+      writeScope: memDir ? [memDir] : [],
+      guardrailHooks: readGuardrailHooks(guardrailPath),
+      guardrailPermissions: readGuardrailPermissions(guardrailPath),
+      strict: sandboxStrict(),
+    });
+    claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(spawnCwd, '.git')));
+    agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+  } else if (guardrailPath) {
+    claudeArgs.push('--settings', guardrailPath);
+  }
   if (claudeModel) claudeArgs.push('--model', claudeModel);
+
+  // Exec-event stream (#902): announce this agent as a lane in the cycle's
+  // fan-out tree, then tee its provider stream through the Claude adapter so
+  // every tool call / file touch / web fetch lands as a normalized event.
+  config.events?.emit({
+    type: 'subagent_spawn',
+    childRunId: execContext.executionId,
+    squad: squadName,
+    agent: agentName,
+    task: task.slice(0, 200),
+  });
+  const eventAdapter = config.events ? createClaudeStreamJsonAdapter() : undefined;
 
   return new Promise<AgentRunResult>((resolve) => {
     const child = spawn('claude', claudeArgs, {
@@ -275,12 +366,15 @@ ${squadContext}
               writeLine(`  ${colors.dim}${agentName} │${RESET} ${line}`);
             }
           }
-        : undefined
+        : undefined,
+      eventAdapter
+        ? (raw: string) => config.events?.ingestProviderLine(eventAdapter, raw, agentName)
+        : undefined,
     );
 
     // Timeout: configurable via env var, defaults from run-types.ts
     const envTimeout = process.env.SQUADS_AGENT_TIMEOUT_MINUTES;
-    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? DEFAULT_TIMEOUT_MINUTES);
+    const timeoutMinutes = envTimeout ? parseInt(envTimeout, 10) : (config.timeout ?? defaultTimeoutForRole(config.role));
     let timedOut = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {
@@ -317,6 +411,13 @@ ${squadContext}
         : rawUsage;
       const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
 
+      config.events?.emit({
+        type: 'subagent_done',
+        childRunId: execContext.executionId,
+        agent: agentName,
+        ok: !timedOut && !isError && code === 0,
+      });
+
       // Timed-out agents: return the timeout sentinel the convergence loop
       // expects, but with the salvaged assistant-event usage (real tokens; cost
       // derived above) instead of zero — cut-off cost is no longer invisible.
@@ -344,6 +445,7 @@ ${squadContext}
 
     child.on('error', (err) => {
       clearTimeout(timeout);
+      config.events?.emit({ type: 'subagent_done', childRunId: execContext.executionId, agent: agentName, ok: false });
       resolve({ text: `[ERROR] ${agentName} failed to spawn: ${err.message}`, usage: emptyUsage(), outcomes: emptyOutcomes() });
     });
   });
@@ -359,7 +461,11 @@ interface ClassifiedAgent {
   path: string;
 }
 
-export function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAgent[] {
+export function buildAgentRoster(
+  squad: Squad,
+  squadsDir: string,
+  opts: { taskMode?: boolean } = {},
+): ClassifiedAgent[] {
   // If squad defines conversation_agents, only include those in the conversation.
   // Other agents run on their own schedules, not in the squad conversation.
   const conversationFilter = squad.conversation_agents;
@@ -384,6 +490,19 @@ export function buildAgentRoster(squad: Squad, squadsDir: string): ClassifiedAge
         a.name.toLowerCase().endsWith('-lead')
     );
     if (byName) byName.role = 'lead';
+  }
+
+  // Scoped --task mode (#951): a `--task` dispatch (e.g. issue-solver working
+  // one issue) doesn't need the full squad roster — scanners/verifiers add
+  // turns and cost without adding value to a single bounded fix. Keep the
+  // lead(s) plus the first worker that isn't an eval/critic/tester/bench
+  // agent (those are quality-gate roles, not delegates that build).
+  if (opts.taskMode) {
+    const leads = agents.filter(a => a.role === 'lead');
+    const delegate = agents.find(
+      a => a.role === 'worker' && !/-eval$|-critic|-tester$|-bench$/i.test(a.name),
+    );
+    return delegate ? [...leads, delegate] : leads;
   }
 
   return agents;
@@ -416,7 +535,30 @@ export async function runConversation(
   const tokenBudget = options.tokenBudget || projectConfig.token_budget || DEFAULT_TOKEN_BUDGET;
   const costCeiling = options.costCeiling || projectConfig.cost_ceiling || DEFAULT_COST_CEILING;
   const maxTurns = options.maxTurns || 100;
+  const scoped = options.scoped ?? Boolean(options.task);
+  const issueNumberFromTask = options.task ? parseIssueNumberFromTask(options.task) : null;
   const transcript = createTranscript(squad.name);
+
+  // Deliver-and-stop gate (#951): in a scoped single-issue conversation, stop
+  // as soon as a PR already addresses the target issue — even if the turn/cost
+  // ceiling hasn't been hit. Wraps detectConvergence (kept pure/IO-free) with
+  // one extra IO check; the bot's gh auth is fetched once, lazily, only when
+  // the gate can actually fire.
+  let prGateGhEnv: Record<string, string> | undefined;
+  const checkConvergence = async () => {
+    const base = detectConvergence(transcript, maxTurns, costCeiling);
+    if (base.converged) return base;
+    if (!scoped || issueNumberFromTask === null || !squad.repo) return base;
+    if (!prGateGhEnv) prGateGhEnv = await getBotGhEnv().catch(() => ({}));
+    const pr = checkPrForIssue(squad.repo, issueNumberFromTask, prGateGhEnv);
+    if (pr) {
+      return {
+        converged: true,
+        reason: `PR #${pr.number} already addresses issue #${issueNumberFromTask} — stopping (${pr.title})`,
+      };
+    }
+    return base;
+  };
 
   // Resolve squad's working directory
   let squadCwd = process.cwd();
@@ -435,11 +577,11 @@ export async function runConversation(
   // drops, and PRs never touch the user's working tree. Falls back to in-place
   // (squadCwd unchanged) if the dir isn't a git repo or worktree add fails.
   // Disable with SQUADS_NO_WORKTREE=1. Cleanup runs in finally below.
-  const worktree = createRunWorktree(squadCwd, squad.name);
+  const worktree = createRunWorktree(squadCwd, squad.name, options.branchPrefix);
   squadCwd = worktree.cwd;
 
   try {
-  const allAgents = buildAgentRoster(squad, squadsDir);
+  const allAgents = buildAgentRoster(squad, squadsDir, { taskMode: scoped });
   const leads = allAgents.filter(a => a.role === 'lead');
   const scanners = allAgents.filter(a => a.role === 'scanner');
   const workers = allAgents.filter(a => a.role === 'worker');
@@ -465,11 +607,85 @@ export async function runConversation(
 
   log(`${squad.name}: ${allAgents.length} agents (${leads.length}L ${scanners.length}S ${workers.length}W ${verifiers.length}V) budget: ${Math.round(tokenBudget / 1000)}K tokens`);
 
+  // Exec-event stream for this cycle (#902): persists to the dispatch root's
+  // observability dir (survives the per-run worktree by construction). One
+  // file per cycle; each agent's activity is attributed via the envelope.
+  const events = new ExecEventWriter(
+    execEventsFile(findProjectRoot() || process.cwd(), executionId),
+    executionId,
+  );
+  const finishEvents = (ok: boolean) => {
+    events.emit({
+      type: 'run_end',
+      ok,
+      durationMs: Date.now() - cycleStartMs,
+      totalUsage: {
+        input: cycleUsage.input_tokens,
+        output: cycleUsage.output_tokens,
+        cacheRead: cycleUsage.cache_read_tokens,
+        cacheWrite: cycleUsage.cache_write_tokens,
+        costEst: cycleUsage.cost_usd,
+      },
+      outcomes: { ...outcomeFields(cycleOutcomes) },
+    });
+    events.close();
+  };
+
+  // Auth-failure fail-fast (#956): a missing/expired login fails every claude
+  // invocation identically — unlike a quota wall it never clears mid-cycle, so
+  // continuing just burns turns until convergence detection prints a cryptic
+  // "no signals" stop at exit 0. Abort loud, nonzero exit, credited as failed
+  // (same family as the #936/#947 exit-0 provider failures).
+  const abortOnAuthFailure = (text: string, agentName: string): ConversationResult | null => {
+    if (!isAuthFailureMessage(text)) return null;
+    void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
+    writeLine(`  ${colors.red}${squad.name}: Claude is not authenticated — run: claude /login${RESET}`);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: agentName,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
+      context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
+      error: 'Claude is not authenticated — run: claude /login',
+      task: options.task,
+    });
+    finishEvents(false);
+    process.exitCode = 1;
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Claude is not authenticated — run: claude /login' };
+  };
+
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
   const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
+  events.emit({
+    type: 'run_start',
+    squad: squad.name,
+    agent: lead.name,
+    mode: 'conversation',
+    model: options.model || modelForRole('lead'),
+    role: contextRole,
+    startedAt: new Date(cycleStartMs).toISOString(),
+  });
   const squadContext = gatherSquadContext(squad.name, lead.name, {
     agentPath: lead.path, role: contextRole,
+    // The one event the provider stream can never produce: per-layer cost (#902).
+    onStats: (stats) => events.emit({
+      type: 'context_assembled',
+      layers: stats.layers,
+      totalTokensEst: stats.totalTokensEst,
+      budgetTokens: Math.ceil(stats.budgetChars / 4),
+    }, lead.name),
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -510,12 +726,30 @@ export async function runConversation(
   const planResult = await runIndependentAgent({
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
-    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+    task: options.task ? `${options.task}\n\n${planPrompt}` : planPrompt, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
   });
   const planOutput = planResult.text;
+  // #989: the plan's validation contract is the verifier's checklist — done-ness
+  // defined before code, checked independently of the implementation.
+  const validationContract = extractValidationContract(planOutput);
+  // #995: the contract is a run ARTIFACT, not just transcript text — remediation
+  // cycles, follow-up dispatches, and the inbox reference done-ness across runs.
+  if (validationContract) {
+    try {
+      const contractDir = join(squadsDir, '..', 'observability', 'runs', executionId);
+      mkdirSync(contractDir, { recursive: true });
+      writeFileSync(join(contractDir, 'validation-contract.md'),
+        `# Validation contract — ${squad.name} ${executionId}\n\n${validationContract}\n`);
+    } catch {
+      // artifact write is best-effort; the in-prompt contract still governs
+    }
+  }
   cycleUsage = addUsage(cycleUsage, planResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
+  if (planAuthAbort) return planAuthAbort;
 
   // Quota detection — if plan hit the API limit, stop immediately
   if (isQuotaMessage(planOutput)) {
@@ -539,11 +773,12 @@ export async function runConversation(
       error: 'Quota limit reached',
       task: options.task,
     });
+    finishEvents(false);
     return { transcript, turnCount: transcript.turns.length, totalCost: transcript.totalCost, converged: false, reason: 'Quota limit reached' };
   }
 
   // Check if lead declared done immediately (nothing to do)
-  const conv = detectConvergence(transcript, maxTurns, costCeiling);
+  const conv = await checkConvergence();
   if (conv.converged) {
     const goalsAfterEarly = snapshotGoals(squad.name);
     const goalsChangedEarly = diffGoals(goalsBefore, goalsAfterEarly);
@@ -569,6 +804,7 @@ export async function runConversation(
       goals_after: Object.keys(goalsAfterEarly).length > 0 ? goalsAfterEarly : undefined,
       goals_changed: goalsChangedEarly.length > 0 ? goalsChangedEarly : undefined,
     });
+    finishEvents(true);
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: true, reason: conv.reason };
   }
 
@@ -598,7 +834,7 @@ ${planOutput.slice(0, 3000)}`;
     const retryResult = await runIndependentAgent({
       agentName: lead.name, agentPath: lead.path, role: 'lead',
       squadName: squad.name, model: options.model || modelForRole('lead'),
-      task: formatReminder, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+      task: formatReminder, squadContext: '', cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
     });
     cycleUsage = addUsage(cycleUsage, retryResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, retryResult.outcomes);
@@ -621,7 +857,7 @@ ${planOutput.slice(0, 3000)}`;
       return runIndependentAgent({
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
-        task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+        task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
       }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes }));
     });
 
@@ -634,6 +870,21 @@ ${planOutput.slice(0, 3000)}`;
         writeLine(`  ${colors.yellow}[WARN] ${agent.name}: ${output.slice(0, 80)}${RESET}`);
       }
       addTurn(transcript, agent.name, agent.role, output, estimateTurnCost(options.model || 'sonnet'));
+    }
+
+    // #990: a worker whose own handoff contradicts its DONE claim gets flagged
+    // loudly — review/verify prompts enforce it; this makes it operator-visible.
+    for (const r of workerResults) {
+      const handoff = parseHandoff(r.output);
+      if (handoff.contradictsDone) {
+        writeLine(`  ${colors.yellow}[WARN] ${r.agent.name}: STATUS DONE contradicted by its own handoff (undone: ${handoff.undone || 'none'}; exits: ${handoff.exitCodes.join(',') || '—'})${RESET}`);
+      }
+    }
+
+    const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
+    if (workerAuthFailure) {
+      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
+      if (workerAuthAbort) return workerAuthAbort;
     }
 
     // Fail-fast (#856): every dispatched agent came back quota-capped — the
@@ -660,6 +911,7 @@ ${planOutput.slice(0, 3000)}`;
         error: 'Quota limit reached',
         task: options.task,
       });
+      finishEvents(false);
       return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
     }
   }
@@ -672,10 +924,13 @@ ${planOutput.slice(0, 3000)}`;
 
   const reviewPrompt = `Review the work done by your team. The conversation transcript shows what each worker produced.
 
-1. Check if workers actually committed code (PR numbers, commit SHAs)
-2. Merge PRs that are ready: \`gh pr merge --squash --delete-branch --auto\`
-3. Update goals.md if a goal was achieved
-4. Update state.md with what was accomplished
+1. Read each worker's ## HANDOFF block FIRST (#990): a DONE status with a
+   non-empty undone list or a failing exit code in commands is NOT done —
+   treat it as incomplete and say so in your summary.
+2. Check if workers actually committed code (PR numbers, commit SHAs)
+3. Merge PRs that are ready: \`gh pr merge --squash --delete-branch --auto\`
+4. Update goals.md if a goal was achieved
+5. Update state.md with what was accomplished
 
 End with:
 ## STATUS: DONE
@@ -685,12 +940,15 @@ Summary: [what was achieved]`;
     agentName: lead.name, agentPath: lead.path, role: 'lead',
     squadName: squad.name, model: options.model || modelForRole('lead'),
     task: reviewPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-    cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+    cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
   });
   const reviewOutput = reviewResult.text;
   cycleUsage = addUsage(cycleUsage, reviewResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
+
+  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
+  if (reviewAuthAbort) return reviewAuthAbort;
 
   // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
   if (isQuotaMessage(reviewOutput)) {
@@ -715,6 +973,7 @@ Summary: [what was achieved]`;
       error: 'Quota limit reached',
       task: options.task,
     });
+    finishEvents(false);
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Quota limit reached' };
   }
 
@@ -733,13 +992,21 @@ Summary: [what was achieved]`;
     const verifier = verifiers[0];
     log(`  verify: ${verifier.name}...`);
 
-    const verifyPrompt = `Verify the work from this cycle. The transcript shows the plan and worker outputs.
+    const contractSection = validationContract
+      ? `\n## VALIDATION CONTRACT (from the plan — check EVERY assertion)\n${validationContract}\n\nReport per-assertion PASS/FAIL. The verdict can only be APPROVED when every assertion passes or the lead explicitly waived it with a reason in the transcript.\n`
+      : '';
 
+    const verifyPrompt = `Verify the work from this cycle. The transcript shows the plan and worker outputs.
+${contractSection}
 Check every PR and deliverable:
 1. Build: does it pass?
 2. Conflicts: is the PR mergeable?
 3. Review comments: are ALL automated review comments addressed?
 4. Correctness: does it match what the lead asked for?
+5. Handoffs (#990): re-read each worker's ## HANDOFF block. A DONE claim
+   contradicted by its own handoff (non-empty undone, failing exit codes,
+   skipped procedures without reason) fails this check — the verdict must be
+   REJECTED naming the contradiction.
 
 End with:
 ## VERDICT: APPROVED (all checks pass)
@@ -750,16 +1017,73 @@ or
       agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
       squadName: squad.name, model: options.model || modelForRole('verifier'),
       task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
-      cwd: squadCwd, verbose: options.verbose, timeout: options.timeout,
+      cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
     });
     const verifyOutput = verifyResult.text;
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, verifyResult.outcomes);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
+
+    // ── #994: bounded remediation — ONE fix round when the verifier rejects.
+    // Missions production data: every milestone needed 2-4 validation rounds;
+    // one-shot passes are the exception. Our bounded runs get exactly one
+    // remediation round; a second rejection converges not-approved and the
+    // inbox owns the rest.
+    const rejectedFirst = /##\s*VERDICT:\s*REJECTED/i.test(verifyOutput);
+    if (rejectedFirst && workers.length > 0
+        && !isQuotaMessage(verifyOutput) && !isAuthFailureMessage(verifyOutput)) {
+      log(`  remediate: ${lead.name}... (one round, #994)`);
+      const remediationPrompt = `The verifier REJECTED this cycle. Its verdict in the transcript names the exact failures${validationContract ? ' (including per-assertion FAILs against the validation contract)' : ''}.
+
+Emit fix tasks scoped ONLY to the named failures — no new scope, no improvements:
+
+\`\`\`plan
+TASKS:
+- worker: [worker-name] | task: [fix instruction naming the failed check/assertion]
+\`\`\`
+
+Max 2 tasks. If the rejection is not actionable by a worker (needs a human decision or external access), do NOT emit tasks — end with ## STATUS: BLOCKED [reason].`;
+      const remediationResult = await runIndependentAgent({
+        agentName: lead.name, agentPath: lead.path, role: 'lead',
+        squadName: squad.name, model: options.model || modelForRole('lead'),
+        task: remediationPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+        cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+      });
+      cycleUsage = addUsage(cycleUsage, remediationResult.usage);
+      cycleOutcomes = addOutcomes(cycleOutcomes, remediationResult.outcomes);
+      addTurn(transcript, lead.name, 'lead', remediationResult.text, estimateTurnCost(options.model || 'sonnet'));
+
+      const fixAssignments = parseTaskAssignments(remediationResult.text, workers).slice(0, 2);
+      if (fixAssignments.length > 0 && !isQuotaMessage(remediationResult.text)) {
+        log(`  fix: ${fixAssignments.length} task(s), serial...`);
+        // Serial on purpose: fix tasks routinely touch the same files.
+        for (const { agent, task } of fixAssignments) {
+          const fixResult = await runIndependentAgent({
+            agentName: agent.name, agentPath: agent.path, role: agent.role,
+            squadName: squad.name, model: options.model || modelForRole(agent.role),
+            task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+          });
+          cycleUsage = addUsage(cycleUsage, fixResult.usage);
+          cycleOutcomes = addOutcomes(cycleOutcomes, fixResult.outcomes);
+          addTurn(transcript, agent.name, agent.role, fixResult.text, estimateTurnCost(options.model || 'sonnet'));
+        }
+
+        log(`  re-verify: ${verifier.name}...`);
+        const reverifyResult = await runIndependentAgent({
+          agentName: verifier.name, agentPath: verifier.path, role: 'verifier',
+          squadName: squad.name, model: options.model || modelForRole('verifier'),
+          task: verifyPrompt, squadContext: `${squadContext}\n\n${serializeTranscript(transcript)}`,
+          cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
+        });
+        cycleUsage = addUsage(cycleUsage, reverifyResult.usage);
+        cycleOutcomes = addOutcomes(cycleOutcomes, reverifyResult.outcomes);
+        addTurn(transcript, verifier.name, 'verifier', reverifyResult.text, estimateTurnCost(options.model || 'haiku'));
+      }
+    }
   }
 
   // Determine final convergence
-  const finalConv = detectConvergence(transcript, maxTurns, costCeiling);
+  const finalConv = await checkConvergence();
 
   // ═══════════════════════════════════════════════════════════════════
   // Observability — log conversation cycle as a single record
@@ -794,6 +1118,7 @@ or
   };
   logObservability(obsRecord);
 
+  finishEvents(true);
   return {
     transcript,
     turnCount: transcript.turns.length,

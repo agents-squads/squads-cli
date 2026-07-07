@@ -38,7 +38,6 @@ export async function memoryQueryCommand(
   query: string,
   options: MemoryOptions
 ): Promise<void> {
-  await track(Events.CLI_MEMORY_QUERY, { squad: options.squad, agent: options.agent });
   const memoryDir = findMemoryDir();
 
   if (!memoryDir) {
@@ -134,7 +133,6 @@ export async function memoryShowCommand(
   squadName: string,
   _options: MemoryOptions
 ): Promise<void> {
-  await track(Events.CLI_MEMORY_SHOW, { squad: squadName });
   const memoryDir = findMemoryDir();
 
   if (!memoryDir) {
@@ -187,7 +185,6 @@ export async function memoryUpdateCommand(
   content: string,
   options: MemoryOptions
 ): Promise<void> {
-  await track(Events.CLI_MEMORY_UPDATE, { squad: squadName, agent: options.agent, type: options.type });
   const agentName = options.agent || `${squadName}-lead`;
   const type = (options.type || 'learnings') as 'state' | 'output' | 'learnings' | 'feedback';
 
@@ -205,7 +202,6 @@ export async function memoryUpdateCommand(
 }
 
 export async function memoryListCommand(): Promise<void> {
-  await track(Events.CLI_MEMORY_LIST);
   const memoryDir = findMemoryDir();
 
   if (!memoryDir) {

@@ -18,22 +18,27 @@ vi.mock('../src/lib/env-config.js', () => ({ saveEmail: vi.fn() }));
 
 const mockGitStatus = vi.fn();
 const mockRepoName = vi.fn();
+const mockGitIdentityArgs = vi.fn();
 vi.mock('../src/lib/git.js', () => ({
   checkGitStatus: (...a: unknown[]) => mockGitStatus(...a),
   getRepoName: (...a: unknown[]) => mockRepoName(...a),
+  gitIdentityArgs: (...a: unknown[]) => mockGitIdentityArgs(...a),
 }));
 
 const mockAuthChecks = vi.fn();
 const mockGhCli = vi.fn();
 const mockDisplayResults = vi.fn();
+const mockCommandExists = vi.fn();
 vi.mock('../src/lib/setup-checks.js', () => ({
   PROVIDERS: {
-    claude: { id: 'claude', name: 'Claude Code', requiresSubscription: true, requiresApiKey: false },
+    claude: { id: 'claude', name: 'Claude Code', cliCheck: 'claude', installCmd: 'npm install -g @anthropic-ai/claude-code', requiresSubscription: true, requiresApiKey: false },
+    gemini: { id: 'gemini', name: 'Gemini', cliCheck: 'gemini', installCmd: 'npm install -g @google/gemini-cli', requiresSubscription: false, requiresApiKey: true },
     none: { id: 'none', name: 'None', requiresSubscription: false, requiresApiKey: false },
   },
   runAuthChecks: (...a: unknown[]) => mockAuthChecks(...a),
   checkGhCli: (...a: unknown[]) => mockGhCli(...a),
   displayCheckResults: (...a: unknown[]) => mockDisplayResults(...a),
+  commandExists: (...a: unknown[]) => mockCommandExists(...a),
 }));
 
 vi.mock('../src/lib/templates.js', () => ({
@@ -50,9 +55,11 @@ import { initCommand } from '../src/commands/init.js';
 function setupMocks(): void {
   mockGitStatus.mockReturnValue({ isGitRepo: true, hasRemote: true, remoteUrl: 'https://github.com/org/repo.git', branch: 'main', isDirty: false, uncommittedCount: 0 });
   mockRepoName.mockReturnValue('org/repo');
+  mockGitIdentityArgs.mockReturnValue('');
   mockAuthChecks.mockReturnValue([{ name: 'Claude CLI', status: 'ok' }]);
   mockGhCli.mockReturnValue({ name: 'GitHub CLI', status: 'ok' });
   mockDisplayResults.mockReturnValue({ hasErrors: false, hasWarnings: false, errorChecks: [], warningChecks: [] });
+  mockCommandExists.mockImplementation((cmd: string) => cmd === 'claude');
 }
 
 describe('initCommand', () => {
@@ -115,5 +122,28 @@ describe('initCommand', () => {
   it('creates IDP catalog entry', async () => {
     await initCommand({ yes: true, force: true });
     expect(existsSync(join(dir, '.agents/idp/catalog'))).toBe(true);
+  });
+
+  describe('headless provider resolution (#977)', () => {
+    it('picks an installed non-claude CLI provider when claude is absent', async () => {
+      mockCommandExists.mockImplementation((cmd: string) => cmd === 'gemini');
+      await initCommand({ yes: true, force: true });
+      expect(existsSync(join(dir, '.agents/squads/company'))).toBe(true);
+      expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(false);
+    });
+
+    it('falls back to planning-only scaffold (provider none) instead of silently scaffolding claude when no CLI is installed', async () => {
+      mockCommandExists.mockReturnValue(false);
+      await initCommand({ yes: true, force: true });
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(existsSync(join(dir, '.agents/squads/company'))).toBe(true);
+      expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(false);
+    });
+
+    it('does not consult CLI availability when --provider is explicit', async () => {
+      mockCommandExists.mockReturnValue(false);
+      await initCommand({ yes: true, force: true, provider: 'none' });
+      expect(mockCommandExists).not.toHaveBeenCalled();
+    });
   });
 });

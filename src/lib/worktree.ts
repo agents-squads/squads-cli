@@ -34,6 +34,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { colors, RESET, writeLine } from './terminal.js';
+import { gitIdentityArgs } from './git.js';
 
 /**
  * Result of attempting to create a per-run worktree.
@@ -85,17 +86,21 @@ function resolveBaseRef(repoDir: string): string {
  * Create a per-squad-RUN git worktree of `repoDir` and return the path its
  * agents should use plus a cleanup callback.
  *
- * The worktree is created at `<repoDir>/../.worktrees/squads-run-<squad>-<shortid>`
- * on a fresh branch `squads/run-<squad>-<shortid>`, based off `develop` (if it
- * exists) or the repo's current branch.
+ * The worktree is created at `<repoDir>/../.worktrees/<dir-prefix><squad>-<shortid>`
+ * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off `develop` (if
+ * it exists) or the repo's current branch. `branchPrefix` defaults to
+ * `squads/run-`; callers that need a distinct branch namespace (e.g. `squads
+ * propose`'s `squads/proposal-` runs, #983) can override it — the inbox
+ * scanner (`scanStrandedBranches`) matches on this prefix to classify items.
  *
  * On ANY failure (not a git repo, worktree add failed) this returns the
  * original `repoDir` as cwd with a no-op cleanup — the run continues in-place.
  *
- * @param repoDir   the squad's resolved repo checkout
- * @param squadName the squad name (used in branch + dir naming)
+ * @param repoDir      the squad's resolved repo checkout
+ * @param squadName    the squad name (used in branch + dir naming)
+ * @param branchPrefix branch namespace prefix (default: 'squads/run-')
  */
-export function createRunWorktree(repoDir: string, squadName: string): RunWorktree {
+export function createRunWorktree(repoDir: string, squadName: string, branchPrefix = 'squads/run-'): RunWorktree {
   const noop: RunWorktree = { cwd: repoDir, cleanup: () => {} };
 
   // Escape hatch: SQUADS_NO_WORKTREE=1 disables isolation entirely.
@@ -116,16 +121,18 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
   // never collide.
   const shortId = `${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
   const slug = squadName.replace(/[^a-zA-Z0-9_-]/g, '-');
-  const branchName = `squads/run-${slug}-${shortId}`;
+  const branchName = `${branchPrefix}${slug}-${shortId}`;
+  const dirPrefix = branchPrefix.replace(/\//g, '-');
   const worktreesRoot = join(repoDir, '..', '.worktrees');
-  const worktreePath = join(worktreesRoot, `squads-run-${slug}-${shortId}`);
+  const worktreePath = join(worktreesRoot, `${dirPrefix}${slug}-${shortId}`);
 
   const base = resolveBaseRef(repoDir);
 
   try {
     mkdirSync(worktreesRoot, { recursive: true });
+    const identity = gitIdentityArgs(repoDir);
     execSync(
-      `git -C '${repoDir}' worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
+      `git -C '${repoDir}' ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
       { stdio: 'pipe' }
     );
   } catch (e) {
@@ -209,6 +216,23 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
       execSync(`git -C '${repoDir}' worktree remove '${worktreePath}' --force`, {
         stdio: 'pipe',
       });
+
+      // Litter cleanup (#979): a run that produced zero commits leaves an
+      // empty `squads/run-*` branch behind forever — nothing to approve or
+      // reject, just noise in the inbox scanners and `git branch -a`. Delete
+      // it; a branch with real commits ahead of `base` (including the
+      // auto-save commit above) is left for the inbox to surface.
+      try {
+        const ahead = execSync(`git -C '${repoDir}' rev-list --count '${base}..${branchName}'`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+        if (ahead === '0') {
+          execSync(`git -C '${repoDir}' branch -D '${branchName}'`, { stdio: 'pipe' });
+        }
+      } catch {
+        // best-effort — a stray empty branch is harmless, just noise
+      }
     } catch {
       // Non-critical — `git worktree prune` will reclaim it later.
     }

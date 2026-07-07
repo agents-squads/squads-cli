@@ -42,6 +42,11 @@ export interface ObservabilityRecord {
   commits?: number;
   prs_created?: number;
   issues_created?: number;
+  // Audit chain (#920): nested dispatches trace to their root so aggregate
+  // cost ceilings and "what did this cascade cost" anchor at one id. Absent
+  // (or = id) for top-level runs.
+  root_run_id?: string;
+  parent_run_id?: string;
   error?: string;
   task?: string;
   // Goal tracking
@@ -472,6 +477,16 @@ async function pingIngestTrigger(): Promise<void> {
 }
 
 export function logObservability(record: ObservabilityRecord): void {
+  // Audit chain (#920): when this CLI process was itself spawned by an agent
+  // run, buildAgentEnv gave it the chain — stamp every record it writes.
+  // Explicit fields on the record win (callers that know better).
+  if (!record.root_run_id && process.env.SQUADS_ROOT_RUN_ID) {
+    record.root_run_id = process.env.SQUADS_ROOT_RUN_ID;
+  }
+  if (!record.parent_run_id && process.env.SQUADS_PARENT_RUN_ID) {
+    record.parent_run_id = process.env.SQUADS_PARENT_RUN_ID;
+  }
+
   const logPath = getLogPath();
   if (!logPath) return;
 

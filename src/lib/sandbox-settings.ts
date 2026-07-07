@@ -9,8 +9,10 @@
  * `@anthropic-ai/sandbox-runtime`. We just feed it settings (merged with the
  * existing guardrail PreToolUse hooks) via the spawn's `--settings` flag.
  *
- * Gated behind `SQUADS_SANDBOX=1` for now: when off, behavior is unchanged; when
- * on, agents run sandboxed. Flip the default after a real `squads run` smoke.
+ * DEFAULT ON since P2 default-on (#780): agents run sandboxed unless
+ * `SQUADS_SANDBOX=0` (explicit opt-out — CI images without Seatbelt/bubblewrap,
+ * debugging). `SQUADS_SANDBOX_STRICT=1` additionally hard-fails when the
+ * sandbox is unavailable and removes the unsandboxed-retry escape hatch.
  *
  * Gotchas baked in (from Anthropic's docs): `gh`/`gcloud`/`terraform` (Go TLS)
  * and `docker` are incompatible with Seatbelt → `excludedCommands` (run outside
@@ -19,8 +21,9 @@
  * managed settings — tracked for the real-run smoke.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { dirname, isAbsolute, join } from 'path';
+import { tmpdir } from 'os';
 
 export interface SandboxSettingsOptions {
   /** Worktree/project root — the agent's write root. */
@@ -106,15 +109,43 @@ export function readGuardrailPermissions(guardrailPath: string | undefined): unk
   }
 }
 
-/** Write the merged settings to a temp file and return its path (for --settings). */
+/**
+ * Write the merged settings to a temp file and return its path (for --settings).
+ *
+ * Callers pass `<repoRoot>/.git` so the file never dirties the working tree.
+ * In a LINKED WORKTREE `.git` is a file (a `gitdir:` pointer), not a directory —
+ * mkdir on it throws EEXIST and killed every conversation-mode run (#931).
+ * Follow the pointer to the real per-worktree git dir; on any failure fall
+ * back to a tmpdir rather than take the spawn down.
+ */
 export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, 'squads-sandbox-settings.json');
+  let target = dir;
+  try {
+    if (existsSync(dir) && !statSync(dir).isDirectory()) {
+      const pointer = readFileSync(dir, 'utf-8').match(/^gitdir:\s*(.+)\s*$/m);
+      if (!pointer) throw new Error(`${dir} exists but is not a directory or gitdir pointer`);
+      const gitDir = pointer[1].trim();
+      target = isAbsolute(gitDir) ? gitDir : join(dirname(dir), gitDir);
+    }
+    mkdirSync(target, { recursive: true });
+  } catch {
+    target = mkdtempSync(join(tmpdir(), 'squads-sandbox-'));
+  }
+  const path = join(target, 'squads-sandbox-settings.json');
   writeFileSync(path, JSON.stringify(settings, null, 2));
   return path;
 }
 
-/** Whether sandboxing is opt-in enabled for spawns. */
+/**
+ * Whether spawns run inside the OS sandbox. DEFAULT ON (#780 — P2 default-on);
+ * `SQUADS_SANDBOX=0` is the explicit opt-out for environments without
+ * Seatbelt/bubblewrap or when debugging agent behavior.
+ */
 export function sandboxEnabled(): boolean {
-  return process.env.SQUADS_SANDBOX === '1';
+  return process.env.SQUADS_SANDBOX !== '0';
+}
+
+/** Strict posture: hard-fail if the sandbox is unavailable, no unsandboxed retry. */
+export function sandboxStrict(): boolean {
+  return process.env.SQUADS_SANDBOX_STRICT === '1';
 }

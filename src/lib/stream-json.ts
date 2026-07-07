@@ -252,8 +252,16 @@ export class StreamJsonAccumulator {
   /** Running sum of what the agent did across the whole stream. */
   private outcomes: RunOutcomes = emptyOutcomes();
 
-  /** @param onText optional sink for live display of assistant text chunks. */
-  constructor(private readonly onText?: (text: string) => void) {}
+  /**
+   * @param onText optional sink for live display of assistant text chunks.
+   * @param onRawLine optional tee of every complete raw JSONL line — used to
+   *   feed a ProviderEventAdapter (exec-events.ts, #902) without a second
+   *   line-buffering layer. Called before the line is parsed here.
+   */
+  constructor(
+    private readonly onText?: (text: string) => void,
+    private readonly onRawLine?: (raw: string) => void,
+  ) {}
 
   /** Feed a decoded stdout chunk; processes all complete lines within it. */
   push(chunk: string): void {
@@ -272,6 +280,7 @@ export class StreamJsonAccumulator {
   }
 
   private consume(line: string): void {
+    this.onRawLine?.(line);
     const parsed = parseStreamJsonLine(line);
     if (parsed.text) {
       this.assistantText += this.assistantText ? '\n' + parsed.text : parsed.text;

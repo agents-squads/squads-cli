@@ -50,7 +50,6 @@ export async function statusCommand(
     const n = reconcileDetachedRuns(getProjectRoot());
     if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
   } catch { /* read paths never break on spool issues */ }
-  await track(Events.CLI_STATUS, { squad: squadName || 'all', verbose: options.verbose });
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {

@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import {
   type RunOptions,
-  DEFAULT_TIMEOUT_MINUTES,
+  defaultTimeoutForRole,
   TOOL_USE_PROVIDERS,
 } from './run-types.js';
 import {
@@ -65,6 +65,7 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  normalizeProviderName,
 } from './llm-clis.js';
 import { classifyAgent } from './conversation.js';
 import { parseAgentFrontmatter } from './run-context.js';
@@ -573,7 +574,7 @@ export async function runLeadMode(
   }
 
   // Block lead mode for providers without tool use support
-  const squadProvider = options.provider || squad?.providers?.default || 'anthropic';
+  const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
   if (!TOOL_USE_PROVIDERS.has(squadProvider)) {
     const cliConfig = getCLIConfig(squadProvider);
     const providerName = cliConfig?.displayName || squadProvider;
@@ -604,7 +605,7 @@ export async function runLeadMode(
   }
 
   // Build the lead prompt from template (no prompts in TypeScript — CLAUDE.md rule)
-  const timeoutMins = options.timeout || DEFAULT_TIMEOUT_MINUTES;
+  const timeoutMins = options.timeout || defaultTimeoutForRole('lead');
   const agentList = agentFiles.map(a => `- ${a.name}: ${a.role}`).join('\n');
   const agentPaths = agentFiles.map(a => `- ${a.name}: ${a.path}`).join('\n');
 
@@ -627,7 +628,7 @@ export async function runLeadMode(
     .replaceAll('{{LEAD_PROTOCOL}}', leadProtocol);
 
   // Determine provider
-  const provider = options.provider || squad?.providers?.default || 'anthropic';
+  const provider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (isAnthropic) {
