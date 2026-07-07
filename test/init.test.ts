@@ -28,14 +28,17 @@ vi.mock('../src/lib/git.js', () => ({
 const mockAuthChecks = vi.fn();
 const mockGhCli = vi.fn();
 const mockDisplayResults = vi.fn();
+const mockCommandExists = vi.fn();
 vi.mock('../src/lib/setup-checks.js', () => ({
   PROVIDERS: {
-    claude: { id: 'claude', name: 'Claude Code', requiresSubscription: true, requiresApiKey: false },
+    claude: { id: 'claude', name: 'Claude Code', cliCheck: 'claude', installCmd: 'npm install -g @anthropic-ai/claude-code', requiresSubscription: true, requiresApiKey: false },
+    gemini: { id: 'gemini', name: 'Gemini', cliCheck: 'gemini', installCmd: 'npm install -g @google/gemini-cli', requiresSubscription: false, requiresApiKey: true },
     none: { id: 'none', name: 'None', requiresSubscription: false, requiresApiKey: false },
   },
   runAuthChecks: (...a: unknown[]) => mockAuthChecks(...a),
   checkGhCli: (...a: unknown[]) => mockGhCli(...a),
   displayCheckResults: (...a: unknown[]) => mockDisplayResults(...a),
+  commandExists: (...a: unknown[]) => mockCommandExists(...a),
 }));
 
 vi.mock('../src/lib/templates.js', () => ({
@@ -56,6 +59,7 @@ function setupMocks(): void {
   mockAuthChecks.mockReturnValue([{ name: 'Claude CLI', status: 'ok' }]);
   mockGhCli.mockReturnValue({ name: 'GitHub CLI', status: 'ok' });
   mockDisplayResults.mockReturnValue({ hasErrors: false, hasWarnings: false, errorChecks: [], warningChecks: [] });
+  mockCommandExists.mockImplementation((cmd: string) => cmd === 'claude');
 }
 
 describe('initCommand', () => {
@@ -118,5 +122,26 @@ describe('initCommand', () => {
   it('creates IDP catalog entry', async () => {
     await initCommand({ yes: true, force: true });
     expect(existsSync(join(dir, '.agents/idp/catalog'))).toBe(true);
+  });
+
+  describe('headless provider resolution (#977)', () => {
+    it('picks an installed non-claude CLI provider when claude is absent', async () => {
+      mockCommandExists.mockImplementation((cmd: string) => cmd === 'gemini');
+      await initCommand({ yes: true, force: true });
+      expect(existsSync(join(dir, '.agents/squads/company'))).toBe(true);
+      expect(existsSync(join(dir, 'CLAUDE.md'))).toBe(false);
+    });
+
+    it('exits with the provider list instead of silently scaffolding claude when no CLI is installed', async () => {
+      mockCommandExists.mockReturnValue(false);
+      await expect(initCommand({ yes: true, force: true })).rejects.toThrow('exit');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('does not consult CLI availability when --provider is explicit', async () => {
+      mockCommandExists.mockReturnValue(false);
+      await initCommand({ yes: true, force: true, provider: 'none' });
+      expect(mockCommandExists).not.toHaveBeenCalled();
+    });
   });
 });
