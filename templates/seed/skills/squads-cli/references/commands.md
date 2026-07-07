@@ -1,6 +1,6 @@
 # Squads CLI — Full Command Reference
 
-> GENERATED from `squads commands --json` (squads-cli v0.8.3) — do not edit.
+> GENERATED from `squads commands --json` (squads-cli v0.9.0) — do not edit.
 > Regenerate: `npm run build && npm run gen:skill`. For the live tree on any
 > installed version, run `squads commands --json` directly.
 
