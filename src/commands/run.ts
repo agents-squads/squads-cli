@@ -732,6 +732,21 @@ async function runSquad(
       const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
 
       if (options.execute && !TOOL_USE_PROVIDERS.has(squadProvider)) {
+        // #966: sequential mode cannot hold a --task — it runs each agent's
+        // definition against the cwd with no conversation, no PR gate, and no
+        // way to carry the directive. The old behavior silently dropped the
+        // task, ran all agents, and reported success. REFUSE instead.
+        if (options.task) {
+          writeLine(`  ${icons.error} ${colors.red}--task needs an executor that can hold a task — ${squadProvider} runs sequential mode (no tool use).${RESET}`);
+          writeLine();
+          writeLine(`  ${colors.dim}Run the task through a single agent (task directive supported):${RESET}`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}/<agent>${RESET} --task "..." --provider=${squadProvider}`);
+          writeLine(`  ${colors.dim}Or use a tool-use provider for the squad conversation:${RESET}`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "..."`);
+          writeLine();
+          process.exitCode = 1;
+          return;
+        }
         // Sequential mode for providers without tool use (Ollama, Codex, etc.)
         await runSequentialMode(squad, squadsDir, squadProvider, options);
       } else if (options.execute) {
