@@ -15,17 +15,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "squads memory sync --push",
-            "timeout": 15
-          }
-        ]
-      }
     ]
   }
 }

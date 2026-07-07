@@ -51,8 +51,27 @@ function getHome(): string {
 /**
  * Get the path to generated contexts directory.
  */
+/** Minimal project-root walk (self-contained — squad-parser/run-utils import
+ *  THIS module, so importing theirs back would cycle). */
+function walkToProjectRoot(): string | null {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, '.agents'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 export function getContextsDir(): string {
-  return join(getHome(), '.claude', 'contexts');
+  // #960: generated configs are PROJECT artifacts — squads never writes into
+  // the user's ~/.claude. (The read-only user override dir below still points
+  // there: reading the user's own overrides is fine, writing is not.)
+  const projectRoot = walkToProjectRoot();
+  return projectRoot
+    ? join(projectRoot, '.agents', 'runtime', 'mcp')
+    : join(getHome(), '.squads', 'mcp');
 }
 
 /**

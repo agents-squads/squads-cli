@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
-  "version": "0.8.2",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
+  "version": "0.8.3",
+  "description": "Your AI workforce. Every user gets an AI manager that runs their team \u2014 finance, marketing, engineering, operations \u2014 for the cost of API calls.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"

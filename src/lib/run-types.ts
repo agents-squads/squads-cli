@@ -8,6 +8,24 @@ import type { EffortLevel } from './squad-parser.js';
 export const DEFAULT_TIMEOUT_MINUTES = 15;
 export const SOFT_DEADLINE_RATIO = 0.7;
 
+/** Per-role timeout defaults (minutes) — workers do heavier lifting than a quick scan (#941). */
+const ROLE_TIMEOUT_DEFAULTS: Record<string, number> = {
+  worker: 40,
+  lead: 20,
+  scanner: 15,
+  verifier: 20,
+};
+
+/**
+ * Resolve the default timeout (minutes) for an agent role. Unknown or missing
+ * roles fall back to DEFAULT_TIMEOUT_MINUTES. Callers apply this only after
+ * checking explicit --timeout and SQUADS_AGENT_TIMEOUT_MINUTES — both outrank
+ * the per-role default.
+ */
+export function defaultTimeoutForRole(role?: string): number {
+  return (role ? ROLE_TIMEOUT_DEFAULTS[role] : undefined) ?? DEFAULT_TIMEOUT_MINUTES;
+}
+
 /** Providers that support tool use (sub-agent spawning, conversation orchestration) */
 export const TOOL_USE_PROVIDERS = new Set(['anthropic', 'google']);
 

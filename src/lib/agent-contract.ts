@@ -292,3 +292,37 @@ export function contractFromAgentFile(
   }
   return deriveContract({ agent: agentName, squad, role, frontmatter: fm, agentFile, squadFile });
 }
+
+// ── P1: grant compilation (contract → Claude Code allowlist) ─────────────────
+
+/**
+ * Compile an agent's EXPLICIT contract grants into a `--allowedTools` list (#920).
+ *
+ * P1 v1 policy — deny-by-omission where declared, unchanged where not:
+ * - Agent file declares `tool_grants:` in frontmatter → those grants (filtered
+ *   to what the Claude Code allowlist can enforce) ARE the allowlist.
+ * - No declared grants → the caller's battle-tested static default list. The
+ *   ROLE_GRANTS role defaults stay contract-layer documentation/validation;
+ *   swapping them silently for the tuned runtime lists (#790/#793 lead
+ *   governance) would change every run's surface in one commit.
+ *
+ * Unenforceable declared tokens are dropped here at spawn; the P0 CI validator
+ * is where they FAIL loudly.
+ */
+export function compileAllowedTools(
+  agentFile: string,
+  fallback: string[],
+): { tools: string[]; source: 'contract' | 'default' } {
+  if (agentFile && existsSync(agentFile)) {
+    try {
+      const fm = (matter(readFileSync(agentFile, 'utf-8')).data ?? {}) as ContractFrontmatter;
+      if (Array.isArray(fm.tool_grants) && fm.tool_grants.length > 0) {
+        const tools = fm.tool_grants
+          .map((g) => g?.tool)
+          .filter((t): t is string => typeof t === 'string' && isEnforceableTool(t));
+        if (tools.length > 0) return { tools, source: 'contract' };
+      }
+    } catch { /* unreadable frontmatter → default surface */ }
+  }
+  return { tools: fallback, source: 'default' };
+}

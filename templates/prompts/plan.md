@@ -23,10 +23,19 @@ Available scanners: {{SCANNERS}}
 
 ## Output Format
 
+FIRST, before any task assignments, define what done means — independently of
+any implementation (#989). Tests and review shaped by the code confirm
+decisions; a contract written before the code catches bugs:
+
+## VALIDATION CONTRACT
+1. [concrete, checkable assertion — behavioral where possible: "running X produces Y, exit 0", not "code for X exists"]
+2. [...]
+(3-10 assertions; every task below must reference the assertion numbers it satisfies)
+
 ```plan
 GOAL: [which goal this cycle advances]
 TASKS:
-- worker: [worker-name] | task: [specific instruction with issue number or PR number]
+- worker: [worker-name] | task: [specific instruction with issue number or PR number] | satisfies: [assertion numbers]
 - worker: [worker-name] | task: [specific instruction]
 - scanner: [scanner-name] | task: [specific scan/monitor instruction]
 ```

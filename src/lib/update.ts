@@ -286,6 +286,15 @@ export async function autoUpdateOnStartup(silent = false): Promise<void> {
   const info = checkForUpdate();
   if (!info.updateAvailable) return;
 
+  // Notify-only by default (#959): mutating a user's global npm install
+  // unprompted is a trust violation. Opt in with SQUADS_AUTO_UPDATE=1.
+  if (process.env.SQUADS_AUTO_UPDATE !== '1') {
+    if (!silent) {
+      console.log(`  Update available: ${info.currentVersion} → ${info.latestVersion} — run: npm update -g squads-cli`);
+    }
+    return;
+  }
+
   // Write attempt timestamp before trying
   writeAutoUpdateCache({ lastAttempt: now, lastSuccess: autoCache?.lastSuccess });
 

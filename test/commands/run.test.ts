@@ -12,6 +12,7 @@ vi.mock('ora', () => ({
 }));
 
 vi.mock('child_process', () => ({
+  exec: vi.fn(),
   spawn: vi.fn(() => ({
     on: vi.fn(),
     stdout: { on: vi.fn() },
@@ -113,6 +114,7 @@ vi.mock('../../src/lib/terminal.js', () => ({
 vi.mock('../../src/lib/llm-clis.js', () => ({
   getCLIConfig: vi.fn(() => undefined),
   isProviderCLIAvailable: vi.fn(() => true),
+  normalizeProviderName: vi.fn((provider: string) => provider),
 }));
 
 vi.mock('../../src/lib/providers.js', () => ({
@@ -454,10 +456,27 @@ describe('runCommand', () => {
   });
 
   describe('preflight check', () => {
+    // The preflight only runs for a target that EXISTS (#912): a nonexistent
+    // squad now reports "not found" BEFORE any executor CLI check, so these
+    // tests mock a real squad to legitimately reach the provider gate.
+    function makeDemoSquad() {
+      return {
+        name: 'demo',
+        dir: 'demo',
+        mission: 'Demo things',
+        agents: [],
+        pipelines: [],
+        triggers: { scheduled: [], event: [], manual: [] },
+        goals: [],
+        status: 'active',
+        frontmatter: {},
+      };
+    }
+
     it('exits with code 1 when non-anthropic provider CLI not found', async () => {
       delete process.env.SQUADS_SKIP_CHECKS;
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
-      mockLoadSquad.mockReturnValue(null);
+      mockLoadSquad.mockReturnValue(makeDemoSquad() as ReturnType<typeof mockLoadSquad>);
       mockIsProviderCLIAvailable.mockReturnValue(false);
 
       await expect(
@@ -470,7 +489,7 @@ describe('runCommand', () => {
     it('writes CLI not found error for missing provider', async () => {
       delete process.env.SQUADS_SKIP_CHECKS;
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
-      mockLoadSquad.mockReturnValue(null);
+      mockLoadSquad.mockReturnValue(makeDemoSquad() as ReturnType<typeof mockLoadSquad>);
       mockIsProviderCLIAvailable.mockReturnValue(false);
 
       await expect(
@@ -479,6 +498,21 @@ describe('runCommand', () => {
 
       const calls = mockWriteLine.mock.calls.map(c => c[0]);
       expect(calls.some(msg => msg?.toString().includes('CLI not found'))).toBe(true);
+    });
+
+    it('reports "not found" (not a CLI error) for a nonexistent target (#912)', async () => {
+      delete process.env.SQUADS_SKIP_CHECKS;
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(null);
+      mockIsProviderCLIAvailable.mockReturnValue(false);
+
+      await expect(
+        runCommand('typo-squadd', { execute: true, provider: 'ollama' })
+      ).rejects.toThrow('process.exit');
+
+      const calls = mockWriteLine.mock.calls.map(c => c[0]?.toString() ?? '');
+      expect(calls.some(msg => msg.includes('not found') && msg.includes('typo-squadd'))).toBe(true);
+      expect(calls.some(msg => msg.includes('CLI not found'))).toBe(false);
     });
 
     it('skips preflight when dryRun is true', async () => {

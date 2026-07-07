@@ -34,6 +34,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { colors, RESET, writeLine } from './terminal.js';
+import { gitIdentityArgs } from './git.js';
 
 /**
  * Result of attempting to create a per-run worktree.
@@ -124,8 +125,9 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
 
   try {
     mkdirSync(worktreesRoot, { recursive: true });
+    const identity = gitIdentityArgs(repoDir);
     execSync(
-      `git -C '${repoDir}' worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
+      `git -C '${repoDir}' ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`,
       { stdio: 'pipe' }
     );
   } catch (e) {
@@ -209,6 +211,23 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
       execSync(`git -C '${repoDir}' worktree remove '${worktreePath}' --force`, {
         stdio: 'pipe',
       });
+
+      // Litter cleanup (#979): a run that produced zero commits leaves an
+      // empty `squads/run-*` branch behind forever — nothing to approve or
+      // reject, just noise in the inbox scanners and `git branch -a`. Delete
+      // it; a branch with real commits ahead of `base` (including the
+      // auto-save commit above) is left for the inbox to surface.
+      try {
+        const ahead = execSync(`git -C '${repoDir}' rev-list --count '${base}..${branchName}'`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+        if (ahead === '0') {
+          execSync(`git -C '${repoDir}' branch -D '${branchName}'`, { stdio: 'pipe' });
+        }
+      } catch {
+        // best-effort — a stray empty branch is harmless, just noise
+      }
     } catch {
       // Non-critical — `git worktree prune` will reclaim it later.
     }

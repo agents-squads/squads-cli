@@ -44,7 +44,9 @@ const CONFIG_DIR = join(homedir(), '.squads');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: SquadsConfig = {
-  current: 'prod',
+  // Local-first product: a fresh install talks to nothing hosted until the
+  // user explicitly runs `squads config use prod` (#959).
+  current: 'local',
   environments: {
     local: {
       api_url: process.env.SQUADS_API_URL || '',

@@ -43,6 +43,10 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   appendFileSync: vi.fn(),
+  // writeSandboxSettingsFile (#931) stats the .git target and falls back to a
+  // tmpdir on failure — treat the mocked path as a plain directory.
+  statSync: vi.fn().mockReturnValue({ isDirectory: () => true }),
+  mkdtempSync: vi.fn().mockReturnValue('/mock/tmp/squads-sandbox-x'),
 }));
 
 // Mock child_process before import — workflow.ts uses spawn for agent execution
@@ -81,7 +85,7 @@ vi.mock('../../src/lib/conversation.js', async () => {
 });
 
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
 import { runConversation, saveTranscript, buildAgentRoster } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
@@ -91,6 +95,7 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
 const mockSpawn = vi.mocked(spawn);
+const mockExecSync = vi.mocked(execSync);
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
 
 // Minimal squad fixture
@@ -260,9 +265,147 @@ describe('runConversation', () => {
     // Should converge without crashing on the unclassifiable agent
     expect(result.converged).toBe(true);
   });
+
+  it('aborts immediately with a nonzero exit code when a turn reports Claude is not authenticated (#956)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+
+    // The lead's first (plan) turn returns the raw CLI auth-failure text —
+    // this must abort the whole conversation, not just get skipped as a turn.
+    mockSpawn.mockImplementation(() => createMockChild('Not logged in · Please run /login') as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+
+      expect(result.converged).toBe(false);
+      expect(result.reason).toContain('not authenticated');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it('deliver-and-stop gate: stops when a PR already addresses the --task issue, even though turn/cost ceilings alone would not', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (String(cmd).includes('gh pr list')) {
+        return JSON.stringify([
+          { number: 951, title: 'fix: issue-951 gate', body: 'Closes #951', state: 'MERGED' },
+        ]);
+      }
+      return '';
+    });
+
+    // Every turn is non-convergent — proves the gate (not the turn/cost ceiling,
+    // both far from being hit) is what stops the run.
+    mockSpawn.mockImplementation(() => createMockChild('Still working on it.') as any);
+
+    const squad = makeSquad({
+      repo: 'agents-squads/squads-cli',
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const result = await runConversation(squad, {
+      task: 'Fix #951',
+      maxTurns: 100,
+      costCeiling: 999,
+      verbose: false,
+    });
+
+    expect(result.converged).toBe(true);
+    expect(result.reason).toContain('951');
+  });
 });
 
 // ─── buildAgentRoster (lead detection robustness, #449) ─────────────────────────
+
+describe('remediation cycle (#994)', () => {
+  const remediationSquad = () => makeSquad({
+    agents: [
+      { name: 'squad-lead', role: 'lead', model: undefined },
+      { name: 'builder', role: 'worker', model: undefined },
+      { name: 'critic', role: 'verifier', model: undefined },
+    ],
+  });
+
+  function scriptRun(outputs: string[]) {
+    let call = 0;
+    mockSpawn.mockImplementation(() => createMockChild(outputs[Math.min(call++, outputs.length - 1)]) as any);
+    return () => call;
+  }
+
+  it('REJECTED verdict triggers one remediation round and converges when re-verify approves', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan ready\n```plan\nTASKS:\n- worker: builder | task: build the thing\n```\n## STATUS: CONTINUE', // plan
+      'built\n## HANDOFF\ncompleted: thing\nundone: none\ncommands: `npm test` → 0\nissues: none\nprocedures: followed\n## STATUS: DONE', // worker
+      'reviewed\n## STATUS: DONE', // review
+      'checked\n## VERDICT: REJECTED (assertion 2 fails: missing error path)', // verify
+      'fixes scoped\n```plan\nTASKS:\n- worker: builder | task: fix assertion 2 error path\n```', // remediation lead
+      'fixed\n## HANDOFF\ncompleted: fix\nundone: none\ncommands: `npm test` → 0\nissues: none\nprocedures: followed\n## STATUS: DONE', // fix worker
+      'rechecked\n## VERDICT: APPROVED (all checks pass)', // re-verify
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(7);
+    expect(result.converged).toBe(true);
+  });
+
+  it('APPROVED on first verify never triggers remediation', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: APPROVED (all checks pass)',
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(4);
+    expect(result.converged).toBe(true);
+  });
+
+  it('a second REJECTED ends the run — exactly one remediation round, no loop', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (assertion 1 fails)',
+      'fixes\n```plan\nTASKS:\n- worker: builder | task: fix assertion 1\n```',
+      'fixed\n## STATUS: DONE',
+      'still bad\n## VERDICT: REJECTED (assertion 1 still fails)',
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(7); // no third verification round
+    expect(result.converged).toBe(false);
+  });
+
+  it('lead answering BLOCKED to remediation dispatches no fix workers', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const calls = scriptRun([
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (needs founder decision on schema)',
+      'cannot fix autonomously\n## STATUS: BLOCKED needs founder decision', // remediation lead: no TASKS
+    ]);
+    const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+    expect(calls()).toBe(5); // no fix worker, no re-verify
+    // REJECTED verdict + BLOCKED remediation = not converged: the run ends,
+    // the preserved work surfaces via the inbox, a human owns the decision.
+    expect(result.converged).toBe(false);
+  });
+});
 
 describe('buildAgentRoster', () => {
   beforeEach(() => {
@@ -349,6 +492,25 @@ describe('buildAgentRoster', () => {
     expect(leads).toHaveLength(1);
     expect(leads[0].name).toBe('real-orchestrator');
     expect(roster.find(a => a.name === 'worker-bot')!.role).toBe('worker');
+  });
+
+  it('taskMode trims the roster to lead + first non-eval/critic/tester worker, dropping scanners/verifiers (#951)', () => {
+    const squad = makeSquad({
+      name: 'cli',
+      dir: 'cli',
+      agents: [
+        { name: 'cli-lead', role: 'orchestrates the team', model: undefined } as any,
+        // Eval/critic/tester agents come FIRST here so the test actually
+        // exercises the exclusion regex — if it were a no-op, one of these
+        // (not issue-solver) would win as "first worker".
+        { name: 'code-eval', role: 'evaluates code quality', model: undefined } as any,
+        { name: 'cli-critic', role: 'critiques output', model: undefined } as any,
+        { name: 'ux-tester', role: 'tests the UX', model: undefined } as any,
+        { name: 'issue-solver', role: 'solves issues', model: undefined } as any,
+      ],
+    });
+    const roster = buildAgentRoster(squad, '/fake/.agents/squads', { taskMode: true });
+    expect(roster.map(a => a.name)).toEqual(['cli-lead', 'issue-solver']);
   });
 });
 

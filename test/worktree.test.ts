@@ -164,12 +164,34 @@ describe('createRunWorktree (#440)', () => {
     initRepo(repoDir);
     const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
     const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
-    const tipBefore = execSync(`git -C '${repoDir}' rev-parse ${branch}`, { encoding: 'utf-8' }).trim();
 
-    cleanup(); // nothing dirty → no commit, just removal
+    cleanup(); // nothing dirty → no commit, no auto-save
 
     expect(existsSync(cwd)).toBe(false);
-    const tipAfter = execSync(`git -C '${repoDir}' rev-parse ${branch}`, { encoding: 'utf-8' }).trim();
-    expect(tipAfter).toBe(tipBefore); // no auto-save commit added
+    // Zero commits ahead of base (#979): the branch is litter, not a
+    // deliverable — cleanup deletes it instead of leaving it stranded.
+    expect(() => execSync(`git -C '${repoDir}' rev-parse --verify --quiet ${branch}`, { stdio: 'pipe' })).toThrow();
+  });
+
+  // ── Litter cleanup (#979) ────────────────────────────────────────────────
+  // A conversation run that produced real commits still needs its branch kept
+  // for the inbox to surface (#924) — only the zero-commit case is litter.
+
+  it('keeps the branch when the run committed real work', () => {
+    initRepo(repoDir);
+    const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
+
+    execSync('git config user.email test@example.com', { cwd, stdio: 'pipe' });
+    execSync('git config user.name Test', { cwd, stdio: 'pipe' });
+    writeFileSync(join(cwd, 'brief.md'), 'deliverable\n');
+    execSync('git add -A', { cwd, stdio: 'pipe' });
+    execSync('git commit -m "real deliverable"', { cwd, stdio: 'pipe' });
+
+    cleanup();
+
+    expect(existsSync(cwd)).toBe(false);
+    const tip = execSync(`git -C '${repoDir}' rev-parse --verify --quiet ${branch}`, { encoding: 'utf-8' }).trim();
+    expect(tip).toBeTruthy();
   });
 });

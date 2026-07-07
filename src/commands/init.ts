@@ -16,9 +16,8 @@ import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync } from 'child_process';
-import { createHash } from 'crypto';
 import { createInterface } from 'readline';
-import { checkGitStatus, getRepoName } from '../lib/git.js';
+import { checkGitStatus, getRepoName, gitIdentityArgs } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
 import { saveEmail } from '../lib/env-config.js';
 import { existsSync, readFileSync } from 'fs';
@@ -398,6 +397,32 @@ async function writeIfNew(filePath: string, content: string): Promise<boolean> {
 async function writeFile(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content);
+}
+
+/**
+ * Auto-commit the freshly scaffolded project (agents need at least one commit
+ * for worktree isolation). Applies the repo-scoped fallback git identity
+ * (#980) when the repo has none configured — never touches global/repo git
+ * config. Throws if `git commit` still fails with staged changes present, so
+ * the caller can fail loud instead of reporting success over zero commits.
+ */
+export function commitInitScaffold(cwd: string): void {
+  execSync('git add -A', { cwd, stdio: 'pipe' });
+
+  let hasStagedChanges = true;
+  try {
+    execSync('git diff --cached --quiet', { cwd, stdio: 'ignore' });
+    hasStagedChanges = false; // exit 0 → nothing staged
+  } catch {
+    hasStagedChanges = true; // non-zero exit → there is a staged diff
+  }
+  if (!hasStagedChanges) return;
+
+  const identity = gitIdentityArgs(cwd);
+  execSync(
+    `git ${identity} commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
+    { cwd, stdio: 'pipe' }
+  );
 }
 
 /**
@@ -865,14 +890,34 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const claudeMd = loadSeedTemplate('CLAUDE.md.template', variables);
       await writeIfNew(path.join(cwd, 'CLAUDE.md'), claudeMd);
 
-      // Claude Code hooks
-      const hooksContent = loadSeedTemplate('hooks/settings.json.template', variables);
-      await writeIfNew(path.join(cwd, '.claude/settings.json'), hooksContent);
+      // Claude Code hooks — consent + disclosure (#963): say exactly what is
+      // installed into the user's sessions; the auto-push hook is OPT-IN.
+      const hooksPath = path.join(cwd, '.claude/settings.json');
+      if (existsSync(hooksPath)) {
+        writeLine(chalk.dim('  .claude/settings.json already exists — squads session hooks NOT installed (merge manually if wanted).'));
+      } else {
+        const hooksContent = loadSeedTemplate('hooks/settings.json.template', variables);
+        let hooks = hooksContent;
+        writeLine();
+        writeLine(chalk.dim('  Session hooks to install in .claude/settings.json (remove the file to uninstall):'));
+        writeLine(chalk.dim('  • SessionStart: squads status + memory sync --no-push (read-only refresh)'));
+        const wantPush = isInteractive()
+          ? (await prompt('  Also sync memory with git push when a session ends? (y/N):', 'n')).toLowerCase().startsWith('y')
+          : false;
+        if (wantPush) {
+          const parsed = JSON.parse(hooks) as { hooks: Record<string, unknown> };
+          parsed.hooks['Stop'] = [{ hooks: [{ type: 'command', command: 'squads memory sync --push', timeout: 15 }] }];
+          hooks = JSON.stringify(parsed, null, 2);
+          writeLine(chalk.dim('  • Stop: squads memory sync --push (git push on session end) — enabled'));
+        }
+        await writeIfNew(hooksPath, hooks);
+      }
     }
 
     spinner.succeed('Seed planted');
 
     // Track initialization
+    await track('journey.init.completed', { provider: selectedProvider, hasGit: gitStatus.isGitRepo });
     await track(Events.CLI_INIT, {
       success: true,
       hasGit: gitStatus.isGitRepo,
@@ -902,14 +947,21 @@ export async function initCommand(options: InitOptions): Promise<void> {
     process.exit(1);
   }
 
-  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees)
-  try {
-    execSync('git add -A && git commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"', {
-      cwd,
-      stdio: 'ignore',
-    });
-  } catch {
-    // Commit may fail if nothing to add or git not configured — non-fatal
+  // 5b. Auto-commit scaffolding (agents need at least one commit for worktrees).
+  // This write is REQUIRED (#980): squads run's worktree isolation depends on
+  // it, so a failure here must not report success over zero commits — fail
+  // loud instead of swallowing the error.
+  if (gitStatus.isGitRepo) {
+    try {
+      commitInitScaffold(cwd);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      writeLine();
+      writeLine(chalk.red('  Failed to create the initial commit — agents need at least one commit for worktree isolation.'));
+      writeLine(chalk.dim(`  ${msg.trim()}`));
+      writeLine(chalk.dim('  Commit manually, then re-run: git add -A && git commit -m "init"'));
+      process.exit(1);
+    }
   }
 
   // 6. Success message
@@ -955,6 +1007,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.dim('See all squads:')} ${chalk.yellow('squads status')}`);
   writeLine(`  ${chalk.dim('Docs:')} ${chalk.dim('https://agents-squads.com/docs/getting-started')}`);
   writeLine();
+  writeLine(`  ${chalk.dim('Telemetry: anonymous usage events (install id, command names, versions, error classes —')}`);
+  writeLine(`  ${chalk.dim('never file contents, paths, or personal data) help us fix what breaks first.')}`);
+  writeLine();
 
   // 7. Opt-in email capture for founder outreach
   // Gracefully wrapped — never blocks init if prompt fails
@@ -962,9 +1017,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     if (isInteractive()) {
       const emailInput = await prompt('Email (optional, for updates):', '');
       if (emailInput && emailInput.includes('@')) {
+        // Saved locally only (#959) — nothing derived from the email is
+        // sent to telemetry; the README's "no telemetry surprises" applies.
         saveEmail(emailInput);
-        const emailHash = createHash('sha256').update(emailInput.toLowerCase().trim()).digest('hex');
-        await track(Events.CLI_EMAIL_CAPTURED, { emailHash });
         writeLine(chalk.dim('  Email saved. We will reach out with updates.'));
         writeLine();
       }

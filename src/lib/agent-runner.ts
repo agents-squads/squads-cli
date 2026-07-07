@@ -3,6 +3,7 @@
  * Extracted from commands/run.ts to reduce its size.
  */
 
+import { track } from './telemetry.js';
 import ora from 'ora';
 import { join, basename, extname } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -14,6 +15,7 @@ import {
 } from './squad-parser.js';
 import {
   type RunOptions,
+  defaultTimeoutForRole,
 } from './run-types.js';
 import {
   generateExecutionId,
@@ -39,6 +41,7 @@ import {
 } from './execution-engine.js';
 import {
   type ContextRole,
+  type ContextStats,
   parseAgentFrontmatter,
   extractMcpServersFromDefinition,
   loadSystemProtocol,
@@ -61,6 +64,7 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  normalizeProviderName,
 } from './llm-clis.js';
 import { loadSession } from './auth.js';
 import { getApiUrl } from './env-config.js';
@@ -249,9 +253,13 @@ export async function runAgent(
   if (options.verbose && agentFrontmatter.max_context_tokens) {
     writeLine(`  ${colors.dim}Context budget: ${agentFrontmatter.max_context_tokens} tokens (agent override)${RESET}`);
   }
+  // Capture per-layer assembly stats — emitted as the run's `context_assembled`
+  // exec-event (#902). Only assembly knows the layers; the provider never does.
+  let contextStats: ContextStats | undefined;
   const squadContext = gatherSquadContext(squadName, agentName, {
     verbose: options.verbose, agentPath, role: contextRole,
     maxTokens: agentFrontmatter.max_context_tokens,
+    onStats: (stats) => { contextStats = stats; },
   });
 
   // Fetch cognition beliefs for prompt injection (Reflexion pattern)
@@ -300,7 +308,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
   const squad = loadSquad(squadName);
   const squadDefaultProvider = squad?.providers?.default;
 
-  const provider = agentProvider || options.provider || squadDefaultProvider || 'anthropic';
+  const provider = normalizeProviderName(agentProvider || options.provider || squadDefaultProvider || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (options.verbose && (agentProvider || squadDefaultProvider)) {
@@ -344,7 +352,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         if (isAnthropic) {
           result = await executeWithClaude(currentPrompt, {
             verbose: options.verbose,
-            timeoutMinutes: options.timeout || 30,
+            timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
             foreground: options.foreground,
             background: options.background,
             watch: options.watch,
@@ -355,6 +363,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             squadName,
             agentName,
             model: options.model,
+            contextStats,
           });
         } else {
           result = await executeWithProvider(provider, currentPrompt, {
@@ -370,7 +379,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             executionId,
             trigger: options.trigger || 'manual',
             startMs,
-            timeoutMinutes: options.timeout,
+            timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
           });
         }
 
@@ -450,7 +459,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
       const cliConfig = getCLIConfig(provider);
       writeLine();
       writeLine(`  ${colors.yellow}${cliConfig?.command || provider} CLI not found${RESET}`);
+      // funnel drop instrument (#964): unknown provider name vs binary absent
+      void track('journey.run.blocked', { reason: cliConfig ? 'cli_missing' : 'provider_unknown', provider });
       writeLine(`  ${colors.dim}Install: ${cliConfig?.install || 'squads providers'}${RESET}`);
+      process.exitCode = 1;
     }
 
     writeLine();
@@ -460,7 +472,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
       writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squadName}${RESET} -a ${colors.cyan}${agentName}${RESET} --provider=${provider}`);
     }
     writeLine();
-    writeLine(`  ${colors.dim}Or run interactively:${RESET}`);
-    writeLine(`  ${colors.dim}$${RESET} Run the ${colors.cyan}${agentName}${RESET} agent from ${agentPath}`);
+    writeLine(`  ${colors.dim}Or paste this into an interactive Claude session:${RESET}`);
+    writeLine(`  ${colors.dim}"Run the ${agentName} agent as defined in ${agentPath}"${RESET}`);
   }
 }

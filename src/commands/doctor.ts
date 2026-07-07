@@ -128,27 +128,38 @@ function checkTool(tool: Tool): ToolResult {
   }
 }
 
+// Verifies an actual Claude session — installed is not the same as authenticated.
+// `claude whoami` is cheap and preferred; a real prompt only runs if whoami is
+// unavailable. Any nonzero exit or "Not logged in" output means NOT authenticated.
+function verifyClaudeSession(): AuthResult {
+  try {
+    const whoami = execSync('claude whoami 2>&1', { encoding: 'utf-8', timeout: 5000 });
+    if (/not logged in/i.test(whoami)) {
+      return { name: 'Claude', authenticated: false, detail: 'run: claude /login' };
+    }
+    const emailMatch = whoami.match(/[\w.+-]+@[\w.-]+/);
+    return { name: 'Claude', authenticated: true, detail: emailMatch ? emailMatch[0] : 'OAuth' };
+  } catch {
+    try {
+      const probe = execSync('claude -p "ok" 2>&1', { encoding: 'utf-8', timeout: 10000 });
+      if (/not logged in/i.test(probe)) {
+        return { name: 'Claude', authenticated: false, detail: 'run: claude /login' };
+      }
+      return { name: 'Claude', authenticated: true, detail: 'OAuth' };
+    } catch {
+      return { name: 'Claude', authenticated: false, detail: 'run: claude /login' };
+    }
+  }
+}
+
 function checkAuth(): AuthResult[] {
   const results: AuthResult[] = [];
 
-  // Claude auth — detect method and account
-  try {
-    const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-    if (hasApiKey) {
-      results.push({ name: 'Claude', authenticated: true, detail: 'API key' });
-    } else {
-      // Check whoami for account info
-      try {
-        const whoami = execSync('claude whoami 2>&1', { encoding: 'utf-8', timeout: 5000 });
-        const emailMatch = whoami.match(/[\w.+-]+@[\w.-]+/);
-        const email = emailMatch ? emailMatch[0] : 'OAuth';
-        results.push({ name: 'Claude', authenticated: true, detail: email });
-      } catch {
-        results.push({ name: 'Claude', authenticated: true, detail: 'OAuth' });
-      }
-    }
-  } catch {
-    results.push({ name: 'Claude', authenticated: false });
+  // Claude auth — API key bypasses OAuth; otherwise verify an actual session
+  if (process.env.ANTHROPIC_API_KEY) {
+    results.push({ name: 'Claude', authenticated: true, detail: 'API key' });
+  } else {
+    results.push(verifyClaudeSession());
   }
 
   // GitHub auth
@@ -482,6 +493,7 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<void> 
   if (coreInstalled < core.length) {
     const missing = core.filter(r => !r.installed).map(r => r.tool.name);
     writeLine(`  ${colors.red}✗ Missing core tools: ${missing.join(', ')}${RESET}`);
+    process.exitCode = 1;
   } else if (!executionCheck.canExecute) {
     writeLine(`  ${colors.red}✗ Cannot execute agents${RESET}`);
     writeLine(`  ${colors.dim}${executionCheck.reason}${RESET}`);

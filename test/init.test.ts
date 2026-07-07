@@ -18,9 +18,11 @@ vi.mock('../src/lib/env-config.js', () => ({ saveEmail: vi.fn() }));
 
 const mockGitStatus = vi.fn();
 const mockRepoName = vi.fn();
+const mockGitIdentityArgs = vi.fn();
 vi.mock('../src/lib/git.js', () => ({
   checkGitStatus: (...a: unknown[]) => mockGitStatus(...a),
   getRepoName: (...a: unknown[]) => mockRepoName(...a),
+  gitIdentityArgs: (...a: unknown[]) => mockGitIdentityArgs(...a),
 }));
 
 const mockAuthChecks = vi.fn();
@@ -50,6 +52,7 @@ import { initCommand } from '../src/commands/init.js';
 function setupMocks(): void {
   mockGitStatus.mockReturnValue({ isGitRepo: true, hasRemote: true, remoteUrl: 'https://github.com/org/repo.git', branch: 'main', isDirty: false, uncommittedCount: 0 });
   mockRepoName.mockReturnValue('org/repo');
+  mockGitIdentityArgs.mockReturnValue('');
   mockAuthChecks.mockReturnValue([{ name: 'Claude CLI', status: 'ok' }]);
   mockGhCli.mockReturnValue({ name: 'GitHub CLI', status: 'ok' });
   mockDisplayResults.mockReturnValue({ hasErrors: false, hasWarnings: false, errorChecks: [], warningChecks: [] });

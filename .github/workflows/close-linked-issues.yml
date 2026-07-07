@@ -1,0 +1,60 @@
+# Closing keywords ("Closes #N") only auto-close on merges to the DEFAULT branch;
+# our PRs merge to develop. The pull_request trigger covers native auto-merge;
+# the SCHEDULED sweep covers merges performed by automerge.yml with GITHUB_TOKEN,
+# whose events GitHub suppresses for workflow triggering (recursion guard).
+name: Close linked issues on develop merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  close-linked:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const re = /\b(?:clos(?:e|es|ed)|fix(?:es|ed)?|resolv(?:e|es|ed))\s*:?\s+#(\d+)/gi;
+
+            async function closeLinked(pr) {
+              const text = `${pr.title}\n${pr.body || ''}`;
+              const nums = [...new Set([...text.matchAll(re)].map(m => Number(m[1])))];
+              for (const n of nums) {
+                try {
+                  const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number: n });
+                  if (issue.pull_request || issue.state === 'closed') continue;
+                  await github.rest.issues.createComment({
+                    ...context.repo, issue_number: n,
+                    body: `Closed by #${pr.number} — merged to develop.`,
+                  });
+                  await github.rest.issues.update({
+                    ...context.repo, issue_number: n, state: 'closed', state_reason: 'completed',
+                  });
+                  core.info(`closed #${n} (via PR #${pr.number})`);
+                } catch (e) { core.warning(`#${n}: ${e.message}`); }
+              }
+            }
+
+            if (context.eventName === 'pull_request') {
+              await closeLinked(context.payload.pull_request);
+            } else {
+              // Sweep: PRs merged into develop in the last 25h (idempotent).
+              const since = Date.now() - 25 * 3600 * 1000;
+              const prs = await github.rest.pulls.list({
+                ...context.repo, state: 'closed', base: 'develop',
+                sort: 'updated', direction: 'desc', per_page: 50,
+              });
+              for (const pr of prs.data) {
+                if (pr.merged_at && new Date(pr.merged_at).getTime() > since) await closeLinked(pr);
+              }
+            }
