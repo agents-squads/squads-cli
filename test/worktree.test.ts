@@ -211,3 +211,39 @@ describe('createRunWorktree (#440)', () => {
     expect(tip).toBeTruthy();
   });
 });
+
+// ─── #1014: worktree base is the FRESH remote trunk ─────────────────────
+import { execSync as _ex } from 'child_process';
+
+describe('worktree base freshness (#1014)', () => {
+  it('cuts the worktree from origin/develop, not a stale local develop', () => {
+    const remote = mkdtempSync(join(tmpdir(), 'squads-wt-remote-'));
+    const clone = mkdtempSync(join(tmpdir(), 'squads-wt-clone-'));
+    const g = (cmd: string, cwd: string) =>
+      _ex(`git ${cmd}`, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+    try {
+      // Remote with develop at commit A, then advanced to B.
+      g('init -q -b develop .', remote);
+      writeFileSync(join(remote, 'a.txt'), 'A');
+      g('add -A', remote); g('commit -qm A', remote);
+      g(`clone -q '${remote}' '${clone}/repo'`, remote);
+      const repo = join(clone, 'repo');
+      // Remote advances AFTER the clone — local develop is now stale.
+      writeFileSync(join(remote, 'b.txt'), 'B');
+      g('add -A', remote); g('commit -qm B', remote);
+
+      const wt = createRunWorktree(repo, 'freshtest');
+      try {
+        expect(wt.cwd).not.toBe(repo);
+        // The worktree must contain commit B (fresh origin/develop), which
+        // local develop does not have.
+        expect(existsSync(join(wt.cwd, 'b.txt'))).toBe(true);
+      } finally {
+        wt.cleanup();
+      }
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+      rmSync(clone, { recursive: true, force: true });
+    }
+  });
+});
