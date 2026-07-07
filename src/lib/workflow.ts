@@ -221,6 +221,8 @@ ${squadContext}
 
 ## Output Requirements
 
+- Write the test that reflects INTENDED behavior BEFORE implementing — a test
+  written after the code confirms decisions instead of catching bugs (#995)
 - Commit your work (git add, commit, push)
 - Open PRs targeting develop (product repos) or push to main (domain repos)
 - Run the build before pushing — fix if it fails
@@ -728,6 +730,18 @@ export async function runConversation(
   // #989: the plan's validation contract is the verifier's checklist — done-ness
   // defined before code, checked independently of the implementation.
   const validationContract = extractValidationContract(planOutput);
+  // #995: the contract is a run ARTIFACT, not just transcript text — remediation
+  // cycles, follow-up dispatches, and the inbox reference done-ness across runs.
+  if (validationContract) {
+    try {
+      const contractDir = join(squadsDir, '..', 'observability', 'runs', executionId);
+      mkdirSync(contractDir, { recursive: true });
+      writeFileSync(join(contractDir, 'validation-contract.md'),
+        `# Validation contract — ${squad.name} ${executionId}\n\n${validationContract}\n`);
+    } catch {
+      // artifact write is best-effort; the in-prompt contract still governs
+    }
+  }
   cycleUsage = addUsage(cycleUsage, planResult.usage);
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));

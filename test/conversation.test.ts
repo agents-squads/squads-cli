@@ -53,3 +53,6 @@ describe('extractValidationContract (#989)', () => {
     expect(c).toBe('1. one');
   });
 });
+
+// #995 note: the contract-artifact write is exercised via workflow tests; the
+// pure extraction stays covered above. Worker-TDD is prompt-contract text.
