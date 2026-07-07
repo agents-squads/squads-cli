@@ -1210,6 +1210,25 @@ program
     return inboxCommand(action, id, options);
   });
 
+// Propose — the ambient core (#983): deterministic context assembly + one
+// bounded dispatch that lands on a squads/proposal-* branch for inbox review.
+program
+  .command('propose')
+  .description('Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only)')
+  .option('--squad <name>', 'Squad to dispatch (default: keyword-overlap heuristic against BUSINESS_BRIEF/README/package.json)')
+  .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 5)')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads propose                        Pick the most relevant squad automatically
+  $ squads propose --squad growth         Propose from a specific squad
+  $ squads propose --cost-ceiling 10      Raise the cost ceiling for this dispatch
+`)
+  .action(async (options) => {
+    const { proposeCommand } = await import('./commands/propose.js');
+    return proposeCommand(options);
+  });
+
 // Executor referee (outcome-driven routing §3.2): quality-per-cost per
 // task class × provider × model, from the execution ledger. Read-only.
 program

@@ -111,7 +111,8 @@ export function scanOpenPrs(repoRoot: string): InboxItem[] {
 }
 
 /**
- * Stranded run branches: `squads/run-*` and `agent/*` refs with commits not
+ * Stranded run branches: `squads/run-*`, `squads/proposal-*` (#983 — `squads
+ * propose`'s ambient deliverables), and `agent/*` refs with commits not
  * reachable from develop (or HEAD when develop doesn't exist) — auto-committed
  * deliverables (#891) nobody has decided on. THE Argonne case.
  */
@@ -119,7 +120,7 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
   const items: InboxItem[] = [];
   let refs: string;
   try {
-    refs = sh(`git for-each-ref 'refs/heads/squads/run-*' 'refs/heads/agent/*' --format='%(refname:short)|%(committerdate:unix)|%(subject)'`, repoRoot);
+    refs = sh(`git for-each-ref 'refs/heads/squads/run-*' 'refs/heads/agent/*' 'refs/heads/squads/proposal-*' --format='%(refname:short)|%(committerdate:unix)|%(subject)'`, repoRoot);
   } catch {
     return items;
   }
@@ -139,14 +140,22 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
     // as a PARTIAL so salvage is a queue decision, not operator archaeology.
     const subject = subjectParts.join('|') || branch;
     const isPartial = /auto-save uncommitted deliverables/i.test(subject);
+    // #983: `squads propose` lands its ambient deliverable on squads/proposal-*
+    // instead of squads/run-* — surface it as a PROPOSAL so a human reviews it
+    // distinctly from a directed run's output before approving.
+    const isProposal = branch.startsWith('squads/proposal-');
+    const label = isProposal && isPartial ? 'PROPOSAL (partial) — '
+      : isProposal ? 'PROPOSAL — '
+      : isPartial ? 'PARTIAL (run died before committing) — '
+      : '';
     items.push({
       id: `branch-${branch}`,
       kind: 'run_branch',
       ref: branch,
-      title: (isPartial ? `PARTIAL (run died before committing) — ${subject}` : subject).slice(0, 110),
+      title: `${label}${subject}`.slice(0, 110),
       ageDays: ageDaysFrom((parseInt(epoch, 10) || 0) * 1000),
       approveSemantics: `open a PR from ${branch} (has ${ahead} unmerged commit${ahead > 1 ? 's' : ''})`,
-      detail: `${ahead} commit(s) ahead of ${base}${isPartial ? ' · partial run output — inspect before approving' : ''}`,
+      detail: `${ahead} commit(s) ahead of ${base}${isPartial ? ' · partial run output — inspect before approving' : ''}${isProposal ? ' · ambient proposal — review before approving' : ''}`,
     });
   }
   return items;

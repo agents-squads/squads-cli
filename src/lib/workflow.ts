@@ -105,6 +105,8 @@ export interface ConversationOptions {
   focus?: CycleFocus;
   /** Scoped, single-issue conversation (roster trimmed, PR-gate stop enabled) — derived from `task` when omitted */
   scoped?: boolean;
+  /** Branch namespace override for the per-run worktree (default: 'squads/run-'). E.g. `squads propose` (#983) uses 'squads/proposal-' so its runs land in a distinct namespace the inbox scanner classifies separately. */
+  branchPrefix?: string;
 }
 
 /** Load focus instructions from .agents/config/cycle-focus.md */
@@ -575,7 +577,7 @@ export async function runConversation(
   // drops, and PRs never touch the user's working tree. Falls back to in-place
   // (squadCwd unchanged) if the dir isn't a git repo or worktree add fails.
   // Disable with SQUADS_NO_WORKTREE=1. Cleanup runs in finally below.
-  const worktree = createRunWorktree(squadCwd, squad.name);
+  const worktree = createRunWorktree(squadCwd, squad.name, options.branchPrefix);
   squadCwd = worktree.cwd;
 
   try {
