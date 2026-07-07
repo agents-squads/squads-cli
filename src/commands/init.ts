@@ -890,9 +890,28 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const claudeMd = loadSeedTemplate('CLAUDE.md.template', variables);
       await writeIfNew(path.join(cwd, 'CLAUDE.md'), claudeMd);
 
-      // Claude Code hooks
-      const hooksContent = loadSeedTemplate('hooks/settings.json.template', variables);
-      await writeIfNew(path.join(cwd, '.claude/settings.json'), hooksContent);
+      // Claude Code hooks — consent + disclosure (#963): say exactly what is
+      // installed into the user's sessions; the auto-push hook is OPT-IN.
+      const hooksPath = path.join(cwd, '.claude/settings.json');
+      if (existsSync(hooksPath)) {
+        writeLine(chalk.dim('  .claude/settings.json already exists — squads session hooks NOT installed (merge manually if wanted).'));
+      } else {
+        const hooksContent = loadSeedTemplate('hooks/settings.json.template', variables);
+        let hooks = hooksContent;
+        writeLine();
+        writeLine(chalk.dim('  Session hooks to install in .claude/settings.json (remove the file to uninstall):'));
+        writeLine(chalk.dim('  • SessionStart: squads status + memory sync --no-push (read-only refresh)'));
+        const wantPush = isInteractive()
+          ? (await prompt('  Also sync memory with git push when a session ends? (y/N):', 'n')).toLowerCase().startsWith('y')
+          : false;
+        if (wantPush) {
+          const parsed = JSON.parse(hooks) as { hooks: Record<string, unknown> };
+          parsed.hooks['Stop'] = [{ hooks: [{ type: 'command', command: 'squads memory sync --push', timeout: 15 }] }];
+          hooks = JSON.stringify(parsed, null, 2);
+          writeLine(chalk.dim('  • Stop: squads memory sync --push (git push on session end) — enabled'));
+        }
+        await writeIfNew(hooksPath, hooks);
+      }
     }
 
     spinner.succeed('Seed planted');
