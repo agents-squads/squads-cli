@@ -347,6 +347,42 @@ export interface ConvergenceResult {
  *
  * Falls back to keyword detection for agents that don't follow the format.
  */
+/**
+ * Structured handoff (#990): workers report completed/undone/commands+exit
+ * codes/issues/procedures before their STATUS line. Parsed so the runtime can
+ * flag DONE claims contradicted by the worker's own command log.
+ */
+export interface ParsedHandoff {
+  present: boolean;
+  undone: string;
+  /** Exit codes found in the commands field (e.g. "`npm test` → 1"). */
+  exitCodes: number[];
+  /** DONE status contradicted by non-empty undone or a nonzero exit code. */
+  contradictsDone: boolean;
+}
+
+export function parseHandoff(text: string): ParsedHandoff {
+  const block = text.match(/##\s*HANDOFF\s*\n([\s\S]*?)(?=\n##\s|$)/i);
+  if (!block) return { present: false, undone: '', exitCodes: [], contradictsDone: false };
+  const body = block[1];
+  const field = (name: string): string => {
+    const m = body.match(new RegExp(`^${name}:\\s*(.*)$`, 'im'));
+    return m ? m[1].trim() : '';
+  };
+  const undone = field('undone');
+  const commands = field('commands');
+  const exitCodes = [...commands.matchAll(/(?:→|->)\s*(\d+)/g)].map(m => parseInt(m[1], 10));
+  const claimsDone = /##\s*STATUS:\s*DONE/i.test(text);
+  const undoneNonEmpty = undone !== '' && !/^(none|n\/a|-)\.?$/i.test(undone);
+  const hasFailingExit = exitCodes.some(c => c !== 0);
+  return {
+    present: true,
+    undone,
+    exitCodes,
+    contradictsDone: claimsDone && (undoneNonEmpty || hasFailingExit),
+  };
+}
+
 export function detectConvergence(
   transcript: Transcript,
   maxTurns: number,

@@ -32,6 +32,7 @@ import {
   addTurn,
   detectConvergence,
   estimateTurnCost,
+  parseHandoff,
 } from './conversation.js';
 import {
   type Squad,
@@ -223,7 +224,20 @@ ${squadContext}
 - Open PRs targeting develop (product repos) or push to main (domain repos)
 - Run the build before pushing — fix if it fails
 - Report: branch name, PR number, build status, what you changed
-- End with: ## STATUS: DONE or ## STATUS: BLOCKED [reason]`;
+- Before your STATUS line, emit a structured handoff (#990) — the next agent
+  acts on THIS, not on your prose. Every field is mandatory; your own command
+  log must not contradict your status:
+
+## HANDOFF
+completed: [what is genuinely done]
+undone: [what remains, or "none"]
+commands: [key commands you ran, each with its exit code, e.g. \`npm test\` → 0]
+issues: [problems discovered, or "none"]
+procedures: [followed | deviated: reason]
+
+- End with: ## STATUS: DONE or ## STATUS: BLOCKED [reason]
+- NEVER claim DONE with a non-empty undone list or a failing exit code in
+  commands — that is BLOCKED with a reason.`;
 
   const resolvedModel = config.model || modelForRole(role);
   const claudeModel = getClaudeModelAlias(resolvedModel) || resolvedModel;
@@ -838,6 +852,15 @@ ${planOutput.slice(0, 3000)}`;
       addTurn(transcript, agent.name, agent.role, output, estimateTurnCost(options.model || 'sonnet'));
     }
 
+    // #990: a worker whose own handoff contradicts its DONE claim gets flagged
+    // loudly — review/verify prompts enforce it; this makes it operator-visible.
+    for (const r of workerResults) {
+      const handoff = parseHandoff(r.output);
+      if (handoff.contradictsDone) {
+        writeLine(`  ${colors.yellow}[WARN] ${r.agent.name}: STATUS DONE contradicted by its own handoff (undone: ${handoff.undone || 'none'}; exits: ${handoff.exitCodes.join(',') || '—'})${RESET}`);
+      }
+    }
+
     const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
     if (workerAuthFailure) {
       const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
@@ -881,10 +904,13 @@ ${planOutput.slice(0, 3000)}`;
 
   const reviewPrompt = `Review the work done by your team. The conversation transcript shows what each worker produced.
 
-1. Check if workers actually committed code (PR numbers, commit SHAs)
-2. Merge PRs that are ready: \`gh pr merge --squash --delete-branch --auto\`
-3. Update goals.md if a goal was achieved
-4. Update state.md with what was accomplished
+1. Read each worker's ## HANDOFF block FIRST (#990): a DONE status with a
+   non-empty undone list or a failing exit code in commands is NOT done —
+   treat it as incomplete and say so in your summary.
+2. Check if workers actually committed code (PR numbers, commit SHAs)
+3. Merge PRs that are ready: \`gh pr merge --squash --delete-branch --auto\`
+4. Update goals.md if a goal was achieved
+5. Update state.md with what was accomplished
 
 End with:
 ## STATUS: DONE
@@ -953,6 +979,10 @@ Check every PR and deliverable:
 2. Conflicts: is the PR mergeable?
 3. Review comments: are ALL automated review comments addressed?
 4. Correctness: does it match what the lead asked for?
+5. Handoffs (#990): re-read each worker's ## HANDOFF block. A DONE claim
+   contradicted by its own handoff (non-empty undone, failing exit codes,
+   skipped procedures without reason) fails this check — the verdict must be
+   REJECTED naming the contradiction.
 
 End with:
 ## VERDICT: APPROVED (all checks pass)
