@@ -5,6 +5,25 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.9.0] — 2026-07-07
+
+The loop release: the CLI teaches the loop, presents it, and enforces its trust properties.
+
+### The loop, taught and presented
+- The seed skill teaches the operating rhythm — intent → execute → decide → learn — with the human-five split from agent working verbs (#1019)
+- 62 visible commands become 25 canonical verbs; absorbed names keep working, hidden from `--help`, each printing its canonical replacement on stderr so piped output and `--json` stay clean (#1020)
+- `docs/architecture.md` updated to the shipped loop: containment, bounded dispatch, the decision gate, measured feedback, initiative — with the canonical execution-loop diagram (light/dark)
+
+### Trust enforcement
+- **Inbox is truthful** (#1021): headless/autonomous decisions stamp `agent:<name>`, never a login identity the human didn't exercise; run-artifact rows reconcile against live PR state — landed work stops showing as "waiting"
+- **The trunk is sacred** (#966): squad-level `--task` on a non-tool-use provider lane refuses with remedies instead of silently reinterpreting; provider harvest never fast-forwards the operator's checkout — work lands on the agent branch and integrates only through the inbox gate
+- **Fresh bases** (#1014): run worktrees are cut from freshly-fetched `origin/develop`, never a stale local trunk (offline falls back with a visible warning)
+- **One autonomy story** (#970): the orphaned in-CLI autopilot loop is deleted — autonomous cadence belongs to the platform heartbeat and the opt-in ambient `squads heartbeat` (upcoming)
+
+### Behavior changes
+- Provider-executed agent work is no longer auto-merged into your checkout on run completion — review it via `squads inbox` (this closes the path that could write to a repo's main without a human decision)
+- `--help` lists the canonical surface only; `squads commands --json --all` still enumerates everything
+
 ## 0.8.3 — 2026-07-07
 
 The first-run journey release: squads now works on a stranger's machine, verified by clean-room persona tests.
