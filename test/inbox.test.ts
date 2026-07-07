@@ -84,6 +84,46 @@ describe('scanRunsWithArtifacts (#924)', () => {
   it('missing events dir yields empty', () => {
     expect(scanRunsWithArtifacts(dir)).toEqual([]);
   });
+
+  describe('stale-row reconcile (#1021)', () => {
+    const seed = (execId: string, refs: string[]) => {
+      const eventsDir = join(dir, '.agents', 'observability', 'events');
+      mkdirSync(eventsDir, { recursive: true });
+      const line = (event: unknown, seq: number) =>
+        JSON.stringify({ v: 1, runId: execId, seq, ts: '2026-07-04T00:00:00Z', event });
+      writeFileSync(join(eventsDir, `${execId}.jsonl`), [
+        line({ type: 'run_start', squad: 'cli', mode: 'background', model: '', role: '', startedAt: 'x' }, 0),
+        ...refs.map((ref, i) => line({ type: 'artifact', kind: 'pr', ref }, i + 1)),
+      ].join('\n'));
+    };
+
+    it('drops items whose every PR already landed', () => {
+      seed('exec_merged', ['https://github.com/o/r/pull/1']);
+      const run = () => 'MERGED\n';
+      expect(scanRunsWithArtifacts(dir, 15, { run })).toEqual([]);
+    });
+
+    it('keeps items with an open PR and points detail at the open ref', () => {
+      seed('exec_mixed', ['https://github.com/o/r/pull/1', 'https://github.com/o/r/pull/2']);
+      const run = (cmd: string) => (cmd.includes('/pull/1') ? 'MERGED\n' : 'OPEN\n');
+      const items = scanRunsWithArtifacts(dir, 15, { run });
+      expect(items).toHaveLength(1);
+      expect(items[0].title).toContain('produced 1 PR');
+      expect(items[0].detail).toBe('https://github.com/o/r/pull/2');
+    });
+
+    it('fails open: gh errors keep the item visible', () => {
+      seed('exec_offline', ['https://github.com/o/r/pull/9']);
+      const run = () => { throw new Error('gh: not logged in'); };
+      const items = scanRunsWithArtifacts(dir, 15, { run });
+      expect(items).toHaveLength(1);
+    });
+
+    it('skips liveness entirely under VITEST when no runner injected', () => {
+      seed('exec_default', ['https://github.com/o/r/pull/3']);
+      expect(scanRunsWithArtifacts(dir)).toHaveLength(1);
+    });
+  });
 });
 
 describe('buildInbox ordering', () => {

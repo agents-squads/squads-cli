@@ -68,6 +68,15 @@ export function reviewedLedgerPath(obsRoot: string): string {
 /** Local operator identity: `squads login` email when a session exists, else
  *  the OS user. Never throws — attribution must not block a decision. */
 export function operatorIdentity(): string {
+  // #1021: headless/autonomous invocations must stamp themselves. Every
+  // ledger decision to 2026-07-07 was made by the autonomous tick but
+  // stamped with the founder's login email via this fallback — the ledger
+  // must never claim a human decided what they never saw. `--by` remains
+  // the explicit override for bridges acting on a real decider's behalf.
+  if (!process.stdin.isTTY) {
+    const agent = process.env.SQUADS_AGENT;
+    return agent ? `agent:${agent}` : 'agent:headless';
+  }
   try {
     const email = loadSession()?.email;
     if (email) return email;

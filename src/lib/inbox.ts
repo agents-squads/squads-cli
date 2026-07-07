@@ -161,12 +161,34 @@ export function scanStrandedBranches(repoRoot: string): InboxItem[] {
   return items;
 }
 
+/** Injectable shell for tests (mirrors inbox-decisions' CommandRunner). */
+export type ShRunner = (cmd: string, cwd: string) => string;
+
+/**
+ * Live PR state for an artifact pointer (#1021 stale-row reconcile). A run
+ * item is only "waiting on a human" while at least one of its PRs is still
+ * open — 4 of 6 items in the 2026-07-07 audit were already-merged PRs shown
+ * as waiting. Fail-open: if gh can't answer (offline, no gh), the item stays
+ * visible — a stale row beats a hidden one.
+ */
+function prStillOpen(ref: string, run: ShRunner): boolean {
+  try {
+    const state = run(`gh pr view ${ref} --json state --jq .state`, process.cwd()).trim();
+    return state !== 'MERGED' && state !== 'CLOSED';
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Recent runs whose event stream recorded PR artifacts — output that exists
- * and may not have landed. Without live resolution this lists them for a
- * human `squads runs --outcome <id>`; the caller can resolve live (capped).
+ * and may not have landed. Landed (merged/closed) PRs are reconciled away at
+ * read time (#1021); liveness checks are skipped under VITEST /
+ * SQUADS_INBOX_NO_FETCH unless a runner is injected.
  */
-export function scanRunsWithArtifacts(obsRoot: string, limit = 15): InboxItem[] {
+export function scanRunsWithArtifacts(obsRoot: string, limit = 15, opts?: { run?: ShRunner }): InboxItem[] {
+  const liveness: ShRunner | null =
+    opts?.run ?? (process.env.VITEST || process.env.SQUADS_INBOX_NO_FETCH === '1' ? null : sh);
   const eventsDir = join(obsRoot, '.agents', 'observability', 'events');
   if (!existsSync(eventsDir)) return [];
   let files: Array<{ id: string; path: string; mtime: number }>;
@@ -197,14 +219,16 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15): InboxItem[] 
       }
     } catch { continue; }
     if (prRefs.length === 0) continue;
+    const openRefs = liveness ? prRefs.filter((ref) => prStillOpen(ref, liveness)) : prRefs;
+    if (openRefs.length === 0) continue; // every PR landed — resolved, not waiting (#1021)
     items.push({
       id: `run-${f.id}`,
       kind: 'run_artifacts',
       ref: f.id,
-      title: `${squad || 'run'} produced ${prRefs.length} PR${prRefs.length > 1 ? 's' : ''}`,
+      title: `${squad || 'run'} produced ${openRefs.length} PR${openRefs.length > 1 ? 's' : ''}`,
       ageDays: ageDaysFrom(f.mtime),
       approveSemantics: `check landed state: squads runs --outcome ${f.id}`,
-      detail: prRefs[0],
+      detail: openRefs[0],
     });
   }
   return items;
