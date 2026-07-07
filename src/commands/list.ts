@@ -23,7 +23,6 @@ interface ListOptions {
 }
 
 export async function listCommand(options: ListOptions): Promise<void> {
-  await track('cli.list', { squads: options.squads, agents: options.agents });
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {

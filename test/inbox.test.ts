@@ -143,3 +143,32 @@ describe('partial class (A5 — timed-out runs surface, not archaeology)', () =>
     expect(item.detail).toContain('inspect before approving');
   });
 });
+
+describe('ambient proposal class (#983 — squads propose lands distinctly)', () => {
+  it('flags squads/proposal-* branches as PROPOSAL', () => {
+    initRepo();
+    git('checkout -q -b squads/proposal-growth-tm99x-0');
+    writeFileSync(join(dir, 'copy-update.md'), 'proposed deliverable');
+    git('add -A');
+    git('commit -qm "draft: homepage copy refresh"');
+    git('checkout -q develop');
+
+    const items = scanStrandedBranches(dir);
+    expect(items).toHaveLength(1);
+    expect(items[0].ref).toBe('squads/proposal-growth-tm99x-0');
+    expect(items[0].title).toContain('PROPOSAL — draft: homepage copy refresh');
+    expect(items[0].detail).toContain('ambient proposal');
+  });
+
+  it('combines PROPOSAL and PARTIAL labels when a proposal run auto-saved on exit', () => {
+    initRepo();
+    git('checkout -q -b squads/proposal-growth-ab12cd-0');
+    writeFileSync(join(dir, 'half-copy.md'), 'partial proposal');
+    git('add -A');
+    git('commit -qm "squads run: auto-save uncommitted deliverables on cleanup (#875)"');
+    git('checkout -q develop');
+
+    const [item] = scanStrandedBranches(dir);
+    expect(item.title).toContain('PROPOSAL (partial) —');
+  });
+});

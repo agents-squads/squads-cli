@@ -15,7 +15,6 @@ export async function pauseCommand(
   squadName: string,
   options: PauseOptions = {}
 ): Promise<void> {
-  await track(Events.CLI_STATUS, { squad: squadName, action: 'pause' });
 
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
@@ -94,7 +93,6 @@ export async function resumeCommand(
   squadName: string,
   options: ResumeOptions = {}
 ): Promise<void> {
-  await track(Events.CLI_STATUS, { squad: squadName, action: 'resume' });
 
   const squadsDir = findSquadsDir();
   if (!squadsDir) {

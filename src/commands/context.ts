@@ -25,7 +25,6 @@ export async function contextShowCommand(
   squadName: string,
   options: ContextOptions = {}
 ): Promise<void> {
-  await track(Events.CLI_CONTEXT, { squad: squadName });
   const squadsDir = findSquadsDir();
 
   if (!squadsDir) {

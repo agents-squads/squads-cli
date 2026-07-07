@@ -356,6 +356,7 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
     writeLine(`  ${colors.dim}The ${cliName} command is required to run agents but was not found on your PATH.${RESET}`);
     writeLine();
     writeLine(`  ${colors.cyan}Install:${RESET} ${installCmd}`);
+    writeLine(`  ${colors.dim}Or pick another provider: squads providers${RESET}`);
     writeLine();
     writeLine(`  ${colors.dim}Skip this check: SQUADS_SKIP_CHECKS=1 squads run ...${RESET}`);
     writeLine();

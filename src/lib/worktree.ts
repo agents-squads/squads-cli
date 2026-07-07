@@ -86,17 +86,21 @@ function resolveBaseRef(repoDir: string): string {
  * Create a per-squad-RUN git worktree of `repoDir` and return the path its
  * agents should use plus a cleanup callback.
  *
- * The worktree is created at `<repoDir>/../.worktrees/squads-run-<squad>-<shortid>`
- * on a fresh branch `squads/run-<squad>-<shortid>`, based off `develop` (if it
- * exists) or the repo's current branch.
+ * The worktree is created at `<repoDir>/../.worktrees/<dir-prefix><squad>-<shortid>`
+ * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off `develop` (if
+ * it exists) or the repo's current branch. `branchPrefix` defaults to
+ * `squads/run-`; callers that need a distinct branch namespace (e.g. `squads
+ * propose`'s `squads/proposal-` runs, #983) can override it — the inbox
+ * scanner (`scanStrandedBranches`) matches on this prefix to classify items.
  *
  * On ANY failure (not a git repo, worktree add failed) this returns the
  * original `repoDir` as cwd with a no-op cleanup — the run continues in-place.
  *
- * @param repoDir   the squad's resolved repo checkout
- * @param squadName the squad name (used in branch + dir naming)
+ * @param repoDir      the squad's resolved repo checkout
+ * @param squadName    the squad name (used in branch + dir naming)
+ * @param branchPrefix branch namespace prefix (default: 'squads/run-')
  */
-export function createRunWorktree(repoDir: string, squadName: string): RunWorktree {
+export function createRunWorktree(repoDir: string, squadName: string, branchPrefix = 'squads/run-'): RunWorktree {
   const noop: RunWorktree = { cwd: repoDir, cleanup: () => {} };
 
   // Escape hatch: SQUADS_NO_WORKTREE=1 disables isolation entirely.
@@ -117,9 +121,10 @@ export function createRunWorktree(repoDir: string, squadName: string): RunWorktr
   // never collide.
   const shortId = `${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
   const slug = squadName.replace(/[^a-zA-Z0-9_-]/g, '-');
-  const branchName = `squads/run-${slug}-${shortId}`;
+  const branchName = `${branchPrefix}${slug}-${shortId}`;
+  const dirPrefix = branchPrefix.replace(/\//g, '-');
   const worktreesRoot = join(repoDir, '..', '.worktrees');
-  const worktreePath = join(worktreesRoot, `squads-run-${slug}-${shortId}`);
+  const worktreePath = join(worktreesRoot, `${dirPrefix}${slug}-${shortId}`);
 
   const base = resolveBaseRef(repoDir);
 

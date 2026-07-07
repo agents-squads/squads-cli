@@ -30,6 +30,7 @@ import {
   checkGhCli,
   runAuthChecks,
   displayCheckResults,
+  commandExists,
 } from '../lib/setup-checks.js';
 import { writeLine } from '../lib/terminal.js';
 
@@ -325,11 +326,48 @@ async function prompt(question: string, defaultValue = ''): Promise<string> {
   });
 }
 
+// CLI-based providers, in preference order — used to auto-pick a provider
+// headless when the caller didn't force one (#977).
+const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider'];
+
+/**
+ * Headless (non-interactive, no --provider) provider resolution.
+ * Never silently scaffolds against a missing binary (#977): picks the first
+ * installed CLI-based provider. When none is installed, scaffolding must
+ * still succeed on a bare machine (first-run retention gate), so fall back
+ * to the vendor-neutral 'none' provider and say so loudly with the full
+ * provider list — the user picks one later or re-runs with --provider.
+ */
+function resolveHeadlessProvider(): Provider {
+  for (const id of CLI_PROVIDER_PRIORITY) {
+    const info = PROVIDERS[id];
+    if (info?.cliCheck && commandExists(info.cliCheck)) {
+      return id;
+    }
+  }
+
+  writeLine();
+  writeLine(chalk.yellow('  No supported AI CLI found on this machine.'));
+  writeLine(chalk.dim('  Scaffolding in planning-only mode (provider: none). To run agents, install one:'));
+  writeLine();
+  for (const info of Object.values(PROVIDERS)) {
+    if (info.installCmd) {
+      writeLine(`    ${chalk.cyan(info.id.padEnd(8))} ${info.installCmd}`);
+    } else if (info.envKey) {
+      writeLine(`    ${chalk.cyan(info.id.padEnd(8))} export ${info.envKey}=<your-key>`);
+    }
+  }
+  writeLine();
+  writeLine(chalk.dim('  Then switch: squads init --force --provider <id>'));
+  writeLine();
+  return 'none';
+}
+
 async function promptProvider(forceProvider?: string): Promise<Provider> {
   if (forceProvider && forceProvider in PROVIDERS) {
     return forceProvider as Provider;
   }
-  if (!isInteractive()) return 'claude';
+  if (!isInteractive()) return resolveHeadlessProvider();
 
   writeLine();
   writeLine(chalk.bold('  Select your AI assistant:'));

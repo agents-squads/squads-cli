@@ -41,7 +41,6 @@ function formatCost(usd: number): string {
 }
 
 export async function logCommand(options: LogOptions = {}): Promise<void> {
-  await track(Events.CLI_LOG, { squad: options.squad, limit: options.limit });
 
   const records = queryExecutions({
     squad: options.squad,

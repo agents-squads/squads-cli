@@ -47,7 +47,7 @@ for (const envPath of envPaths) {
 import type { SessionSummaryData } from './commands/sessions.js';
 
 // Setup imports (must run on every invocation)
-import { registerExitHandler } from './lib/telemetry.js';
+import { registerExitHandler, installCommandTelemetry } from './lib/telemetry.js';
 import { applyStackConfig } from './lib/stack-config.js';
 
 // Register-pattern commands (must define subcommand structure before parseAsync)
@@ -186,6 +186,10 @@ function handleOutputError(str: string, write: (s: string) => void): void {
 }
 
 const program = new Command();
+
+// #1009: every command reports usage via one root hook pair — no per-command
+// wiring, privacy hard-scoped to command path + flag names in telemetry.ts.
+installCommandTelemetry(program);
 
 program
   .name('squads')
@@ -1208,6 +1212,25 @@ program
   .action(async (action, id, options) => {
     const { inboxCommand } = await import('./commands/inbox.js');
     return inboxCommand(action, id, options);
+  });
+
+// Propose — the ambient core (#983): deterministic context assembly + one
+// bounded dispatch that lands on a squads/proposal-* branch for inbox review.
+program
+  .command('propose')
+  .description('Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only)')
+  .option('--squad <name>', 'Squad to dispatch (default: keyword-overlap heuristic against BUSINESS_BRIEF/README/package.json)')
+  .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 5)')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads propose                        Pick the most relevant squad automatically
+  $ squads propose --squad growth         Propose from a specific squad
+  $ squads propose --cost-ceiling 10      Raise the cost ceiling for this dispatch
+`)
+  .action(async (options) => {
+    const { proposeCommand } = await import('./commands/propose.js');
+    return proposeCommand(options);
   });
 
 // Executor referee (outcome-driven routing §3.2): quality-per-cost per
