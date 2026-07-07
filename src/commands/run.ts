@@ -504,7 +504,8 @@ export async function runCommand(
       writeLine(`  ${colors.dim}   or: squads run ${squadName}/<agent> --cloud${RESET}`);
       process.exit(1);
     }
-    await track(Events.CLI_RUN, { type: 'cloud', target: `${squadName}/${agentName}` });
+    // #1009 privacy scope: run type only — squad/agent names never ship
+    await track(Events.CLI_RUN, { type: 'cloud' });
     await flushEvents();
     await runCloudDispatch(squadName, agentName, options);
     return;
@@ -561,7 +562,7 @@ export async function runCommand(
   }
 
   if (squad) {
-    await track(Events.CLI_RUN, { type: 'squad', target: squad.name });
+    await track(Events.CLI_RUN, { type: 'squad' });
     await flushEvents(); // Ensure telemetry is sent before potential exit
     const runStartMs = Date.now();
     let hadError = false;

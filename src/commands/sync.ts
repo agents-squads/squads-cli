@@ -825,7 +825,6 @@ function gitPushMemory(): { success: boolean; output: string } {
 }
 
 export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean; autoLearn?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_MEMORY_SYNC, { push: options.push, pull: options.pull, postgres: options.postgres, dimensions: options.dimensions, learnings: options.learnings, autoLearn: options.autoLearn });
 
   // If --dimensions flag, sync squad/agent definitions to Postgres dim tables
   if (options.dimensions) {

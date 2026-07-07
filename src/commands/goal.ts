@@ -21,7 +21,6 @@ export async function goalSetCommand(
   description: string,
   options: { metric?: string[] }
 ): Promise<void> {
-  await track(Events.CLI_GOAL_SET, { squad: squadName });
   const squad = loadSquad(squadName);
   if (!squad) {
     writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);
@@ -53,7 +52,6 @@ export async function goalListCommand(
   squadName?: string,
   options: { all?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_GOAL_LIST, { squad: squadName || 'all' });
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);
@@ -126,7 +124,6 @@ export async function goalCompleteCommand(
   squadName: string,
   goalIndex: string
 ): Promise<void> {
-  await track(Events.CLI_GOAL_COMPLETE, { squad: squadName });
   const squad = loadSquad(squadName);
   if (!squad) {
     writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);
@@ -161,7 +158,6 @@ export async function goalProgressCommand(
   goalIndex: string,
   progress: string
 ): Promise<void> {
-  await track(Events.CLI_GOAL_PROGRESS, { squad: squadName });
   const squad = loadSquad(squadName);
   if (!squad) {
     writeLine(`  ${colors.red}Squad "${squadName}" not found${RESET}`);

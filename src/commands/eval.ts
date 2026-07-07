@@ -567,7 +567,6 @@ export async function evalCommand(target: string, options: {
   }
 
   await track('cli.eval', {
-    squad: squadName,
     agents: results.length,
     avgScore: Math.round(results.reduce((sum, r) => sum + r.overallScore, 0) / results.length),
   });

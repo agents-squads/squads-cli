@@ -408,7 +408,6 @@ function renderDashboardFooter(): void {
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean; json?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_DASHBOARD, { verbose: options.verbose, ceo: options.ceo, fast: options.fast });
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`${colors.red}No .agents/squads directory found${RESET}`);

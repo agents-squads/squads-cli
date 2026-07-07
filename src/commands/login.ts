@@ -149,7 +149,6 @@ export async function logoutCommand(): Promise<void> {
 
   clearSession();
   writeLine(chalk.green(`✓ Logged out from ${session.email}`));
-  await track('cli.logout');
 }
 
 export async function whoamiCommand(): Promise<void> {
