@@ -161,12 +161,6 @@ export async function learnCommand(
   content += formatLearning(learning);
   writeFileSync(learningsPath, content);
 
-  // Track telemetry
-  await track(Events.CLI_LEARN, {
-    squad: squadName,
-    category,
-    tagCount: tags.length,
-  });
 
   // Display
   writeLine();
@@ -218,8 +212,6 @@ export async function learnShowCommand(
   const limit = options.limit ? parseInt(options.limit) : 10;
   const recent = filtered.slice(-limit).reverse();
 
-  // Track
-  await track(Events.CLI_LEARN_SHOW, { squad: squadName });
 
   // Display
   writeLine();
@@ -285,8 +277,6 @@ export async function learnSearchCommand(
     l.tags.some(t => t.includes(queryLower))
   );
 
-  // Track
-  await track(Events.CLI_LEARN_SEARCH, { query, matches: matches.length });
 
   // Display
   writeLine();

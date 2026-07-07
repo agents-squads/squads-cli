@@ -235,3 +235,72 @@ describe('toMpEvent (#964 GA4 MP shape)', () => {
     expect(e.params['bad_key_name']).toHaveLength(100);
   });
 });
+
+// ─── #1009: root command hook — comprehensive, privacy-hard-scoped ──────
+import { Command } from 'commander';
+import { commandPath, presentFlagNames, installCommandTelemetry } from '../src/lib/telemetry.js';
+
+describe('commandPath (#1009)', () => {
+  it('builds the dotted path for nested subcommands, excluding the root', () => {
+    const program = new Command('squads');
+    const memory = program.command('memory');
+    const sync = memory.command('sync');
+    expect(commandPath(sync)).toBe('memory.sync');
+    expect(commandPath(memory)).toBe('memory');
+  });
+
+  it('falls back to the command name for a root-level command', () => {
+    const program = new Command('squads');
+    const run = program.command('run');
+    expect(commandPath(run)).toBe('run');
+  });
+});
+
+describe('presentFlagNames (#1009)', () => {
+  it('returns only flags the caller passed, sorted, names not values', () => {
+    const program = new Command('squads');
+    let captured: string[] = [];
+    program
+      .command('run')
+      .argument('[target]')
+      .option('-t, --timeout <min>')
+      .option('--task <text>')
+      .option('--verbose')
+      .action(function (this: Command) {
+        captured = presentFlagNames(this);
+      });
+    program.parse(['run', 'secret-squad', '--task', 'secret text', '-t', '40'], { from: 'user' });
+    expect(captured).toEqual(['--task', '--timeout']);
+    expect(captured.join(',')).not.toContain('secret');
+  });
+});
+
+describe('installCommandTelemetry (#1009)', () => {
+  it('emits cli.<path> with flag names and cli.done, never arg or flag values', async () => {
+    const events: Array<{ event: string; properties?: Record<string, unknown> }> = [];
+    const capture = async (event: string, properties?: Record<string, string | number | boolean | undefined>) => {
+      events.push({ event, properties });
+    };
+
+    const program = new Command('squads');
+    installCommandTelemetry(program, capture);
+    const goal = program.command('goal');
+    goal
+      .command('set')
+      .argument('<squad>')
+      .option('--kpi <name>')
+      .action(async () => {});
+
+    await program.parseAsync(['goal', 'set', 'client-secret', '--kpi', 'revenue'], { from: 'user' });
+
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain('client-secret');
+    expect(serialized).not.toContain('revenue');
+    const pre = events.find((e) => e.event === 'cli.goal.set');
+    expect(pre?.properties?.flags).toBe('--kpi');
+    const done = events.find((e) => e.event === 'cli.done');
+    expect(done?.properties?.command).toBe('goal.set');
+    expect(done?.properties?.success).toBe(true);
+    expect(typeof done?.properties?.durationMs).toBe('number');
+  });
+});

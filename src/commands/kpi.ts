@@ -36,7 +36,6 @@ export async function kpiShowCommand(
   squadName: string,
   options: { json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_SHOW, { squad: squadName });
 
   const squad = loadSquad(squadName);
   if (!squad) {
@@ -99,7 +98,6 @@ export async function kpiRecordCommand(
   value: string,
   options: { note?: string; json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_RECORD, { squad: squadName, kpi: kpiName });
 
   const squad = loadSquad(squadName);
   if (!squad) {
@@ -154,7 +152,6 @@ export async function kpiTrendCommand(
   kpiName: string,
   options: { periods?: string; json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_TREND, { squad: squadName, kpi: kpiName });
 
   const squad = loadSquad(squadName);
   if (!squad) {
@@ -222,7 +219,6 @@ export async function kpiInsightsCommand(
   squadName?: string,
   options: { json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_INSIGHTS, { squad: squadName || 'all' });
 
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
@@ -317,7 +313,6 @@ export async function kpiInsightsCommand(
 export async function kpiListCommand(
   options: { json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_LIST, {});
 
   const squadsDir = findSquadsDir();
   if (!squadsDir) {

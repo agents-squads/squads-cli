@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, release } from 'os';
 import { randomUUID } from 'crypto';
+import type { Command } from 'commander';
 import { version as cliVersion } from '../version.js';
 import { loadProjectConfig } from './config.js';
 
@@ -426,6 +427,71 @@ export const Events = {
  * // ... execute command ...
  * done(); // Records duration
  */
+/**
+ * Full subcommand path of a Commander action command, dot-joined
+ * (e.g. "memory.sync", "goal.set"). Excludes the root program name.
+ */
+export function commandPath(cmd: Command): string {
+  const parts: string[] = [];
+  let c: Command | null = cmd;
+  while (c && c.parent) {
+    parts.unshift(c.name());
+    c = c.parent;
+  }
+  return parts.join('.') || cmd.name();
+}
+
+/**
+ * Names of the flags the caller explicitly passed (option source 'cli'),
+ * sorted. Names ONLY — flag values and positional args never leave the
+ * machine (#1009 privacy scope).
+ */
+export function presentFlagNames(cmd: Command): string[] {
+  const names: string[] = [];
+  for (const opt of cmd.options) {
+    try {
+      if (cmd.getOptionValueSource(opt.attributeName()) === 'cli') {
+        names.push(opt.long ?? opt.short ?? opt.attributeName());
+      }
+    } catch {
+      // telemetry must never break a command
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * Root command instrumentation (#1009): one preAction/postAction pair on
+ * the program covers every command, current and future — no per-command
+ * wiring. preAction emits `cli.<path>` (the usage counter; fires even when
+ * the action later hard-exits — the local store write is synchronous).
+ * postAction emits `cli.done` with duration + success for commands that
+ * complete. Payload is hard-scoped to command path + present flag NAMES;
+ * values and positional args NEVER ship. Routes through track(), so
+ * opt-out / DO_NOT_TRACK / CI+VITEST suppression apply automatically.
+ */
+export function installCommandTelemetry(
+  program: Command,
+  trackFn: typeof track = track
+): void {
+  const startedAt = new WeakMap<Command, number>();
+  program.hook('preAction', async (_root, actionCommand) => {
+    startedAt.set(actionCommand, Date.now());
+    const flags = presentFlagNames(actionCommand).join(',');
+    await trackFn(`cli.${commandPath(actionCommand)}`, {
+      flags: flags || undefined,
+    });
+  });
+  program.hook('postAction', async (_root, actionCommand) => {
+    const start = startedAt.get(actionCommand);
+    await trackFn('cli.done', {
+      command: commandPath(actionCommand),
+      durationMs: start ? Date.now() - start : undefined,
+      success: !process.exitCode,
+    });
+  });
+}
+
 export function trackCommand(command: string): () => void {
   const start = Date.now();
 

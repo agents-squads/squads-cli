@@ -47,7 +47,7 @@ for (const envPath of envPaths) {
 import type { SessionSummaryData } from './commands/sessions.js';
 
 // Setup imports (must run on every invocation)
-import { registerExitHandler } from './lib/telemetry.js';
+import { registerExitHandler, installCommandTelemetry } from './lib/telemetry.js';
 import { applyStackConfig } from './lib/stack-config.js';
 
 // Register-pattern commands (must define subcommand structure before parseAsync)
@@ -186,6 +186,10 @@ function handleOutputError(str: string, write: (s: string) => void): void {
 }
 
 const program = new Command();
+
+// #1009: every command reports usage via one root hook pair — no per-command
+// wiring, privacy hard-scoped to command path + flag names in telemetry.ts.
+installCommandTelemetry(program);
 
 program
   .name('squads')

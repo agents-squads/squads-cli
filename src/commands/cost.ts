@@ -72,7 +72,6 @@ function getBudgetStatus(
 }
 
 export async function costCommand(options: CostOptions = {}): Promise<void> {
-  await track(Events.CLI_COST, { squad: options.squad || 'all' });
 
   const stats = await fetchBridgeStats();
   const plan = detectPlan();
@@ -239,7 +238,6 @@ export async function budgetCheckCommand(
   squadName: string,
   options: { json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_COST, { action: 'budget-check', squad: squadName });
 
   const stats = await fetchBridgeStats();
   const squad = loadSquad(squadName);

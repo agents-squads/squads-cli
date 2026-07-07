@@ -46,7 +46,6 @@ export async function autonomyCommand(options: AutonomyOptions = {}): Promise<vo
   const bridgeUrl = getEnv().bridge_url;
   const period = options.period || 'today';
 
-  await track(Events.CLI_STATUS, { command: 'autonomy', period, squad: options.squad });
 
   try {
     const params = new URLSearchParams({ period });
