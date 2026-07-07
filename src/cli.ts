@@ -48,6 +48,7 @@ import type { SessionSummaryData } from './commands/sessions.js';
 
 // Setup imports (must run on every invocation)
 import { registerExitHandler, installCommandTelemetry } from './lib/telemetry.js';
+import { applyCommandSurface, installDeprecationNotices } from './lib/command-surface.js';
 import { applyStackConfig } from './lib/stack-config.js';
 
 // Register-pattern commands (must define subcommand structure before parseAsync)
@@ -1335,6 +1336,14 @@ function handleError(error: unknown): void {
 // Register global error handlers
 process.on('uncaughtException', handleError);
 process.on('unhandledRejection', handleError);
+
+// #1020: shrink the visible surface to the canonical loop verbs — absorbed
+// names keep working (hidden + one stderr deprecation notice per use).
+applyCommandSurface(program);
+installDeprecationNotices(program);
+program.addHelpText('after', chalk.dim(
+  '\nDeprecated command names still work but are hidden — each prints its canonical replacement.\nFull surface: squads commands --json --all\n'
+));
 
 // Parse arguments (use parseAsync to properly await async actions)
 try {
