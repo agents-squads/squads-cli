@@ -46,6 +46,7 @@ Orchestrates all squads, evaluates outputs, and closes the feedback loop. Reads 
 | goal-tracker | doer | Tracks business objectives, updates progress |
 | company-eval | evaluator | Evaluates squad outputs and business impact |
 | company-critic | critic | Critiques process, identifies improvements |
+| intent-scanner | scanner | Keeps product-intent fresh from repo deltas; proposes BUSINESS_BRIEF updates as reviewable diffs |
 
 ## Pipeline
 
