@@ -11,6 +11,9 @@ The first-run journey release: squads now works on a stranger's machine, verifie
 
 ### Journey & truthfulness
 - Fresh `squads init` scaffolds agents that can actually run — init/runtime provider vocabulary unified (#955)
+- Bare machines (no AI CLI installed) init in planning-only mode with the full provider install list — never a silent claude scaffold, never a wall (#977)
+- `squads propose` — one bounded background run turns repo intent into a reviewable proposal branch + inbox card (#983)
+- Every command reports usage via one root hook — command path + flag names + duration + success ONLY; this pass also removed 29 legacy events that leaked squad names and search queries in violation of the telemetry disclosure (#1009)
 - Unauthenticated or missing claude fails LOUD with the exact remedy and a nonzero exit (#956, #957); doctor reports real auth state and exits 1 on missing core tools
 - README quickstart works verbatim: `git init` step, auth note, demo verification; deprecated autopilot example removed (#958, decision tracker #970)
 
