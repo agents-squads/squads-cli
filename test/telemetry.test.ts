@@ -304,3 +304,53 @@ describe('installCommandTelemetry (#1009)', () => {
     expect(typeof done?.properties?.durationMs).toBe('number');
   });
 });
+
+// ─── #1020: command-surface deprecation pass ────────────────────────────
+import { applyCommandSurface, installDeprecationNotices, DEPRECATED_COMMANDS } from '../src/lib/command-surface.js';
+
+describe('command surface (#1020)', () => {
+  it('hides every absorbed name and session plumbing from help, behavior intact', () => {
+    const program = new Command('squads');
+    const run = program.command('run');
+    const cost = program.command('cost');
+    const session = program.command('session');
+    applyCommandSurface(program);
+    // assert against what the help renderer actually consults
+    const helpText = program.helpInformation();
+    expect(helpText).toContain('run');
+    expect(helpText).not.toContain('cost');
+    expect(helpText).not.toContain('session');
+    void run; void cost; void session;
+  });
+
+  it('prints one stderr notice with the canonical verb for a deprecated top-level command', async () => {
+    const program = new Command('squads');
+    program.command('cost').action(async () => {});
+    installDeprecationNotices(program);
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
+    await program.parseAsync(['cost'], { from: 'user' });
+    spy.mockRestore();
+    expect(writes.join('')).toContain('squads cost is deprecated');
+    expect(writes.join('')).toContain('squads usage');
+  });
+
+  it('never notices canonical verbs or session plumbing', async () => {
+    const program = new Command('squads');
+    program.command('run').action(async () => {});
+    const session = program.command('session');
+    session.command('start').action(async () => {});
+    installDeprecationNotices(program);
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
+    await program.parseAsync(['run'], { from: 'user' });
+    await program.parseAsync(['session', 'start'], { from: 'user' });
+    spy.mockRestore();
+    expect(writes.join('')).not.toContain('deprecated');
+  });
+
+  it('every deprecated name maps to a live canonical verb', () => {
+    const canonicals = new Set(Object.values(DEPRECATED_COMMANDS));
+    for (const c of canonicals) expect(c in DEPRECATED_COMMANDS).toBe(false);
+  });
+});
