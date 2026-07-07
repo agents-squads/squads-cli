@@ -9,7 +9,6 @@
 import { localUsageSummary, type UsageBucket } from '../lib/observability.js';
 import { reconcileDetachedRuns } from '../lib/spool.js';
 import { readClaudeSessions, totalTokens, type SessionBucket } from '../lib/claude-sessions.js';
-import { track, Events } from '../lib/telemetry.js';
 import {
   colors,
   bold,
@@ -56,7 +55,6 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
     const n = reconcileDetachedRuns(getProjectRoot());
     if (n > 0) console.log(`  reconciled ${n} detached run(s) into observability`);
   } catch { /* read paths never break on spool issues */ }
-  await track(Events.CLI_COST, { action: 'usage' });
 
   const windowHours = Math.max(1, parseInt(String(options.window ?? 5), 10) || 5);
   const summary = localUsageSummary(windowHours);

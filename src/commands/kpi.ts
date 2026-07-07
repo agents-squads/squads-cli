@@ -317,8 +317,6 @@ export async function kpiInsightsCommand(
 export async function kpiListCommand(
   options: { json?: boolean } = {}
 ): Promise<void> {
-  await track(Events.CLI_KPI_LIST, {});
-
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`  ${colors.red}No .agents/squads directory found${RESET}`);

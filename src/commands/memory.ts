@@ -205,7 +205,6 @@ export async function memoryUpdateCommand(
 }
 
 export async function memoryListCommand(): Promise<void> {
-  await track(Events.CLI_MEMORY_LIST);
   const memoryDir = findMemoryDir();
 
   if (!memoryDir) {

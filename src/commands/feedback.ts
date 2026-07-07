@@ -225,7 +225,6 @@ export async function feedbackShowCommand(
 }
 
 export async function feedbackStatsCommand(): Promise<void> {
-  await track(Events.CLI_FEEDBACK_STATS);
   const memoryDir = findMemoryDir();
   if (!memoryDir) {
     writeLine(`  ${colors.red}Could not find memory directory${RESET}`);

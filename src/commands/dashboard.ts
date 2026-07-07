@@ -7,7 +7,6 @@ import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, Sq
 import { saveDashboardSnapshot, isDatabaseAvailable, getDashboardHistory, DashboardSnapshot, SquadSnapshotData, closeDatabase, getLatestBaseline, BaselineSnapshot } from '../lib/db.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions, SessionSummary } from '../lib/sessions.js';
 import { checkForUpdate } from '../lib/update.js';
-import { track, Events } from '../lib/telemetry.js';
 import {
   colors,
   bold,
@@ -408,7 +407,6 @@ function renderDashboardFooter(): void {
 }
 
 export async function dashboardCommand(options: { verbose?: boolean; ceo?: boolean; fast?: boolean; json?: boolean } = {}): Promise<void> {
-  await track(Events.CLI_DASHBOARD, { verbose: options.verbose, ceo: options.ceo, fast: options.fast });
   const squadsDir = findSquadsDir();
   if (!squadsDir) {
     writeLine(`${colors.red}No .agents/squads directory found${RESET}`);

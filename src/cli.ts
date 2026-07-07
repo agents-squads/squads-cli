@@ -47,7 +47,8 @@ for (const envPath of envPaths) {
 import type { SessionSummaryData } from './commands/sessions.js';
 
 // Setup imports (must run on every invocation)
-import { registerExitHandler } from './lib/telemetry.js';
+import { registerExitHandler, track, flushEvents } from './lib/telemetry.js';
+import { commandPath, presentFlagNames } from './lib/command-telemetry.js';
 import { applyStackConfig } from './lib/stack-config.js';
 
 // Register-pattern commands (must define subcommand structure before parseAsync)
@@ -243,6 +244,54 @@ Resources:
     const { statusCommand } = await import('./commands/status.js');
     await statusCommand(undefined, {});
   });
+
+// ─── Telemetry: root command hook (#1009) ────────────────────────────────────
+// One baseline event per invocation, for every command — including the ones
+// with no per-command track() call at all (doctor, health, ...). Existing
+// manual track() calls in command handlers add domain detail on top of this
+// floor; they don't conflict with it. Routes through the same
+// track()/isEnabled() gate as every other event, so opt-out, DO_NOT_TRACK,
+// and CI/VITEST suppression apply here automatically.
+//
+// HARD PRIVACY SCOPE: only the command path, present FLAG NAMES (boolean
+// presence — never values), duration, and success/failure are ever read.
+// Positional arguments (squad names, task directives, queries, ...) never
+// touch this code path.
+//
+// Gotcha (verified empirically): Commander's postAction hook does not fire
+// when the action handler throws or rejects, so the catch around
+// parseAsync() below carries the failure case.
+interface PendingCommandTelemetry {
+  path: string;
+  flags: string[];
+  start: number;
+}
+
+// Boxed in an object rather than a bare `let`: TS's control-flow analysis
+// otherwise over-narrows a module-scope `let` to its initializer (`null`)
+// because the only reassignment happens inside hook callbacks, which are
+// function-call arguments the top-level flow analysis can't see as executed.
+const commandTelemetryState: { pending: PendingCommandTelemetry | null } = { pending: null };
+
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  commandTelemetryState.pending = {
+    path: commandPath(actionCommand),
+    flags: presentFlagNames(actionCommand),
+    start: Date.now(),
+  };
+});
+
+program.hook('postAction', async () => {
+  if (!commandTelemetryState.pending) return;
+  const { path, flags, start } = commandTelemetryState.pending;
+  commandTelemetryState.pending = null;
+  await track(`cli.${path}`, {
+    command: path,
+    flags: flags.join(','),
+    duration_ms: Date.now() - start,
+    success: true,
+  });
+});
 
 // ─── Execute (daily operations) ──────────────────────────────────────────────
 
@@ -1336,5 +1385,18 @@ process.on('unhandledRejection', handleError);
 try {
   await program.parseAsync();
 } catch (error) {
+  // postAction never ran for this invocation (see hook comment above) — emit
+  // the failure baseline event ourselves so failed commands still report.
+  if (commandTelemetryState.pending) {
+    const { path, flags, start } = commandTelemetryState.pending;
+    commandTelemetryState.pending = null;
+    await track(`cli.${path}`, {
+      command: path,
+      flags: flags.join(','),
+      duration_ms: Date.now() - start,
+      success: false,
+    });
+    await flushEvents();
+  }
   handleError(error);
 }
