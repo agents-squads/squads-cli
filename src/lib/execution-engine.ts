@@ -63,6 +63,7 @@ import {
   getCLIConfig,
   isProviderCLIAvailable,
 } from './llm-clis.js';
+import { gitIdentityArgs } from './git.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
@@ -199,9 +200,12 @@ export async function autoCommitAgentWork(
     const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
     writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit using --file to avoid shell interpolation
+    // Commit using --file to avoid shell interpolation. Repo-scoped fallback
+    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/
+    // GIT_COMMITTER_* env vars from botEnv (if set) still take precedence.
+    const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git commit --file "${msgFile}"`, execOpts);
+      execSync(`git ${identity} commit --file "${msgFile}"`, execOpts);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -477,7 +481,8 @@ export function createAgentWorktree(projectRoot: string, squadName: string, agen
 
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const identity = gitIdentityArgs(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     return worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -575,8 +580,10 @@ export async function harvestProviderWork(
     const coAuthor = getCoAuthorTrailer(info.provider);
     const msgFile = join(tmpdir(), `squads-harvest-${Date.now()}.txt`);
     writeFileSync(msgFile, `feat(${info.squadName}/${info.agentName}): agent work via ${info.provider}\n\n${coAuthor}\n`);
+    // Repo-scoped fallback identity (#980) when no git identity is configured.
+    const identity = gitIdentityArgs(workDir);
     try {
-      execSync(`git commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
+      execSync(`git ${identity} commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -664,7 +671,10 @@ export function buildDetachedShellScript(config: {
     : '--dangerously-skip-permissions';
   const executorCmd = `claude --print --output-format stream-json --verbose ${permissionFlags} ${settingsFlag}--disable-slash-commands ${sessionFlag}${modelFlag} -- '${config.escapedPrompt}' > '${config.logFile}' 2>&1`;
   const watchdogSecs = Math.max(1, Math.round((config.timeoutMinutes ?? defaultTimeoutForRole()) * 60));
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
+  // Repo-scoped fallback identity (#980) computed once here (TS side) rather
+  // than inline in the shell — single source of truth via gitIdentityArgs.
+  const identity = gitIdentityArgs(config.projectRoot);
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
   // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
   return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
@@ -1205,7 +1215,8 @@ export async function executeWithProvider(
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
-    execSync(`git worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const identity = gitIdentityArgs(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -1364,14 +1375,14 @@ export async function executeWithProvider(
   // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
   // the executor wrote, fast-forward the project root, and only delete the
   // agent branch when its work is integrated or empty — never lose output.
-  // Author = the user's git identity (same as the TS-side harvest), with the
-  // provider co-author trailer marking machine authorship; a neutral local
-  // identity is the fallback ONLY when no git identity is configured (#837).
+  // Author = the user's git identity (same as the TS-side harvest); the
+  // repo-scoped fallback identity (#980, single source of truth via
+  // gitIdentityArgs) applies ONLY when no git identity is configured.
   const harvestMsg = `-m 'feat(${squadName}/${agentName}): agent work via ${provider}' -m '${getCoAuthorTrailer(provider)}'`;
+  const harvestIdentity = gitIdentityArgs(workDir);
   const cleanupCmd = workDir !== projectRoot
     ? `; git -C '${workDir}' add -A 2>/dev/null` +
-      `; { git -C '${workDir}' commit ${harvestMsg}` +
-      ` || git -C '${workDir}' -c user.name='squads-agent' -c user.email='squads-agent@localhost' commit ${harvestMsg}; } >/dev/null 2>&1` +
+      `; git -C '${workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
       `; KEEP_BRANCH=''; HARVEST=none` +
       `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
       ` { git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 && HARVEST=merged; } || { KEEP_BRANCH=1; HARVEST=preserved; }; fi` +

@@ -12,6 +12,7 @@ vi.mock('ora', () => ({
 }));
 
 vi.mock('child_process', () => ({
+  exec: vi.fn(),
   spawn: vi.fn(() => ({
     on: vi.fn(),
     stdout: { on: vi.fn() },
