@@ -161,39 +161,6 @@ export function resolveModel(
 
 // ── Project trust ────────────────────────────────────────────────────
 
-/**
- * Ensure the project directory is trusted in Claude's config.
- * This prevents the workspace trust dialog from blocking autonomous execution.
- */
-export function ensureProjectTrusted(projectPath: string): void {
-  const configPath = join(process.env.HOME || '', '.claude.json');
-
-  if (!existsSync(configPath)) {
-    // No Claude config yet - will be created on first interactive run
-    return;
-  }
-
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-
-    if (!config.projects) {
-      config.projects = {};
-    }
-
-    if (!config.projects[projectPath]) {
-      config.projects[projectPath] = {};
-    }
-
-    // Mark as trusted for autonomous execution
-    if (!config.projects[projectPath].hasTrustDialogAccepted) {
-      config.projects[projectPath].hasTrustDialogAccepted = true;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
-    }
-  } catch (e) {
-    // Don't fail execution if we can't update config — the trust dialog will just appear
-    writeLine(`  ${colors.dim}warn: config update failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
-  }
-}
 
 // ── Project root ─────────────────────────────────────────────────────
 

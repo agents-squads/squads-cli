@@ -182,7 +182,19 @@ function streamSessionFile(
  * Streams every file; never loads a whole session into memory. Returns a
  * zeroed-but-`available:false` summary when ~/.claude/projects is missing.
  */
-export async function readClaudeSessions(windowHours = 5): Promise<ClaudeSessionsSummary> {
+/** Claude Code encodes a session's cwd into its dir name (slashes → dashes). */
+export function encodeProjectDir(absPath: string): string {
+  return absPath.replace(/[/.]/g, '-');
+}
+
+export async function readClaudeSessions(
+  windowHours = 5,
+  opts: { scope?: 'project' | 'all'; projectRoot?: string } = {},
+): Promise<ClaudeSessionsSummary> {
+  // #960: default is PROJECT-scoped — reading every session on the machine
+  // (a user's unrelated private work) requires the explicit 'all' scope,
+  // which `squads usage --all-claude` discloses when it engages.
+  const scope = opts.scope ?? 'project';
   const projectsDir = getClaudeProjectsDir();
   const summary: ClaudeSessionsSummary = {
     today: emptySplit(),
@@ -204,6 +216,17 @@ export async function readClaudeSessions(windowHours = 5): Promise<ClaudeSession
     projDirs = readdirSync(projectsDir);
   } catch {
     return summary;
+  }
+
+  if (scope === 'project') {
+    const root = opts.projectRoot || process.cwd();
+    const rootEnc = encodeProjectDir(root);
+    // The project itself + its run worktrees (…-worktrees-squads-run-<squad>-…,
+    // which live one level above the project and carry its path prefix).
+    const parentEnc = encodeProjectDir(join(root, '..'));
+    projDirs = projDirs.filter(d =>
+      d === rootEnc || d.startsWith(rootEnc + '-') ||
+      (d.startsWith(parentEnc) && d.includes('worktrees')));
   }
 
   for (const projDir of projDirs) {

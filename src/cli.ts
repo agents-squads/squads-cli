@@ -573,6 +573,7 @@ program
   .command('usage')
   .description('Show local cost/token usage (today, rolling window, by squad)')
   .option('-w, --window <hours>', 'Rolling-window size in hours', '5')
+  .option('--all-claude', 'Include ALL Claude Code sessions on this machine, not just this project (#960)')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     const { usageCommand } = await import('./commands/usage.js');
