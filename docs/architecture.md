@@ -119,37 +119,76 @@ The CLI computes execution phases via topological sort. Squads with no
 dependencies run first. Squads with `depends_on: ["*"]` run last
 (evaluation). Within each phase, squads run in parallel.
 
+## Execution Containment
+
+Knowing the right things (the cascade) is half of trust; the other half
+is bounding what a run can touch. Every squad run is contained:
+
+- **Worktree isolation** — each run executes in its own git worktree, cut
+  from the trunk. Agents never edit your working copy; deliverables arrive
+  as branches and PRs, not loose changes.
+- **Nothing is silently lost** — if a run dies mid-work (timeout, quota,
+  crash), uncommitted deliverables are auto-committed to a
+  `squads/run-*` salvage branch and surfaced in the inbox as PARTIAL.
+- **OS sandbox** — agent processes run inside the operating system's
+  sandbox by default, with an egress allowlist.
+- **Bounds** — per-role timeouts, per-run budget caps, and conversation
+  turn limits are enforced by the runner, not requested politely.
+- **The agent contract** — each agent's declared permissions compile to
+  an enforced tool allowlist at spawn (see `agent-contract.md`).
+
+## Bounded Task Dispatch
+
+The workhorse mode for scoped work is a task, not a conversation:
+
+```bash
+squads run engineering --task "Fix #593 — spec in the issue" -t 40
+```
+
+A `--task` run gets a lead+delegate roster (not the full squad), a hard
+timeout, and a **PR-gate stop**: the run converges when the deliverable
+exists as a pull request, then stops. One task, one branch, one PR —
+drift is prevented by the mode, not by agent discipline.
+
 ## The Feedback Loop
 
-This is the core of Squads — a closed loop where agents improve autonomously:
+This is the core of Squads — a closed loop that runs through a human gate:
 
-```
-┌─────────────────────────────────────────────────────┐
-│                                                     │
-│   autopilot ──→ squads run                          │
-│       ▲              │                              │
-│       │              ▼                              │
-│       │    intelligence ──┐                         │
-│       │    research ──────┼──→ product              │
-│       │                   │        │                │
-│       │                   │        ▼                │
-│       │                   │   company (COO)         │
-│       │                   │        │                │
-│       │                   │   feedback.md           │
-│       │                   │        │                │
-│       │                   └────────┘                │
-│       │               (injected next cycle)         │
-│       └─────────────────────┘                       │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/execution-loop-dark.svg">
+  <img alt="The execution loop: context assembly, agent execution cycle, human decision gate, outcomes feeding the next cycle" src="assets/execution-loop-light.svg">
+</picture>
 
-After each cycle, the company evaluator assesses all squad outputs:
-what was valuable, what was noise, what to prioritize next. Written to
-`feedback.md` per squad and injected into the next cycle — closing the
-loop so agents learn from their own output quality.
+Each run assembles the minimal context slice its task needs, executes
+inside containment, and produces artifacts. Then two things close the loop:
 
-`squads autopilot` uses these evaluations to determine which squads to
-run next, in what order, with what budget. The full loop: autopilot
-dispatches → agents execute → evaluator writes feedback → autopilot
-reads feedback → dispatches again.
+**The decision gate.** `squads inbox` lists everything waiting on a human
+— PRs from runs, salvaged PARTIAL branches, proposals. `approve` executes
+the item's stated semantics (for a PR: the CI-gated auto-merge; with no
+GitHub remote: a local squash-merge to your trunk). `reject` archive-tags
+before deleting, so nothing is unrecoverable, and writes the reason
+through to feedback. Every decision lands in an append-only
+`reviewed.jsonl` ledger with `by:` attribution — autonomous actors stamp
+themselves, never a human who didn't look.
+
+**Measured feedback.** Runs emit a typed event stream (watch live with
+`squads watch`, replay after). Outcomes are captured — not "did the agent
+say done" but did the work *land* (merged, deployed, delivered). The
+evaluator writes `feedback.md` per squad, injected into the next cycle;
+`squads feedback` records human ratings; and the scoreboard ranks
+executors by quality-per-cost from real outcomes, feeding dispatch
+decisions.
+
+Autopilot mode (`squads run` with no target) uses these evaluations to
+determine which squads to run next, in what order, with what budget. The
+full loop: dispatch → contained execution → artifacts through the gate →
+measured outcomes → richer context → dispatch again.
+
+## Initiative
+
+Squads don't only respond — they extend. `squads propose` runs one
+bounded background pass that turns repo intent (README, commits, your
+product's trajectory) into a draft deliverable on a proposal branch plus
+an inbox card. The intent scanner keeps `BUSINESS_BRIEF.md` fresh from
+repo deltas so proposals track what you're actually building. Nothing
+lands without your approval — initiative is always behind the gate.

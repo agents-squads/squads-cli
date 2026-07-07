@@ -531,8 +531,7 @@ export function cleanupWorktree(
 export type HarvestOutcome =
   | { outcome: 'in-place' }          // ran in projectRoot directly — nothing to move
   | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
-  | { outcome: 'merged' }            // committed + fast-forwarded into projectRoot
-  | { outcome: 'branch-preserved'; branch: string }  // committed but projectRoot diverged/dirty — branch kept
+  | { outcome: 'branch-preserved'; branch: string }  // committed to the agent branch — the only landing path (#966)
   | { outcome: 'blocked'; detail: string };          // secret/PII scan refused the commit — worktree kept
 
 /**
@@ -542,9 +541,12 @@ export type HarvestOutcome =
  * prompted with), so the engine historically never harvested — and provider
  * executors like aider, which only edit files, silently lost ALL output when
  * the worktree was cleaned (#823). This commits whatever the executor wrote
- * (after the same secret/PII scan autoCommitAgentWork uses) and fast-forwards
- * the project root; when that isn't safe the agent branch is preserved and
- * reported instead. Work must never evaporate behind a green run.
+ * (after the same secret/PII scan autoCommitAgentWork uses) and preserves it
+ * on the agent branch — NEVER integrated into the operator's checkout (#966:
+ * the old fast-forward path landed unrequested agent commits directly on a
+ * host repo's main). The inbox stranded-branch scanner surfaces the branch
+ * for a human decision. Work must never evaporate behind a green run — and
+ * must never land without one either.
  */
 export async function harvestProviderWork(
   workDir: string,
@@ -596,14 +598,9 @@ export async function harvestProviderWork(
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
-  // 3. Fast-forward the project root. --ff-only refuses on divergence and
-  //    aborts (preserving local changes) rather than producing a merge state.
-  try {
-    execSync(`git merge --ff-only '${branchName}'`, { cwd: projectRoot, stdio: 'pipe' });
-    return { outcome: 'merged' };
-  } catch {
-    return { outcome: 'branch-preserved', branch: branchName };
-  }
+  // 3. Preserve on the agent branch — integration is a human decision made
+  //    through the inbox gate, never a side effect of a run finishing (#966).
+  return { outcome: 'branch-preserved', branch: branchName };
 }
 
 // ── Detached execution helpers ───────────────────────────────────────
@@ -1332,13 +1329,9 @@ export async function executeWithProvider(
         }
 
         switch (harvest.outcome) {
-          case 'merged':
-            writeLine(`  ${colors.green}Harvested agent work${RESET} ${colors.dim}(fast-forwarded ${branchName})${RESET}`);
-            cleanupWorktree(workDir, projectRoot);
-            break;
           case 'branch-preserved':
-            writeLine(`  ${colors.yellow}Agent work preserved on branch ${harvest.branch}${RESET}`);
-            writeLine(`  ${colors.dim}Project root diverged or has conflicting changes — merge manually: git merge ${harvest.branch}${RESET}`);
+            writeLine(`  ${colors.green}Agent work preserved on branch ${harvest.branch}${RESET}`);
+            writeLine(`  ${colors.dim}Review and land it through the gate: squads inbox${RESET}`);
             cleanupWorktree(workDir, projectRoot, { keepBranch: true });
             break;
           case 'blocked':

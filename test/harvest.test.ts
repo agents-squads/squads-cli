@@ -55,17 +55,21 @@ describe('harvestProviderWork (#823 — executor output must never be lost)', ()
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it('commits dirty executor output and fast-forwards the project root', async () => {
+  it('commits dirty executor output to the agent branch and NEVER touches the project trunk (#966)', async () => {
     writeFileSync(join(workDir, 'report.md'), '# Agent report\n');
+    const trunkBefore = git('rev-parse HEAD', root).trim();
 
     const result = await harvestProviderWork(workDir, root, branch, {
       squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek',
     });
 
-    expect(result.outcome).toBe('merged');
-    expect(existsSync(join(root, 'report.md'))).toBe(true);
-    expect(readFileSync(join(root, 'report.md'), 'utf-8')).toContain('Agent report');
-    expect(git('log -1 --format=%s', root)).toContain('testsquad/testagent');
+    expect(result.outcome).toBe('branch-preserved');
+    if (result.outcome === 'branch-preserved') expect(result.branch).toBe(branch);
+    // The operator's checkout is untouched — integration is an inbox decision.
+    expect(git('rev-parse HEAD', root).trim()).toBe(trunkBefore);
+    expect(existsSync(join(root, 'report.md'))).toBe(false);
+    // The work exists, committed on the agent branch.
+    expect(git(`log -1 --format=%s '${branch}'`, root)).toContain('testsquad/testagent');
   });
 
   it('preserves the branch when the project root has diverged', async () => {

@@ -53,20 +53,41 @@ export interface RunWorktree {
 let runCounter = 0;
 
 /**
- * Resolve the base branch for the worktree: prefer `develop` if it exists on
- * the repo, else the repo's current branch (HEAD). Falls back to 'HEAD' if the
- * current branch can't be determined.
+ * Resolve the base branch for the worktree: prefer the FRESH remote trunk
+ * (`origin/develop` after a fetch), else local `develop`, else the repo's
+ * current branch (HEAD).
+ *
+ * #1014: a run worktree cut from a stale local develop (16 commits behind)
+ * made a worker implement against an old tree — 40 minutes and real money
+ * for zero salvageable work. One bounded fetch per run buys a current base;
+ * offline machines fall back to local refs with a visible warning.
  */
 function resolveBaseRef(repoDir: string): string {
-  // Prefer develop when present (product repos branch off develop).
+  const rev = (ref: string): boolean => {
+    try {
+      execSync(`git rev-parse --verify --quiet ${ref}`, { cwd: repoDir, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Freshen the trunk ref when a remote exists. Bounded: one ref, 15s cap.
+  let fetched = false;
   try {
-    execSync('git rev-parse --verify --quiet refs/heads/develop', {
-      cwd: repoDir,
-      stdio: 'pipe',
-    });
-    return 'develop';
+    execSync('git fetch --quiet origin develop', { cwd: repoDir, stdio: 'pipe', timeout: 15_000 });
+    fetched = true;
   } catch {
-    // develop doesn't exist locally — fall through to current branch.
+    // no remote / offline / no develop on origin — local refs are all we have
+  }
+
+  if (fetched && rev('refs/remotes/origin/develop')) return 'origin/develop';
+
+  if (rev('refs/heads/develop')) {
+    if (!fetched) {
+      writeLine(`  ${colors.yellow}worktree base = LOCAL develop (fetch failed — offline?); it may be stale${RESET}`);
+    }
+    return 'develop';
   }
 
   try {

@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 952" style="color:#e4e4e7;width:100%;height:auto" role="img" aria-labelledby="loop-title loop-desc">
+  <title id="loop-title">The agent execution loop</title>
+  <desc id="loop-desc">A closed-loop architecture across four zones. Zone 1 (Context): agent definitions, priorities, squad memory, and the semantic layer over your data sources — each run assembles only the minimal slice its task needs. Zone 2 (Agent Execution Cycle): assemble context, reason, call typed tools, render widget. Zone 3 (Human in the Loop): the Central Command where humans chat with the agent, approve / reject / edit, escalate, and audit — gating every outcome before it commits. Zone 4 (Outcomes): internal memory side-effects (state, learnings, role refinement) and external work product (data writes, artifacts, third-party actions). A closing-loop arrow on the right margin feeds outcomes back into context for the next run.</desc>
+
+  <defs>
+    <marker id="arrSubtle" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor" opacity="0.5"/>
+    </marker>
+    <marker id="arrAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a855f7"/>
+    </marker>
+  </defs>
+
+  <!-- ============ ZONE 1: CONTEXT ============ -->
+  <g>
+    <rect x="20" y="20" width="800" height="240" rx="14" fill="currentColor" fill-opacity="0.025" stroke="currentColor" stroke-opacity="0.12" stroke-width="1"/>
+    <text x="40" y="48" font-family="ui-monospace, monospace" font-size="11" font-weight="600" letter-spacing="1.5" fill="currentColor" fill-opacity="0.55">CONTEXT</text>
+    <text x="105" y="48" font-family="ui-monospace, monospace" font-size="11" fill="currentColor" fill-opacity="0.4">— the minimal slice the task needs, from git · memory · data</text>
+
+    <!-- Row 1: agent defs · priorities · memory -->
+    <g>
+      <rect x="50" y="74" width="230" height="86" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="68" y="100" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Agent definitions</text>
+      <text x="68" y="121" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">.agents/squads/&lt;squad&gt;/*</text>
+      <text x="68" y="142" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">role · mission · tools · permissions</text>
+    </g>
+
+    <g>
+      <rect x="295" y="74" width="230" height="86" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="313" y="100" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Priorities · directives</text>
+      <text x="313" y="121" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">goals.md · directives.md</text>
+      <text x="313" y="142" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">founder + cofounder set direction</text>
+    </g>
+
+    <g>
+      <rect x="540" y="74" width="250" height="86" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="558" y="100" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Squad memory</text>
+      <text x="558" y="121" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">state · feedback · learnings</text>
+      <text x="558" y="142" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">accumulates across runs</text>
+    </g>
+
+    <!-- Row 2: SEMANTIC LAYER & DATA SOURCES (wide) -->
+    <g>
+      <rect x="50" y="180" width="740" height="68" rx="10" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.25"/>
+      <text x="420" y="206" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">SEMANTIC LAYER &amp; DATA SOURCES</text>
+      <text x="420" y="228" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11" fill="currentColor" fill-opacity="0.65">typed views · scoped tools — over your DB · ERP · CRM · external SaaS</text>
+    </g>
+  </g>
+
+  <!-- Arrow: Zone 1 → Zone 2 -->
+  <line x1="420" y1="260" x2="420" y2="296" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+  <text x="430" y="282" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.55">minimal slice per run</text>
+
+  <!-- ============ ZONE 2: AGENT EXECUTION CYCLE ============ -->
+  <g>
+    <rect x="20" y="304" width="800" height="132" rx="14" fill="currentColor" fill-opacity="0.025" stroke="currentColor" stroke-opacity="0.12" stroke-width="1"/>
+    <text x="40" y="332" font-family="ui-monospace, monospace" font-size="11" font-weight="600" letter-spacing="1.5" fill="currentColor" fill-opacity="0.55">AGENT EXECUTION CYCLE</text>
+    <text x="245" y="332" font-family="ui-monospace, monospace" font-size="11" fill="currentColor" fill-opacity="0.4">— per run, one role at a time</text>
+
+    <!-- Step 1 -->
+    <g>
+      <rect x="50" y="356" width="170" height="74" rx="10" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.25"/>
+      <circle cx="50" cy="356" r="13" fill="#a855f7"/>
+      <text x="50" y="361" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="700" font-size="13" fill="white">1</text>
+      <text x="135" y="392" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">assemble context</text>
+      <text x="135" y="412" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">role + relevant memory + data</text>
+    </g>
+    <line x1="225" y1="393" x2="248" y2="393" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+
+    <!-- Step 2 -->
+    <g>
+      <rect x="250" y="356" width="170" height="74" rx="10" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.25"/>
+      <circle cx="250" cy="356" r="13" fill="#a855f7"/>
+      <text x="250" y="361" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="700" font-size="13" fill="white">2</text>
+      <text x="335" y="392" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">reason · plan</text>
+      <text x="335" y="412" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">decide next typed action</text>
+    </g>
+    <line x1="425" y1="393" x2="448" y2="393" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+
+    <!-- Step 3 -->
+    <g>
+      <rect x="450" y="356" width="170" height="74" rx="10" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.25"/>
+      <circle cx="450" cy="356" r="13" fill="#a855f7"/>
+      <text x="450" y="361" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="700" font-size="13" fill="white">3</text>
+      <text x="535" y="392" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">call typed tool</text>
+      <text x="535" y="412" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">scoped, schema-checked</text>
+    </g>
+    <line x1="625" y1="393" x2="648" y2="393" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+
+    <!-- Step 4 -->
+    <g>
+      <rect x="650" y="356" width="170" height="74" rx="10" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.25" stroke-width="1.25"/>
+      <circle cx="650" cy="356" r="13" fill="#a855f7"/>
+      <text x="650" y="361" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="700" font-size="13" fill="white">4</text>
+      <text x="735" y="392" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">render widget</text>
+      <text x="735" y="412" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">e.g. invoice_table_v0</text>
+    </g>
+  </g>
+
+  <!-- Arrow: Zone 2 → Zone 3 -->
+  <line x1="420" y1="436" x2="420" y2="472" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+  <text x="430" y="458" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.55">renders to chat · awaits approval</text>
+
+  <!-- ============ ZONE 3: HUMAN IN THE LOOP (prominent) ============ -->
+  <g>
+    <rect x="20" y="480" width="800" height="160" rx="14" fill="#a855f7" fill-opacity="0.04" stroke="#a855f7" stroke-opacity="0.6" stroke-width="1.5"/>
+    <text x="40" y="508" font-family="ui-monospace, monospace" font-size="11" font-weight="600" letter-spacing="1.5" fill="#a855f7" fill-opacity="0.85">HUMAN IN THE LOOP</text>
+    <text x="200" y="508" font-family="ui-monospace, monospace" font-size="11" fill="currentColor" fill-opacity="0.5">— the Central Command · gates every outcome before it commits</text>
+
+    <text x="420" y="540" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="15" fill="currentColor">Widgets render in chat. Humans supervise.</text>
+
+    <!-- Function pills -->
+    <g>
+      <rect x="80" y="562" width="140" height="50" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.25"/>
+      <text x="150" y="586" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">chat</text>
+      <text x="150" y="603" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="currentColor" fill-opacity="0.55">redirect · clarify</text>
+    </g>
+
+    <g>
+      <rect x="235" y="562" width="230" height="50" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.25"/>
+      <text x="350" y="586" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">approve · reject · edit</text>
+      <text x="350" y="603" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="currentColor" fill-opacity="0.55">gate each tool call</text>
+    </g>
+
+    <g>
+      <rect x="480" y="562" width="120" height="50" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.25"/>
+      <text x="540" y="586" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">escalate</text>
+      <text x="540" y="603" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="currentColor" fill-opacity="0.55">route to operator</text>
+    </g>
+
+    <g>
+      <rect x="615" y="562" width="145" height="50" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.25"/>
+      <text x="687" y="586" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">audit trail</text>
+      <text x="687" y="603" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="currentColor" fill-opacity="0.55">everything reviewable</text>
+    </g>
+  </g>
+
+  <!-- Feedback arrow: HUMAN back to Step 2 (left side, dashed) -->
+  <path d="M 50 480 C 10 460 10 410 50 393" fill="none" stroke="#a855f7" stroke-opacity="0.7" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrAccent)"/>
+  <text x="14" y="440" font-family="ui-monospace, monospace" font-size="10" fill="#a855f7" fill-opacity="0.85" font-weight="600" transform="rotate(-90 14 440)" text-anchor="middle">chat feedback → re-plan</text>
+
+  <!-- Arrow: Zone 3 → Zone 4 -->
+  <line x1="420" y1="640" x2="420" y2="676" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5" marker-end="url(#arrSubtle)"/>
+  <text x="430" y="662" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.55">once approved → committed</text>
+
+  <!-- ============ ZONE 4: OUTCOMES ============ -->
+  <g>
+    <rect x="20" y="684" width="800" height="248" rx="14" fill="currentColor" fill-opacity="0.025" stroke="currentColor" stroke-opacity="0.12" stroke-width="1"/>
+    <text x="40" y="712" font-family="ui-monospace, monospace" font-size="11" font-weight="600" letter-spacing="1.5" fill="currentColor" fill-opacity="0.55">OUTCOMES</text>
+    <text x="135" y="712" font-family="ui-monospace, monospace" font-size="11" fill="currentColor" fill-opacity="0.4">— what every run leaves behind</text>
+
+    <text x="40" y="744" font-family="ui-monospace, monospace" font-size="9" letter-spacing="1" fill="currentColor" fill-opacity="0.4">INTERNAL · MEMORY</text>
+    <text x="40" y="848" font-family="ui-monospace, monospace" font-size="9" letter-spacing="1" fill="currentColor" fill-opacity="0.4">EXTERNAL · WORK PRODUCT</text>
+
+    <!-- ROW 1 — internal memory -->
+    <g>
+      <rect x="50" y="754" width="230" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="68" y="778" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Outcome → state</text>
+      <text x="68" y="797" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">state.md (rotated, max 5)</text>
+      <text x="68" y="816" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">success · escalated · failed</text>
+    </g>
+
+    <g>
+      <rect x="295" y="754" width="230" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="313" y="778" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Learning → git commit</text>
+      <text x="313" y="797" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">cross-squad learnings</text>
+      <text x="313" y="816" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">durable, reviewable, replayable</text>
+    </g>
+
+    <g>
+      <rect x="540" y="754" width="250" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="558" y="778" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">PR → refine role</text>
+      <text x="558" y="797" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">edit the agent definition</text>
+      <text x="558" y="816" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">product iteration is a git diff</text>
+    </g>
+
+    <!-- ROW 2 — external work product -->
+    <g>
+      <rect x="50" y="858" width="230" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="68" y="882" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Data writes</text>
+      <text x="68" y="901" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">invoice paid · lead created</text>
+      <text x="68" y="920" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">rows changed this run · audit trail</text>
+    </g>
+
+    <g>
+      <rect x="295" y="858" width="230" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="313" y="882" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">Artifacts</text>
+      <text x="313" y="901" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">PDFs · reports · docs · images</text>
+      <text x="313" y="920" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">files the agent produced</text>
+    </g>
+
+    <g>
+      <rect x="540" y="858" width="250" height="76" rx="10" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.25"/>
+      <text x="558" y="882" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600" font-size="13" fill="currentColor">3rd-party actions</text>
+      <text x="558" y="901" font-family="ui-monospace, monospace" font-size="10" fill="currentColor" fill-opacity="0.6">Slack · email · GitHub · calendar</text>
+      <text x="558" y="920" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="currentColor" fill-opacity="0.55">messages sent · PRs opened · invites</text>
+    </g>
+  </g>
+
+  <!-- ============ THE CLOSING LOOP (right margin) ============ -->
+  <path d="M 820 808 C 900 808, 930 808, 930 750 L 930 200 C 930 140, 900 140, 820 140" fill="none" stroke="#a855f7" stroke-opacity="0.85" stroke-width="2" marker-end="url(#arrAccent)"/>
+  <text x="940" y="470" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#a855f7" fill-opacity="0.95" transform="rotate(-90 940 470)" text-anchor="middle">next cycle starts richer</text>
+</svg>
