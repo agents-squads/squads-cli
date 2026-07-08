@@ -16,6 +16,10 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   pr: 'PR',
   run_branch: 'BRANCH',
   run_artifacts: 'RUN',
+  goal: 'GOAL',
+  coherence: 'COHERE',
+  oracle_alert: 'ALERT',
+  strategy_proposal: 'PROP',
 };
 
 const VERBS = new Set(['approve', 'reject', 'defer']);

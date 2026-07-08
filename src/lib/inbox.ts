@@ -11,11 +11,11 @@
 
 import { execSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { parsePersistedLine } from './event-render.js';
 import { activeDeferrals } from './inbox-decisions.js';
 
-export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts';
+export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts' | 'goal' | 'coherence' | 'oracle_alert' | 'strategy_proposal';
 
 export interface InboxItem {
   /** Stable handle for Child A's decisions: pr-12 | branch-<name> | run-<execId>. */
@@ -235,6 +235,200 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15, opts?: { run?
 }
 
 /**
+ * Run a validation script whose non-zero exit code IS the signal — these
+ * scripts exit non-zero precisely when they find problems, which is the case
+ * the caller wants to parse. Returns captured stdout either way; empty string
+ * only when the script produced no output (missing, crashed, timed out).
+ */
+function runValidationScript(script: string, timeoutMs: number): string {
+  try {
+    return execSync(`bash ${script}`, {
+      encoding: 'utf8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const stdout = (err as { stdout?: unknown }).stdout;
+    return typeof stdout === 'string' ? stdout : '';
+  }
+}
+
+/**
+ * Machine-detected goal lifecycle events (hq#478). Reads goals.md across
+ * squads and surfaces: achieved (all PR refs merged), contradicted (refs not
+ * found), stale (no activity). Detection is from validate-goals.sh; this
+ * scanner creates inbox items from its structured output.
+ */
+export function scanGoalEvents(obsRoot: string): InboxItem[] {
+  const memoryDir = join(obsRoot, '.agents', 'memory');
+  if (!existsSync(memoryDir)) return [];
+  const items: InboxItem[] = [];
+  let squadsDir = join(obsRoot, '.agents', 'squads');
+  if (!existsSync(squadsDir)) squadsDir = join(dirname(obsRoot), '.agents', 'squads');
+  if (!existsSync(squadsDir)) return [];
+  try {
+    const validateScript = join(squadsDir, '..', '..', 'scripts', 'validate-goals.sh');
+    if (!existsSync(validateScript)) return [];
+    const raw = runValidationScript(validateScript, 120_000);
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('✓')) continue;
+      const reviewMatch = trimmed.match(/⤴ REVIEW.*:\s+(.+)/);
+      if (reviewMatch) {
+        items.push({
+          id: `goal-${reviewMatch[1].slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
+          kind: 'goal', ref: reviewMatch[1], title: `Goal achieved: ${reviewMatch[1].slice(0, 80)}`,
+          ageDays: 0, approveSemantics: 'move to Achieved in goals.md',
+          detail: 'all PR refs merged — appears complete',
+        });
+        continue;
+      }
+      const contraMatch = trimmed.match(/✗ CONTRADICTED:\s+(.+)/);
+      if (contraMatch) {
+        items.push({
+          id: `goal-${contraMatch[1].slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
+          kind: 'goal', ref: contraMatch[1], title: `Goal contradicted: ${contraMatch[1].slice(0, 80)}`,
+          ageDays: 7, approveSemantics: 'keep as active',
+          detail: 'refs not found or not merged — may need review or drop',
+        });
+      }
+    }
+  } catch {
+    // validate-goals.sh unavailable — no goal items this cycle
+  }
+  return items;
+}
+
+/**
+ * Coherence violations (hq#479). Surfaces strategy↔runtime mismatches.
+ * If coherence-check.sh exists, delegates to it; otherwise derives from
+ * SQUAD.md status vs strategy.md active list.
+ */
+export function scanCoherenceViolations(obsRoot: string): InboxItem[] {
+  const coherenceScript = join(obsRoot, 'scripts', 'coherence-check.sh');
+  if (!existsSync(coherenceScript)) {
+    return deriveCoherenceFromStatus(obsRoot);
+  }
+  try {
+    const raw = runValidationScript(coherenceScript, 30_000);
+    if (!raw) return deriveCoherenceFromStatus(obsRoot);
+    const items: InboxItem[] = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('FAIL:')) continue;
+      const detail = trimmed.slice(5).trim();
+      items.push({
+        id: `coherence-${detail.slice(0, 30).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
+        kind: 'coherence', ref: detail, title: detail.slice(0, 100),
+        ageDays: 0, approveSemantics: 'acknowledge (fix or accept drift)',
+        detail: 'declarative state ≠ operational state — surfaced by coherence check',
+      });
+    }
+    return items;
+  } catch {
+    return deriveCoherenceFromStatus(obsRoot);
+  }
+}
+
+function deriveCoherenceFromStatus(obsRoot: string): InboxItem[] {
+  const items: InboxItem[] = [];
+  try {
+    const strategyFile = join(obsRoot, '.agents', 'memory', 'company', 'strategy.md');
+    const squadsDir = join(obsRoot, '.agents', 'squads');
+    if (!existsSync(strategyFile) || !existsSync(squadsDir)) return items;
+    const strategyText = readFileSync(strategyFile, 'utf8');
+    const activeMatch = strategyText.match(/\*\*Active:\*\*\s*(.+)/);
+    if (!activeMatch) return items;
+    const strategyActive = activeMatch[1].split(',').map((s: string) => s.trim());
+    const squads = readdirSync(squadsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    for (const squad of squads) {
+      const squadFile = join(squadsDir, squad, 'SQUAD.md');
+      if (!existsSync(squadFile)) continue;
+      const squadText = readFileSync(squadFile, 'utf8');
+      const statusMatch = squadText.match(/^status:\s*(.+)/m);
+      const runtimePaused = statusMatch && statusMatch[1].trim() === 'paused';
+      const strategyActive_ = strategyActive.includes(squad);
+      if (runtimePaused && strategyActive_) {
+        items.push({
+          id: `coherence-squad-${squad}`,
+          kind: 'coherence', ref: squad,
+          title: `${squad}: paused at runtime but strategy.md says Active`,
+          ageDays: 0, approveSemantics: 'update strategy.md or squads resume',
+          detail: `SQUAD.md status=paused, strategy.md lists as Active`,
+        });
+      }
+    }
+  } catch { /* derivation failed */ }
+  return items;
+}
+
+/**
+ * Oracle alerts — survival signals that crossed a threshold. GPS stale >3d,
+ * lead silent >7d, coherence mismatch count >0. Reads from local state.
+ */
+export function scanOracleAlerts(obsRoot: string): InboxItem[] {
+  const items: InboxItem[] = [];
+  const gpsDir = join(obsRoot, 'data', 'intelligence');
+  if (existsSync(gpsDir)) {
+    try {
+      const backups = readdirSync(gpsDir)
+        .filter((f) => f.startsWith('gps.duckdb.backup.'))
+        .sort().reverse();
+      if (backups.length > 0) {
+        const latestBackup = join(gpsDir, backups[0]);
+        const mtime = statSync(latestBackup).mtimeMs;
+        const daysStale = Math.floor((Date.now() - mtime) / 86400000);
+        if (daysStale > 3) {
+          items.push({
+            id: 'oracle-gps-stale',
+            kind: 'oracle_alert', ref: 'gps-freshness',
+            title: `GPS data is ${daysStale}d stale — intelligence cadence at risk`,
+            ageDays: daysStale,
+            approveSemantics: 'acknowledge (dispatch GPS enrichment)',
+            detail: `last ingestion: ${backups[0].replace('gps.duckdb.backup.', '')}`,
+          });
+        }
+      }
+    } catch { /* unavailable */ }
+  }
+  return items;
+}
+
+/**
+ * Strategy proposals — machine-suggested direction from founder-alignment.md.
+ * Draft items the founder can promote to goals or dismiss.
+ */
+export function scanStrategyProposals(obsRoot: string): InboxItem[] {
+  const items: InboxItem[] = [];
+  const memoryDir = join(obsRoot, '.agents', 'memory');
+  if (!existsSync(memoryDir)) return items;
+  try {
+    for (const entry of readdirSync(memoryDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const alignmentFile = join(memoryDir, entry.name, 'founder-alignment.md');
+      if (!existsSync(alignmentFile)) continue;
+      const text = readFileSync(alignmentFile, 'utf8').replace(/\r\n/g, '\n');
+      const cycleMatch = text.match(/\*\*Suggested cycle output\*\*\n((?:\s*- .+\n?)+)/);
+      if (!cycleMatch) continue;
+      const suggestions = cycleMatch[1].split('\n').filter((l) => l.trim().startsWith('-'));
+      for (const sug of suggestions.slice(0, 2)) {
+        const title = sug.replace(/^-\s*/, '').trim();
+        if (title.length < 10) continue;
+        const idSuffix = title.slice(0, 20).replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        items.push({
+          id: `proposal-${entry.name}-${idSuffix}`,
+          kind: 'strategy_proposal', ref: `founder-alignment:${entry.name}`,
+          title: `[${entry.name}] ${title.slice(0, 90)}`,
+          ageDays: 0, approveSemantics: 'promote to goals.md for this squad',
+          detail: 'from auto-generated founder-alignment — ready for review',
+        });
+      }
+    }
+  } catch { /* no proposals */ }
+  return items;
+}
+
+/**
  * The queue, newest-risk-first: open PRs (oldest = most overdue, first),
  * then stranded branches (the silent-loss class), then artifact runs.
  * Scanners are independent; one failing never empties the others.
@@ -248,7 +442,11 @@ export function buildInbox(repoRoot: string, obsRoot: string, opts?: { includeDe
   const prs = scanOpenPrs(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const branches = scanStrandedBranches(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const runs = scanRunsWithArtifacts(obsRoot).sort((a, b) => b.ageDays - a.ageDays);
-  const all = [...prs, ...branches, ...runs];
+  const goals = scanGoalEvents(obsRoot);
+  const coherence = scanCoherenceViolations(obsRoot);
+  const oracleAlerts = scanOracleAlerts(obsRoot);
+  const proposals = scanStrategyProposals(obsRoot);
+  const all = [...prs, ...branches, ...runs, ...goals, ...coherence, ...oracleAlerts, ...proposals];
   if (opts?.includeDeferred) return all;
   const deferred = activeDeferrals(obsRoot);
   return deferred.size === 0 ? all : all.filter((i) => !deferred.has(i.id));
