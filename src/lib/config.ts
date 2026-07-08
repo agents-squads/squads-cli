@@ -207,13 +207,14 @@ export function checkFleetBudget(obsRoot: string): { daily: BudgetCheckResult; m
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   const dayStart = now - (now % dayMs);
-  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+  // UTC month boundary — dayStart above is UTC-based; mixing in the local
+  // timezone here would shift monthly totals by up to a month at boundaries.
+  const nowDate = new Date(now);
+  const monthStart = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
   let dailySpend = 0;
   let monthlySpend = 0;
 
   try {
-    const { readFileSync, existsSync } = require('fs');
-    const { join } = require('path');
     const execFile = join(obsRoot, '.agents', 'observability', 'executions.jsonl');
     if (existsSync(execFile)) {
       for (const line of readFileSync(execFile, 'utf8').split('\n')) {

@@ -11,7 +11,7 @@
 
 import { execSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { parsePersistedLine } from './event-render.js';
 import { activeDeferrals } from './inbox-decisions.js';
 
@@ -235,6 +235,23 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15, opts?: { run?
 }
 
 /**
+ * Run a validation script whose non-zero exit code IS the signal — these
+ * scripts exit non-zero precisely when they find problems, which is the case
+ * the caller wants to parse. Returns captured stdout either way; empty string
+ * only when the script produced no output (missing, crashed, timed out).
+ */
+function runValidationScript(script: string, timeoutMs: number): string {
+  try {
+    return execSync(`bash ${script}`, {
+      encoding: 'utf8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const stdout = (err as { stdout?: unknown }).stdout;
+    return typeof stdout === 'string' ? stdout : '';
+  }
+}
+
+/**
  * Machine-detected goal lifecycle events (hq#478). Reads goals.md across
  * squads and surfaces: achieved (all PR refs merged), contradicted (refs not
  * found), stale (no activity). Detection is from validate-goals.sh; this
@@ -250,9 +267,7 @@ export function scanGoalEvents(obsRoot: string): InboxItem[] {
   try {
     const validateScript = join(squadsDir, '..', '..', 'scripts', 'validate-goals.sh');
     if (!existsSync(validateScript)) return [];
-    const raw = execSync(`bash ${validateScript}`, {
-      encoding: 'utf8', timeout: 120_000, stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const raw = runValidationScript(validateScript, 120_000);
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('✓')) continue;
@@ -293,9 +308,8 @@ export function scanCoherenceViolations(obsRoot: string): InboxItem[] {
     return deriveCoherenceFromStatus(obsRoot);
   }
   try {
-    const raw = execSync(`bash ${coherenceScript}`, {
-      encoding: 'utf8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const raw = runValidationScript(coherenceScript, 30_000);
+    if (!raw) return deriveCoherenceFromStatus(obsRoot);
     const items: InboxItem[] = [];
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
@@ -393,7 +407,7 @@ export function scanStrategyProposals(obsRoot: string): InboxItem[] {
       if (!entry.isDirectory()) continue;
       const alignmentFile = join(memoryDir, entry.name, 'founder-alignment.md');
       if (!existsSync(alignmentFile)) continue;
-      const text = readFileSync(alignmentFile, 'utf8');
+      const text = readFileSync(alignmentFile, 'utf8').replace(/\r\n/g, '\n');
       const cycleMatch = text.match(/\*\*Suggested cycle output\*\*\n((?:\s*- .+\n?)+)/);
       if (!cycleMatch) continue;
       const suggestions = cycleMatch[1].split('\n').filter((l) => l.trim().startsWith('-'));
