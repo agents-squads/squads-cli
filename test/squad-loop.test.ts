@@ -29,10 +29,6 @@ vi.mock('../src/lib/outcomes.js', () => ({
   getOutcomeScoreModifier: vi.fn(() => 0),
 }));
 
-vi.mock('../src/lib/api-client.js', () => ({
-  ingestMemorySignal: vi.fn(),
-}));
-
 vi.mock('../src/lib/terminal.js', () => ({
   colors: { green: '', red: '', yellow: '', blue: '', cyan: '', white: '', gray: '' },
   RESET: '',

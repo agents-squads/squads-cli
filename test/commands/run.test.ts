@@ -139,7 +139,6 @@ vi.mock('../../src/lib/workflow.js', () => ({
 vi.mock('../../src/lib/api-client.js', () => ({
   reportExecutionStart: vi.fn(() => Promise.resolve()),
   reportConversationResult: vi.fn(() => Promise.resolve()),
-  pushCognitionSignal: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../src/lib/github.js', () => ({
@@ -156,7 +155,6 @@ vi.mock('../../src/lib/squad-loop.js', () => ({
   scoreSquads: vi.fn(() => []),
   checkCooldown: vi.fn(() => false),
   classifyRunOutcome: vi.fn(() => 'completed'),
-  pushMemorySignals: vi.fn(() => Promise.resolve()),
   slackNotify: vi.fn(() => Promise.resolve()),
 }));
 
