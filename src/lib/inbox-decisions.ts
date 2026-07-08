@@ -212,6 +212,11 @@ export function approveItem(item: InboxItem, ctx: DecisionContext): DecisionOutc
     outcome = mergePr(number, item.ref, ctx.repoRoot, run);
   } else if (item.kind === 'run_branch') {
     outcome = approveBranch(item.ref, ctx.repoRoot, run);
+  } else if (item.kind === 'goal' || item.kind === 'coherence' || item.kind === 'oracle_alert' || item.kind === 'strategy_proposal') {
+    // Decision-gate items: approve = record the decision, no code mutation.
+    // Code mutations (goals.md edits, strategy updates) are executed by
+    // the bridge (inbox-sync.py) or the human operator after approval.
+    outcome = { ok: true, message: `${item.kind} '${item.title.slice(0, 60)}' approved — recorded in ledger` };
   } else {
     return {
       ok: false,
@@ -312,6 +317,10 @@ export function rejectItem(item: InboxItem, reason: string, ctx: DecisionContext
   } else if (item.kind === 'run_branch') {
     squad = squadFromBranch(item.ref);
     outcome = archiveBranch(item.ref, ctx.repoRoot, run);
+  } else if (item.kind === 'goal' || item.kind === 'coherence' || item.kind === 'oracle_alert' || item.kind === 'strategy_proposal') {
+    // Decision-gate reject: record the decision. The item is dismissed
+    // from the inbox; no artifact to archive/close.
+    outcome = { ok: true, message: `${item.kind} '${item.title.slice(0, 60)}' rejected — recorded in ledger` };
   } else {
     return {
       ok: false,
