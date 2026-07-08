@@ -6,9 +6,8 @@
  * state management, scoring, cooldowns, and post-run reactions.
  */
 
-import { createHash } from 'crypto';
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -18,7 +17,6 @@ import {
 } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';
-import { ingestMemorySignal } from './api-client.js';
 import {
   colors,
   RESET,
@@ -65,10 +63,6 @@ export interface PRWithReviews {
   comments: ReviewComment[];
 }
 
-export type MemoryFileType = 'state' | 'learnings' | 'executions' | 'events' | 'directives';
-
-export const INGESTIBLE_FILES: MemoryFileType[] = ['state', 'learnings', 'executions'];
-
 // ── Loop State ───────────────────────────────────────────────────────
 
 const STATE_DIR = join(homedir(), '.squads', 'daemon');
@@ -86,7 +80,6 @@ export interface LoopState {
     durationMs: number;
   }>;
   failCounts: Record<string, number>; // squad:agent → consecutive failures
-  memoryHashes: Record<string, string>; // squad/agent/file_type → content hash
   cooldowns: Record<string, number>; // squad:agent → timestamp of last dispatch
 }
 
@@ -97,7 +90,6 @@ export function defaultState(): LoopState {
     dailyCostDate: new Date().toISOString().slice(0, 10),
     recentRuns: [],
     failCounts: {},
-    memoryHashes: {},
     cooldowns: {},
   };
 }
@@ -109,7 +101,6 @@ export function loadLoopState(): LoopState {
     const raw = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
     // Ensure new fields exist for backward compatibility
     if (!raw.cooldowns) raw.cooldowns = {};
-    if (!raw.memoryHashes) raw.memoryHashes = {};
     return raw as LoopState;
   } catch {
     return defaultState();
@@ -593,91 +584,6 @@ export async function slackNotify(message: string): Promise<void> {
     });
   } catch {
     // Silent — Slack is best-effort
-  }
-}
-
-// ── Memory ingestion ─────────────────────────────────────────────────
-
-/**
- * Push changed memory files to the cognition engine.
- * Reads agent memory files (state, learnings, executions) for squads that ran,
- * computes content hash, and POSTs to API if changed since last push.
- * Fire-and-forget — never blocks the cycle.
- */
-export async function pushMemorySignals(
-  squads: string[],
-  state: LoopState,
-  verbose: boolean,
-): Promise<void> {
-  const memDir = findMemoryDir();
-  if (!memDir) return;
-
-  // Initialize memoryHashes if missing (backward compat with old state files)
-  if (!state.memoryHashes) {
-    state.memoryHashes = {};
-  }
-
-  const promises: Promise<void>[] = [];
-
-  for (const squad of squads) {
-    const squadPath = join(memDir, squad);
-    if (!existsSync(squadPath)) continue;
-
-    let agents: string[];
-    try {
-      agents = readdirSync(squadPath, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch {
-      continue;
-    }
-
-    for (const agent of agents) {
-      for (const fileType of INGESTIBLE_FILES) {
-        const filePath = join(squadPath, agent, `${fileType}.md`);
-        if (!existsSync(filePath)) continue;
-
-        let content: string;
-        try {
-          content = readFileSync(filePath, 'utf-8');
-        } catch {
-          continue;
-        }
-
-        if (!content.trim()) continue;
-
-        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
-        const key = `${squad}/${agent}/${fileType}`;
-
-        if (state.memoryHashes[key] === hash) continue;
-
-        const p = ingestMemorySignal({
-          squad,
-          agent,
-          file_type: fileType,
-          content,
-          content_hash: hash,
-        }).then((result) => {
-          if (result) {
-            state.memoryHashes[key] = hash;
-            if (verbose && result.status === 'ingested') {
-              writeLine(`  ${colors.dim}Memory: ${key} → ${result.signals_created || 0} signals${RESET}`);
-            }
-          }
-        }).catch(() => {
-          // Silent — memory ingestion is best-effort
-        });
-
-        promises.push(p);
-      }
-    }
-  }
-
-  if (promises.length > 0) {
-    await Promise.race([
-      Promise.allSettled(promises),
-      new Promise<void>(resolve => setTimeout(resolve, 10000)),
-    ]);
   }
 }
 

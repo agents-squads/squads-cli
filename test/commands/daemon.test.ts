@@ -79,11 +79,6 @@ vi.mock('../../src/lib/outcomes.js', () => ({
   getOutcomeScoreModifier: vi.fn(() => 0),
 }));
 
-vi.mock('../../src/lib/api-client.js', () => ({
-  pushCognitionSignal: vi.fn(async () => null),
-  ingestMemorySignal: vi.fn(async () => null),
-}));
-
 import { daemonCommand } from '../../src/commands/daemon.js';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { getBotGhEnv } from '../../src/lib/github.js';
@@ -174,7 +169,6 @@ describe('daemonCommand', () => {
         dailyCostDate: today,
         recentRuns: [],
         failCounts: {},
-        memoryHashes: {},
       }) as unknown as ReturnType<typeof readFileSync>,
     );
     // Budget of $5 with $10 already spent — should halt without dispatching
@@ -191,7 +185,6 @@ describe('daemonCommand', () => {
         dailyCostDate: today,
         recentRuns: [],
         failCounts: {},
-        memoryHashes: {},
       }) as unknown as ReturnType<typeof readFileSync>,
     );
     await expect(daemonCommand({ once: true, budget: '50' })).resolves.toBeUndefined();
@@ -206,7 +199,6 @@ describe('daemonCommand', () => {
         dailyCostDate: '2020-01-01', // old date — triggers reset
         recentRuns: [],
         failCounts: {},
-        memoryHashes: {},
       }) as unknown as ReturnType<typeof readFileSync>,
     );
     await expect(daemonCommand({ once: true }).then(() => {
@@ -225,7 +217,6 @@ describe('daemonCommand', () => {
         dailyCostDate: today,
         recentRuns: [],
         failCounts: {},
-        memoryHashes: {},
       }) as unknown as ReturnType<typeof readFileSync>,
     );
     // budget=0 (default) = unlimited — should proceed past budget check

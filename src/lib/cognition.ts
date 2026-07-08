@@ -2,14 +2,12 @@
  * Local-first cognition engine.
  *
  * Processes signals → beliefs → reflections locally using JSON files.
- * Pushes to API when available (pro/enterprise feature).
  *
  * The intelligence loop:
  *   1. Ingest: memory files → signals
  *   2. Synthesize: classify signals against beliefs (Haiku)
  *   3. Evaluate: score past decisions
  *   4. Reflect: meta-cognition assessment (Sonnet, every 4h)
- *   5. Push: sync to API if reachable
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
@@ -17,7 +15,6 @@ import { join } from 'path';
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { findMemoryDir } from './memory.js';
-import { pushCognitionSignal, ingestMemorySignal } from './api-client.js';
 import { slackNotify } from './squad-loop.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import { loadProjectConfig } from './config.js';
@@ -174,7 +171,6 @@ export function saveCognitionState(state: CognitionState): void {
 
 /**
  * Add a signal to the local cognition state.
- * Also pushes to API if available.
  */
 export function addSignal(
   state: CognitionState,
@@ -191,18 +187,6 @@ export function addSignal(
   if (state.signals.length > MAX_SIGNALS_KEPT) {
     state.signals = state.signals.slice(-MAX_SIGNALS_KEPT);
   }
-
-  // Push to API (fire-and-forget)
-  pushCognitionSignal({
-    source: signal.source,
-    signal_type: signal.signal_type,
-    value: signal.value ?? undefined,
-    unit: signal.unit ?? undefined,
-    data: signal.data,
-    entity_type: signal.entity_type ?? undefined,
-    entity_id: signal.entity_id ?? undefined,
-    confidence: signal.confidence,
-  });
 
   return newSignal;
 }
@@ -285,9 +269,6 @@ export function ingestMemoryFiles(
             signalsCreated++;
           }
         }
-
-        // Also push to API
-        ingestMemorySignal({ squad, agent, file_type: fileType, content, content_hash: hash });
 
         if (verbose) {
           writeLine(`    ${colors.dim}Cognition: ${key} → ${bullets.length || 1} signals${RESET}`);
@@ -580,7 +561,7 @@ export function updateBeliefTemperatures(state: CognitionState): void {
 /**
  * Run the full cognition cycle. Called after agent execution in squads run.
  *
- * 1. Ingest memory files → local signals (+ push to API)
+ * 1. Ingest memory files → local signals
  * 2. Synthesize signals against beliefs (Haiku)
  * 3. Evaluate past decisions
  * 4. Reflect if enough time has passed (Sonnet)

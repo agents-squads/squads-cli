@@ -30,7 +30,7 @@ import { runCloudDispatch } from '../lib/cloud-dispatch.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { isQuotaMessage } from '../lib/conversation.js';
 import { probeQuota, waitForQuota } from '../lib/quota-probe.js';
-import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
+import { reportExecutionStart, reportConversationResult } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { statSync } from 'fs';
@@ -782,23 +782,6 @@ async function runSquad(
             agentsInvolved: [...new Set(result.transcript.turns.map(t => t.agent))],
           });
         }
-
-        // Push conversation signal to cognition engine (fire-and-forget)
-        pushCognitionSignal({
-          source: 'execution',
-          signal_type: result.converged ? 'conversation_converged' : 'conversation_stopped',
-          value: result.totalCost,
-          unit: 'usd',
-          data: {
-            turn_count: result.turnCount,
-            converged: result.converged,
-            reason: result.reason,
-            agents_involved: [...new Set(result.transcript.turns.map(t => t.agent))],
-          },
-          entity_type: 'squad',
-          entity_id: squad.name,
-          confidence: 0.9,
-        });
 
         writeLine();
         writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
