@@ -42,7 +42,8 @@ only for fields with no native equivalent" = don't rebuild what Anthropic ships.
 - An unknown `credential_scope` secret; `autonomy: autonomous` together with a gate (contradiction).
 
 ## Status
-P0 validates **all 112 existing hq agents** with conservative role-based defaults
+P0 validates **all existing hq agents** (112 as of 2026-06-10; agent count grows over
+time — run `squads catalog` for the live count) with conservative role-based defaults
 (scanner/verifier read-only; worker +write-in-squad-memory; lead/coo +dispatch),
 and rejects over-scoped/unenforceable contracts. Agents tighten their grants by
 declaring `tool_grants`/`autonomy`/`hitl_gate`/`write_scope` in frontmatter; the
