@@ -80,8 +80,12 @@ squads inbox                                    # everything waiting on YOUR dec
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (default
 provider — others optional). `squads doctor` checks your machine.
 
-Everything runs locally: your machine, your API keys, your data. No
-login, no cloud, no telemetry surprises.
+Runs locally by default: your machine, your API keys, your data stay
+on disk. No account needed for the open-source CLI — `squads login` is
+optional, only for Pro & Enterprise cloud features. Telemetry is
+anonymous and install-level only (command names, versions, error
+classes — never file contents, paths, or personal data); opt out any
+time with `DO_NOT_TRACK=1` or `SQUADS_TELEMETRY_DISABLED=1`.
 
 ## Development
 
