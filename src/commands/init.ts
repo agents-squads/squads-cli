@@ -1038,7 +1038,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   // Dynamic first-run suggestion based on use case
   const firstRun = getFirstRunCommand(selectedUseCase);
-  const firstRunCmd = `squads run ${firstRun.squad} -a ${firstRun.agent}`;
+  const firstRunCmd = `squads run ${firstRun.squad}/${firstRun.agent}`;
   writeLine(`  ${chalk.green('→')} Run your first real agent:`);
   writeLine(`     ${chalk.yellow(firstRunCmd)}`);
   writeLine();

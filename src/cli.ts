@@ -296,7 +296,7 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 // Run command - execute squads or individual agents
 program
   .command('run [target] [agent]')
-  .description('Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle.')
+  .description('Run a squad or agent: squads run <squad>/<agent> (also: <squad> <agent>). No target lists squads; --org runs all squads as one coordinated cycle.')
   .allowExcessArguments(false)
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
