@@ -30,7 +30,7 @@ interface Row {
 export function registerContractCommand(program: Command): void {
   const contract = program
     .command('contract')
-    .description('Agent Contracts — the governed definition of what each agent may do');
+    .description('Define what each agent is allowed to do — permissions and guardrails, checked automatically');
 
   contract
     .command('validate')

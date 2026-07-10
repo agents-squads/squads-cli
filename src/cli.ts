@@ -399,7 +399,7 @@ registerOrchestrateCommand(program);
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
   .command('env')
-  .description('View squad execution environment (MCP, skills, model, budget)')
+  .description('View what a squad run uses: tool integrations (MCP), skills, model, and cost budget')
   .action(() => { env.outputHelp(); });
 
 env
@@ -1219,7 +1219,7 @@ program
 // bounded dispatch that lands on a squads/proposal-* branch for inbox review.
 program
   .command('propose')
-  .description('Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only)')
+  .description('Draft one extra deliverable on a proposal branch you review before it lands — scoped, and never leaves your machine')
   .option('--squad <name>', 'Squad to dispatch (default: keyword-overlap heuristic against BUSINESS_BRIEF/README/package.json)')
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 5)')
   .option('--json', 'Output as JSON')
@@ -1238,7 +1238,7 @@ Examples:
 // task class × provider × model, from the execution ledger. Read-only.
 program
   .command('scoreboard')
-  .description('Executor quality-per-cost ranking from real runs (read-only, provenance-labeled)')
+  .description('Compare models and executors by quality per cost, with the source of every number shown (read-only)')
   .option('--json', 'Output as JSON')
   .option('--days <n>', 'Window in days (default 30)')
   .option('--resolve', 'Check recent PR artifacts live against GitHub for landed-rate (slower)')
