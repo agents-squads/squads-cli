@@ -71,7 +71,7 @@ What is the #1 priority right now? What metric are you optimizing?
 What constraints apply? What should agents NOT do?
 ```
 
-Falls back to `memory/company/directives.md` or `.agents/company.md` if `strategy.md` doesn't exist.
+Falls back in order (first non-empty wins): `strategy.md` → `.agents/company.md` (legacy primary) → `memory/company/directives.md` (legacy, backward compat).
 
 ### 3. Squad Goals (what each team does)
 
