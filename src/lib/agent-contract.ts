@@ -71,7 +71,7 @@ export interface AgentContract {
 
 // ── Tool-grant vocabulary (what the Claude Code allowlist can enforce) ───────
 const TOOL_NAME =
-  /^(Read|Write|Edit|MultiEdit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
+  /^(Read|Write|Edit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
 const BASH_SCOPED = /^Bash\([A-Za-z0-9_./ -]+(:\*)?\)$/; // Bash(git:*) | Bash(git status:*) — literal space only (not \s, which allows \n/\r/\t)
 const MCP_TOOL = /^mcp__[a-z0-9_]+__([a-z0-9_]+|\*)$/;
 
