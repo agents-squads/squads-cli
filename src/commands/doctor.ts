@@ -281,8 +281,33 @@ interface RunningSquad {
   task?: string;
 }
 
+/**
+ * Resolve a process's working directory (sync, via lsof). Empty string when
+ * unknown — callers must treat unknown as "not ours" (fail closed), otherwise
+ * doctor attributes other projects' runs to this one (#1054).
+ */
+function getPidCwd(pid: string): string {
+  try {
+    const out = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, { encoding: 'utf-8', timeout: 3000 });
+    const line = out.split('\n').find(l => l.startsWith('n'));
+    return line ? line.slice(1).trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** True iff cwd is the project root or inside it. */
+function cwdInProject(cwd: string, root: string): boolean {
+  return cwd === root || cwd.startsWith(root.endsWith('/') ? root : root + '/');
+}
+
 function checkRunningSquads(): RunningSquad[] {
   try {
+    // "Running" means running FOR THIS PROJECT — ps aux is machine-wide
+    // (all terminals, all users), so every candidate PID is scoped by its
+    // actual cwd before being reported (#1054).
+    const root = findProjectRoot();
+    if (!root) return [];
     const output = execSync('ps aux 2>/dev/null', { encoding: 'utf-8', timeout: 3000 });
     const results: RunningSquad[] = [];
 
@@ -298,6 +323,9 @@ function checkRunningSquads(): RunningSquad[] {
       if (!squadMatch) continue;
 
       const squad = squadMatch[1];
+
+      const cwd = getPidCwd(pid);
+      if (!cwd || !cwdInProject(cwd, root)) continue;
 
       // Extract task if present
       const taskMatch = fullCmd.match(/--task\s+(.+?)(?:\s+--|$)/);
@@ -325,10 +353,16 @@ function checkRunningSquads(): RunningSquad[] {
 
 function checkDaemon(): { running: boolean; pid?: string; routines?: number } {
   try {
+    // Same project scoping as checkRunningSquads (#1054): a daemon running
+    // for another project on this machine is not THIS project's daemon.
+    const projectRoot = findProjectRoot();
+    if (!projectRoot) return { running: false };
     const output = execSync('ps aux 2>/dev/null', { encoding: 'utf-8', timeout: 3000 });
     for (const line of output.split('\n')) {
       if (line.includes('squads autonomous') && !line.includes('grep')) {
         const pid = line.trim().split(/\s+/)[1];
+        const cwd = getPidCwd(pid);
+        if (!cwd || !cwdInProject(cwd, projectRoot)) continue;
         // Try to count routines
         let routines = 0;
         try {
