@@ -33,6 +33,24 @@ squads run research/analyst    # your first real agent
 > Claude Code must be installed and logged in (`claude /login`) before the
 > first run — `squads doctor` checks both and tells you exactly what's missing.
 
+What `squads run demo hello-world` looks like — real, unedited output:
+
+```text
+  squads run Demo
+
+- Running agent: hello-world
+Hello from hello-world, squad demo — today is 2026-07-10, and this run
+confirms the my-workforce AI workforce is installed and ready. 🎉
+
+State file written to `.agents/memory/demo/hello-world/state.md` and
+committed locally (`b694270`) — no remote is configured on this repo,
+so no push was attempted. Setup is working.
+
+  Auto-committed agent work
+✔ Agent hello-world completed (Anthropic)
+  Run completed — demo/hello-world (37.4s)
+```
+
 ## How it works
 
 ```
