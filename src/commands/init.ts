@@ -1047,6 +1047,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(`  ${chalk.dim('Telemetry: anonymous usage events (install id, command names, versions, error classes —')}`);
   writeLine(`  ${chalk.dim('never file contents, paths, or personal data) help us fix what breaks first.')}`);
+  writeLine(`  ${chalk.dim('Opt out any time: DO_NOT_TRACK=1 or SQUADS_TELEMETRY_DISABLED=1')}`);
   writeLine();
 
   // 7. Opt-in email capture for founder outreach
