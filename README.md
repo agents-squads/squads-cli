@@ -2,7 +2,7 @@
 
 # Agents Squads
 
-**Your AI ops teams.**
+**Your AI workforce.**
 
 Autonomous AI agents for engineering, marketing, finance, and operations.
 You make the decisions. They do the work.
