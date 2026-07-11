@@ -559,18 +559,27 @@ export async function harvestProviderWork(
   projectRoot: string,
   branchName: string,
   info: { squadName: string; agentName: string; provider: string },
+  /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
+   *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
+  excludePaths: string[] = [],
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
   const run = (cmd: string, cwd: string) =>
     execSync(cmd, { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
 
+  // Pathspec that hides harness-copied furniture from every work-detection step.
+  const excludeSpec = excludePaths
+    .map((p) => `':(exclude)${p.replace(/'/g, '')}'`)
+    .join(' ');
+  const pathspec = excludeSpec ? ` -- . ${excludeSpec}` : '';
+
   // 1. Commit any uncommitted changes the executor left behind
-  const dirty = run('git status --porcelain', workDir).trim();
+  const dirty = run(`git status --porcelain${pathspec}`, workDir).trim();
   if (dirty) {
     const botEnv = await getBotGitEnv();
     const env = { ...process.env, ...botEnv };
-    execSync('git add -A', { cwd: workDir, env, stdio: 'pipe' });
+    execSync(`git add -A${pathspec}`, { cwd: workDir, env, stdio: 'pipe' });
 
     // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
     const stagedDiff = execSync('git diff --cached', {
@@ -1266,12 +1275,16 @@ export async function executeWithProvider(
   // agent definitions, memory, and config files. Providers like Gemini restrict
   // file reads to the workspace directory, so these must be local.
   let effectivePrompt = prompt;
+  // Paths the harness itself materializes in the worktree — excluded from the
+  // harvest so furniture never gets committed as "agent work" (#1070).
+  const harnessCopiedPaths: string[] = [];
   if (workDir !== projectRoot) {
     const agentsDir = join(projectRoot, '.agents');
     const targetAgentsDir = join(workDir, '.agents');
     if (existsSync(agentsDir) && !existsSync(targetAgentsDir)) {
       try {
         cpSync(agentsDir, targetAgentsDir, { recursive: true });
+        harnessCopiedPaths.push('.agents');
       } catch (e) {
         writeLine(`  ${colors.dim}warn: .agents copy failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
@@ -1344,7 +1357,7 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          });
+          }, harnessCopiedPaths);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }

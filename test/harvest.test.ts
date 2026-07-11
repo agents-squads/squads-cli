@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -158,5 +158,33 @@ describe('harvestProviderWork (#823 — executor output must never be lost)', ()
     });
 
     expect(result.outcome).toBe('branch-preserved');
+  });
+
+  it('reports nothing when only harness-copied furniture is dirty (#1070)', async () => {
+    // The harness cpSyncs .agents/ into the worktree for sandboxed providers;
+    // observed: dead GLM runs "preserved" branches containing only that copy.
+    mkdirSync(join(workDir, '.agents', 'observability'), { recursive: true });
+    writeFileSync(join(workDir, '.agents', 'observability', 'reviewed.jsonl'), '{}\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'glm',
+    }, ['.agents']);
+
+    expect(result.outcome).toBe('nothing');
+  });
+
+  it('harvests real work but keeps harness furniture out of the commit (#1070)', async () => {
+    mkdirSync(join(workDir, '.agents'), { recursive: true });
+    writeFileSync(join(workDir, '.agents', 'junk.json'), '{}\n');
+    writeFileSync(join(workDir, 'real-work.ts'), 'export const fix = true;\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'glm',
+    }, ['.agents']);
+
+    expect(result.outcome).toBe('branch-preserved');
+    const files = git(`show --stat --format= '${branch}'`, root);
+    expect(files).toContain('real-work.ts');
+    expect(files).not.toContain('.agents');
   });
 });
