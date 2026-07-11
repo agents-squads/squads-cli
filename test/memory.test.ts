@@ -4,6 +4,7 @@ import {
   listMemoryEntries,
   searchMemory,
   getSquadState,
+  getSquadMemory,
   updateMemorySync,
   appendToMemorySync,
 } from '../src/lib/memory';
@@ -214,6 +215,56 @@ Revenue metrics displayed`);
 
       const result = getSquadState('cli');
       expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('getSquadMemory', () => {
+    it('returns empty array for non-existent squad', () => {
+      const result = getSquadMemory('nonexistent-squad');
+      expect(result).toEqual([]);
+    });
+
+    it('includes learnings alongside state for the same agent (#914)', () => {
+      const leadPath = join(memoryDir, 'research', 'lead');
+      mkdirSync(leadPath, { recursive: true });
+      writeFileSync(join(leadPath, 'state.md'), 'Status: active');
+      writeFileSync(join(leadPath, 'learnings.md'), '## 2026-07-10: insight\n\nFound: MCP adoption at 15%');
+
+      const result = getSquadMemory('research');
+
+      expect(result).toHaveLength(2);
+      const types = result.map(e => e.type);
+      expect(types).toContain('state');
+      expect(types).toContain('learnings');
+      expect(result.every(e => e.agent === 'lead' && e.squad === 'research')).toBe(true);
+    });
+
+    it('returns an entry for a write when the agent has no state.md yet', () => {
+      const leadPath = join(memoryDir, 'research', 'lead');
+      mkdirSync(leadPath, { recursive: true });
+      writeFileSync(join(leadPath, 'learnings.md'), 'Only learnings, no state yet');
+
+      const result = getSquadMemory('research');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe('learnings');
+      expect(result[0].content).toBe('Only learnings, no state yet');
+    });
+
+    it('includes all memory types across multiple agents', () => {
+      const leadPath = join(memoryDir, 'cli', 'lead');
+      mkdirSync(leadPath, { recursive: true });
+      writeFileSync(join(leadPath, 'state.md'), 'Lead state');
+      writeFileSync(join(leadPath, 'feedback.md'), 'Feedback for lead');
+
+      const builderPath = join(memoryDir, 'cli', 'builder');
+      mkdirSync(builderPath, { recursive: true });
+      writeFileSync(join(builderPath, 'output.md'), 'Builder output');
+
+      const result = getSquadMemory('cli');
+
+      expect(result).toHaveLength(3);
+      expect(result.every(e => e.squad === 'cli')).toBe(true);
     });
   });
 

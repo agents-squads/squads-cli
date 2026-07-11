@@ -1,10 +1,11 @@
 import {
   findMemoryDir,
   searchMemory,
-  getSquadState,
+  getSquadMemory,
   appendToMemory,
   listMemoryEntries
 } from '../lib/memory.js';
+import { loadSquad } from '../lib/squad-parser.js';
 import {
   colors,
   bold,
@@ -140,9 +141,9 @@ export async function memoryShowCommand(
     process.exit(1);
   }
 
-  const states = getSquadState(squadName);
+  const memoryEntries = getSquadMemory(squadName);
 
-  if (states.length === 0) {
+  if (memoryEntries.length === 0) {
     writeLine(`  ${colors.yellow}No memory found for squad: ${squadName}${RESET}`);
     const entries = listMemoryEntries(memoryDir!);
     const squads = [...new Set(entries.map(e => e.squad))].sort();
@@ -156,20 +157,20 @@ export async function memoryShowCommand(
   writeLine(`  ${gradient('squads')} ${colors.dim}memory${RESET} ${colors.cyan}${squadName}${RESET}`);
   writeLine();
 
-  writeLine(`  ${colors.dim}${states.length} entries${RESET}`);
+  writeLine(`  ${colors.dim}${memoryEntries.length} entries${RESET}`);
   writeLine();
 
-  for (const state of states) {
-    writeLine(`  ${icons.progress} ${colors.white}${state.agent}${RESET} ${colors.dim}(${state.type || 'state'})${RESET}`);
+  for (const entry of memoryEntries) {
+    writeLine(`  ${icons.progress} ${colors.white}${entry.agent}${RESET} ${colors.dim}(${entry.type || 'state'})${RESET}`);
     writeLine(`  ${colors.dim}${box.horizontal.repeat(40)}${RESET}`);
 
     // Show preview
-    const lines = state.content.split('\n').slice(0, 12);
+    const lines = entry.content.split('\n').slice(0, 12);
     for (const line of lines) {
       writeLine(`  ${colors.dim}${truncate(line, 70)}${RESET}`);
     }
 
-    if (state.content.split('\n').length > 12) {
+    if (entry.content.split('\n').length > 12) {
       writeLine(`  ${colors.dim}... (more content)${RESET}`);
     }
     writeLine();
@@ -180,12 +181,34 @@ export async function memoryShowCommand(
   writeLine();
 }
 
+/**
+ * Resolve the roster agent id to write memory under when --agent isn't
+ * given. `${squad}-lead` is a guess and doesn't match every squad's roster
+ * (e.g. the research squad's lead agent id is literally 'lead'), so prefer
+ * the actual SQUAD.md roster: an agent named exactly 'lead', then one ending
+ * in '-lead', then the first listed agent. Falls back to the old guess when
+ * no roster can be loaded (e.g. no .agents/squads directory).
+ */
+function resolveDefaultAgent(squadName: string): string {
+  const agents = loadSquad(squadName)?.agents || [];
+
+  const exactLead = agents.find(a => a.name === 'lead');
+  if (exactLead) return exactLead.name;
+
+  const suffixedLead = agents.find(a => a.name.endsWith('-lead'));
+  if (suffixedLead) return suffixedLead.name;
+
+  if (agents.length > 0) return agents[0].name;
+
+  return `${squadName}-lead`;
+}
+
 export async function memoryUpdateCommand(
   squadName: string,
   content: string,
   options: MemoryOptions
 ): Promise<void> {
-  const agentName = options.agent || `${squadName}-lead`;
+  const agentName = options.agent || resolveDefaultAgent(squadName);
   const type = (options.type || 'learnings') as 'state' | 'output' | 'learnings' | 'feedback';
 
   writeLine();
