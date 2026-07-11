@@ -48,7 +48,7 @@ export type ExecEvent =
   | { type: 'subagent_done'; childRunId: string; agent: string; ok: boolean }
   | { type: 'token_usage'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
   | { type: 'artifact'; kind: 'commit' | 'pr' | 'issue' | 'file'; ref: string }
-  | { type: 'run_end'; ok: boolean; durationMs: number; totalUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number }; outcomes: { actions: number; files_edited: number; commits: number; prs_created: number; issues_created: number } }
+  | { type: 'run_end'; ok: boolean; durationMs: number; totalUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number }; outcomes?: { actions: number; files_edited: number; commits: number; prs_created: number; issues_created: number } }
   | { type: 'truncated'; droppedCount: number; reason: string };
 
 /** Envelope stamped on every persisted line. */

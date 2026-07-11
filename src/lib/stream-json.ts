@@ -110,7 +110,7 @@ export interface ParsedLine {
   };
 }
 
-interface AssistantContentBlock {
+export interface AssistantContentBlock {
   type?: string;
   text?: string;
   name?: string;                     // tool name on `tool_use` blocks
@@ -118,7 +118,7 @@ interface AssistantContentBlock {
 }
 
 /** Count what the agent did from a message's `tool_use` blocks. */
-function parseOutcomes(blocks: AssistantContentBlock[]): RunOutcomes {
+export function parseOutcomes(blocks: AssistantContentBlock[]): RunOutcomes {
   const o = emptyOutcomes();
   for (const b of blocks) {
     if (!b || b.type !== 'tool_use') continue;

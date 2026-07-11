@@ -235,13 +235,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
           ok: status === 'completed',
           durationMs,
           totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
-          outcomes: {
-            actions: outcomes?.actions || 0,
-            files_edited: outcomes?.files_edited || 0,
-            commits: outcomes?.commits || 0,
-            prs_created: outcomes?.prs_created || 0,
-            issues_created: outcomes?.issues_created || 0,
-          },
+          outcomes,
         });
       } catch { /* events are best-effort; the obs record below is the source of truth */ }
     }
