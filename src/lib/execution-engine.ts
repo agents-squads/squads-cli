@@ -1233,6 +1233,28 @@ export function resolveIntegrationBase(projectRoot: string): string {
   return 'HEAD';
 }
 
+/**
+ * Ambient-credential guard for provider lanes (#1084). Provider work lands via
+ * harvest + the inbox gate (#966), never the lane's own pushes/PRs — a GLM run
+ * created a PR authored by the OPERATOR's personal account by inheriting
+ * ambient gh auth. Strip the env tokens and point gh at an empty, per-run
+ * config dir so keychain-backed `gh` auth can't ride along either. (git's own
+ * credential helpers / ssh keys are out of scope here — sandbox P2 covers FS
+ * and network isolation.)
+ */
+export function providerCredentialGuard(timestamp: number): Record<string, string | undefined> {
+  let ghConfigDir: string | undefined;
+  try {
+    ghConfigDir = join(tmpdir(), `squads-ghconfig-${timestamp}`);
+    mkdirSync(ghConfigDir, { recursive: true });
+  } catch { ghConfigDir = undefined; }
+  return {
+    GH_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    ...(ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : {}),
+  };
+}
+
 export async function executeWithProvider(
   provider: string,
   prompt: string,
@@ -1273,6 +1295,7 @@ export async function executeWithProvider(
   const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
     ...(cliConfig.env?.() ?? {}),
+    ...providerCredentialGuard(timestamp),
     SQUADS_SQUAD: squadName,
     SQUADS_AGENT: agentName,
     SQUADS_PROVIDER: provider,
