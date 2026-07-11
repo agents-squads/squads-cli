@@ -1213,6 +1213,26 @@ export async function executeWithClaude(
  * Unlike executeWithClaude which has full session management,
  * other CLIs run in simpler non-interactive mode.
  */
+/**
+ * The base a provider-lane worktree branches from (#1083): the repo's
+ * integration branch (origin/develop, else origin/main), never the operator's
+ * checked-out HEAD. Best-effort fetch keeps the base fresh; offline falls back
+ * to the stale local ref (still better than operator HEAD), then HEAD when no
+ * remote refs exist at all (fresh local-only repos).
+ */
+export function resolveIntegrationBase(projectRoot: string): string {
+  for (const ref of ['origin/develop', 'origin/main']) {
+    try {
+      execSync(`git rev-parse --verify --quiet '${ref}'`, { cwd: projectRoot, stdio: 'pipe' });
+      try {
+        execSync(`git fetch origin '${ref.split('/')[1]}' --quiet`, { cwd: projectRoot, stdio: 'pipe', timeout: 10_000 });
+      } catch { /* offline — stale ref beats operator HEAD */ }
+      return ref;
+    } catch { /* ref absent — try next */ }
+  }
+  return 'HEAD';
+}
+
 export async function executeWithProvider(
   provider: string,
   prompt: string,
@@ -1261,14 +1281,18 @@ export async function executeWithProvider(
     if (providerEnv[key] === undefined) delete providerEnv[key];
   }
 
-  // Create isolated worktree for this agent (same pattern as executeWithClaude)
+  // Create isolated worktree for this agent — branched from the repo's
+  // INTEGRATION base, never the operator's checked-out HEAD (#1083): a lane
+  // spawned while the operator sat on an unmerged fix branch produced a PR
+  // mixing that branch's content into the agent's diff.
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
-    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const base = resolveIntegrationBase(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
