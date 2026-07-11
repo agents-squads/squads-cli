@@ -1,0 +1,62 @@
+name: public-ref-guard
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check cross-repo references
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { title, body } = context.payload.pull_request;
+            const text = `${title}\n${body || ''}`;
+
+            const allowlist = new Set([
+              'squads-cli',
+              'agents-squads',
+              'engram',
+              'slack-bot',
+              'awesome-ai-agents'
+            ]);
+
+            const violations = new Set();
+
+            // owner/repo#N   e.g. agents-squads/some-repo#42
+            const ownerRepoRef = /\b([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)#(\d+)\b/g;
+            let m;
+            while ((m = ownerRepoRef.exec(text)) !== null) {
+              if (!allowlist.has(m[2])) violations.add(m[0]);
+            }
+
+            // repo#N   e.g. some-other-repo#123 — the lookbehind keeps this
+            // from re-matching the tail of an owner/repo#N reference.
+            const repoRef = /(?<![\/\w])([a-zA-Z0-9_-]+)#(\d+)\b/g;
+            while ((m = repoRef.exec(text)) !== null) {
+              if (!allowlist.has(m[1])) violations.add(m[0]);
+            }
+
+            // github.com/agents-squads/<repo>
+            const ghLink = /github\.com\/agents-squads\/([a-zA-Z0-9_-]+)/g;
+            while ((m = ghLink.exec(text)) !== null) {
+              if (!allowlist.has(m[1])) violations.add(m[0]);
+            }
+
+            // `core` is provided by actions/github-script — never require() it.
+            for (const ref of violations) {
+              core.warning(
+                `Cross-repo reference to non-public repo: ${ref}. ` +
+                `Guidance: move the pointer to the internal tracker or write [internal]`
+              );
+            }
+
+            if (violations.size > 0) {
+              console.log(`Found ${violations.size} violation(s) — warn-only, exiting 0.`);
+              // Flip to blocking after the warn-week (issue #1044):
+              // core.setFailed(`Found ${violations.size} cross-repo reference violation(s).`);
+            } else {
+              console.log('No cross-repo reference violations.');
+            }
