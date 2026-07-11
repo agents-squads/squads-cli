@@ -10,6 +10,7 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
+import { parseOutcomes, emptyOutcomes, addOutcomes, type RunOutcomes, type AssistantContentBlock } from './stream-json.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -150,6 +151,9 @@ interface SessionUsage {
   cache_write_tokens: number;
   cost_usd: number;
   messages: number;
+  // What the session's tool_use blocks show the agent DID (#1060). Absent when
+  // no tool calls were seen — consumers must treat that as unknown, not zero.
+  outcomes?: RunOutcomes;
 }
 
 /**
@@ -234,6 +238,8 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
       messages: 0,
     };
 
+    let outcomes = emptyOutcomes();
+
     for (const line of lines) {
       try {
         const record = JSON.parse(line);
@@ -250,6 +256,10 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
             usage.cache_write_tokens += u.cache_creation_input_tokens || 0;
           }
 
+          if (Array.isArray(msg.content)) {
+            outcomes = addOutcomes(outcomes, parseOutcomes(msg.content as AssistantContentBlock[]));
+          }
+
           if (!usage.model || usage.model === 'unknown') {
             usage.model = msg.model || 'unknown';
           }
@@ -263,6 +273,11 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
     }
 
     if (usage.messages === 0) return null;
+
+    // Same convention as the detached path (spool.ts): zero actions is
+    // indistinguishable from a parse miss, so report outcomes only when the
+    // agent verifiably did something — absent means unknown, never fake zero.
+    if (outcomes.actions > 0) usage.outcomes = outcomes;
 
     // Calculate cost from tokens if not directly available
     if (usage.cost_usd === 0) {

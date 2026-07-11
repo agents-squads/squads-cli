@@ -748,6 +748,15 @@ export function executeForeground(config: {
         goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
         goals_after: Object.keys(goalsAfter).length > 0 ? goalsAfter : undefined,
         goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
+        // Real outcomes parsed from the session JSONL (#1060) — absent when
+        // unknown so the scoreboard never ingests fake zeros.
+        ...(sessionUsage?.outcomes ? {
+          actions: sessionUsage.outcomes.actions,
+          files_edited: sessionUsage.outcomes.files_edited,
+          commits: sessionUsage.outcomes.commits,
+          prs_created: sessionUsage.outcomes.prs_created,
+          issues_created: sessionUsage.outcomes.issues_created,
+        } : {}),
       };
       logObservability(obsRecord);
 
@@ -774,7 +783,7 @@ export function executeForeground(config: {
             cacheWrite: sessionUsage?.cache_write_tokens || 0,
             costEst: sessionUsage?.cost_usd || 0,
           },
-          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+          outcomes: sessionUsage?.outcomes,
         });
         config.events.close();
       }
@@ -831,7 +840,6 @@ export function executeForeground(config: {
           ok: false,
           durationMs,
           totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0 },
-          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
         });
         config.events.close();
       }

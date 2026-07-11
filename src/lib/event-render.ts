@@ -76,10 +76,10 @@ export function renderEvent(event: ExecEvent): string | null {
     case 'run_end': {
       const o = event.outcomes;
       const made: string[] = [];
-      if (o.commits) made.push(`${o.commits} commit${o.commits > 1 ? 's' : ''}`);
-      if (o.prs_created) made.push(`${o.prs_created} PR${o.prs_created > 1 ? 's' : ''}`);
-      if (o.issues_created) made.push(`${o.issues_created} issue${o.issues_created > 1 ? 's' : ''}`);
-      if (o.files_edited) made.push(`${o.files_edited} file${o.files_edited > 1 ? 's' : ''} edited`);
+      if (o?.commits) made.push(`${o.commits} commit${o.commits > 1 ? 's' : ''}`);
+      if (o?.prs_created) made.push(`${o.prs_created} PR${o.prs_created > 1 ? 's' : ''}`);
+      if (o?.issues_created) made.push(`${o.issues_created} issue${o.issues_created > 1 ? 's' : ''}`);
+      if (o?.files_edited) made.push(`${o.files_edited} file${o.files_edited > 1 ? 's' : ''} edited`);
       const status = event.ok ? `${colors.green}completed${RESET}` : `${colors.red}failed${RESET}`;
       return `${colors.cyan}■${RESET} ${status} ${colors.dim}in ${fmtDuration(event.durationMs)}${event.totalUsage.costEst ? ` · $${event.totalUsage.costEst.toFixed(4)}` : ''}${made.length ? ` · ${made.join(', ')}` : ''}${RESET}`;
     }
