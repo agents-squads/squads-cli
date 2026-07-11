@@ -212,6 +212,47 @@ export function getSquadState(squadName: string): MemoryEntry[] {
   return entries;
 }
 
+// Rendering order for `getSquadMemory` — state first (current status), then
+// learnings alongside it (what `squads memory write` lands in by default),
+// then the less commonly read types.
+const SQUAD_MEMORY_TYPE_ORDER: MemoryEntry['type'][] = ['state', 'learnings', 'output', 'feedback'];
+
+/**
+ * Get every memory entry (state, learnings, output, feedback) for a squad,
+ * grouped by agent. Unlike getSquadState (state.md only), this is what
+ * `squads memory read` renders so a `squads memory write` is visible
+ * immediately afterward.
+ */
+export function getSquadMemory(squadName: string): MemoryEntry[] {
+  const memoryDir = findMemoryDir();
+  if (!memoryDir) return [];
+
+  const squadPath = join(memoryDir, squadName);
+  if (!existsSync(squadPath)) return [];
+
+  const entries: MemoryEntry[] = [];
+  const agents = readdirSync(squadPath, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => e.name);
+
+  for (const agent of agents) {
+    for (const type of SQUAD_MEMORY_TYPE_ORDER) {
+      const filePath = join(squadPath, agent, `${type}.md`);
+      if (existsSync(filePath)) {
+        entries.push({
+          squad: squadName,
+          agent,
+          type,
+          content: readFileSync(filePath, 'utf-8'),
+          path: filePath
+        });
+      }
+    }
+  }
+
+  return entries;
+}
+
 /**
  * Update memory file with distributed locking
  * Safe for concurrent access from multiple agents
