@@ -1217,6 +1217,8 @@ export async function executeWithProvider(
     trigger?: ExecutionContext['trigger'];
     startMs?: number;
     timeoutMinutes?: number;
+    /** Compiled tool allowlist for claude-harness lanes (#1073). */
+    allowedTools?: string[];
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -1280,7 +1282,12 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = options.model ? { model: options.model } : undefined;
+  const buildOpts = (options.model || options.allowedTools?.length)
+    ? {
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+      }
+    : undefined;
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
 
   if (options.verbose) {
