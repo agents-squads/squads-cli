@@ -42,6 +42,7 @@ import {
   updateExecutionStatus,
 } from './execution-log.js';
 import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
+import { parseStreamJson, StreamJsonAccumulator } from './stream-json.js';
 import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
@@ -1329,15 +1330,24 @@ export async function executeWithProvider(
         env: providerEnv,
       });
 
-      // Tail buffer for usage parsing (cap to keep memory bounded)
-      const OUTPUT_TAIL_MAX = 256 * 1024;
+      // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
+      // lanes get a larger cap — outcomes accumulate across ALL events, so a
+      // tight tail would undercount long runs (#1077).
+      const OUTPUT_TAIL_MAX = cliConfig.streamJson ? 4 * 1024 * 1024 : 256 * 1024;
       let outputTail = '';
       if (captureUsage) {
         const append = (chunk: Buffer) => {
           outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
         };
-        proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
-        proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        if (cliConfig.streamJson) {
+          // Render assistant text live instead of echoing raw JSONL (#1077).
+          const renderer = new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'));
+          proc.stdout?.on('data', (c: Buffer) => { renderer.push(c.toString('utf-8')); append(c); });
+          proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        } else {
+          proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
+          proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        }
       }
 
       // For stdinPrompt providers (e.g. Ollama), pipe the prompt via stdin
@@ -1369,6 +1379,11 @@ export async function executeWithProvider(
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
         const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
+        // Stream-json lanes carry real outcomes in the event stream (#1077) —
+        // same omit-when-unknown convention as everywhere else (#1060).
+        const streamOutcomes = cliConfig.streamJson && outputTail
+          ? parseStreamJson(outputTail).outcomes
+          : null;
         logObservability({
           ts: new Date().toISOString(),
           id: options.executionId || generateExecutionId(),
@@ -1385,6 +1400,13 @@ export async function executeWithProvider(
           cache_write_tokens: 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
+          ...(streamOutcomes && streamOutcomes.actions > 0 ? {
+            actions: streamOutcomes.actions,
+            files_edited: streamOutcomes.files_edited,
+            commits: streamOutcomes.commits,
+            prs_created: streamOutcomes.prs_created,
+            issues_created: streamOutcomes.issues_created,
+          } : {}),
           error: fatal
             ?? (suspect ? `suspect harvest: ${suspect}` : undefined)
             ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
