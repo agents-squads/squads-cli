@@ -40,17 +40,19 @@ describe('parseGlmStreamUsage (#1077)', () => {
     delete process.env.SQUADS_GLM_COST_PER_MTOK_OUT;
   });
 
+  // cost_usd deliberately non-zero: the claude CLI prices foreign models at
+  // Claude rates (~25× overstated on glm-4.7), so the parser must DISCARD it.
   const resultLine = JSON.stringify({
-    type: 'result', result: 'done', is_error: false, num_turns: 3, cost_usd: 0,
+    type: 'result', result: 'done', is_error: false, num_turns: 3, cost_usd: 1.4978,
     usage: { input_tokens: 200_000, output_tokens: 10_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
   });
 
-  it('reads tokens from the terminal result event; cost stays 0 without env rates (visible gap, not fabricated)', () => {
+  it('reads tokens from the result event and DISCARDS its Claude-rate cost; 0 without env rates', () => {
     const out = parseGlmStreamUsage(resultLine + '\n');
     expect(out).toEqual({ input_tokens: 200_000, output_tokens: 10_000, cost_usd: 0 });
   });
 
-  it('derives cost from env-configured $/Mtok rates when the CLI priced it 0', () => {
+  it('derives cost from env-configured $/Mtok rates, ignoring the CLI-reported figure', () => {
     process.env.SQUADS_GLM_COST_PER_MTOK_IN = '0.6';
     process.env.SQUADS_GLM_COST_PER_MTOK_OUT = '2.2';
     const out = parseGlmStreamUsage(resultLine + '\n');

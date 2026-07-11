@@ -82,25 +82,23 @@ function parseTokenCount(raw: string): number {
 
 /**
  * Usage from a claude-harness stream-json tail (#1077 — glm lane). Token
- * counts come from the stream's events; cost uses the terminal result event
- * when the CLI priced the model, else falls back to env-configured rates
- * (SQUADS_GLM_COST_PER_MTOK_IN/OUT, $ per million tokens) — the claude CLI
- * doesn't know z.ai pricing, so without the env rates cost stays 0 (visible
- * gap, never a fabricated number).
+ * counts come from the stream's events. The result event's cost_usd is
+ * DISCARDED: the claude CLI prices foreign models at Claude rates (measured
+ * ~25× overstatement on glm-4.7), which would corrupt every ROI comparison.
+ * Cost = tokens × env rates (SQUADS_GLM_COST_PER_MTOK_IN/OUT, $ per million
+ * tokens); unset rates leave cost 0 — a visible gap, never a fabricated number.
  */
 export function parseGlmStreamUsage(output: string): ProviderUsage | null {
   const stream = parseStreamJson(output);
   const u = stream.usage;
   if (!u.input_tokens && !u.output_tokens) return null;
-  let cost = u.cost_usd;
-  if (!cost) {
-    const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
-    const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
-    if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
-      cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
-    }
+  let cost = 0;
+  const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
+  const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
+  if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
+    cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
   }
-  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost || 0 };
+  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost };
 }
 
 /**
