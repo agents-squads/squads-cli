@@ -9,7 +9,7 @@
 | Command | Description |
 |---------|-------------|
 | `squads init` | Plant the seed: create manager agent, CLI skill, and starter squads |
-| `squads run [target] [agent]` | Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle. |
+| `squads run [target] [agent]` | Run a squad or agent: squads run <squad>/<agent> (also: <squad> <agent>). No target lists squads; --org runs all squads as one coordinated cycle. |
 | `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
 | `squads resume <squad>` | Resume a paused squad |
 | `squads env show <squad>` | Show execution environment for a squad |
@@ -41,8 +41,8 @@
 | `squads version` | Show version information |
 | `squads runs` | List live background agent runs (pid-file inventory) |
 | `squads inbox [action] [id]` | Everything waiting on a human decision — list, or approve/reject/defer <id> |
-| `squads propose` | Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only) |
-| `squads scoreboard` | Executor quality-per-cost ranking from real runs (read-only, provenance-labeled) |
+| `squads propose` | Draft one extra deliverable on a proposal branch you review before it lands — scoped, and never leaves your machine |
+| `squads scoreboard` | Compare models and executors by quality per cost, with the source of every number shown (read-only) |
 | `squads kill [target]` | Stop a background run gracefully (pid, squad, or squad/agent) |
 | `squads commands` | List the live command tree (machine-readable with --json) |
 
