@@ -271,6 +271,7 @@ program
   .command('add <name>')
   .description('Add a new squad with directory structure and starter files')
   .option('-d, --description <text>', 'Squad mission (one sentence)')
+  .option('--mission <text>', 'Squad mission (one sentence) - alias for --description')
   .option('-g, --goal <text>', 'First goal for the squad')
   .option('-m, --model <model>', 'Default model (default: sonnet)')
   .option('-f, --force', 'Overwrite existing squad')
@@ -281,6 +282,7 @@ program
 Examples:
   $ squads add marketing                          Add with interactive prompts
   $ squads add marketing -d "Drive growth" -y     Add non-interactively
+  $ squads add marketing --mission "Drive growth" -y  Add with --mission flag
   $ squads add marketing --force                  Overwrite existing squad
   $ squads add marketing --repo                   Add with GitHub repo
   $ squads add marketing --repo --org myorg       Add with GitHub repo in specific org
