@@ -8,6 +8,7 @@
  */
 
 import { execSync } from 'child_process';
+import { parseStreamJson } from './stream-json.js';
 
 export interface CLIConfig {
   /** Provider identifier (matches provider field in SQUAD.md/agent.md) */
@@ -33,6 +34,13 @@ export interface CLIConfig {
    * prints it. Enables observability records for non-anthropic runs (#824).
    */
   parseUsage?: (output: string) => ProviderUsage | null;
+
+  /**
+   * The CLI emits Claude Code stream-json (JSONL events), not prose (#1077).
+   * The foreground runner renders assistant text live instead of echoing raw
+   * JSONL, and parses outcomes from the same stream.
+   */
+  streamJson?: boolean;
 
   /**
    * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
@@ -70,6 +78,29 @@ function parseTokenCount(raw: string): number {
   const base = parseFloat(match[1]);
   const mult = match[2] === 'k' ? 1_000 : match[2] === 'M' ? 1_000_000 : 1;
   return Math.round(base * mult);
+}
+
+/**
+ * Usage from a claude-harness stream-json tail (#1077 — glm lane). Token
+ * counts come from the stream's events; cost uses the terminal result event
+ * when the CLI priced the model, else falls back to env-configured rates
+ * (SQUADS_GLM_COST_PER_MTOK_IN/OUT, $ per million tokens) — the claude CLI
+ * doesn't know z.ai pricing, so without the env rates cost stays 0 (visible
+ * gap, never a fabricated number).
+ */
+export function parseGlmStreamUsage(output: string): ProviderUsage | null {
+  const stream = parseStreamJson(output);
+  const u = stream.usage;
+  if (!u.input_tokens && !u.output_tokens) return null;
+  let cost = u.cost_usd;
+  if (!cost) {
+    const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
+    const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
+    if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
+      cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
+    }
+  }
+  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost || 0 };
 }
 
 /**
@@ -215,6 +246,10 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     install: 'npm i -g @anthropic-ai/claude-code, then set GLM_API_KEY',
     buildArgs: (prompt, opts) => [
       '--print',
+      // Structured event stream so usage + outcomes are parseable (#1077);
+      // --verbose is required by the claude CLI for stream-json in print mode.
+      '--output-format', 'stream-json',
+      '--verbose',
       '--model',
       opts?.model || process.env.GLM_MODEL || 'glm-4.7',
       // In --print mode permission prompts can't be answered, so without an
@@ -223,6 +258,8 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       '--disable-slash-commands',
       prompt,
     ],
+    streamJson: true,
+    parseUsage: parseGlmStreamUsage,
     env: () => ({
       ANTHROPIC_BASE_URL: process.env.GLM_BASE_URL || 'https://api.z.ai/api/anthropic',
       ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
