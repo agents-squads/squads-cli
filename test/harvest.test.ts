@@ -113,4 +113,50 @@ describe('harvestProviderWork (#823 — executor output must never be lost)', ()
     expect(existsSync(workDir)).toBe(false);
     expect(git(`rev-list --count '${branch}'`, root)).toBe('2'); // base + wip
   });
+
+  it('flags mass deletion without replacement as suspect — corrupted whole-file edit, not work (#1076)', async () => {
+    // Base repo gets a big file the "agent" then guts to a fragment (the
+    // observed aider failure: 826 lines → 6-line patch fragment, exit 0).
+    const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    writeFileSync(join(root, 'big.ts'), big);
+    git('add -A', root);
+    git('commit -m add-big', root);
+    // Recreate the worktree from the new HEAD so the fork point includes big.ts.
+    git(`worktree remove '${workDir}' --force`, root);
+    git(`branch -D '${branch}'`, root);
+    git(`worktree add '${workDir}' -b '${branch}' HEAD`, root);
+
+    writeFileSync(join(workDir, 'big.ts'), '// fragment\nconst x = 1;\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek',
+    });
+
+    expect(result.outcome).toBe('suspect');
+    if (result.outcome === 'suspect') {
+      expect(result.detail).toContain('big.ts');
+      expect(result.branch).toBe(branch);
+    }
+    // The branch still exists for review — flagged, never destroyed.
+    expect(git(`rev-list --count '${branch}' '^HEAD'`, root)).toBe('1');
+  });
+
+  it('does NOT flag a large rewrite that adds comparable volume back (refactor, not truncation)', async () => {
+    const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    writeFileSync(join(root, 'big.ts'), big);
+    git('add -A', root);
+    git('commit -m add-big', root);
+    git(`worktree remove '${workDir}' --force`, root);
+    git(`branch -D '${branch}'`, root);
+    git(`worktree add '${workDir}' -b '${branch}' HEAD`, root);
+
+    const rewrite = Array.from({ length: 180 }, (_, i) => `rewritten ${i}`).join('\n') + '\n';
+    writeFileSync(join(workDir, 'big.ts'), rewrite);
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek',
+    });
+
+    expect(result.outcome).toBe('branch-preserved');
+  });
 });
