@@ -528,11 +528,17 @@ export function cleanupWorktree(
 
 // ── Provider work harvest ─────────────────────────────────────────────
 
+// #1076 thresholds: a file losing ≥50 lines with <10% of them replaced reads
+// as a corrupted whole-file edit; legitimate refactors add back comparable volume.
+const TRUNCATION_MIN_DELETED_LINES = 50;
+const TRUNCATION_REPLACEMENT_RATIO = 0.1;
+
 export type HarvestOutcome =
   | { outcome: 'in-place' }          // ran in projectRoot directly — nothing to move
   | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
   | { outcome: 'branch-preserved'; branch: string }  // committed to the agent branch — the only landing path (#966)
-  | { outcome: 'blocked'; detail: string };          // secret/PII scan refused the commit — worktree kept
+  | { outcome: 'blocked'; detail: string }           // secret/PII scan refused the commit — worktree kept
+  | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
 
 /**
  * Harvest file changes a non-anthropic executor left in its worktree.
@@ -598,7 +604,34 @@ export async function harvestProviderWork(
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
-  // 3. Preserve on the agent branch — integration is a human decision made
+  // 3. Truncation guard (#1076): a file losing nearly everything with almost
+  //    nothing added back is a corrupted whole-file edit, not work — aider has
+  //    replaced an 826-line file with its 6-line patch fragment and exited 0.
+  //    Diff against the branch's fork point (projectRoot HEAD may have moved
+  //    during the run) and flag; the inbox gate decides, never auto-land.
+  try {
+    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
+    const gutted: string[] = [];
+    for (const row of numstat.split('\n')) {
+      const [addStr, delStr, file] = row.split('\t');
+      const added = parseInt(addStr, 10);
+      const deleted = parseInt(delStr, 10);
+      if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue; // binary file
+      if (deleted >= TRUNCATION_MIN_DELETED_LINES && added < deleted * TRUNCATION_REPLACEMENT_RATIO) {
+        gutted.push(`${file} (-${deleted}/+${added})`);
+      }
+    }
+    if (gutted.length > 0) {
+      return {
+        outcome: 'suspect',
+        branch: branchName,
+        detail: `mass deletion without replacement: ${gutted.join(', ')}`,
+      };
+    }
+  } catch { /* diff unavailable — fall through to preserve; the gate still reviews */ }
+
+  // 4. Preserve on the agent branch — integration is a human decision made
   //    through the inbox gate, never a side effect of a run finishing (#966).
   return { outcome: 'branch-preserved', branch: branchName };
 }
@@ -1304,29 +1337,9 @@ export async function executeWithProvider(
         if (fatal) {
           writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
         }
-        logObservability({
-          ts: new Date().toISOString(),
-          id: options.executionId || generateExecutionId(),
-          squad: squadName,
-          agent: agentName,
-          provider,
-          model: options.model || 'unknown',
-          trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
-          status: code === 0 && !fatal ? 'completed' : 'failed',
-          duration_ms: Date.now() - startMs,
-          input_tokens: usage?.input_tokens || 0,
-          output_tokens: usage?.output_tokens || 0,
-          cache_read_tokens: 0,
-          cache_write_tokens: 0,
-          cost_usd: usage?.cost_usd || 0,
-          context_tokens: 0,
-          error: fatal ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
-        });
-        if (usage && options.verbose) {
-          writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
-        }
-        // Harvest regardless of exit code — partial work from a failed run
-        // must not evaporate either.
+        // Harvest BEFORE the ledger write so a suspect harvest (#1076) can mark
+        // the run failed — and regardless of exit code: partial work from a
+        // failed run must not evaporate either.
         let harvest: HarvestOutcome = { outcome: 'in-place' };
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
@@ -1335,11 +1348,40 @@ export async function executeWithProvider(
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
+        const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
+        logObservability({
+          ts: new Date().toISOString(),
+          id: options.executionId || generateExecutionId(),
+          squad: squadName,
+          agent: agentName,
+          provider,
+          model: options.model || 'unknown',
+          trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+          status: code === 0 && !fatal && !suspect ? 'completed' : 'failed',
+          duration_ms: Date.now() - startMs,
+          input_tokens: usage?.input_tokens || 0,
+          output_tokens: usage?.output_tokens || 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: usage?.cost_usd || 0,
+          context_tokens: 0,
+          error: fatal
+            ?? (suspect ? `suspect harvest: ${suspect}` : undefined)
+            ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
+        });
+        if (usage && options.verbose) {
+          writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
+        }
 
         switch (harvest.outcome) {
           case 'branch-preserved':
             writeLine(`  ${colors.green}Agent work preserved on branch ${harvest.branch}${RESET}`);
             writeLine(`  ${colors.dim}Review and land it through the gate: squads inbox${RESET}`);
+            cleanupWorktree(workDir, projectRoot, { keepBranch: true });
+            break;
+          case 'suspect':
+            writeLine(`  ${colors.red}SUSPECT harvest (run marked failed): ${harvest.detail}${RESET}`);
+            writeLine(`  ${colors.dim}Branch kept for review — do NOT land without inspecting: ${harvest.branch}${RESET}`);
             cleanupWorktree(workDir, projectRoot, { keepBranch: true });
             break;
           case 'blocked':
