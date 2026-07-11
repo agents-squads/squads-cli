@@ -104,6 +104,29 @@ describe('create command', () => {
       );
       expect(content).toContain('Publish 10 blog posts');
     });
+
+    it('supports --mission flag as alias for --description', async () => {
+      const { createCommand } = await import('../../src/commands/create.js');
+      await createCommand('marketing', { yes: true, mission: 'Drive growth through content marketing' });
+
+      const content = readFileSync(
+        join(testDir, '.agents', 'squads', 'marketing', 'SQUAD.md'),
+        'utf-8'
+      );
+      expect(content).toContain('Drive growth through content marketing');
+    });
+
+    it('--mission flag takes precedence over --description when both provided', async () => {
+      const { createCommand } = await import('../../src/commands/create.js');
+      await createCommand('marketing', { yes: true, description: 'Old description', mission: 'New mission' });
+
+      const content = readFileSync(
+        join(testDir, '.agents', 'squads', 'marketing', 'SQUAD.md'),
+        'utf-8'
+      );
+      expect(content).toContain('New mission');
+      expect(content).not.toContain('Old description');
+    });
   });
 
   describe('name handling', () => {
