@@ -60,14 +60,14 @@ function checkPrerequisites(): void {
 
 // ── Schedule hint (#695) ─────────────────────────────────────────────
 
-function showScheduleHint(squadName: string): void {
+function showScheduleHint(squadDir: string): void {
   const hintDir = join(homedir(), '.squads-cli');
   const hintFile = join(hintDir, 'schedule-hint-shown');
 
   if (existsSync(hintFile)) return;
 
   writeLine(`  ${colors.dim}Tip: Run this daily for best results. Set up a schedule:${RESET}`);
-  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadName}${RESET}`);
+  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadDir}${RESET}`);
   writeLine();
 
   try {
@@ -294,16 +294,16 @@ export async function runCommand(
         saveTranscript(result.transcript);
 
         const status = result.converged ? 'converged' : 'completed';
-        writeLine(`  ${result.converged ? icons.success : icons.warning} ${squadName}: ${result.reason} ${colors.dim}(${result.turnCount}t, ~$${result.totalCost.toFixed(2)})${RESET}`);
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${squad.dir}: ${result.reason} ${colors.dim}(${result.turnCount}t, ~$${result.totalCost.toFixed(2)})${RESET}`);
         return {
-          squad: squadName, agent: s.lead, status,
+          squad: squad.dir, agent: s.lead, status,
           durationMs: Date.now() - runStart,
           turnCount: result.turnCount, totalCost: result.totalCost, converged: result.converged,
         };
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        writeLine(`  ${colors.red}${squadName} failed: ${errMsg.slice(0, 80)}${RESET}`);
-        return { squad: squadName, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart };
+        writeLine(`  ${colors.red}${squad.dir} failed: ${errMsg.slice(0, 80)}${RESET}`);
+        return { squad: squad.dir, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart };
       }
     }
 
@@ -471,8 +471,9 @@ export async function runCommand(
       writeLine(`  ${bold}Available squads:${RESET}`);
       for (const name of squads) {
         const squad = loadSquad(name);
+        const dir = squad?.dir || name;
         const mission = squad?.mission ? ` ${colors.dim}— ${squad.mission}${RESET}` : '';
-        writeLine(`    ${colors.cyan}${name.padEnd(14)}${RESET}${mission}`);
+        writeLine(`    ${colors.cyan}${dir.padEnd(14)}${RESET}${mission}`);
       }
       writeLine();
       writeLine(`  ${colors.dim}Usage: squads run <squad>${RESET}`);
@@ -532,15 +533,15 @@ export async function runCommand(
     const since = squad.paused_since ? ` (paused ${new Date(squad.paused_since).toLocaleDateString()})` : '';
     const reason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
     writeLine();
-    writeLine(`  ${colors.yellow}⏸  Squad "${squadName}" is paused${since}${reason}.${RESET}`);
-    writeLine(`  ${colors.dim}To run anyway: squads run ${squadName} --force${RESET}`);
-    writeLine(`  ${colors.dim}To resume:     squads resume ${squadName}${RESET}`);
+    writeLine(`  ${colors.yellow}⏸  Squad "${squad.dir}" is paused${since}${reason}.${RESET}`);
+    writeLine(`  ${colors.dim}To run anyway: squads run ${squad.dir} --force${RESET}`);
+    writeLine(`  ${colors.dim}To resume:     squads resume ${squad.dir}${RESET}`);
     writeLine();
     process.exit(1);
   }
 
   if (squad && squad.status === 'paused' && options.force) {
-    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squadName}" (--force override).${RESET}`);
+    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squad.dir}" (--force override).${RESET}`);
   }
 
   // Pre-flight executor check: verify CLI and auth before attempting execution
@@ -568,10 +569,10 @@ export async function runCommand(
     let hadError = false;
     try {
       await runSquad(squad, squadsDir, options);
-      // Post-run COO evaluation (default on, --no-eval to skip)
-      await runPostEvaluation([squad.name], options);
+      // Post-run COO evaluation – use canonical dir name
+      await runPostEvaluation([squad.dir], options);
       // Show scheduling hint on first few runs (#695)
-      showScheduleHint(squad.name);
+      showScheduleHint(squad.dir);
     } catch (err) {
       hadError = true;
       throw err;
@@ -637,7 +638,7 @@ async function runSquad(
   const startTime = new Date().toISOString();
 
   writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET} ${colors.cyan}${squad.name}${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET} ${colors.cyan}${squad.dir}${RESET}`);
   writeLine();
   if (squad.mission) {
     writeLine(`  ${colors.dim}${squad.mission}${RESET}`);
@@ -676,7 +677,7 @@ async function runSquad(
       }
       writeLine();
       writeLine(`  ${colors.dim}Launch all agents in parallel:${RESET}`);
-      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --parallel`);
       writeLine();
       return;
     }
@@ -740,9 +741,9 @@ async function runSquad(
           writeLine(`  ${icons.error} ${colors.red}--task needs an executor that can hold a task — ${squadProvider} runs sequential mode (no tool use).${RESET}`);
           writeLine();
           writeLine(`  ${colors.dim}Run the task through a single agent (task directive supported):${RESET}`);
-          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}/<agent>${RESET} --task "..." --provider=${squadProvider}`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}/<agent>${RESET} --task "..." --provider=${squadProvider}`);
           writeLine(`  ${colors.dim}Or use a tool-use provider for the squad conversation:${RESET}`);
-          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "..."`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --task "..."`);
           writeLine();
           process.exitCode = 1;
           return;
@@ -803,18 +804,18 @@ async function runSquad(
         }
         writeLine();
         writeLine(`  ${colors.dim}Run:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --task "review and merge open PRs"`);
         writeLine();
         writeLine(`  ${colors.dim}Run single agent:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} -a ${colors.cyan}<agent>${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} -a ${colors.cyan}<agent>${RESET}`);
       }
     }
   }
 
   writeLine();
   writeLine(`  ${colors.dim}After execution, record outcome:${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.name}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.dir}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
   writeLine();
 }
 
