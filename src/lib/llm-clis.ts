@@ -51,6 +51,9 @@ export interface RunOptions {
 
   /** Dry run - just show what would execute */
   dryRun?: boolean;
+
+  /** Compiled tool allowlist for claude-harness lanes (#1073); others ignore it */
+  allowedTools?: string[];
 }
 
 export interface ProviderUsage {
