@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.9.0",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team \u2014 finance, marketing, engineering, operations \u2014 for the cost of API calls.",
+  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"
@@ -78,6 +78,7 @@
     "dotenv": "^17.2.3",
     "gray-matter": "^4.0.3",
     "inquirer": "^9.2.12",
+    "js-yaml": "^4.3.0",
     "minimatch": "^10.2.1",
     "open": "^11.0.0",
     "ora": "^8.0.1"
@@ -96,5 +97,22 @@
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.51.0",
     "vitest": "^4.1.8"
+  },
+  "overrides": {
+    "read-yaml-file": {
+      "js-yaml": "~3.15.0"
+    },
+    "@changesets/parse": {
+      "js-yaml": "^4.2.0"
+    },
+    "@hey-api/json-schema-ref-parser": {
+      "js-yaml": "^4.2.0"
+    },
+    "gray-matter": {
+      "js-yaml": "~3.15.0"
+    },
+    "@eslint/eslintrc": {
+      "js-yaml": "^4.2.0"
+    }
   }
 }
