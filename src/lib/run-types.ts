@@ -62,6 +62,10 @@ export interface RunOptions {
   eval?: boolean; // Post-run COO evaluation (default: true, --no-eval to skip)
   org?: boolean; // Org cycle: scan → plan → execute all leads → report
   force?: boolean; // Force re-run squads that already completed today
+  // Internal (not a CLI flag): compiled tool allowlist for claude-harness
+  // provider lanes (#1073). In --print mode permission prompts can't be
+  // answered, so without this the lane is read-only.
+  allowedTools?: string[];
   resume?: boolean; // Resume org cycle from quota-skipped squads
   focus?: string; // Cycle focus: create, resolve, review, ship, research, cost
   yes?: boolean; // Skip the org-run cost confirmation gate (deliberate trigger)

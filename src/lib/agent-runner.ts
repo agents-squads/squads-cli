@@ -38,7 +38,9 @@ import {
   executeWithProvider,
   resolveTargetRepoRoot,
   verifyExecution,
+  DEFAULT_AGENT_TOOLS,
 } from './execution-engine.js';
+import { compileAllowedTools } from './agent-contract.js';
 import {
   type ContextRole,
   type ContextStats,
@@ -380,6 +382,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             trigger: options.trigger || 'manual',
             startMs,
             timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
+            // Same permission surface as the anthropic executor (#920): contract
+            // grants when declared, tuned default otherwise. Claude-harness lanes
+            // (glm) pass it through --allowedTools; other CLIs ignore it (#1073).
+            allowedTools: compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
           });
         }
 

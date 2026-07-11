@@ -214,6 +214,10 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       '--print',
       '--model',
       opts?.model || process.env.GLM_MODEL || 'glm-4.7',
+      // In --print mode permission prompts can't be answered, so without an
+      // allowlist every Edit/Write is denied and the lane is read-only (#1073).
+      ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+      '--disable-slash-commands',
       prompt,
     ],
     env: () => ({
