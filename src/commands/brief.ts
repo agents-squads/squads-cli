@@ -1,179 +1,204 @@
+/**
+ * squads brief — morning catchup: delivered work, pending approvals, active agents.
+ */
+
 import { Command } from 'commander';
-import { spawnSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import { findProjectRoot } from '../lib/squad-parser.js';
-import { getSquadRepos } from '../lib/squad-loop.js';
-import { bold, colors, dim, RESET, writeLine } from '../lib/terminal.js';
+import { loadSession, isLoggedIn } from '../lib/auth.js';
+import { getApiUrl } from '../lib/env-config.js';
+import type { DashboardSummary, ActivityItem } from '../client/types.gen.js';
+import { bold, colors, RESET, writeLine, dim } from '../lib/terminal.js';
 
-interface BriefTask {
-  squad: string;
-  repo?: string;
-  title: string;
-  body: string;
+interface BriefOptions {
+  json?: boolean;
 }
 
-interface BriefResult {
-  focus: string;
-  tasks: BriefTask[];
-}
+/**
+ * Fetch dashboard summary from the API.
+ * Returns null if not authenticated or API is unavailable.
+ */
+async function fetchBrief(): Promise<DashboardSummary | null> {
+  const session = loadSession();
+  if (!session?.accessToken || session.status !== 'active') return null;
 
-const EXTRACTION_PROMPT = `You are reading recent Claude Code session transcripts between a founder and their AI cofounder.
+  const apiUrl = getApiUrl();
+  if (!apiUrl) return null;
 
-Extract actionable GitHub issues from these sessions. Look for:
-- Things the founder explicitly asked for ("build X", "fix Y", "we need Z")
-- Frustrations about current system behavior
-- Decisions made that require implementation work
-- Features discussed and approved
-
-For each task identify the owning squad (intelligence, engineering, cli, product, finance, etc.), a clear imperative title under 72 chars, and a body with context + acceptance criteria (3-5 sentences).
-
-Respond with ONLY valid JSON — no markdown, no explanation:
-{
-  "focus": "one sentence: what is the founder currently most focused on?",
-  "tasks": [
-    {
-      "squad": "intelligence",
-      "title": "Build buyer shortlist from GPS and MP databases",
-      "body": "Query GPS (610 companies) and MP tender database to identify Chilean companies with AI budget and buying intent. Profile two buyer types: solo founders needing retainer support, and industrial CTOs in mining/water/energy. Cross-reference MP tender spend with GPS decision makers. Output: ranked shortlist with company, decision maker, budget signals, and reason to buy. Research only — no outreach."
-    }
-  ]
-}
-
-Only include clearly actionable tasks. Skip vague intentions. Max 8 tasks.`;
-
-async function briefCommand(options: { sessions: number; dryRun: boolean; coo: boolean }): Promise<void> {
-  const projectRoot = findProjectRoot();
-  if (!projectRoot) {
-    writeLine(`  ${colors.red}Not in a squads project.${RESET} Run from a directory with .agents/`);
-    return;
-  }
-
-  const convDir = join(projectRoot, '.agents', 'conversations', 'cli');
-  if (!existsSync(convDir)) {
-    writeLine(`  ${colors.yellow}No CLI sessions found${RESET} at ${dim}${convDir}${RESET}`);
-    return;
-  }
-
-  const files = readdirSync(convDir)
-    .filter(f => f.endsWith('.md'))
-    .map(f => ({ name: f, path: join(convDir, f), mtime: statSync(join(convDir, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, options.sessions);
-
-  if (files.length === 0) {
-    writeLine(`  ${colors.yellow}No session files found.${RESET}`);
-    return;
-  }
-
-  writeLine();
-  writeLine(`  ${bold}squads brief${RESET}  ${dim}reading ${files.length} session(s)...${RESET}`);
-  writeLine();
-
-  const transcripts = files
-    .map(f => `=== Session: ${f.name} ===\n${readFileSync(f.path, 'utf-8')}`)
-    .join('\n\n');
-
-  let result: BriefResult;
   try {
-    const { CLAUDECODE: _cc, ANTHROPIC_API_KEY: _ak, ...cleanEnv } = process.env;
-    const prompt = `${EXTRACTION_PROMPT}\n\n${transcripts}`;
-    const proc = spawnSync('claude', ['--print', '--model', 'haiku'], {
-      input: prompt,
-      encoding: 'utf-8',
-      timeout: 60_000,
-      env: cleanEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const response = await fetch(`${apiUrl}/api/dashboard/summary`, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.accessToken}`,
+      },
+      signal: AbortSignal.timeout(5000),
     });
 
-    if (proc.status !== 0 || !proc.stdout) {
-      writeLine(`  ${colors.red}Extraction failed.${RESET} Is ${dim}claude${RESET} installed and logged in?`);
-      return;
-    }
+    if (!response.ok) return null;
+    return await response.json() as DashboardSummary;
+  } catch {
+    return null;
+  }
+}
 
-    const jsonMatch = proc.stdout.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON found in response');
-    result = JSON.parse(jsonMatch[0]) as BriefResult;
-    if (
-      !result || typeof result.focus !== 'string' || !Array.isArray(result.tasks) ||
-      result.tasks.some((t) => !t || typeof t.squad !== 'string' || typeof t.title !== 'string' || typeof t.body !== 'string')
-    ) {
-      throw new Error('Unexpected JSON schema from extraction (need focus:string, tasks: Array<{squad,title,body: string}>)');
+interface FormattedBrief {
+  delivered: ActivityItem[];
+  needsYou: ActivityItem[];
+  pending: ActivityItem[];
+  summary: {
+    squadsActive: number;
+    squadsTotal: number;
+    runningAgents: number;
+    costToday: number;
+  };
+}
+
+/**
+ * Structure the raw dashboard data into sections:
+ * - Delivered: completed activity in the last 24 hours
+ * - Needs you: pending approvals (shown first)
+ * - Pending: running agents and tasks today
+ */
+function formatBrief(data: DashboardSummary): FormattedBrief {
+  const now = new Date();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const delivered: ActivityItem[] = [];
+  const needsYou: ActivityItem[] = [];
+  const pending: ActivityItem[] = [];
+
+  for (const activity of data.recent_activity) {
+    const timestamp = new Date(activity.timestamp);
+
+    if (activity.type === 'approval' && activity.status === 'pending') {
+      needsYou.push(activity);
+    } else if (timestamp >= oneDayAgo && activity.status === 'completed') {
+      delivered.push(activity);
+    } else if (activity.status === 'running' || activity.status === 'pending') {
+      pending.push(activity);
     }
-  } catch (err) {
-    writeLine(`  ${colors.red}Extraction failed:${RESET} ${err instanceof Error ? err.message : String(err)}`);
-    return;
   }
 
-  const squadRepos = getSquadRepos();
+  return {
+    delivered,
+    needsYou,
+    pending,
+    summary: {
+      squadsActive: data.squads_active,
+      squadsTotal: data.squads_total,
+      runningAgents: data.running_agents,
+      costToday: data.cost_today_usd,
+    },
+  };
+}
 
-  writeLine(`  ${bold}Founder focus:${RESET} ${result.focus}`);
+/**
+ * Render the brief as colored CLI output.
+ */
+function renderBrief(formatted: FormattedBrief): void {
   writeLine();
-  writeLine(`  ${colors.cyan}${result.tasks.length} issue(s) proposed:${RESET}`);
+  writeLine(`  ${bold}Morning catch-up${RESET}`);
   writeLine();
 
-  for (const task of result.tasks) {
-    const repo = task.repo ?? squadRepos[task.squad];
-    writeLine(`  ${bold}[${task.squad}]${RESET} ${task.title}`);
-    writeLine(`  ${dim}${task.body.length > 120 ? task.body.slice(0, 120) + '...' : task.body}${RESET}`);
-    if (repo) writeLine(`  ${dim}→ ${repo}${RESET}`);
+  // Needs you (pending approvals) — shown first
+  if (formatted.needsYou.length > 0) {
+    writeLine(`  ${bold}${colors.yellow}Needs you${RESET} ${dim}(${formatted.needsYou.length} pending approval)${RESET}`);
+    writeLine();
+    for (const item of formatted.needsYou.slice(0, 5)) {
+      const squad = item.squad ? `${colors.cyan}[${item.squad}]${RESET} ` : '';
+      const agent = item.agent ? `${colors.white}${item.agent}${RESET} ` : '';
+      writeLine(`    ${squad}${agent}${item.title}`);
+    }
+    if (formatted.needsYou.length > 5) {
+      writeLine(`    ${dim}... and ${formatted.needsYou.length - 5} more${RESET}`);
+    }
     writeLine();
   }
 
-  if (options.dryRun) {
-    writeLine(`  ${dim}--dry-run: no issues created.${RESET}`);
+  // Delivered (completed last 24h)
+  if (formatted.delivered.length > 0) {
+    writeLine(`  ${bold}${colors.green}Delivered${RESET} ${dim}(${formatted.delivered.length} completed last 24h)${RESET}`);
+    writeLine();
+    for (const item of formatted.delivered.slice(0, 5)) {
+      const squad = item.squad ? `${colors.cyan}[${item.squad}]${RESET} ` : '';
+      const agent = item.agent ? `${colors.white}${item.agent}${RESET} ` : '';
+      writeLine(`    ${squad}${agent}${item.title}`);
+    }
+    if (formatted.delivered.length > 5) {
+      writeLine(`    ${dim}... and ${formatted.delivered.length - 5} more${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Pending (running agents + tasks today)
+  if (formatted.pending.length > 0) {
+    writeLine(`  ${bold}${colors.cyan}Pending${RESET} ${dim}(${formatted.pending.length} in progress)${RESET}`);
+    writeLine();
+    for (const item of formatted.pending.slice(0, 5)) {
+      const squad = item.squad ? `${colors.cyan}[${item.squad}]${RESET} ` : '';
+      const agent = item.agent ? `${colors.white}${item.agent}${RESET} ` : '';
+      const status = item.status ? `${dim}(${item.status})${RESET} ` : '';
+      writeLine(`    ${squad}${agent}${status}${item.title}`);
+    }
+    if (formatted.pending.length > 5) {
+      writeLine(`    ${dim}... and ${formatted.pending.length - 5} more${RESET}`);
+    }
+    writeLine();
+  }
+
+  // Summary footer
+  writeLine(`  ${dim}${formatted.summary.squadsActive}/${formatted.summary.squadsTotal} squads active${RESET}  ${dim}│${RESET}  ${dim}${formatted.summary.runningAgents} agents running${RESET}  ${dim}│${RESET}  ${dim}$${formatted.summary.costToday.toFixed(2)} today${RESET}`);
+  writeLine();
+}
+
+/**
+ * Render JSON output for scripting.
+ */
+function renderJsonBrief(formatted: FormattedBrief): void {
+  console.log(JSON.stringify(formatted, null, 2));
+}
+
+/**
+ * Show graceful "not connected" message.
+ */
+function showNotConnected(): void {
+  writeLine();
+  writeLine(`  ${colors.yellow}Not connected to squads API${RESET}`);
+  writeLine();
+  writeLine(`  ${dim}Run ${colors.cyan}squads connect${RESET} to link your CLI and enable the brief command.${RESET}`);
+  writeLine();
+}
+
+async function briefCommand(options: BriefOptions): Promise<void> {
+  // Check if logged in
+  if (!isLoggedIn()) {
+    showNotConnected();
     return;
   }
 
-  let created = 0;
-  let skipped = 0;
-
-  for (const task of result.tasks) {
-    const repo = task.repo ?? squadRepos[task.squad];
-    if (!repo) {
-      writeLine(`  ${colors.yellow}skip${RESET} [${task.squad}] — no repo: field in SQUAD.md`);
-      skipped++;
-      continue;
-    }
-
-    try {
-      const proc = spawnSync('gh', ['issue', 'create', '-R', repo, '--title', task.title, '--body', task.body], { encoding: 'utf-8' });
-      if (proc.status !== 0) throw new Error(proc.stderr);
-      const url = proc.stdout.trim();
-      writeLine(`  ${colors.green}created${RESET} ${url}`);
-      created++;
-    } catch {
-      writeLine(`  ${colors.red}failed${RESET}  [${task.squad}] ${task.title}`);
-      skipped++;
-    }
+  // Fetch from API
+  const data = await fetchBrief();
+  if (!data) {
+    showNotConnected();
+    return;
   }
 
-  writeLine();
-  writeLine(
-    `  ${bold}${created} created${RESET}${skipped > 0 ? `  ${dim}${skipped} skipped${RESET}` : ''}`
-  );
+  // Format and render
+  const formatted = formatBrief(data);
 
-  if (options.coo) {
-    const focusPath = join(projectRoot, '.agents', 'memory', 'company', 'founder-focus.md');
-    const date = new Date().toISOString().split('T')[0];
-    const content = `# Founder Focus — ${date}\n\n${result.focus}\n\n## Issues created\n\n${result.tasks.map(t => `- [${t.squad}] ${t.title}`).join('\n')}\n`;
-    writeFileSync(focusPath, content);
-    writeLine(`  ${dim}founder-focus.md written → ${focusPath}${RESET}`);
+  if (options.json) {
+    renderJsonBrief(formatted);
+  } else {
+    renderBrief(formatted);
   }
 }
+
+export { briefCommand };
 
 export function registerBriefCommand(program: Command): void {
   program
     .command('brief')
-    .description('Read recent sessions, extract founder intentions, create GitHub issues')
-    .option('-n, --sessions <n>', 'Number of recent sessions to read', '5')
-    .option('--dry-run', 'Show proposed issues without creating them')
-    .option('--coo', 'Write founder-focus.md for COO context')
+    .description('Morning catch-up: delivered work, pending approvals, active agents')
+    .option('--json', 'Output as JSON')
     .action(async (options) => {
-      await briefCommand({
-        sessions: parseInt(options.sessions, 10),
-        dryRun: !!options.dryRun,
-        coo: !!options.coo,
-      });
+      await briefCommand({ json: !!options.json });
     });
 }
