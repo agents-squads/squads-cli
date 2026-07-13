@@ -24,7 +24,10 @@ describe('founder-context refresh call sites (#1093)', () => {
   );
 
   it('never passes a force option into refreshFounderContext', () => {
-    const calls = source.match(/refresh(?:FounderContext|Ctx)\s*\([^)]*\)/g) ?? [];
+    // Strip comments first — the call sites carry comments explaining exactly
+    // this rule, which mention "force" without passing it.
+    const cleanSource = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+    const calls = cleanSource.match(/refresh(?:FounderContext|Ctx)\s*\([^)]*\)/g) ?? [];
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
       expect(call).not.toMatch(/force/);
