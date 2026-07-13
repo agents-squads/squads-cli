@@ -119,6 +119,7 @@ export async function reportExecutionComplete(
     status,
     ...(details?.summary ? { summary: details.summary } : {}),
     ...(details?.error ? { error: details.error } : {}),
+    ...(details?.durationMs ? { duration_ms: details.durationMs } : {}),
   });
 }
 
