@@ -226,4 +226,49 @@ describe('reportExecutionComplete', () => {
 
     expect(result).toBe(false);
   });
+
+  it('includes durationMs in PATCH payload for background runs (#1100)', async () => {
+    mockLoadSession.mockReturnValue({
+      email: 'user@acme.com',
+      domain: 'acme.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'valid-token',
+      apiUrl: 'https://api.test.com',
+    });
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await reportExecutionComplete('exec-123', 'completed', {
+      summary: 'Background run finished',
+      durationMs: 12345,
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.duration_ms).toBe(12345);
+  });
+
+  it('includes error in PATCH payload when background run fails (#1100)', async () => {
+    mockLoadSession.mockReturnValue({
+      email: 'user@acme.com',
+      domain: 'acme.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'valid-token',
+      apiUrl: 'https://api.test.com',
+    });
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await reportExecutionComplete('exec-123', 'failed', {
+      error: 'Provider API timeout',
+      durationMs: 5000,
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.status).toBe('failed');
+    expect(body.error).toBe('Provider API timeout');
+  });
 });

@@ -64,6 +64,7 @@ import {
   isProviderCLIAvailable,
 } from './llm-clis.js';
 import { gitIdentityArgs } from './git.js';
+import { reportExecutionStart } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
@@ -1204,6 +1205,13 @@ export async function executeWithClaude(
   // events are normalized from the raw stream-json log at reconcile (spool.ts).
   events.close();
 
+  // Register run start with the API for background/watch modes (#1100)
+  // Fire-and-forget: never block the dispatch on API reachability
+  void reportExecutionStart(squadName, agentName, execContext.executionId, {
+    trigger,
+    model: claudeModelAlias || resolvedModel,
+  });
+
   if (runInWatch) {
     if (verbose) {
       logVerboseExecution({
@@ -1582,6 +1590,13 @@ export async function executeWithProvider(
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
+
+  // Register run start with the API for provider background mode (#1100)
+  // Fire-and-forget: never block the dispatch on API reachability
+  void reportExecutionStart(squadName, agentName, options.executionId || generateExecutionId(), {
+    trigger: options.trigger || 'manual',
+    model: options.model,
+  });
 
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,

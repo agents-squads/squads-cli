@@ -26,6 +26,7 @@ import {
 import { updateExecutionStatus } from './execution-log.js';
 import { parseStreamJson } from './stream-json.js';
 import { normalizeDetachedLog } from './exec-events.js';
+import { reportExecutionComplete } from './api-client.js';
 
 /** Tail cap when parsing executor logs — matches the #826 live-stream buffer. */
 const LOG_TAIL_CAP_BYTES = 256 * 1024;
@@ -303,6 +304,15 @@ export function reconcileDetachedRuns(obsRoot: string): number {
           error: record.error,
         });
       } catch { /* status ledger is best-effort; the obs record is the source of truth */ }
+
+      // Report terminal status to API for background runs (#1100)
+      // Fire-and-forget: never block reconcile on API reachability
+      void reportExecutionComplete(spool.execId, record.status === 'completed' ? 'completed' : 'failed', {
+        summary: `Detached run reconciled (${record.input_tokens} in / ${record.output_tokens} out, $${record.cost_usd.toFixed(4)})`,
+        error: record.error,
+        durationMs: record.duration_ms,
+      });
+
       unlinkSync(path);
       ingested++;
     } catch {
