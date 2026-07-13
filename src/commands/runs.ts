@@ -132,9 +132,30 @@ function parseRunResult(logPath: string, startedAt: number): RunWaitResult | nul
   let denials = 0;
   let resultTail: string | undefined;
 
-  // Count denials first
-  const denialMatches = content.match(/haven't granted it yet/g);
-  denials = denialMatches ? denialMatches.length : 0;
+  // Count denials by parsing stream-json and looking only in tool_result content blocks
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    try {
+      const parsed = JSON.parse(trimmed);
+
+      // Look for user-type entries containing tool_result blocks
+      if (parsed.type === 'user' && Array.isArray(parsed.content)) {
+        for (const block of parsed.content) {
+          if (block.type === 'tool_result' && typeof block.content === 'string') {
+            // Count denial phrase occurrences within this tool_result content
+            const matches = block.content.match(/haven't granted it yet/g);
+            if (matches) {
+              denials += matches.length;
+            }
+          }
+        }
+      }
+    } catch {
+      // Not a JSON line, skip
+    }
+  }
 
   // Look for the provider's final result event
   // In Claude's stream-json format, this is a line with type: 'result'

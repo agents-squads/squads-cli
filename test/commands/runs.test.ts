@@ -115,13 +115,32 @@ describe('runsCommand --wait', () => {
 
     const pidFile = writePidFile('research', 'housekeeper', ts, childPid);
 
-    // Write a log file with permission denials
-    const logContent = `
-      Some log content
-      "haven't granted it yet" - permission denied
-      "haven't granted it yet" - another denial
-      ${JSON.stringify({ type: 'result', stop_reason: 'end_turn' })}
-    `;
+    // Write a log file with permission denials in proper stream-json format
+    const denial1 = JSON.stringify({
+      type: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content: 'Error: Permission denied: haven\'t granted it yet to write to file.txt',
+          tool_use_id: 'toolu_001',
+          is_error: true
+        }
+      ]
+    });
+
+    const denial2 = JSON.stringify({
+      type: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content: 'Error: haven\'t granted it yet - operation blocked',
+          tool_use_id: 'toolu_002',
+          is_error: true
+        }
+      ]
+    });
+
+    const logContent = `${denial1}\n${denial2}\n${JSON.stringify({ type: 'result', stop_reason: 'end_turn' })}\n`;
     writeFileSync(pidFile.replace('.pid', '.log'), logContent);
 
     // Wait for child to complete
@@ -137,6 +156,73 @@ describe('runsCommand --wait', () => {
 
     const parsed = JSON.parse(jsonLine!);
     expect(parsed.denials).toBe(2);
+
+    writeSpy.mockRestore();
+  });
+
+  it('does not count denial phrase in task prompt or plan text (regression for #1114)', async () => {
+    // Create a short-lived child process
+    const ts = Date.now();
+    const child = spawn('sh', ['-c', 'echo "test" && sleep 0.05'], { detached: true });
+    const childPid = child.pid!;
+
+    // Wait a bit for the child to start
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const pidFile = writePidFile('research', 'housekeeper', ts, childPid);
+
+    // Write a log file where the task prompt contains the denial phrase
+    // but no actual tool_result denials occur
+    const messageWithPhrase = JSON.stringify({
+      type: 'message',
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Task: Fix the permissions issue - the system says "haven\'t granted it yet" when writing files'
+        }
+      ]
+    });
+
+    const planWithPhrase = JSON.stringify({
+      type: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Plan: Investigate why haven\'t granted it yet errors appear in logs'
+        }
+      ]
+    });
+
+    const successfulToolResult = JSON.stringify({
+      type: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          content: 'Successfully read file.txt',
+          tool_use_id: 'toolu_001',
+          is_error: false
+        }
+      ]
+    });
+
+    const logContent = `${messageWithPhrase}\n${planWithPhrase}\n${successfulToolResult}\n${JSON.stringify({ type: 'result', stop_reason: 'end_turn' })}\n`;
+    writeFileSync(pidFile.replace('.pid', '.log'), logContent);
+
+    // Wait for child to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await runsCommand({ wait: 'research/housekeeper', json: true });
+
+    const calls = writeSpy.mock.calls;
+    // Find the JSON line
+    const jsonLine = calls.map(c => String(c[0])).find(line => line.trim().startsWith('{'));
+    expect(jsonLine).toBeDefined();
+
+    const parsed = JSON.parse(jsonLine!);
+    // Should count 0 denials since the phrase only appears in prompt/plan text, not in tool_result blocks
+    expect(parsed.denials).toBe(0);
 
     writeSpy.mockRestore();
   });
