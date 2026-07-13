@@ -17,6 +17,13 @@ vi.mock('../../src/lib/runs-inventory.js', () => ({
   listDetachedRuns: vi.fn(() => []),
 }));
 
+// Claude-harness rows (#1119) read the real ~/.claude/projects on this
+// machine — mock so tests stay deterministic regardless of local session
+// history. Individual tests override the resolved value as needed.
+vi.mock('../../src/lib/claude-sessions.js', () => ({
+  deriveClaudeHarnessRows: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock('../../src/lib/run-utils.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/lib/run-utils.js')>();
   return { ...actual, getProjectRoot: vi.fn(() => '/tmp/board-test-root') };
@@ -44,9 +51,11 @@ import {
 } from '../../src/commands/board.js';
 import { queryExecutions } from '../../src/lib/observability.js';
 import { listDetachedRuns } from '../../src/lib/runs-inventory.js';
+import { deriveClaudeHarnessRows } from '../../src/lib/claude-sessions.js';
 
 const mockQueryExecutions = vi.mocked(queryExecutions);
 const mockListDetachedRuns = vi.mocked(listDetachedRuns);
+const mockDeriveClaudeHarnessRows = vi.mocked(deriveClaudeHarnessRows);
 
 function rec(over: Partial<ObservabilityRecord>): ObservabilityRecord {
   return {
@@ -59,10 +68,21 @@ function rec(over: Partial<ObservabilityRecord>): ObservabilityRecord {
   };
 }
 
+/** A Claude-harness row shape as `deriveClaudeHarnessRows` (#1119) returns it. */
+function harnessRec(over: Partial<ObservabilityRecord>): ObservabilityRecord {
+  return rec({
+    id: 'claude:session-x', squad: 'cli', agent: 'issue-solver', provider: 'claude-code',
+    model: 'claude-sonnet-4-6', source: 'claude-code', cost_estimated: true,
+    input_tokens: 100_000, output_tokens: 20_000, cost_usd: 0.6,
+    ...over,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockQueryExecutions.mockReturnValue([]);
   mockListDetachedRuns.mockReturnValue([]);
+  mockDeriveClaudeHarnessRows.mockResolvedValue([]);
 });
 
 // ── Day scoping ──────────────────────────────────────────────────────
@@ -264,5 +284,84 @@ describe('boardCommand', () => {
     expect(out).toContain('280.0k tok');
     // Cost-honesty hint names the env rates
     expect(out).toContain('SQUADS_GLM_COST_PER_MTOK_IN/OUT');
+  });
+
+  // ── Claude-harness merge (#1119) ────────────────────────────────────
+
+  it('--json merges Claude-harness rows in, each carrying its source', async () => {
+    const b = dayBounds('2026-07-12')!;
+    mockQueryExecutions.mockReturnValue([
+      rec({ id: 'ledger-a', ts: new Date(b.start + 3600_000).toISOString(), cost_usd: 0.5, prs_created: 1 }),
+    ]);
+    mockDeriveClaudeHarnessRows.mockResolvedValue([
+      harnessRec({ id: 'claude:s1', ts: new Date(b.start + 7200_000).toISOString() }),
+    ]);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await boardCommand({ json: true, date: '2026-07-12' });
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    logSpy.mockRestore();
+
+    expect(parsed.executions).toHaveLength(2);
+    const bySource = Object.fromEntries(parsed.executions.map((r: { id: string; source: string }) => [r.id, r.source]));
+    expect(bySource['ledger-a']).toBe('ledger');
+    expect(bySource['claude:s1']).toBe('claude-code');
+    // Tiles roll up both sources — this is the whole point of #1119.
+    expect(parsed.tiles.executions).toBe(2);
+    expect(parsed.tiles.cost_usd).toBeCloseTo(1.1, 6);
+  });
+
+  it('sorts merged rows by time across both sources', async () => {
+    const b = dayBounds('2026-07-12')!;
+    mockQueryExecutions.mockReturnValue([
+      rec({ id: 'ledger-late', ts: new Date(b.start + 10 * 3600_000).toISOString() }),
+    ]);
+    mockDeriveClaudeHarnessRows.mockResolvedValue([
+      harnessRec({ id: 'claude:early', ts: new Date(b.start + 2 * 3600_000).toISOString() }),
+    ]);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await boardCommand({ json: true, date: '2026-07-12' });
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    logSpy.mockRestore();
+
+    expect(parsed.executions.map((r: { id: string }) => r.id)).toEqual(['claude:early', 'ledger-late']);
+  });
+
+  it('renders claude-code in the PROVIDER column with a ~-marked notional cost', async () => {
+    const b = dayBounds()!;
+    mockQueryExecutions.mockReturnValue([]);
+    mockDeriveClaudeHarnessRows.mockResolvedValue([
+      harnessRec({ ts: new Date(b.start + 9 * 3600_000).toISOString(), squad: 'cli', agent: 'issue-solver', cost_usd: 0.6 }),
+    ]);
+
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => {
+      writes.push(String(s));
+      return true;
+    });
+    await boardCommand({});
+    spy.mockRestore();
+    const out = writes.join('').replace(/\x1b\[[0-9;]*m/g, '');
+
+    expect(out).toContain('claude-code');
+    expect(out).toContain('cli/issue-solver');
+    expect(out).toContain('~$0.60');
+    expect(out).toContain('notional list-price estimate');
+  });
+
+  it('degrades to ledger-only when the transcript reader throws', async () => {
+    const b = dayBounds('2026-07-12')!;
+    mockQueryExecutions.mockReturnValue([
+      rec({ id: 'ledger-a', ts: new Date(b.start + 3600_000).toISOString() }),
+    ]);
+    mockDeriveClaudeHarnessRows.mockRejectedValue(new Error('boom'));
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await expect(boardCommand({ json: true, date: '2026-07-12' })).resolves.toBeUndefined();
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    logSpy.mockRestore();
+
+    expect(parsed.executions.map((r: { id: string }) => r.id)).toEqual(['ledger-a']);
   });
 });

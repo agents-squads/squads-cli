@@ -3,8 +3,17 @@
  *
  * One screen for a day of heavy dispatching: tiles (executions · PRs ·
  * est. cost · failures), live detached runs, the day's executions from
- * .agents/observability/executions.jsonl, and what's queued next (instance
- * dispatch queue + active-milestone issues).
+ * .agents/observability/executions.jsonl merged with Claude-harness
+ * sessions read from ~/.claude/projects (#1119 — squads-cli dispatches are
+ * only half the fleet; Claude Code's own subagents have no dispatch hook to
+ * write a ledger row, so they're merged in at render time instead), and
+ * what's queued next (instance dispatch queue + active-milestone issues).
+ *
+ * Row provenance: every EXECUTIONS row (and --json `executions` entry)
+ * carries `source: 'ledger' | 'claude-code'`. Claude-harness rows always
+ * show provider `claude-code` (the EXECUTOR, not the underlying model) and
+ * `cost_estimated: true` — their cost is a notional list-price token proxy,
+ * flagged with a `~` in the COST column, never presented as a real bill.
  *
  * Cost honesty: tiles sum cost_usd; a row with cost_usd 0 but recorded
  * tokens renders its tokens (dimmed) instead of $0.00 — never a fabricated
@@ -18,6 +27,7 @@
 
 import { execSync } from 'child_process';
 import { queryExecutions, type ObservabilityRecord } from '../lib/observability.js';
+import { deriveClaudeHarnessRows } from '../lib/claude-sessions.js';
 import { listDetachedRuns } from '../lib/runs-inventory.js';
 import { formatDuration } from '../lib/executions.js';
 import {
@@ -257,8 +267,22 @@ export async function boardCommand(options: BoardOptions = {}): Promise<void> {
     reconcileDetachedRuns(getProjectRoot());
   } catch { /* read paths never break on spool issues */ }
 
-  // Ledger (never crashes: queryExecutions returns [] without a file).
-  const dayRecords = filterLedgerDay(queryExecutions({}), bounds);
+  // Ledger (never crashes: queryExecutions returns [] without a file) —
+  // tagged 'ledger' so every merged row carries a source (#1119).
+  const ledgerRecords: ObservabilityRecord[] = filterLedgerDay(queryExecutions({}), bounds)
+    .map((r) => ({ ...r, source: r.source ?? 'ledger' }));
+
+  // Claude-harness sessions (#1119): squads-cli never dispatched these, so
+  // there's no ledger row — derive them from ~/.claude/projects transcripts
+  // instead. Degrades to [] on any read failure (never breaks the board).
+  let harnessRecords: ObservabilityRecord[] = [];
+  try {
+    const { getProjectRoot } = await import('../lib/run-utils.js');
+    harnessRecords = await deriveClaudeHarnessRows(bounds, { projectRoot: getProjectRoot() });
+  } catch { /* transcript reads never break the board */ }
+
+  const dayRecords = [...ledgerRecords, ...harnessRecords]
+    .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
   const tiles = buildTiles(dayRecords);
 
   // Live detached runs — same source as `squads runs`.
@@ -359,7 +383,8 @@ function renderBoard(
     writeLine();
   } else {
     writeLine();
-    const w = { time: 7, agent: 24, prov: 10, status: 12, dur: 8, tokens: 13, cost: 11, out: 9 };
+    // prov: 12 fits 'claude-code' (11 chars) untruncated — the #1119 executor tag.
+    const w = { time: 7, agent: 24, prov: 12, status: 12, dur: 8, tokens: 13, cost: 11, out: 9 };
     const tableWidth = w.time + w.agent + w.prov + w.status + w.dur + w.tokens + w.cost + w.out + 1;
 
     writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
@@ -387,7 +412,7 @@ function renderBoard(
 
       const cell = costCell(r);
       const costStr = cell.kind === 'cost'
-        ? `${colors.green}${cell.text}${RESET}`
+        ? `${colors.green}${r.cost_estimated ? '~' : ''}${cell.text}${RESET}`
         : `${colors.dim}${cell.text}${RESET}`;
 
       const outStr = outcomesCell(r);
@@ -406,6 +431,9 @@ function renderBoard(
       );
     }
     writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+    if (records.some((r) => r.cost_estimated)) {
+      writeLine(`  ${colors.dim}~ = notional list-price estimate (Claude Code session, not a bill)${RESET}`);
+    }
     writeLine();
   }
 

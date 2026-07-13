@@ -57,6 +57,14 @@ export interface ObservabilityRecord {
   // Quality scoring (from COO eval)
   grade?: string;                        // A/B/C/D/F
   grade_score?: number;                  // 0-100
+  // Row provenance (#1119): squads-cli dispatches vs Claude-harness sessions
+  // merged in from ~/.claude/projects transcripts at render time. Absent on
+  // rows written by this module (always a squads-cli dispatch) — callers that
+  // merge sources tag ledger rows 'ledger' explicitly.
+  source?: 'ledger' | 'claude-code';
+  // True when cost_usd is a notional list-price estimate derived from raw
+  // token counts (no billing signal), not what execution-log.ts recorded.
+  cost_estimated?: boolean;
 }
 
 export interface QueryOptions {
