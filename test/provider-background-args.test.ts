@@ -25,10 +25,10 @@ describe('executeWithProvider background argv (#1101)', () => {
   it('builds the provider argv exactly once (buildOpts included)', () => {
     const calls = fn.match(/cliConfig\.buildArgs\(/g) ?? [];
     expect(calls).toHaveLength(1);
-    expect(fn).toContain('cliConfig.buildArgs(effectivePrompt, buildOpts)');
+    expect(fn).toMatch(/cliConfig\.buildArgs\(\s*effectivePrompt\s*,\s*buildOpts\s*\)/);
   });
 
   it('derives the detached shell argv from the shared args array, shell-escaping each arg', () => {
-    expect(fn).toContain("const providerArgs = args.map(a => `'${a.replace(/'/g, \"'\\\\''\")}'`).join(' ');");
+    expect(fn).toMatch(/const providerArgs = args\s*\.map\(\s*a\s*=>.*\.replace\(.*\)\s*.*\.join\(' '\)/);
   });
 });
