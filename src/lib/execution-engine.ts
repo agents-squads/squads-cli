@@ -1538,8 +1538,11 @@ export async function executeWithProvider(
     mkdirSync(logDir, { recursive: true });
   }
 
-  const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
-  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
+  // Single argv source with the foreground path (#1101): rebuilding here via a
+  // second buildArgs call silently dropped buildOpts — background claude-harness
+  // lanes spawned with NO --allowedTools, so every Write/Edit was denied in
+  // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
+  const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
   // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
   // the executor wrote, fast-forward the project root, and only delete the
   // agent branch when its work is integrated or empty — never lose output.
