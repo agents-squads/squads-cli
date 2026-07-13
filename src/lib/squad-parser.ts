@@ -428,7 +428,9 @@ export function parseSquadFile(filePath: string): Squad {
     effort: fm.effort,
     context: fm.context,
     repo: fm.repo,
-    also_owns: Array.isArray(fm.also_owns) ? fm.also_owns : undefined,
+    also_owns: Array.isArray(fm.also_owns)
+      ? fm.also_owns.filter((v): v is string => typeof v === 'string')
+      : undefined,
     stack: fm.stack,
     conversation_agents: Array.isArray(fm.conversation_agents) ? fm.conversation_agents : undefined,
     providers: fm.providers,
