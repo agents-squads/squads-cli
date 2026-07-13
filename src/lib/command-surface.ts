@@ -60,7 +60,6 @@ export const DEPRECATED_COMMANDS: Record<string, string> = {
   // scaffolding
   add: 'init',
   'detect-squad': 'status',
-  brief: 'propose',
 };
 
 /** Plumbing kept registered for hooks/automation but hidden from humans —
