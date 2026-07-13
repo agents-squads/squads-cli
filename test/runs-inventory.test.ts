@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 // Inventory only needs two things from the engine; mocking them keeps these
 // tests free of git fixtures (harvest itself is covered by harvest.test.ts).
 vi.mock('../src/lib/execution-engine.js', () => ({
-  resolveTargetRepoRoot: vi.fn((projectRoot: string) => projectRoot),
+  resolveOwnedRepoRoots: vi.fn((projectRoot: string) => [projectRoot]),
   harvestProviderWork: vi.fn(async () => ({ outcome: 'merged' })),
 }));
 

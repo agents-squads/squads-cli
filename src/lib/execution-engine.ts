@@ -135,6 +135,8 @@ export interface ExecuteWithClaudeOptions {
   squadName: string;
   agentName: string;
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  /** Task directive — `<repo>#<n>` refs route the run to an also_owns repo (#1092) */
+  task?: string;
   /** Assembly-time context stats from gatherSquadContext — emitted as the run's `context_assembled` event (#902). */
   contextStats?: ContextStats;
 }
@@ -465,13 +467,44 @@ export function logVerboseExecution(config: {
 
 // ── Worktree management ──────────────────────────────────────────────
 
-/** Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir) */
-export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null): string {
+/**
+ * Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir).
+ * A `<repo>#<n>` ref in the task directive may reroute to an `also_owns` repo (#1092) —
+ * allowlisted to [repo, ...also_owns], never an arbitrary repo named in the task.
+ */
+export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null, task?: string): string {
   if (!squad?.repo) return projectRoot;
+  if (task) {
+    const owned = [squad.repo, ...(squad.also_owns ?? [])];
+    for (const ref of task.matchAll(/(?:([\w.-]+)\/)?([\w.-]+)#\d+/g)) {
+      const [, refOrg, refName] = ref;
+      const hit = owned.find((o) => {
+        const slash = o.lastIndexOf('/');
+        const [oOrg, oName] = slash === -1 ? [undefined, o] : [o.slice(0, slash), o.slice(slash + 1)];
+        return oName === refName && (!refOrg || !oOrg || refOrg === oOrg);
+      });
+      if (!hit) continue; // ref to a repo this squad doesn't own — ignore
+      const candidate = join(projectRoot, '..', hit.split('/').pop()!);
+      if (existsSync(candidate)) return candidate;
+      break; // owned but not checked out as a sibling — fall back to primary
+    }
+  }
   const repoName = squad.repo.split('/').pop();
   if (!repoName) return projectRoot;
   const candidatePath = join(projectRoot, '..', repoName);
   return existsSync(candidatePath) ? candidatePath : projectRoot;
+}
+
+/** All repo roots a squad may operate in: primary repo + existing also_owns sibling dirs (#1092) */
+export function resolveOwnedRepoRoots(projectRoot: string, squad: Squad | null): string[] {
+  const roots = [resolveTargetRepoRoot(projectRoot, squad)];
+  for (const owned of squad?.also_owns ?? []) {
+    const name = owned.split('/').pop();
+    if (!name) continue;
+    const candidate = join(projectRoot, '..', name);
+    if (existsSync(candidate)) roots.push(candidate);
+  }
+  return roots;
 }
 
 /** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
@@ -995,8 +1028,9 @@ export async function executeWithClaude(
   const resolvedModel = resolveModel(effectiveModel, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
-  // Resolve target repo for worktree creation (squad.repo → sibling dir)
-  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad);
+  // Resolve target repo for worktree creation (squad.repo → sibling dir;
+  // task refs may reroute to an also_owns repo, #1092)
+  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad, options.task);
 
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {

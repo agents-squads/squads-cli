@@ -23,7 +23,7 @@ import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { join, resolve } from 'path';
 import { execSync } from 'child_process';
 import { findSquadsDir, listSquads, loadSquad } from './squad-parser.js';
-import { resolveTargetRepoRoot, harvestProviderWork } from './execution-engine.js';
+import { resolveOwnedRepoRoots, harvestProviderWork } from './execution-engine.js';
 import { logObservability, type ObservabilityRecord } from './observability.js';
 
 export interface DetachedRun {
@@ -55,7 +55,9 @@ export function inventoryRoots(projectRoot: string): string[] {
     if (squadsDir) {
       for (const name of listSquads(squadsDir)) {
         try {
-          roots.add(resolve(resolveTargetRepoRoot(projectRoot, loadSquad(name))));
+          for (const root of resolveOwnedRepoRoots(projectRoot, loadSquad(name))) {
+            roots.add(resolve(root));
+          }
         } catch { /* unresolvable squad repo — skip */ }
       }
     }

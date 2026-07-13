@@ -365,6 +365,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             squadName,
             agentName,
             model: options.model,
+            task: options.task,
             contextStats,
           });
         } else {
@@ -373,8 +374,9 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             foreground: !isBackground,
             // Route to the squad's bound repo (SQUAD.md repo: → sibling dir).
             // Without this the executor worktrees + harvests onto whatever
-            // repo the dispatch ran from (#844).
-            cwd: resolveTargetRepoRoot(getProjectRoot(), squad),
+            // repo the dispatch ran from (#844). Task refs may reroute to an
+            // also_owns repo (#1092).
+            cwd: resolveTargetRepoRoot(getProjectRoot(), squad, options.task),
             squadName,
             agentName,
             model: options.model || frontmatter.model,
