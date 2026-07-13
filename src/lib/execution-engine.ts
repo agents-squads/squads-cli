@@ -486,7 +486,7 @@ export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null, 
       if (!hit) continue; // ref to a repo this squad doesn't own — ignore
       const candidate = join(projectRoot, '..', hit.split('/').pop()!);
       if (existsSync(candidate)) return candidate;
-      break; // owned but not checked out as a sibling — fall back to primary
+      // owned but not checked out as a sibling — a later owned ref may still match
     }
   }
   const repoName = squad.repo.split('/').pop();

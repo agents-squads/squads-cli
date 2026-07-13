@@ -84,6 +84,17 @@ describe('resolveTargetRepoRoot task routing (#1092)', () => {
       .toBe(join(base, 'squads-app'));
   });
 
+  it('routes to a later owned ref when the first owned ref is not checked out', () => {
+    mkdirSync(join(base, 'squads-console'), { recursive: true });
+    rmSync(join(base, 'squads-api'), { recursive: true, force: true });
+    const s = squadWith({
+      repo: 'agents-squads/squads-app',
+      also_owns: ['agents-squads/squads-api', 'agents-squads/squads-console'],
+    });
+    expect(resolveTargetRepoRoot(projectRoot, s, 'Work squads-api#166 then squads-console#3'))
+      .toBe(join(base, 'squads-console'));
+  });
+
   it('falls back to projectRoot when the squad has no repo binding', () => {
     expect(resolveTargetRepoRoot(projectRoot, squadWith({}), 'Work squads-api#166'))
       .toBe(projectRoot);
@@ -137,5 +148,25 @@ describe('parseSquadFile also_owns (#1092)', () => {
     const file = join(squadDir, 'SQUAD.md');
     writeFileSync(file, ['---', 'name: plain', 'repo: agents-squads/squads-app', '---', '', '# Squad: plain'].join('\n'));
     expect(parseSquadFile(file).also_owns).toBeUndefined();
+  });
+
+  it('drops non-string entries from also_owns', () => {
+    const squadDir = join(base, '.agents', 'squads', 'mixed');
+    mkdirSync(squadDir, { recursive: true });
+    const file = join(squadDir, 'SQUAD.md');
+    writeFileSync(file, [
+      '---',
+      'name: mixed',
+      'repo: agents-squads/squads-app',
+      'also_owns:',
+      '  - agents-squads/squads-api',
+      '  - 42',
+      '  - null',
+      '  - {repo: agents-squads/squads-console}',
+      '---',
+      '',
+      '# Squad: mixed',
+    ].join('\n'));
+    expect(parseSquadFile(file).also_owns).toEqual(['agents-squads/squads-api']);
   });
 });
