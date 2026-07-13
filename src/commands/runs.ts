@@ -203,6 +203,20 @@ function parseRunResult(logPath: string, startedAt: number): RunWaitResult | nul
   };
 }
 
+/** Print a wait result in json or human form (shared by the live-poll and already-ended paths). */
+function printRunResult(result: RunWaitResult, json?: boolean): void {
+  if (json) {
+    writeLine(JSON.stringify(result, null, 2));
+  } else {
+    const statusColor = result.is_error ? colors.red : colors.green;
+    writeLine(`  ${statusColor}${result.status.toUpperCase()}${RESET} ${colors.dim}in ${result.duration_s.toFixed(1)}s${RESET}`);
+    writeLine(`  ${colors.dim}Turns: ${result.turns}${RESET}`);
+    if (result.denials > 0) {
+      writeLine(`  ${colors.yellow}Permission denials: ${result.denials}${RESET}`);
+    }
+  }
+}
+
 /**
  * Wait for a detached run to complete, then print a summary.
  */
@@ -223,6 +237,20 @@ export async function waitRun(runId: string | boolean, projectRoot: string, json
     // Find run by ID (squad/agent or just squad)
     targetRun = live.find((r) => r.squad === runId || `${r.squad}/${r.agent}` === runId);
     if (!targetRun) {
+      // Not live — but it may have already ended between dispatch and this
+      // call (or the caller is polling after the fact). If there's a
+      // pid/log trail on disk for this id, treat it as already-ended:
+      // parse the log and report the same summary a live wait would have
+      // produced, rather than erroring just because the process is gone.
+      const ended = runs.find((r) => r.squad === runId || `${r.squad}/${r.agent}` === runId);
+      if (ended) {
+        const result = parseRunResult(ended.logFile, ended.startedAt);
+        if (result) {
+          printRunResult(result, json);
+          if (result.is_error) process.exit(1);
+          return;
+        }
+      }
       writeLine(`  ${colors.red}No live run matching '${runId}'${RESET}`);
       process.exit(1);
     }
@@ -261,16 +289,7 @@ export async function waitRun(runId: string | boolean, projectRoot: string, json
       // Process died, check the log for results
       const result = parseRunResult(targetRun.logFile, targetRun.startedAt);
       if (result) {
-        if (json) {
-          writeLine(JSON.stringify(result, null, 2));
-        } else {
-          const statusColor = result.is_error ? colors.red : colors.green;
-          writeLine(`  ${statusColor}${result.status.toUpperCase()}${RESET} ${colors.dim}in ${result.duration_s.toFixed(1)}s${RESET}`);
-          writeLine(`  ${colors.dim}Turns: ${result.turns}${RESET}`);
-          if (result.denials > 0) {
-            writeLine(`  ${colors.yellow}Permission denials: ${result.denials}${RESET}`);
-          }
-        }
+        printRunResult(result, json);
         // Exit with error code if the run failed
         if (result.is_error) {
           process.exit(1);

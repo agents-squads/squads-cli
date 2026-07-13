@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 vi.mock('../../src/lib/run-utils.js', () => ({
   getProjectRoot: vi.fn(() => process.cwd()),
@@ -32,6 +32,18 @@ function writeLogFile(squad: string, agent: string, ts: number, content: string)
   const p = join(dir, `${agent}-${ts}.log`);
   writeFileSync(p, content);
   return p;
+}
+
+/**
+ * A PID guaranteed to have already exited by the time it's returned —
+ * spawnSync blocks until the child is fully reaped, so there's no race with
+ * isAlive() and no dependency on a real live process (regression for CI
+ * flakiness: a detached `spawn` + timeout races isAlive checks and is
+ * inherently non-deterministic under CI scheduling).
+ */
+function deadPid(): number {
+  const result = spawnSync('sh', ['-c', 'exit 0']);
+  return result.pid!;
 }
 
 beforeEach(() => {
@@ -64,17 +76,12 @@ describe('runsCommand --wait', () => {
     exitSpy.mockRestore();
   });
 
-  it('outputs JSON format when requested and run has completed', async () => {
-    // Create a short-lived child process
+  it('outputs JSON format when requested and run has completed (ended-run path: dead pid + log trail on disk)', async () => {
+    // pid file points at an already-dead PID with a log trail on disk — this
+    // exercises the "not live but has a trace" path in waitRun, which
+    // reports the ended run's summary from the log instead of erroring.
     const ts = Date.now();
-    const child = spawn('sh', ['-c', 'echo "test" && sleep 0.05'], { detached: true });
-    const childPid = child.pid!;
-
-    // Wait a bit for the child to start
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    // Write PID file with the child PID (will be dead by the time we poll)
-    const pidFile = writePidFile('research', 'housekeeper', ts, childPid);
+    const pidFile = writePidFile('research', 'housekeeper', ts, deadPid());
 
     // Write a log file with a completed result
     const logContent = JSON.stringify({
@@ -83,9 +90,6 @@ describe('runsCommand --wait', () => {
       usage: { input_tokens: 100, output_tokens: 50 }
     });
     writeFileSync(pidFile.replace('.pid', '.log'), logContent);
-
-    // Wait for child to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
 
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     await runsCommand({ wait: 'research/housekeeper', json: true });
@@ -105,15 +109,10 @@ describe('runsCommand --wait', () => {
   });
 
   it('counts permission denials correctly', async () => {
-    // Create a short-lived child process
+    // pid file points at an already-dead PID with a log trail on disk (see
+    // deadPid() note above — no live-process dependency needed here).
     const ts = Date.now();
-    const child = spawn('sh', ['-c', 'echo "test" && sleep 0.05'], { detached: true });
-    const childPid = child.pid!;
-
-    // Wait a bit for the child to start
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    const pidFile = writePidFile('research', 'housekeeper', ts, childPid);
+    const pidFile = writePidFile('research', 'housekeeper', ts, deadPid());
 
     // Write a log file with permission denials in proper stream-json format
     const denial1 = JSON.stringify({
@@ -143,9 +142,6 @@ describe('runsCommand --wait', () => {
     const logContent = `${denial1}\n${denial2}\n${JSON.stringify({ type: 'result', stop_reason: 'end_turn' })}\n`;
     writeFileSync(pidFile.replace('.pid', '.log'), logContent);
 
-    // Wait for child to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     await runsCommand({ wait: 'research/housekeeper', json: true });
 
@@ -161,15 +157,10 @@ describe('runsCommand --wait', () => {
   });
 
   it('does not count denial phrase in task prompt or plan text (regression for #1114)', async () => {
-    // Create a short-lived child process
+    // pid file points at an already-dead PID with a log trail on disk (see
+    // deadPid() note above — no live-process dependency needed here).
     const ts = Date.now();
-    const child = spawn('sh', ['-c', 'echo "test" && sleep 0.05'], { detached: true });
-    const childPid = child.pid!;
-
-    // Wait a bit for the child to start
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    const pidFile = writePidFile('research', 'housekeeper', ts, childPid);
+    const pidFile = writePidFile('research', 'housekeeper', ts, deadPid());
 
     // Write a log file where the task prompt contains the denial phrase
     // but no actual tool_result denials occur
@@ -208,9 +199,6 @@ describe('runsCommand --wait', () => {
 
     const logContent = `${messageWithPhrase}\n${planWithPhrase}\n${successfulToolResult}\n${JSON.stringify({ type: 'result', stop_reason: 'end_turn' })}\n`;
     writeFileSync(pidFile.replace('.pid', '.log'), logContent);
-
-    // Wait for child to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
 
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     await runsCommand({ wait: 'research/housekeeper', json: true });
