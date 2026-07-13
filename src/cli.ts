@@ -575,6 +575,33 @@ program
     return budgetCheckCommand(squad, options);
   });
 
+// Board command — day-scoped execution board (#1116): tiles, live runs,
+// today's ledger executions, and the incoming queue. One screen for a day
+// of heavy dispatching.
+program
+  .command('board')
+  .description('Day-scoped execution board: tiles, live runs, executions, incoming queue')
+  .option('--date <YYYY-MM-DD>', 'Board day (local time, default today)')
+  .option('--json', 'Output the full board as one JSON object')
+  .addHelpText('after', `
+Cost honesty:
+  Tiles sum cost_usd from the local ledger (.agents/observability/executions.jsonl).
+  A row with cost_usd 0 but recorded tokens shows its tokens instead of $0.00 —
+  a visible gap, never a fabricated price. GLM lane runs record cost 0 unless
+  you set env rates (USD per million tokens):
+    SQUADS_GLM_COST_PER_MTOK_IN    input-token rate
+    SQUADS_GLM_COST_PER_MTOK_OUT   output-token rate
+
+Examples:
+  $ squads board                    Today's board
+  $ squads board --date 2026-07-12  A past day
+  $ squads board --json             Machine-readable (scripting)
+`)
+  .action(async (options) => {
+    const { boardCommand } = await import('./commands/board.js');
+    return boardCommand(options);
+  });
+
 // Usage command - local-first cost/token view from executions.jsonl (no Bridge)
 program
   .command('usage')

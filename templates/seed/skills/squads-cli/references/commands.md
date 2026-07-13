@@ -16,6 +16,7 @@
 | `squads env prompt <squad>` | Output ready-to-use prompt for Claude Code execution |
 | `squads dashboard [name]` | Show dashboards. Use "squads dash" for overview, "squads dash <name>" for specific dashboard, "squads dash --list" to see all. |
 | `squads status [squad]` | Show squad status and state |
+| `squads board` | Day-scoped execution board: tiles, live runs, executions, incoming queue |
 | `squads usage` | Show local cost/token usage (today, rolling window, by squad) |
 | `squads doctor` | Check local tools, auth, and project readiness |
 | `squads goal set <squad> <description>` | Set a goal for a squad |
@@ -36,6 +37,7 @@
 | `squads logout` | Log out from Squads |
 | `squads whoami` | Show current logged in user |
 | `squads contract validate` | Derive + validate every agent contract; non-zero exit on any violation |
+| `squads brief` | Morning catch-up: delivered work, pending approvals, active agents |
 | `squads providers` | Show available LLM CLI providers (claude, gemini, codex, etc.) |
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
