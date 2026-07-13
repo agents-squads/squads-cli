@@ -183,4 +183,66 @@ describe('brief command', () => {
 
     consoleLogSpy.mockRestore();
   });
+
+  it('does not crash on a partial API payload (missing activity/summary fields)', async () => {
+    mockIsLoggedIn.mockReturnValue(true);
+    mockLoadSession.mockReturnValue({
+      email: 'test@example.com',
+      domain: 'example.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'token',
+    });
+    mockGetApiUrl.mockReturnValue('https://api.agents-squads.com');
+
+    // No recent_activity, no cost_today_usd, no squad counts — the CLI must
+    // degrade gracefully, never TypeError (repo rule: graceful degradation).
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ pending_approvals: 0 }),
+      } as Response)
+    );
+
+    await expect(briefCommand({ json: false })).resolves.not.toThrow();
+  });
+
+  it('skips null and invalid-timestamp activity entries', async () => {
+    mockIsLoggedIn.mockReturnValue(true);
+    mockLoadSession.mockReturnValue({
+      email: 'test@example.com',
+      domain: 'example.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'token',
+    });
+    mockGetApiUrl.mockReturnValue('https://api.agents-squads.com');
+
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          cost_today_usd: 0,
+          pending_approvals: 0,
+          recent_activity: [
+            null,
+            { timestamp: 'not-a-date', title: 'Bad clock', type: 'task', status: 'completed', squad: 'cli' },
+            { timestamp: new Date().toISOString(), title: 'Good entry', type: 'task', status: 'completed', squad: 'cli' },
+          ],
+          running_agents: 0,
+          squads_active: 0,
+          squads_total: 0,
+        }),
+      } as Response)
+    );
+
+    await briefCommand({ json: true });
+
+    const jsonOutput = JSON.parse(consoleLogSpy.mock.calls.map(c => c[0]).join(''));
+    expect(jsonOutput.delivered).toHaveLength(1);
+    expect(jsonOutput.delivered[0].title).toBe('Good entry');
+
+    consoleLogSpy.mockRestore();
+  });
 });

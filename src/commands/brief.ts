@@ -65,8 +65,10 @@ function formatBrief(data: DashboardSummary): FormattedBrief {
   const needsYou: ActivityItem[] = [];
   const pending: ActivityItem[] = [];
 
-  for (const activity of data.recent_activity) {
+  for (const activity of data.recent_activity ?? []) {
+    if (!activity) continue;
     const timestamp = new Date(activity.timestamp);
+    if (isNaN(timestamp.getTime())) continue;
 
     if (activity.type === 'approval' && activity.status === 'pending') {
       needsYou.push(activity);
@@ -82,10 +84,10 @@ function formatBrief(data: DashboardSummary): FormattedBrief {
     needsYou,
     pending,
     summary: {
-      squadsActive: data.squads_active,
-      squadsTotal: data.squads_total,
-      runningAgents: data.running_agents,
-      costToday: data.cost_today_usd,
+      squadsActive: data.squads_active ?? 0,
+      squadsTotal: data.squads_total ?? 0,
+      runningAgents: data.running_agents ?? 0,
+      costToday: data.cost_today_usd ?? 0,
     },
   };
 }
