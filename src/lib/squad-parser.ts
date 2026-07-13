@@ -58,6 +58,8 @@ export interface SquadFrontmatter {
   name?: string;
   mission?: string;
   repo?: string;
+  /** Additional repos this squad owns and may be routed to via task refs (#1092) */
+  also_owns?: string[];
   stack?: string;
   context?: SquadContext;
   effort?: EffortLevel;
@@ -146,6 +148,8 @@ export interface Squad {
   effort?: EffortLevel;  // Squad-level default effort
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
+  /** Additional repos this squad owns and may be routed to via task refs (#1092) */
+  also_owns?: string[];
   stack?: string;
   /** Agents that participate in squad conversations. Others run on schedules. */
   conversation_agents?: string[];
@@ -424,6 +428,7 @@ export function parseSquadFile(filePath: string): Squad {
     effort: fm.effort,
     context: fm.context,
     repo: fm.repo,
+    also_owns: Array.isArray(fm.also_owns) ? fm.also_owns : undefined,
     stack: fm.stack,
     conversation_agents: Array.isArray(fm.conversation_agents) ? fm.conversation_agents : undefined,
     providers: fm.providers,
