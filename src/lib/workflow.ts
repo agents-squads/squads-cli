@@ -552,6 +552,25 @@ export async function runConversation(
     if (!prGateGhEnv) prGateGhEnv = await getBotGhEnv().catch(() => ({}));
     const pr = checkPrForIssue(squad.repo, issueNumberFromTask, prGateGhEnv);
     if (pr) {
+      // CI gate (#1012): verify PR's CI is green before declaring success.
+      // Red CI must NOT report success — the work isn't done until checks pass.
+      try {
+        const { execSync } = await import('child_process');
+        const checksRaw = execSync(
+          `gh pr checks ${pr.number} --repo ${squad.repo} --json bucket --jq '.[].bucket'`,
+          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...prGateGhEnv } },
+        );
+        const buckets = checksRaw.trim().split('\n').map((b: string) => b.replace(/"/g, ''));
+        // All checks must be in 'pass' state — any fail/pending/skipping/cancel blocks convergence
+        const allPassed = buckets.length > 0 && buckets.every((b: string) => b === 'pass');
+        if (!allPassed) {
+          return base; // CI not green — don't declare convergence
+        }
+      } catch {
+        // If we can't fetch CI status (gh error, timeout), fall back to not converging
+        // — better to continue the cycle than to falsely declare success on red CI.
+        return base;
+      }
       return {
         converged: true,
         reason: `PR #${pr.number} already addresses issue #${issueNumberFromTask} — stopping (${pr.title})`,
