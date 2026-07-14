@@ -300,6 +300,10 @@ describe('runConversation', () => {
           { number: 951, title: 'fix: issue-951 gate', body: 'Closes #951', state: 'MERGED' },
         ]);
       }
+      if (String(cmd).includes('gh pr checks')) {
+        // Return "pass" buckets for all CI checks (#1012 — CI gate requirement)
+        return '"pass"\n"pass"\n"pass"';
+      }
       return '';
     });
 
