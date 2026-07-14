@@ -159,6 +159,26 @@ function formatCost(usd: number): string {
 }
 
 /**
+ * Reprice GLM runs at display time when env rates are now set.
+ * GLM runs recorded with cost_usd=0 (because env rates weren't set at run time)
+ * are re-priced using current SQUADS_GLM_COST_PER_MTOK_IN/OUT values.
+ * This is display-only; the ledger is not modified.
+ */
+export function repriceIfNeeded(r: ObservabilityRecord): ObservabilityRecord {
+  // Only reprice GLM provider records with cost_usd=0 but tokens>0
+  if (r.provider !== 'glm' || r.cost_usd > 0) return r;
+  const tokens = (r.input_tokens || 0) + (r.output_tokens || 0);
+  if (tokens === 0) return r;
+
+  const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
+  const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
+  if (!Number.isFinite(inRate) || !Number.isFinite(outRate)) return r;
+
+  const recost = ((r.input_tokens || 0) * inRate + (r.output_tokens || 0) * outRate) / 1_000_000;
+  return { ...r, cost_usd: recost };
+}
+
+/**
  * The rendering decision the issue mandates: cost when we have one, tokens
  * (dimmed by the renderer) when the row is 0-cost but burned tokens, an
  * em-dash when there is neither. Never prints $0.00 for real work.
@@ -282,7 +302,8 @@ export async function boardCommand(options: BoardOptions = {}): Promise<void> {
   } catch { /* transcript reads never break the board */ }
 
   const dayRecords = [...ledgerRecords, ...harnessRecords]
-    .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+    .map(repriceIfNeeded); // #1118: reprice GLM runs when env rates now set
   const tiles = buildTiles(dayRecords);
 
   // Live detached runs — same source as `squads runs`.

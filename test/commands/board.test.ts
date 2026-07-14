@@ -48,6 +48,7 @@ import {
   buildTiles,
   costCell,
   outcomesCell,
+  repriceIfNeeded,
 } from '../../src/commands/board.js';
 import { queryExecutions } from '../../src/lib/observability.js';
 import { listDetachedRuns } from '../../src/lib/runs-inventory.js';
@@ -188,6 +189,57 @@ describe('outcomesCell', () => {
   });
   it('is empty when the run reported no outcomes', () => {
     expect(outcomesCell(rec({}))).toBe('');
+  });
+});
+
+// ── Board repricing (#1118) ────────────────────────────────────────────────
+
+describe('repriceIfNeeded', () => {
+  afterEach(() => {
+    delete process.env.SQUADS_GLM_COST_PER_MTOK_IN;
+    delete process.env.SQUADS_GLM_COST_PER_MTOK_OUT;
+  });
+
+  it('leaves non-GLM records unchanged', () => {
+    const anthropicRec = rec({ provider: 'anthropic', cost_usd: 0, input_tokens: 100_000 });
+    expect(repriceIfNeeded(anthropicRec)).toEqual(anthropicRec);
+  });
+
+  it('leaves GLM records with existing cost unchanged', () => {
+    const glmWithCost = rec({ provider: 'glm', cost_usd: 0.5, input_tokens: 100_000 });
+    expect(repriceIfNeeded(glmWithCost)).toEqual(glmWithCost);
+  });
+
+  it('leaves GLM records with no tokens unchanged', () => {
+    const glmNoTokens = rec({ provider: 'glm', cost_usd: 0, input_tokens: 0, output_tokens: 0 });
+    expect(repriceIfNeeded(glmNoTokens)).toEqual(glmNoTokens);
+  });
+
+  it('leaves GLM records unchanged when env rates are not set', () => {
+    const glmUncosted = rec({ provider: 'glm', cost_usd: 0, input_tokens: 200_000, output_tokens: 10_000 });
+    expect(repriceIfNeeded(glmUncosted)).toEqual(glmUncosted);
+  });
+
+  it('reprices GLM records when env rates are set', () => {
+    process.env.SQUADS_GLM_COST_PER_MTOK_IN = '0.6';
+    process.env.SQUADS_GLM_COST_PER_MTOK_OUT = '2.2';
+    const glmUncosted = rec({ provider: 'glm', cost_usd: 0, input_tokens: 200_000, output_tokens: 10_000 });
+    const repriced = repriceIfNeeded(glmUncosted);
+    expect(repriced.cost_usd).toBeCloseTo(0.6 * 0.2 + 2.2 * 0.01, 6); // 200k in + 10k out
+    expect(repriced.provider).toBe('glm');
+    expect(repriced.input_tokens).toBe(200_000);
+    expect(repriced.output_tokens).toBe(10_000);
+  });
+
+  it('returns a new object, leaving the original unchanged', () => {
+    process.env.SQUADS_GLM_COST_PER_MTOK_IN = '0.6';
+    process.env.SQUADS_GLM_COST_PER_MTOK_OUT = '2.2';
+    const original = rec({ provider: 'glm', cost_usd: 0, input_tokens: 100_000, output_tokens: 10_000 });
+    const originalCost = original.cost_usd;
+    const repriced = repriceIfNeeded(original);
+    expect(original.cost_usd).toBe(originalCost); // Original unchanged
+    expect(repriced.cost_usd).not.toBe(originalCost); // Repriced has new cost
+    expect(repriced).not.toBe(original); // Different object
   });
 });
 
