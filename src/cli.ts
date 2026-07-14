@@ -1264,6 +1264,22 @@ Examples:
     return proposeCommand(options);
   });
 
+// PR-gate CI check re-run (#1012): re-run failed CI checks on a PR
+program
+  .command('rerun')
+  .description('Re-run failed CI checks on a PR (detected from current branch or --pr)')
+  .option('--pr <number>', 'PR number (default: detect from current branch)')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads rerun                          Detect PR from current branch and re-run failed checks
+  $ squads rerun --pr 123                 Re-run failed checks for PR #123
+`)
+  .action(async (options) => {
+    const { rerunCommand } = await import('./commands/rerun.js');
+    return rerunCommand(options);
+  });
+
 // Executor referee (outcome-driven routing §3.2): quality-per-cost per
 // task class × provider × model, from the execution ledger. Read-only.
 program
