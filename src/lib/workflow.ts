@@ -557,7 +557,7 @@ export async function runConversation(
       try {
         const { execSync } = await import('child_process');
         const checksRaw = execSync(
-          `gh pr checks ${pr.number} --json bucket --jq '.[].bucket'`,
+          `gh pr checks ${pr.number} --repo ${squad.repo} --json bucket --jq '.[].bucket'`,
           { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...prGateGhEnv } },
         );
         const buckets = checksRaw.trim().split('\n').map((b: string) => b.replace(/"/g, ''));
