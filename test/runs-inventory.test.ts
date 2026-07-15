@@ -11,8 +11,13 @@ vi.mock('../src/lib/execution-engine.js', () => ({
   harvestProviderWork: vi.fn(async () => ({ outcome: 'merged' })),
 }));
 
+vi.mock('../src/lib/api-client.js', () => ({
+  reportExecutionComplete: vi.fn().mockResolvedValue(true),
+}));
+
 import { listDetachedRuns, cleanStaleRuns, killDetachedRun } from '../src/lib/runs-inventory.js';
 import { harvestProviderWork } from '../src/lib/execution-engine.js';
+import { reportExecutionComplete } from '../src/lib/api-client.js';
 
 let root: string;
 
@@ -22,11 +27,11 @@ function deadPid(): number {
   return r.pid!;
 }
 
-function writePidFile(squad: string, agent: string, ts: number, pid: number): string {
+function writePidFile(squad: string, agent: string, ts: number, pid: number, executionId?: string): string {
   const dir = join(root, '.agents', 'logs', squad);
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${agent}-${ts}.pid`);
-  writeFileSync(p, String(pid));
+  writeFileSync(p, executionId ? `${pid}\n${executionId}\n` : String(pid));
   return p;
 }
 
@@ -35,6 +40,7 @@ beforeEach(() => {
   mkdirSync(join(root, '.agents', 'squads'), { recursive: true });
   mkdirSync(join(root, '.agents', 'observability'), { recursive: true });
   vi.spyOn(process, 'cwd').mockReturnValue(root);
+  vi.mocked(reportExecutionComplete).mockClear();
 });
 
 afterEach(() => {
@@ -60,6 +66,18 @@ describe('listDetachedRuns', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'not-a-run.pid'), 'garbage');
     expect(listDetachedRuns(root)).toEqual([]);
+  });
+
+  it('reads the execution id from the pid file second line when present (#1131)', () => {
+    writePidFile('research', 'housekeeper', 1700000000010, deadPid(), 'exec_abc123');
+    const [run] = listDetachedRuns(root);
+    expect(run.executionId).toBe('exec_abc123');
+  });
+
+  it('leaves executionId undefined for legacy single-line pid files', () => {
+    writePidFile('research', 'housekeeper', 1700000000011, deadPid());
+    const [run] = listDetachedRuns(root);
+    expect(run.executionId).toBeUndefined();
   });
 });
 

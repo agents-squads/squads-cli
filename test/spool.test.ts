@@ -3,6 +3,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+
+vi.mock('../src/lib/api-client.js', () => ({
+  reportExecutionComplete: vi.fn().mockResolvedValue(true),
+}));
+
 import {
   buildSpoolWriterShell,
   buildWatchdogShell,
@@ -10,6 +15,7 @@ import {
   spoolDir,
   type SpoolRecord,
 } from '../src/lib/spool.js';
+import { reportExecutionComplete } from '../src/lib/api-client.js';
 
 let root: string;
 
@@ -20,6 +26,7 @@ beforeEach(() => {
   // reconcile writes via logObservability/updateExecutionStatus which resolve
   // the project root from cwd
   vi.spyOn(process, 'cwd').mockReturnValue(root);
+  vi.mocked(reportExecutionComplete).mockClear();
 });
 
 afterEach(() => {
@@ -416,5 +423,88 @@ describe('stream-json log normalization (#902)', () => {
     const [rec] = readExecutionsJsonl();
     expect(rec.input_tokens).toBe(0);
     expect(existsSync(join(root, '.agents', 'observability', 'events', 'exec_ev_legacy.jsonl'))).toBe(false);
+  });
+});
+
+// ── #1131: postmortem fields on the execution row (error/result.summary) ──
+
+describe('claude terminal-state classification + result summary (#1131)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    // Hermetic HOME so captureSessionUsage finds no session JSONL and the
+    // stream is exercised as the usage/status source.
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('marks a run failed when the terminal result reports is_error, even at exit 0', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'text', text: 'working on it' },
+      ], model: 'claude-haiku-4-5' } }),
+      JSON.stringify({ type: 'result', subtype: 'error_max_turns', result: 'hit max turns', is_error: true,
+        total_cost_usd: 0.02, num_turns: 25, model: 'claude-haiku-4-5',
+        usage: { input_tokens: 100, output_tokens: 20 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_is_error_1', provider: 'anthropic', model: 'haiku', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(String(rec.error)).toContain('is_error');
+  });
+
+  it('marks a run failed when the stream never reaches a terminal result despite real activity (interrupted mid-response)', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo hi' } },
+      ], model: 'claude-haiku-4-5' } }),
+      // no terminal `result` line — connection dropped mid-turn
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_stall_1', provider: 'anthropic', model: 'haiku', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(String(rec.error)).toContain('interrupted');
+  });
+
+  it('leaves legacy plain-text (non-stream-json) logs completed — no false-positive stall', () => {
+    writeFileSync(join(root, 'run.log'), 'plain old buffered output, not JSON at all\n');
+    writeSpoolFile({ execId: 'exec_legacy_ok', provider: 'anthropic', model: 'haiku', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+  });
+
+  it('reports the agent final message as the API summary instead of the generic token line', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'Fixed the bug and opened PR #42.', is_error: false,
+        total_cost_usd: 0.01, num_turns: 3, model: 'claude-haiku-4-5',
+        usage: { input_tokens: 50, output_tokens: 10 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_summary_1', provider: 'anthropic', model: 'haiku' });
+    reconcileDetachedRuns(root);
+    expect(reportExecutionComplete).toHaveBeenCalledWith('exec_summary_1', 'completed', expect.objectContaining({
+      summary: 'Fixed the bug and opened PR #42.',
+    }));
+  });
+
+  it('falls back to the token-count summary when the stream carries no final message', () => {
+    writeFileSync(join(root, 'run.log'), 'Tokens: 1k sent, 10 received. Cost: $0.001 message, $0.001 session.\n');
+    writeSpoolFile({ execId: 'exec_summary_fallback_1', provider: 'deepseek', model: 'deepseek-chat' });
+    reconcileDetachedRuns(root);
+    expect(reportExecutionComplete).toHaveBeenCalledWith('exec_summary_fallback_1', 'completed', expect.objectContaining({
+      summary: expect.stringContaining('Detached run reconciled'),
+    }));
   });
 });
