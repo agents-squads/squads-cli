@@ -25,6 +25,7 @@ import { execSync } from 'child_process';
 import { findSquadsDir, listSquads, loadSquad } from './squad-parser.js';
 import { resolveOwnedRepoRoots, harvestProviderWork } from './execution-engine.js';
 import { logObservability, type ObservabilityRecord } from './observability.js';
+import { reportExecutionComplete } from './api-client.js';
 
 export interface DetachedRun {
   squad: string;
@@ -36,6 +37,12 @@ export interface DetachedRun {
   logFile: string;
   repoRoot: string;
   alive: boolean;
+  /**
+   * This run's API execution id, when the wrapper recorded one (#1131) — the
+   * pid file's optional second line. Absent for pre-#1131 wrappers still on
+   * disk; cleanStaleRuns then just can't report the lane death to the API.
+   */
+  executionId?: string;
 }
 
 function isAlive(pid: number): boolean {
@@ -88,8 +95,11 @@ export function listDetachedRuns(projectRoot: string): DetachedRun[] {
         if (!m) continue;
         const pidFile = join(dir, f);
         let pid: number;
+        let executionId: string | undefined;
         try {
-          pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10);
+          const [pidLine, execIdLine] = readFileSync(pidFile, 'utf8').split('\n');
+          pid = parseInt((pidLine || '').trim(), 10);
+          executionId = execIdLine?.trim() || undefined;
         } catch { continue; }
         if (!Number.isInteger(pid) || pid <= 1) continue;
         runs.push({
@@ -101,6 +111,7 @@ export function listDetachedRuns(projectRoot: string): DetachedRun[] {
           logFile: pidFile.replace(/\.pid$/, '.log'),
           repoRoot: root,
           alive: isAlive(pid),
+          executionId,
         });
       }
     }
@@ -137,6 +148,7 @@ export async function cleanStaleRuns(projectRoot: string): Promise<StaleCleanupR
         });
         outcome = harvest.outcome;
       } catch { /* recorded below either way */ }
+      const errorMsg = `orphaned: wrapper died before reporting; worktree salvage: ${outcome}`;
       const record: ObservabilityRecord = {
         ts: new Date().toISOString(),
         id: `orphan_${run.squad}_${run.agent}_${run.startedAt}`,
@@ -149,9 +161,17 @@ export async function cleanStaleRuns(projectRoot: string): Promise<StaleCleanupR
         duration_ms: 0,
         input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
         cost_usd: 0, context_tokens: 0,
-        error: `orphaned: wrapper died before reporting; worktree salvage: ${outcome}`,
+        error: errorMsg,
       };
       try { logObservability(record); } catch { /* best effort */ }
+      // Backstop (#1131): the wrapper died before it ever reached the spool
+      // writer, so this is the ONLY chance the API's execution row hears
+      // about it — without this it sits at 'running' forever. Only fires
+      // when the wrapper recorded its execution id (pid file line 2);
+      // fire-and-forget, same as every other API report in this codebase.
+      if (run.executionId) {
+        void reportExecutionComplete(run.executionId, 'failed', { error: errorMsg });
+      }
       result.salvaged.push({ squad: run.squad, agent: run.agent, outcome });
     }
     try {

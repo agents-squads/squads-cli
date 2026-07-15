@@ -39,6 +39,9 @@ const LOG_TAIL_CAP_BYTES = 256 * 1024;
  */
 const STREAM_LOG_CAP_BYTES = 16 * 1024 * 1024;
 
+/** Cap on the agent's final message reported to the API as result.summary (#1131). */
+const RESULT_SUMMARY_MAX_CHARS = 1000;
+
 export interface SpoolRecord {
   execId: string;
   squad: string;
@@ -163,7 +166,7 @@ function readLogTail(logFile: string, capBytes: number = LOG_TAIL_CAP_BYTES): st
   }
 }
 
-function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
+function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityRecord; resultSummary?: string } {
   const durationMs = spool.endEpoch > spool.startEpoch && spool.startEpoch > 0
     ? (spool.endEpoch - spool.startEpoch) * 1000
     : 0;
@@ -171,6 +174,8 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
     ? 'timeout'
     : spool.exitCode === 0 ? 'completed' : 'failed';
   let fatalError: string | undefined;
+  /** Agent's final message, when the stream carried one (#1131 result.summary). */
+  let resultSummary: string | undefined;
 
   let input = 0, output = 0, cost = 0, cacheRead = 0, cacheWrite = 0;
   let model = spool.model || 'unknown';
@@ -205,6 +210,29 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
     const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
     const stream = rawLog ? parseStreamJson(rawLog) : null;
     if (stream && stream.outcomes.actions > 0) outcomes = stream.outcomes;
+
+    // #1131: classify claude's OWN terminal state — a clean process exit
+    // doesn't mean the conversation actually finished. `is_error` on the
+    // terminal result event, or real stream activity that never reached a
+    // terminal result at all (e.g. an API disconnect mid-turn), both read as
+    // silent "completed" runs today. Only reclassify on positive stream-json
+    // evidence so legacy plain-text detached logs (pre-#902) are untouched.
+    const hasStreamEvidence = !!stream && (
+      stream.outcomes.actions > 0 || stream.text.length > 0 ||
+      stream.usage.input_tokens > 0 || stream.usage.output_tokens > 0
+    );
+    if (status === 'completed' && stream) {
+      if (stream.sawResult && stream.isError) {
+        status = 'failed';
+        fatalError = `claude reported is_error on its terminal result (${stream.usage.num_turns} turn(s))`;
+      } else if (!stream.sawResult && hasStreamEvidence) {
+        status = 'failed';
+        fatalError = `stream ended without a terminal result — likely interrupted mid-response (${stream.outcomes.actions} action(s) logged)`;
+      }
+    }
+    if (stream?.text) {
+      resultSummary = stream.text.slice(0, RESULT_SUMMARY_MAX_CHARS);
+    }
 
     // Exact session-id attribution when the wrapper recorded one (#857);
     // legacy fallback = mtime-window scan BOUNDED by endEpoch so a session
@@ -246,7 +274,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
     }
   }
 
-  return {
+  const record: ObservabilityRecord = {
     ts: new Date(spool.endEpoch > 0 ? spool.endEpoch * 1000 : Date.now()).toISOString(),
     id: spool.execId,
     squad: spool.squad,
@@ -274,6 +302,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
       ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
       : fatalError ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
   };
+  return { record, resultSummary };
 }
 
 /**
@@ -300,20 +329,24 @@ export function reconcileDetachedRuns(obsRoot: string): number {
     const path = join(dir, entry);
     try {
       const spool = JSON.parse(readFileSync(path, 'utf8')) as SpoolRecord;
-      const record = toRecord(spool, obsRoot);
+      const { record, resultSummary } = toRecord(spool, obsRoot);
       logObservability(record);
+      const tokenSummary = `Detached run reconciled (${record.input_tokens} in / ${record.output_tokens} out, $${record.cost_usd.toFixed(4)})`;
       try {
         updateExecutionStatus(spool.squad, spool.agent, spool.execId, record.status === 'completed' ? 'completed' : 'failed', {
-          outcome: `Detached run reconciled (${record.input_tokens} in / ${record.output_tokens} out, $${record.cost_usd.toFixed(4)})`,
+          outcome: tokenSummary,
           durationMs: record.duration_ms,
           error: record.error,
         });
       } catch { /* status ledger is best-effort; the obs record is the source of truth */ }
 
-      // Report terminal status to API for background runs (#1100)
+      // Report terminal status to API for background runs (#1100).
+      // summary prefers the agent's own final message (#1131 result.summary)
+      // over the generic token-count line — that's the postmortem a founder
+      // reading a FAILED run in the app actually needs.
       // Fire-and-forget: never block reconcile on API reachability
       void reportExecutionComplete(spool.execId, record.status === 'completed' ? 'completed' : 'failed', {
-        summary: `Detached run reconciled (${record.input_tokens} in / ${record.output_tokens} out, $${record.cost_usd.toFixed(4)})`,
+        summary: resultSummary || tokenSummary,
         error: record.error,
         durationMs: record.duration_ms,
       });

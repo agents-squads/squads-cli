@@ -388,6 +388,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             // grants when declared, tuned default otherwise. Claude-harness lanes
             // (glm) pass it through --allowedTools; other CLIs ignore it (#1073).
             allowedTools: compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
+            task: options.task,
           });
         }
 

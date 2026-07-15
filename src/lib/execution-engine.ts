@@ -71,6 +71,8 @@ export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+/** Cap on the dispatch task text reported to the API as the execution's brief (#1131). */
+export const TASK_BRIEF_MAX_CHARS = 500;
 
 /**
  * The default agent tool surface — the compiler fallback when an agent
@@ -682,6 +684,21 @@ export async function harvestProviderWork(
 
 // ── Detached execution helpers ───────────────────────────────────────
 
+/**
+ * Shell snippet writing a detached wrapper's pid file. Line 1 is always the
+ * wrapper's pid (unchanged format — `squads runs`/liveness checks read only
+ * this line). Line 2, when an executionId is known, is this run's API
+ * execution id (#1131) — read back by runs-inventory's cleanStaleRuns() so a
+ * wrapper that dies before ever reaching the spool writer can still report
+ * its postmortem instead of leaving the API row stuck at 'running' forever.
+ */
+function buildPidFileWriteCmd(pidFile: string, executionId?: string): string {
+  const safeExecId = executionId ? executionId.replace(/[^A-Za-z0-9_-]/g, '') : '';
+  return safeExecId
+    ? `printf '%s\\n%s\\n' "$$" '${safeExecId}' > '${pidFile}'`
+    : `echo $$ > '${pidFile}'`;
+}
+
 /** Build shell script for detached execution with worktree isolation */
 export function buildDetachedShellScript(config: {
   projectRoot: string;
@@ -750,8 +767,12 @@ export function buildDetachedShellScript(config: {
   const identity = gitIdentityArgs(config.projectRoot);
   const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
-  // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
-  return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
+  // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4). Its
+  // second line (when known) is this run's API execution id (#1131) — the
+  // only way cleanStaleRuns' lane-death backstop can report a postmortem for
+  // a wrapper that died before it ever reached the spool writer.
+  const pidFileWrite = buildPidFileWriteCmd(config.pidFile, config.executionId);
+  return `${pidFileWrite}; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
 }
 
 /** Prepare log directory and file paths for detached execution */
@@ -1042,7 +1063,7 @@ export async function executeWithClaude(
       writeLine(`  ${colors.dim}Provider: ${provider}${RESET}`);
     }
     return executeWithProvider(provider, prompt, {
-      verbose, foreground, cwd: targetRepoRoot, squadName, agentName,
+      verbose, foreground, cwd: targetRepoRoot, squadName, agentName, task: options.task,
     });
   }
 
@@ -1206,11 +1227,14 @@ export async function executeWithClaude(
   // events are normalized from the raw stream-json log at reconcile (spool.ts).
   events.close();
 
-  // Register run start with the API for background/watch modes (#1100)
+  // Register run start with the API for background/watch modes (#1100).
+  // brief carries the dispatch task text (#1131) — the postmortem "what was
+  // this run even for" the app can't answer today without it.
   // Fire-and-forget: never block the dispatch on API reachability
   void reportExecutionStart(squadName, agentName, execContext.executionId, {
     trigger,
     model: claudeModelAlias || resolvedModel,
+    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
   });
 
   if (runInWatch) {
@@ -1314,6 +1338,8 @@ export async function executeWithProvider(
     timeoutMinutes?: number;
     /** Compiled tool allowlist for claude-harness lanes (#1073). */
     allowedTools?: string[];
+    /** Dispatch task text — reported to the API as the execution's brief (#1131). */
+    task?: string;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -1590,13 +1616,17 @@ export async function executeWithProvider(
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
-  const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
+  // pid file's second line (when known) is this run's API execution id
+  // (#1131) — see buildPidFileWriteCmd.
+  const wrapperScript = `${buildPidFileWriteCmd(pidFile, options.executionId)}; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
 
-  // Register run start with the API for provider background mode (#1100)
+  // Register run start with the API for provider background mode (#1100).
+  // brief carries the dispatch task text (#1131).
   // Fire-and-forget: never block the dispatch on API reachability
   void reportExecutionStart(squadName, agentName, options.executionId || generateExecutionId(), {
     trigger: options.trigger || 'manual',
     model: options.model,
+    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
   });
 
   const child = spawn('sh', ['-c', wrapperScript], {
