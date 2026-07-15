@@ -175,6 +175,9 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
   let input = 0, output = 0, cost = 0, cacheRead = 0, cacheWrite = 0;
   let model = spool.model || 'unknown';
   let outcomes: ReturnType<typeof parseStreamJson>['outcomes'] | undefined;
+  // Run identity (#1129): the id the wrapper launched with is authoritative;
+  // legacy spools without one fall back to whatever the mtime-window scan found.
+  let sessionId: string | undefined = spool.sessionId || undefined;
 
   if (spool.provider && spool.provider !== 'anthropic') {
     const tail = spool.logFile ? readLogTail(spool.logFile) : '';
@@ -218,6 +221,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
       cacheRead = session.cache_read_tokens || 0;
       cacheWrite = session.cache_write_tokens || 0;
       if (session.model) model = session.model;
+      if (!sessionId) sessionId = session.session_id;
     } else if (stream && stream.sawResult) {
       // No session JSONL visible — the stream's terminal result event still
       // carries the run's canonical usage (incl. cache), so use it.
@@ -249,6 +253,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): ObservabilityRecord {
     agent: spool.agent,
     provider: spool.provider || 'anthropic',
     model,
+    session_id: sessionId,
     trigger: (spool.trigger || 'manual') as ObservabilityRecord['trigger'],
     status,
     duration_ms: durationMs,

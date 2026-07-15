@@ -402,6 +402,49 @@ describe('boardCommand', () => {
     expect(out).toContain('notional list-price estimate');
   });
 
+  // ── session_id dedup (#1129) ────────────────────────────────────────
+
+  it('--json drops a harness row whose session_id matches a ledger row (no double-count)', async () => {
+    const b = dayBounds('2026-07-12')!;
+    mockQueryExecutions.mockReturnValue([
+      rec({
+        id: 'ledger-a', ts: new Date(b.start + 3600_000).toISOString(),
+        cost_usd: 0.5, prs_created: 1, session_id: 'sess-shared',
+      }),
+    ]);
+    mockDeriveClaudeHarnessRows.mockResolvedValue([
+      // Same run, seen a second time via the transcript sweep — must be dropped.
+      harnessRec({ id: 'claude:sess-shared', session_id: 'sess-shared', ts: new Date(b.start + 3660_000).toISOString() }),
+      // A distinct session the ledger never saw — must survive.
+      harnessRec({ id: 'claude:sess-other', session_id: 'sess-other', ts: new Date(b.start + 7200_000).toISOString() }),
+    ]);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await boardCommand({ json: true, date: '2026-07-12' });
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    logSpy.mockRestore();
+
+    expect(parsed.executions.map((r: { id: string }) => r.id)).toEqual(['ledger-a', 'claude:sess-other']);
+    expect(parsed.tiles.executions).toBe(2);
+  });
+
+  it('keeps harness rows with no session_id (pre-#1129 history) — old union behavior', async () => {
+    const b = dayBounds('2026-07-12')!;
+    mockQueryExecutions.mockReturnValue([
+      rec({ id: 'ledger-a', ts: new Date(b.start + 3600_000).toISOString() }),
+    ]);
+    mockDeriveClaudeHarnessRows.mockResolvedValue([
+      harnessRec({ id: 'claude:no-session-id', ts: new Date(b.start + 7200_000).toISOString() }),
+    ]);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await boardCommand({ json: true, date: '2026-07-12' });
+    const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+    logSpy.mockRestore();
+
+    expect(parsed.executions.map((r: { id: string }) => r.id)).toEqual(['ledger-a', 'claude:no-session-id']);
+  });
+
   it('degrades to ledger-only when the transcript reader throws', async () => {
     const b = dayBounds('2026-07-12')!;
     mockQueryExecutions.mockReturnValue([

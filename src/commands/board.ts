@@ -8,6 +8,9 @@
  * only half the fleet; Claude Code's own subagents have no dispatch hook to
  * write a ledger row, so they're merged in at render time instead), and
  * what's queued next (instance dispatch queue + active-milestone issues).
+ * A lane run is both a ledger execution and a Claude-harness session, so the
+ * merge dedups a harness row against any ledger row sharing its `session_id`
+ * (#1129) before rendering — otherwise the same run double-counts.
  *
  * Row provenance: every EXECUTIONS row (and --json `executions` entry)
  * carries `source: 'ledger' | 'claude-code'`. Claude-harness rows always
@@ -301,7 +304,19 @@ export async function boardCommand(options: BoardOptions = {}): Promise<void> {
     harnessRecords = await deriveClaudeHarnessRows(bounds, { projectRoot: getProjectRoot() });
   } catch { /* transcript reads never break the board */ }
 
-  const dayRecords = [...ledgerRecords, ...harnessRecords]
+  // #1129: a dispatched lane run is BOTH a ledger execution and a
+  // Claude-harness session — drop the derived harness row once its
+  // session_id matches a ledger row's, instead of unioning both (the
+  // double-count api#199 flagged). Rows without a session_id (pre-#1129
+  // history, non-Claude providers) keep the old union behavior.
+  const ledgerSessionIds = new Set(
+    ledgerRecords.map((r) => r.session_id).filter((id): id is string => Boolean(id)),
+  );
+  const dedupedHarnessRecords = harnessRecords.filter(
+    (r) => !r.session_id || !ledgerSessionIds.has(r.session_id),
+  );
+
+  const dayRecords = [...ledgerRecords, ...dedupedHarnessRecords]
     .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
     .map(repriceIfNeeded); // #1118: reprice GLM runs when env rates now set
   const tiles = buildTiles(dayRecords);

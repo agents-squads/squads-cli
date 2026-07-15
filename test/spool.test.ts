@@ -287,6 +287,64 @@ describe('session-id attribution (#857)', () => {
   });
 });
 
+// ── #1129: session_id stamped on the reconciled ledger row ──────────────
+
+describe('session_id on the ledger row (#1129)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  const SESSION_ID = '99999999-8888-7777-6666-555555555555';
+
+  function writeSessionFile(projDir: string, name: string, inputTokens: number, outputTokens: number): string {
+    const dir = join(home, '.claude', 'projects', projDir);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${name}.jsonl`);
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-haiku-4-5', usage: { input_tokens: inputTokens, output_tokens: outputTokens } },
+    });
+    writeFileSync(path, `${line}\n`);
+    return path;
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('persists the id the wrapper was launched with (--session-id, #857) into the ledger row', () => {
+    writeSessionFile('proj-run', SESSION_ID, 100, 50);
+    writeSpoolFile({ execId: 'exec_stamp_1', provider: 'anthropic', model: 'haiku', sessionId: SESSION_ID });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.session_id).toBe(SESSION_ID);
+  });
+
+  it('falls back to the mtime-discovered session file basename when no explicit id was pinned', () => {
+    const startEpoch = Math.floor(Date.now() / 1000) - 10;
+    const endEpoch = Math.floor(Date.now() / 1000) + 10;
+    writeSessionFile('proj-run', SESSION_ID, 10, 5);
+    writeSpoolFile({ execId: 'exec_stamp_2', provider: 'anthropic', model: 'haiku', startEpoch, endEpoch });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.session_id).toBe(SESSION_ID);
+  });
+
+  it('leaves session_id absent for non-Claude provider runs', () => {
+    writeFileSync(join(root, 'run.log'), 'Tokens: 1k sent, 10 received. Cost: $0.001 message, $0.001 session.\n');
+    writeSpoolFile({ execId: 'exec_stamp_3', provider: 'deepseek', model: 'deepseek-chat' });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.session_id).toBeUndefined();
+  });
+});
+
 // ── #902: exec-event normalization + outcomes for detached claude runs ──
 
 describe('stream-json log normalization (#902)', () => {

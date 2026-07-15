@@ -268,6 +268,9 @@ describe('deriveClaudeHarnessRows (fixture tree, #1119)', () => {
     const row = rows[0];
 
     expect(row.id).toBe('claude:session-a');
+    // Same session UUID a squads-cli ledger row would carry (#1129) — the
+    // board merge dedups on this field.
+    expect(row.session_id).toBe('session-a');
     expect(row.squad).toBe('interactive');
     expect(row.agent).toBe('hq');
     expect(row.provider).toBe('claude-code');
