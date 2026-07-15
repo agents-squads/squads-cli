@@ -80,3 +80,37 @@ describe('session outcomes extraction (#1060)', () => {
     expect(out!.outcomes).toBeUndefined();
   });
 });
+
+describe('session_id on captured usage (#1129)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeSession(sessionId: string, lines: object[]): void {
+    const projDir = join(home, '.claude', 'projects', '-Users-x-repo');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${sessionId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
+
+  const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+  it('captureSessionUsageById returns the session file basename as session_id', () => {
+    writeSession('11111111-2222-3333-4444-555555555555', [
+      { type: 'assistant', message: { model: 'claude-sonnet-5', usage } },
+    ]);
+
+    const out = captureSessionUsageById('11111111-2222-3333-4444-555555555555');
+    expect(out).not.toBeNull();
+    expect(out!.session_id).toBe('11111111-2222-3333-4444-555555555555');
+  });
+});

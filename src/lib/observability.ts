@@ -27,6 +27,12 @@ export interface ObservabilityRecord {
   agent: string;
   provider: string;
   model: string;
+  // Claude Code session UUID this run's transcript was written under (#1129).
+  // Detached runs: the id the wrapper was launched with (`--session-id`, #857).
+  // Foreground runs: the basename of the session file run-capture located.
+  // Absent for non-Claude providers and for rows written before this field
+  // existed — no backfill; downstream mergers keep their prior heuristics.
+  session_id?: string;
   trigger: 'manual' | 'scheduled' | 'event' | 'smart';
   status: 'completed' | 'failed' | 'timeout';
   duration_ms: number;
@@ -153,6 +159,8 @@ function getLogPath(): string | null {
 
 interface SessionUsage {
   model: string;
+  /** Basename of the session JSONL this usage was read from (#1129). */
+  session_id: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -236,8 +244,10 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
     const content = readFileSync(sessionPath, 'utf-8');
     const lines = content.split('\n').filter(Boolean);
 
+    const basename = sessionPath.split('/').pop() || '';
     const usage: SessionUsage = {
       model: 'unknown',
+      session_id: basename.endsWith('.jsonl') ? basename.slice(0, -'.jsonl'.length) : basename,
       input_tokens: 0,
       output_tokens: 0,
       cache_read_tokens: 0,

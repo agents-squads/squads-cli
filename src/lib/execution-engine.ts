@@ -812,6 +812,7 @@ export function executeForeground(config: {
         agent: config.agentName,
         provider: config.provider || 'anthropic',
         model: sessionUsage?.model || config.agentEnv.SQUADS_MODEL || 'unknown',
+        session_id: sessionUsage?.session_id,
         trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
         status: code === 0 ? 'completed' : 'failed',
         duration_ms: durationMs,

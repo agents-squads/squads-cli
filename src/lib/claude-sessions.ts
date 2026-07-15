@@ -363,6 +363,9 @@ function deriveRowForSessionFile(
         agent,
         provider: 'claude-code',
         model: model || 'unknown',
+        // Same session UUID a squads-cli ledger row would carry for this run
+        // (#1129) — lets the board merge dedup instead of double-counting.
+        session_id: sessionId,
         trigger: 'manual',
         status: 'completed',
         duration_ms: Math.max(0, (lastTs ?? firstTs) - firstTs),
