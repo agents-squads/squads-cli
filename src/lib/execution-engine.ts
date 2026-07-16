@@ -1258,7 +1258,7 @@ export async function executeWithClaude(
     squad: squadName,
     agent: agentName,
     provider: 'anthropic',
-    model: claudeModelAlias || resolvedModel,
+    model: claudeModelAlias || resolvedModel || 'unknown',
     trigger: trigger as ObservabilityRecord['trigger'],
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
   });
