@@ -291,6 +291,19 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     parseUsage: parseAiderUsage,
   },
 
+  opencode: {
+    provider: 'opencode',
+    displayName: 'OpenCode',
+    command: 'opencode',
+    install: 'curl -fsSL https://opencode.ai/install.sh | bash',
+    buildArgs: (prompt, opts) => {
+      const args = ['run', '--auto', prompt];
+      if (opts?.model) args.push('--model', opts.model);
+      if (opts?.cwd) args.push('--dir', opts.cwd);
+      return args;
+    },
+  },
+
   ollama: {
     provider: 'ollama',
     displayName: 'Ollama (Local)',
