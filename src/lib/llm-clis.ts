@@ -228,6 +228,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
         prompt,
         '--yes',
         '--no-auto-commits',
+        '--no-gitignore',
         ...aiderMapTokensArgs(),
       ];
     },
