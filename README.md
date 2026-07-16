@@ -71,7 +71,7 @@ team — tuned by role so scanners stay lightweight and leads get the full
 picture. Agents that know what's been done don't duplicate work; agents
 that see their own feedback stop producing noise.
 
-Squads shells out to native AI CLIs (`claude`, `gemini`, `aider`, …), so
+Squads shells out to native AI CLIs (`claude`, `gemini`, `aider`, `opencode`, …), so
 mixed-model teams work out of the box: a cheap model scans, a deep
 reasoning model builds, a mid-tier model verifies.
 

@@ -15,6 +15,7 @@ context, and tool use independently — Squads just orchestrates.
 | Anthropic | `claude` | Stable — primary provider |
 | Google | `gemini` | Stable |
 | DeepSeek | `aider` (delegation) | New in 0.8.0 — file-based roles |
+| OpenCode | `opencode` (native) | New — file-based executor |
 | OpenAI | `codex` | Experimental |
 | Mistral | `vibe` | Experimental |
 | xAI | `grok` | Experimental |
@@ -47,12 +48,13 @@ Precedence: agent frontmatter → `--provider` flag → squad
 
 ## File-based executors
 
-Some providers (DeepSeek via `aider`) run as *file-based executors*: they
-read and edit files and commit the result, but don't run shell commands
-or browse the web. They're a fit for validators, formatters, and
-summarizers — agents whose job is read files → write files. Squads
-harvests their output from the isolated execution worktree, so completed
-work is never lost even if the run ends abnormally.
+Some providers (DeepSeek via `aider`, and `opencode` directly) run as
+*file-based executors*: they read and edit files and commit the result,
+but don't run shell commands or browse the web. They're a fit for
+validators, formatters, and summarizers — agents whose job is read files
+→ write files. Squads harvests their output from the isolated execution
+worktree, so completed work is never lost even if the run ends
+abnormally.
 
 Every provider run is recorded in observability (`squads exec list`,
 `squads usage`) with real token and cost figures parsed from the
