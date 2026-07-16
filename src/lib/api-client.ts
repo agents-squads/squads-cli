@@ -24,12 +24,31 @@ function agentExecutionPath(
   return `/agent-executions/${encodeURIComponent(executionId)}`;
 }
 
-function getApiConfig(): { apiUrl: string; token: string } | null {
-  const session = loadSession();
-  if (!session?.accessToken || session.status !== 'active') return null;
-
+// /agent-executions is scheduler-gated server-side (verify_scheduler_api_key —
+// X-API-Key only, Bearer is not accepted). Background/unattended dispatch has
+// no interactive `squads login` session, so the scheduler/platform key is the
+// auth path that actually authenticates here — same precedence as
+// cloud-dispatch.ts. An interactive session's Bearer token is sent too when
+// present, so a logged-in dev's calls keep working either way.
+function getApiConfig(): { apiUrl: string; headers: Record<string, string> } | null {
   const apiUrl = getApiUrl();
-  return { apiUrl, token: session.accessToken };
+  if (!apiUrl) return null;
+
+  const headers: Record<string, string> = {};
+
+  const session = loadSession();
+  if (session?.accessToken && session.status === 'active') {
+    headers.Authorization = `Bearer ${session.accessToken}`;
+  }
+
+  const apiKey = process.env.SQUADS_PLATFORM_API_TOKEN || process.env.SCHEDULER_API_KEY;
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+
+  if (Object.keys(headers).length === 0) return null; // no auth available — offline-first
+
+  return { apiUrl, headers };
 }
 
 async function apiRequest(
@@ -45,7 +64,7 @@ async function apiRequest(
       method,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
+        ...config.headers,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -78,7 +97,7 @@ export async function reportExecutionStart(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
+        ...config.headers,
       },
       body: JSON.stringify({
         squad,
