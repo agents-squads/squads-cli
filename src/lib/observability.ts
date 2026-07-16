@@ -67,7 +67,7 @@ export interface ObservabilityRecord {
   // merged in from ~/.claude/projects transcripts at render time. Absent on
   // rows written by this module (always a squads-cli dispatch) — callers that
   // merge sources tag ledger rows 'ledger' explicitly.
-  source?: 'ledger' | 'claude-code';
+  source?: 'ledger' | 'claude-code' | 'opencode';
   // True when cost_usd is a notional list-price estimate derived from raw
   // token counts (no billing signal), not what execution-log.ts recorded.
   cost_estimated?: boolean;

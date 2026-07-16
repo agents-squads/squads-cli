@@ -25,6 +25,7 @@ import { existsSync, readdirSync, statSync, createReadStream } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createInterface } from 'readline';
+import { execSync } from 'child_process';
 import { deriveCostFromTokens, type ObservabilityRecord } from './observability.js';
 import { findSquadsDir, listSquads } from './squad-parser.js';
 
@@ -457,4 +458,130 @@ export async function deriveClaudeHarnessRows(
   }
 
   return rows;
+}
+
+// ── OpenCode session reader ───────────────────────────────────────────
+
+function getOpenCodeDbPath(): string {
+  const dataDir = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
+  return join(dataDir, 'opencode', 'opencode.db');
+}
+
+function parseOpenCodeModel(raw: string): string {
+  if (!raw) return '';
+  try {
+    const m = JSON.parse(raw) as Record<string, unknown>;
+    return typeof m.id === 'string' ? m.id : '';
+  } catch {
+    return '';
+  }
+}
+
+function parseOpenCodeProvider(raw: string): string {
+  if (!raw) return '';
+  try {
+    const m = JSON.parse(raw) as Record<string, unknown>;
+    return typeof m.providerID === 'string' ? m.providerID : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Derive execution rows from the opencode SQLite database — the opencode
+ * equivalent of `deriveClaudeHarnessRows`. opencode stores every session in
+ * `~/.local/share/opencode/opencode.db` with token counts and cost already
+ * aggregated per session, so we don't need to stream message-by-message.
+ *
+ * Cost is real (opencode tracks actual provider cost), not a notional
+ * estimate — we still mark `cost_estimated: false` to distinguish from
+ * Claude Code's list-price proxy.
+ */
+export async function deriveOpenCodeRows(
+  bounds: { start: number; end: number },
+  opts: { projectRoot?: string } = {},
+): Promise<ObservabilityRecord[]> {
+  const dbPath = getOpenCodeDbPath();
+  if (!existsSync(dbPath)) return [];
+
+  const root = opts.projectRoot || process.cwd();
+
+  const knownSquads: string[] = [];
+  try {
+    const squadsDir = findSquadsDir();
+    if (squadsDir) knownSquads.push(...listSquads(squadsDir));
+  } catch { /* attribution degrades to raw slugs */ }
+
+  let raw: string;
+  try {
+    // SQL-escape the directory (double any single quote) — a path like
+    // .../jorge's-repo would otherwise terminate the SQL string literal.
+    const dir = root.replace(/'/g, "''");
+    const sql =
+      `SELECT id, directory, time_created, time_updated, cost, ` +
+      `tokens_input, tokens_output, tokens_cache_read, ` +
+      `tokens_cache_write, tokens_reasoning, model, agent FROM session ` +
+      `WHERE directory = '${dir}' ` +
+      `AND time_updated >= ${bounds.start} AND time_created < ${bounds.end} ` +
+      `ORDER BY time_created ASC`;
+    raw = execSync(`sqlite3 -json "${dbPath.replace(/"/g, '\\"')}" ${JSON.stringify(sql)}`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return [];
+  }
+
+  if (!raw) return [];
+
+  let rows: Array<Record<string, unknown>>;
+  try {
+    rows = JSON.parse(raw) as Array<Record<string, unknown>>;
+    if (!Array.isArray(rows)) return [];
+  } catch {
+    return [];
+  }
+
+  return rows.map((r) => {
+    const directory = String(r.directory || '');
+    const modelJson = String(r.model || '');
+    const provider = parseOpenCodeProvider(modelJson);
+    const modelId = parseOpenCodeModel(modelJson);
+    const id = String(r.id || '');
+    const agent = String(r.agent || '');
+    const cost = Number(r.cost) || 0;
+    const inputTokens = Number(r.tokens_input) || 0;
+    const outputTokens = Number(r.tokens_output) || 0;
+    const cacheRead = Number(r.tokens_cache_read) || 0;
+    const cacheWrite = Number(r.tokens_cache_write) || 0;
+    const created = Number(r.time_created);
+    const updated = Number(r.time_updated);
+
+    const dirSegments = directory.split('/').filter(Boolean);
+    const lastSeg = dirSegments[dirSegments.length - 1] || 'session';
+    const squad = knownSquads.includes(lastSeg) ? lastSeg : 'interactive';
+    const agentTag = agent || 'opencode';
+
+    return {
+      ts: new Date(created).toISOString(),
+      id: `opencode:${id}`,
+      squad,
+      agent: squad === 'interactive' ? lastSeg : agentTag,
+      provider: provider || 'opencode',
+      model: modelId || 'unknown',
+      session_id: id,
+      trigger: 'manual' as const,
+      status: 'completed' as const,
+      duration_ms: Math.max(0, updated - created),
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_read_tokens: cacheRead,
+      cache_write_tokens: cacheWrite,
+      cost_usd: cost,
+      context_tokens: 0,
+      source: 'opencode' as ObservabilityRecord['source'],
+      cost_estimated: false,
+    };
+  });
 }

@@ -69,6 +69,7 @@ const AI_TOOL_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /^copilot$/i, name: 'copilot' },
   { pattern: /^cody$/i, name: 'cody' },
   { pattern: /^continue$/i, name: 'continue' },
+  { pattern: /^opencode$/, name: 'opencode' },
 ];
 
 // Session is stale after 5 minutes without heartbeat

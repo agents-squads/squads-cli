@@ -43,7 +43,7 @@ export interface InitOptions {
   pack?: string[];
 }
 
-type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
+type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'opencode' | 'none';
 
 type UseCase = 'engineering' | 'marketing' | 'growth' | 'operations' | 'full-company' | 'custom';
 
@@ -328,7 +328,7 @@ async function prompt(question: string, defaultValue = ''): Promise<string> {
 
 // CLI-based providers, in preference order — used to auto-pick a provider
 // headless when the caller didn't force one (#977).
-const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider'];
+const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider', 'opencode'];
 
 /**
  * Headless (non-interactive, no --provider) provider resolution.

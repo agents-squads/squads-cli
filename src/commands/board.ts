@@ -13,7 +13,7 @@
  * (#1129) before rendering — otherwise the same run double-counts.
  *
  * Row provenance: every EXECUTIONS row (and --json `executions` entry)
- * carries `source: 'ledger' | 'claude-code'`. Claude-harness rows always
+ * carries `source: 'ledger' | 'claude-code' | 'opencode'`. Claude-harness rows always
  * show provider `claude-code` (the EXECUTOR, not the underlying model) and
  * `cost_estimated: true` — their cost is a notional list-price token proxy,
  * flagged with a `~` in the COST column, never presented as a real bill.
@@ -30,7 +30,7 @@
 
 import { execSync } from 'child_process';
 import { queryExecutions, type ObservabilityRecord } from '../lib/observability.js';
-import { deriveClaudeHarnessRows } from '../lib/claude-sessions.js';
+import { deriveClaudeHarnessRows, deriveOpenCodeRows } from '../lib/claude-sessions.js';
 import { listDetachedRuns } from '../lib/runs-inventory.js';
 import { formatDuration } from '../lib/executions.js';
 import {
@@ -299,9 +299,12 @@ export async function boardCommand(options: BoardOptions = {}): Promise<void> {
   // there's no ledger row — derive them from ~/.claude/projects transcripts
   // instead. Degrades to [] on any read failure (never breaks the board).
   let harnessRecords: ObservabilityRecord[] = [];
+  let opencodeRecords: ObservabilityRecord[] = [];
   try {
     const { getProjectRoot } = await import('../lib/run-utils.js');
-    harnessRecords = await deriveClaudeHarnessRows(bounds, { projectRoot: getProjectRoot() });
+    const root = getProjectRoot();
+    harnessRecords = await deriveClaudeHarnessRows(bounds, { projectRoot: root });
+    opencodeRecords = await deriveOpenCodeRows(bounds, { projectRoot: root });
   } catch { /* transcript reads never break the board */ }
 
   // #1129: a dispatched lane run is BOTH a ledger execution and a
@@ -315,8 +318,11 @@ export async function boardCommand(options: BoardOptions = {}): Promise<void> {
   const dedupedHarnessRecords = harnessRecords.filter(
     (r) => !r.session_id || !ledgerSessionIds.has(r.session_id),
   );
+  const dedupedOpenCodeRecords = opencodeRecords.filter(
+    (r) => !r.session_id || !ledgerSessionIds.has(r.session_id),
+  );
 
-  const dayRecords = [...ledgerRecords, ...dedupedHarnessRecords]
+  const dayRecords = [...ledgerRecords, ...dedupedHarnessRecords, ...dedupedOpenCodeRecords]
     .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
     .map(repriceIfNeeded); // #1118: reprice GLM runs when env rates now set
   const tiles = buildTiles(dayRecords);
