@@ -110,6 +110,31 @@ describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)'
   });
 });
 
+describe('opencode lane (#978 — headless `opencode run`, aider-tier file executor)', () => {
+  it('is registered in LLM_CLIS with the right identity', () => {
+    expect(LLM_CLIS.opencode.provider).toBe('opencode');
+    expect(LLM_CLIS.opencode.displayName).toBe('OpenCode');
+    expect(LLM_CLIS.opencode.command).toBe('opencode');
+  });
+
+  it('builds a headless run with --auto and the prompt', () => {
+    const args = LLM_CLIS.opencode.buildArgs('do the thing');
+    expect(args).toEqual(['run', '--auto', 'do the thing']);
+  });
+
+  it('appends --model and --dir only when provided', () => {
+    const args = LLM_CLIS.opencode.buildArgs('hi', { model: 'claude-sonnet-4-5', cwd: '/repo' });
+    expect(args).toEqual(['run', '--auto', 'hi', '--model', 'claude-sonnet-4-5', '--dir', '/repo']);
+  });
+
+  // Scope guard (#978): opencode is a plain one-shot file-editing executor,
+  // same tier as aider — not a conversational tool-use harness like claude/glm.
+  it('stays a plain one-shot executor: no streamJson, no parseUsage', () => {
+    expect(LLM_CLIS.opencode.streamJson).toBeUndefined();
+    expect(LLM_CLIS.opencode.parseUsage).toBeUndefined();
+  });
+});
+
 describe('detectProviderFatalError (#936 — exit-0 API failures must fail loud)', () => {
   it('catches the real failure classes seen in production', async () => {
     const { detectProviderFatalError } = await import('../src/lib/llm-clis.js');
