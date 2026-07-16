@@ -45,6 +45,15 @@ export function getCoAuthorTrailer(provider: string): string {
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
 
+/**
+ * Match GitHub's auth-failure wording across git's HTTP transport and the
+ * `gh` CLI (#1133 — the ~1h installation-token TTL outlives long lanes, and
+ * both surfaces phrase an expired/invalid token differently).
+ */
+export function isGhAuthFailure(text: string): boolean {
+  return /bad credentials|401 unauthorized|http\/1\.1 401|https response received an unexpected status code \[401\]|authentication failed|could not read username|requires authentication|invalid or expired token/i.test(text);
+}
+
 function loadAppConfig(): GitHubAppConfig | null {
   if (!existsSync(APP_CONFIG_PATH)) return null;
   try {
@@ -79,10 +88,16 @@ function generateJWT(appId: number, pemPath: string): string {
  * Get a GitHub App installation token.
  * Caches the token until 5 minutes before expiry.
  * Returns null if the app is not configured.
+ *
+ * `forceRefresh` bypasses the cache — used by callers retrying a git/gh
+ * operation that just failed auth (#1133): the cache's TTL check alone only
+ * protects the process that minted the token; it can't tell that GitHub
+ * rejected it early (revocation, clock drift, or a stale value baked into a
+ * long-running child's env before this process ever ran).
  */
-export async function getGitHubAppToken(): Promise<string | null> {
+export async function getGitHubAppToken(opts?: { forceRefresh?: boolean }): Promise<string | null> {
   // Return cached token if still valid (5 min buffer)
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 5 * 60 * 1000) {
+  if (!opts?.forceRefresh && cachedToken && cachedToken.expiresAt > Date.now() + 5 * 60 * 1000) {
     return cachedToken.token;
   }
 
@@ -135,8 +150,8 @@ export async function getBotGitEnv(): Promise<Record<string, string>> {
  * Environment for gh CLI commands authenticated as the bot.
  * Falls back to empty object (uses user's gh auth).
  */
-export async function getBotGhEnv(): Promise<Record<string, string>> {
-  const token = await getGitHubAppToken();
+export async function getBotGhEnv(opts?: { forceRefresh?: boolean }): Promise<Record<string, string>> {
+  const token = await getGitHubAppToken(opts);
   if (!token) return {};
   return { GH_TOKEN: token };
 }
@@ -145,12 +160,66 @@ export async function getBotGhEnv(): Promise<Record<string, string>> {
  * Get the git push URL with bot token embedded for authentication.
  * Returns null if app not configured.
  */
-export async function getBotPushUrl(repo: string): Promise<string | null> {
-  const token = await getGitHubAppToken();
+export async function getBotPushUrl(repo: string, opts?: { forceRefresh?: boolean }): Promise<string | null> {
+  const token = await getGitHubAppToken(opts);
   if (!token) return null;
   return `https://x-access-token:${token}@github.com/${repo}.git`;
 }
 
+/**
+ * Env vars that make git call OUR credential helper — a fresh `squads`
+ * subprocess minting a live installation token — instead of any static
+ * embedded token or pre-existing helper (macOS Keychain, `gh auth setup-git`,
+ * etc). This is what makes a bot-authored `git push` survive a lane that
+ * outlives the ~1h token TTL (#1133): git invokes credential helpers as a
+ * new process every time it needs credentials, so unlike a token baked into
+ * `GH_TOKEN`/a remote URL at spawn time, this one can never go stale.
+ *
+ * `credential.helper` is cleared first (empty value) because git queries
+ * every configured helper in order — without clearing, an already-configured
+ * helper (e.g. `gh auth setup-git`'s, which itself just reads the same
+ * frozen `GH_TOKEN`) could still win the race and hand git a stale token.
+ *
+ * Deliberately env-scoped (`GIT_CONFIG_*`, per git's own env-based config
+ * mechanism) rather than written to `.git/config`: multiple lanes run in
+ * parallel worktrees of the same repo and share that file, so mutating it
+ * risks the exact cross-lane git-config corruption this codebase has hit
+ * before. Env vars are private to this process tree.
+ */
+export function buildBotGitCredentialEnv(): Record<string, string> {
+  if (!loadAppConfig()) return {};
+  return {
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: 'credential.helper',
+    GIT_CONFIG_VALUE_0: '',
+    GIT_CONFIG_KEY_1: 'credential.helper',
+    GIT_CONFIG_VALUE_1: '!squads __git-credential-helper',
+  };
+}
+
+/**
+ * Git credential helper protocol handler (invoked as `squads
+ * __git-credential-helper get`, registered via `buildBotGitCredentialEnv`).
+ * Git pipes `key=value` lines on stdin and reads `username=`/`password=`
+ * lines back on stdout for the `get` action; `store`/`erase` are no-ops here
+ * (there's nothing to persist — every `get` mints/returns a live token).
+ */
+export async function runGitCredentialHelper(action: string): Promise<void> {
+  await drainStdin();
+  if (action !== 'get') return;
+  const token = await getGitHubAppToken();
+  if (!token) return; // let git fall through (prompt / another configured source)
+  process.stdout.write(`username=x-access-token\npassword=${token}\n`);
+}
+
+function drainStdin(): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) { resolve(); return; }
+    process.stdin.resume();
+    process.stdin.on('end', resolve);
+    process.stdin.on('error', () => resolve());
+  });
+}
 
 /**
  * Detect GitHub org from the current project's git remote.

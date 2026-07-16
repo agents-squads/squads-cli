@@ -52,7 +52,7 @@ import {
 import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
-import { getBotGhEnv } from './github.js';
+import { getBotGhEnv, buildBotGitCredentialEnv, isGhAuthFailure } from './github.js';
 import { parseIssueNumberFromTask, checkPrForIssue } from './squad-loop.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
 import { createRunWorktree } from './worktree.js';
@@ -265,7 +265,10 @@ procedures: [followed | deviated: reason]
 
   // Effort level per role (#702): scanners low, workers high, verifiers medium
   const effortByRole: Record<string, string> = { lead: 'high', scanner: 'low', worker: 'high', verifier: 'medium' };
-  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low' });
+  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, {
+    ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low',
+    gitCredentialEnv: buildBotGitCredentialEnv(),
+  });
 
   // Role-based tool sets (#701): scanners read-only, workers full, verifiers read+build.
   // readBase = inspection only (no git/gh, no writes).
@@ -558,10 +561,21 @@ export async function runConversation(
       // Red CI must NOT report success — the work isn't done until checks pass.
       try {
         const { execSync } = await import('child_process');
-        const checksRaw = execSync(
+        const runChecks = (env: Record<string, string>) => execSync(
           `gh pr checks ${pr.number} --repo ${squad.repo} --json bucket --jq '.[].bucket'`,
-          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...prGateGhEnv } },
+          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } },
         );
+        let checksRaw: string;
+        try {
+          checksRaw = runChecks(prGateGhEnv);
+        } catch (e) {
+          // Re-mint and retry once on an expired/invalid bot token (#1133) —
+          // anything else falls through to the outer catch (don't converge).
+          const msg = e instanceof Error ? `${e.message}\n${(e as { stderr?: string }).stderr ?? ''}` : String(e);
+          if (!isGhAuthFailure(msg)) throw e;
+          prGateGhEnv = await getBotGhEnv({ forceRefresh: true }).catch(() => ({}));
+          checksRaw = runChecks(prGateGhEnv);
+        }
         const buckets = checksRaw.trim().split('\n').map((b: string) => b.replace(/"/g, ''));
         // All checks must be in 'pass' state — any fail/pending/skipping/cancel blocks convergence
         const allPassed = buckets.length > 0 && buckets.every((b: string) => b === 'pass');
