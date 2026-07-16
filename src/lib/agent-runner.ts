@@ -302,15 +302,15 @@ Your full context follows — read it top-to-bottom:
 ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
 
   // Resolve provider with full chain:
-  // 1. Agent config (from agent file frontmatter/header)
-  // 2. CLI option (--provider flag)
+  // 1. CLI option (--provider flag) — explicit override wins
+  // 2. Agent config (from agent file frontmatter/header)
   // 3. Squad default (from SQUAD.md providers.default)
   // 4. Fallback to 'anthropic'
   const agentProvider = parseAgentProvider(agentPath);
   const squad = loadSquad(squadName);
   const squadDefaultProvider = squad?.providers?.default;
 
-  const provider = normalizeProviderName(agentProvider || options.provider || squadDefaultProvider || 'anthropic');
+  const provider = normalizeProviderName(options.provider || agentProvider || squadDefaultProvider || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (options.verbose && (agentProvider || squadDefaultProvider)) {
