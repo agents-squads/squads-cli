@@ -1298,6 +1298,19 @@ program
     return commandsCommand(program, options);
   });
 
+// ─── Internal (hidden — invoked by squads-cli itself, not a user-facing surface) ──
+
+// Registered as `credential.helper` for bot-spawned agents (#1133): git execs
+// this as a fresh subprocess every time it needs credentials, so it mints a
+// live installation token instead of relying on a static one baked into a
+// long-running child's env. See buildBotGitCredentialEnv in lib/github.ts.
+program.command('__git-credential-helper <action>', { hidden: true })
+  .description('[internal] git credential helper — mints a live bot token')
+  .action(async (action: string) => {
+    const { runGitCredentialHelper } = await import('./lib/github.js');
+    await runGitCredentialHelper(action);
+  });
+
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
 program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));

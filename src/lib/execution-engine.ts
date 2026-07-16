@@ -47,7 +47,7 @@ import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
-import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
+import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv, isGhAuthFailure } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
 import {
@@ -215,21 +215,30 @@ export async function autoCommitAgentWork(
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
 
-    // Push to origin using bot token
+    // Push to origin using bot token. Retries once after re-minting the
+    // installation token on an auth failure (#1133): the bot token has a
+    // ~1h TTL, and this push runs after the agent's full turn, so a long
+    // turn can outlive it. `spawnSync` never throws on a failed push (only
+    // on a spawn-level error) — the status/stderr must be checked explicitly.
     try {
       const { spawnSync } = await import('child_process');
       const repo = detectGitHubRepo(projectRoot);
       // Validate repo format (org/name) to prevent injection
-      if (repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
-        const pushUrl = await getBotPushUrl(repo);
-        if (pushUrl) {
-          // Use spawnSync with args array to avoid shell injection
-          spawnSync('git', ['push', pushUrl, 'HEAD'], { ...execOpts, stdio: 'pipe' });
-        } else {
-          spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
-        }
-      } else {
-        spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+      const validRepo = repo && /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : undefined;
+
+      const pushOnce = async (forceRefresh: boolean) => {
+        const pushUrl = validRepo ? await getBotPushUrl(validRepo, { forceRefresh }) : null;
+        return spawnSync('git', ['push', pushUrl ?? 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+      };
+
+      let result = await pushOnce(false);
+      let stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
+      if (result.status !== 0 && validRepo && isGhAuthFailure(stderr)) {
+        result = await pushOnce(true);
+        stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
+      }
+      if (result.status !== 0) {
+        writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${stderr}${RESET}`);
       }
     } catch (e) {
       writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -397,7 +406,15 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
 export function buildAgentEnv(
   baseEnv: Record<string, string>,
   execContext: ExecutionContext,
-  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean; ghToken?: string }
+  options?: {
+    effort?: EffortLevel;
+    skills?: string[];
+    includeOtel?: boolean;
+    ghToken?: string;
+    /** GIT_CONFIG_* env from buildBotGitCredentialEnv() — keeps the spawned
+     *  agent's own `git push` authenticated past the token's ~1h TTL (#1133). */
+    gitCredentialEnv?: Record<string, string>;
+  }
 ): Record<string, string> {
   // Strip CLAUDECODE to allow spawning claude from within a Claude Code session
   const { CLAUDECODE: _, ...cleanEnv } = baseEnv;
@@ -419,6 +436,9 @@ export function buildAgentEnv(
   // Inject bot GH_TOKEN so agents create PRs/issues as the bot identity,
   // not the user's personal gh auth. This enables founder to review/approve.
   if (options?.ghToken) env.GH_TOKEN = options.ghToken;
+
+  // Live-refreshing git credential helper (#1133) — see buildBotGitCredentialEnv.
+  if (options?.gitCredentialEnv) Object.assign(env, options.gitCredentialEnv);
 
   // Inject per-squad GCP credential if available
   // Agents get GOOGLE_APPLICATION_CREDENTIALS pointing to their squad's service account key
@@ -1113,6 +1133,7 @@ export async function executeWithClaude(
     const ghEnv = await getBotGhEnv();
     botGhToken = ghEnv.GH_TOKEN;
   } catch { /* graceful: falls back to user's gh auth */ }
+  const botGitCredentialEnv = buildBotGitCredentialEnv();
 
   // ── Foreground mode ──────────────────────────────────────────────────
   if (runInForeground) {
@@ -1167,7 +1188,7 @@ export async function executeWithClaude(
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken,
+      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken, gitCredentialEnv: botGitCredentialEnv,
     });
     // P2: native subprocess credential scrub (strips Anthropic/cloud creds from bash children).
     if (sandboxEnabled()) agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
@@ -1182,7 +1203,7 @@ export async function executeWithClaude(
   const timestamp = Date.now();
   const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken,
+    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken, gitCredentialEnv: botGitCredentialEnv,
   });
 
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
