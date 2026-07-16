@@ -98,7 +98,9 @@ describe('reportExecutionStart', () => {
     expect(body.executor).toBe('cli');
     expect(body.brief).toBe('Run daily analysis');
     expect(body.model).toBe('opus');
-    expect(body.metadata.local_execution_id).toBe('local-123');
+    // Run-ledger contract: the local id IS the row id — top-level, honored by
+    // the API — not buried in metadata for a server-minted duplicate identity.
+    expect(body.execution_id).toBe('local-123');
     expect(body.metadata.trigger).toBe('scheduled');
   });
 

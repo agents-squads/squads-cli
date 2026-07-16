@@ -712,6 +712,10 @@ export interface OpenPR {
   number: number;
   title: string;
   base: string;
+  /** ISO date the PR was opened — a bare title says nothing about staleness. */
+  createdAt: string | null;
+  /** Rollup of CI check runs: pass | fail | pending; null = no checks. */
+  ci: 'pass' | 'fail' | 'pending' | null;
 }
 
 export interface OperationalStatus {
@@ -756,7 +760,7 @@ export async function fetchOperationalStatus(repos: string[]): Promise<Operation
           { encoding: 'utf-8', timeout: 8000 }
         ),
         execAsync(
-          `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
+          `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName,createdAt,statusCheckRollup 2>/dev/null`,
           { encoding: 'utf-8', timeout: 8000 }
         ),
       ]);
@@ -780,15 +784,33 @@ export async function fetchOperationalStatus(repos: string[]): Promise<Operation
       }
 
       if (prResult.status === 'fulfilled') {
-        for (const line of prResult.value.stdout.trim().split('\n').filter(l => l.trim())) {
-          const [num, base, ...titleParts] = line.split('\t');
-          openPRs.push({
-            repo: repoShort,
-            number: parseInt(num) || 0,
-            title: titleParts.join('\t'),
-            base,
-          });
-        }
+        try {
+          const prs = JSON.parse(prResult.value.stdout.trim() || '[]') as Array<{
+            number: number;
+            title: string;
+            baseRefName: string;
+            createdAt: string;
+            statusCheckRollup: Array<{ conclusion?: string | null; status?: string | null }> | null;
+          }>;
+          for (const pr of prs) {
+            const checks = pr.statusCheckRollup ?? [];
+            const ci: OpenPR['ci'] = checks.length === 0
+              ? null
+              : checks.some(c => c.conclusion === 'FAILURE' || c.conclusion === 'TIMED_OUT')
+                ? 'fail'
+                : checks.every(c => c.conclusion === 'SUCCESS' || c.conclusion === 'SKIPPED' || c.conclusion === 'NEUTRAL')
+                  ? 'pass'
+                  : 'pending';
+            openPRs.push({
+              repo: repoShort,
+              number: pr.number,
+              title: pr.title,
+              base: pr.baseRefName,
+              createdAt: pr.createdAt ?? null,
+              ci,
+            });
+          }
+        } catch { /* malformed gh output — leave this repo's PRs empty */ }
       }
 
       return { milestones, openPRs };

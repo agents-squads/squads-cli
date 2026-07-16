@@ -65,8 +65,15 @@ vi.mock('../../src/lib/squad-parser.js', () => ({
 // Mock observability to avoid file system reads
 vi.mock('../../src/lib/observability.js', () => ({
   logObservability: vi.fn(),
+  logRunStarted: vi.fn(),
   snapshotGoals: vi.fn().mockReturnValue({}),
   diffGoals: vi.fn().mockReturnValue([]),
+}));
+
+// Run-ledger API reports are fire-and-forget network calls — never real in tests.
+vi.mock('../../src/lib/api-client.js', () => ({
+  reportExecutionStart: vi.fn().mockResolvedValue(null),
+  reportExecutionComplete: vi.fn().mockResolvedValue(true),
 }));
 
 // Mock run-context to avoid file system reads in unit tests

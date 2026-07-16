@@ -34,8 +34,14 @@ export interface ObservabilityRecord {
   // existed — no backfill; downstream mergers keep their prior heuristics.
   session_id?: string;
   trigger: 'manual' | 'scheduled' | 'event' | 'smart';
-  status: 'completed' | 'failed' | 'timeout';
+  // 'running' rows are start events (run-ledger): the jsonl is an event log,
+  // and a run's current state is its LAST row (fold by id). 'orphaned' is the
+  // reaper's terminal for a running row whose pid died without reporting.
+  status: 'running' | 'completed' | 'failed' | 'timeout' | 'orphaned';
   duration_ms: number;
+  // OS pid of the run's process (start events) — what the orphan reaper
+  // checks liveness against. Absent on rows predating the ledger.
+  pid?: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -537,6 +543,114 @@ export function logObservability(record: ObservabilityRecord): void {
   pushToBridge(record).catch(() => {});
   // Real-time ingest trigger: notify local squads-api immediately (fire-and-forget).
   pingIngestTrigger().catch(() => {});
+}
+
+// ── Run ledger (start events + fold + orphan reaper) ─────────────────
+//
+// The jsonl is an event log: a run appends a 'running' row at spawn and a
+// terminal row at exit, and its current state is the LAST row for its id.
+// This is what makes "what's running right now" answerable from the ledger
+// instead of from unreconciled per-agent markdown (the 191-zombie bug that
+// made `squads status` report 17 phantom running runs — cli#1142).
+
+/** Append a start event. Same sinks as any other record. */
+export function logRunStarted(rec: {
+  id: string;
+  squad: string;
+  agent: string;
+  provider: string;
+  model: string;
+  trigger: ObservabilityRecord['trigger'];
+  pid?: number;
+  task?: string;
+}): void {
+  logObservability({
+    ts: new Date().toISOString(),
+    id: rec.id,
+    squad: rec.squad,
+    agent: rec.agent,
+    provider: rec.provider,
+    model: rec.model,
+    trigger: rec.trigger,
+    status: 'running',
+    pid: rec.pid,
+    task: rec.task,
+    duration_ms: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cost_usd: 0,
+    context_tokens: 0,
+  });
+}
+
+/** Fold the event log: one record per id. Later rows win, with one state-
+ * machine rule on top: a terminal row is never overwritten by a 'running'
+ * row for the same id. Timestamps have millisecond resolution, so a start
+ * event and its terminal can tie — and a run never goes back to running. */
+export function foldExecutions(records: ObservabilityRecord[]): ObservabilityRecord[] {
+  const byId = new Map<string, ObservabilityRecord>();
+  // records arrive newest-first from queryExecutions — walk oldest-first so
+  // later rows naturally replace earlier ones.
+  for (let i = records.length - 1; i >= 0; i--) {
+    const rec = records[i];
+    const prev = byId.get(rec.id);
+    if (prev && prev.status !== 'running' && rec.status === 'running') continue;
+    byId.set(rec.id, rec);
+  }
+  return [...byId.values()];
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A pid-less running row can't be liveness-checked; give it the same grace
+// the API-side sweeper gives (longest legitimate run observed ~85min).
+const ORPHAN_PIDLESS_AFTER_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Reap running rows whose process is gone: append an 'orphaned' terminal
+ * event locally and report it to the API (fire-and-forget). Returns the
+ * folded, post-reap view so callers render truth in the same pass.
+ */
+export function reconcileOrphanedRuns(): ObservabilityRecord[] {
+  const folded = foldExecutions(queryExecutions());
+  const now = Date.now();
+
+  for (const rec of folded) {
+    if (rec.status !== 'running') continue;
+    const dead = rec.pid
+      ? !pidAlive(rec.pid)
+      : now - new Date(rec.ts).getTime() > ORPHAN_PIDLESS_AFTER_MS;
+    if (!dead) continue;
+
+    const orphanRow: ObservabilityRecord = {
+      ...rec,
+      ts: new Date().toISOString(),
+      status: 'orphaned',
+      duration_ms: Math.max(0, now - new Date(rec.ts).getTime()),
+      error: rec.pid
+        ? `orphaned: pid ${rec.pid} gone without a terminal report`
+        : 'orphaned: no pid and no terminal report within 3h',
+    };
+    logObservability(orphanRow);
+    rec.status = orphanRow.status;
+    rec.error = orphanRow.error;
+    // Mirror to the API so Postgres converges without waiting for its own
+    // 3h sweep. Lazy import avoids a cycle (api-client → auth → …).
+    void import('./api-client.js')
+      .then(m => m.reportExecutionComplete(rec.id, 'orphaned', { error: orphanRow.error, squad: rec.squad, agent: rec.agent }))
+      .catch(() => {});
+  }
+
+  return folded;
 }
 
 // ── Read ─────────────────────────────────────────────────────────────

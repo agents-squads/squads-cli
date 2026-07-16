@@ -17,10 +17,10 @@ import {
 import { fetchOperationalStatus } from '../lib/git.js';
 import {
   listExecutions,
-  getExecutionStats,
   formatDuration,
   formatRelativeTime,
 } from '../lib/executions.js';
+import { reconcileOrphanedRuns, type ObservabilityRecord } from '../lib/observability.js';
 import { checkForUpdate } from '../lib/update.js';
 import { track, Events } from '../lib/telemetry.js';
 import {
@@ -38,6 +38,38 @@ import {
 interface StatusOptions {
   verbose?: boolean;
   json?: boolean;
+  /** Show every squad row and completed milestones (default: only what's moving). */
+  all?: boolean;
+}
+
+/** 24h ledger view: fold + reap, then split into live and terminal. */
+function ledgerStats24h(): {
+  running: ObservabilityRecord[];
+  completed: number;
+  failed: number;
+  total: number;
+  lastTerminalBySquad: Map<string, number>;
+} {
+  // reconcileOrphanedRuns folds the event log AND reaps dead-pid rows, so a
+  // run only counts as running if its process is actually alive right now —
+  // the 191-zombie / "17 running" lie this rewrite kills (cli#1142).
+  const folded = reconcileOrphanedRuns();
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const running = folded.filter(r => r.status === 'running');
+  const day = folded.filter(r => r.status !== 'running' && new Date(r.ts).getTime() >= dayAgo);
+  const lastTerminalBySquad = new Map<string, number>();
+  for (const r of folded) {
+    if (r.status === 'running') continue;
+    const t = new Date(r.ts).getTime();
+    if (t > (lastTerminalBySquad.get(r.squad) ?? 0)) lastTerminalBySquad.set(r.squad, t);
+  }
+  return {
+    running,
+    completed: day.filter(r => r.status === 'completed').length,
+    failed: day.filter(r => r.status === 'failed' || r.status === 'timeout' || r.status === 'orphaned').length,
+    total: running.length + day.length,
+    lastTerminalBySquad,
+  };
 }
 
 export async function statusCommand(
@@ -78,7 +110,7 @@ async function showOverallStatus(
 
   // JSON output
   if (options.json) {
-    const execStats = getExecutionStats({ since: new Date(Date.now() - 24 * 60 * 60 * 1000) });
+    const ledger = ledgerStats24h();
     const squadData = squads.map(name => {
       const agents = listAgents(squadsDir, name);
       const states = memoryDir ? getSquadState(name) : [];
@@ -91,7 +123,15 @@ async function showOverallStatus(
         squads: squadData,
         totalSquads: squads.length,
         sessions: sessionSummary,
-        executions24h: execStats,
+        executions24h: {
+          total: ledger.total,
+          running: ledger.running.length,
+          completed: ledger.completed,
+          failed: ledger.failed,
+        },
+        working_now: ledger.running.map(r => ({
+          id: r.id, squad: r.squad, agent: r.agent, provider: r.provider, since: r.ts,
+        })),
         memoryEnabled: !!memoryDir,
       },
     }, null, 2));
@@ -125,100 +165,106 @@ async function showOverallStatus(
   }
   writeLine();
 
-  // Execution stats (last 24h)
-  const execStats = getExecutionStats({ since: new Date(Date.now() - 24 * 60 * 60 * 1000) });
-  const execSummary = execStats.total > 0
-    ? `${colors.green}${execStats.completed}${RESET} ${colors.dim}completed${RESET}` +
-      (execStats.failed > 0 ? ` ${colors.red}${execStats.failed}${RESET} ${colors.dim}failed${RESET}` : '') +
-      (execStats.running > 0 ? ` ${colors.yellow}${execStats.running}${RESET} ${colors.dim}running${RESET}` : '')
+  // Execution truth (last 24h) — from the folded run ledger + live pids,
+  // never from unreconciled per-agent markdown (cli#1142).
+  const ledger = ledgerStats24h();
+  const workingSquads = new Set(ledger.running.map(r => r.squad));
+  const execSummary = ledger.total > 0
+    ? `${colors.green}${ledger.completed}${RESET} ${colors.dim}completed${RESET}` +
+      (ledger.failed > 0 ? ` ${colors.red}${ledger.failed}${RESET} ${colors.dim}failed${RESET}` : '')
     : `${colors.dim}no executions${RESET}`;
 
-  // Stats row
-  const totalSquads = squads.length;
-  const activeCount = squads.length; // All loaded squads are "active"
-  writeLine(`  ${colors.cyan}${activeCount}${RESET}/${totalSquads} squads  ${colors.dim}│${RESET}  ${colors.dim}memory: ${memoryDir ? 'enabled' : 'none'}${RESET}  ${colors.dim}│${RESET}  ${colors.dim}24h:${RESET} ${execSummary}`);
+  // Headline: what's happening RIGHT NOW.
+  if (ledger.running.length > 0) {
+    writeLine(`  ${colors.green}●${RESET} ${bold}${workingSquads.size}${RESET} ${workingSquads.size === 1 ? 'squad' : 'squads'} working ${colors.dim}(${ledger.running.length} ${ledger.running.length === 1 ? 'run' : 'runs'})${RESET}  ${colors.dim}│${RESET}  ${colors.dim}24h:${RESET} ${execSummary}  ${colors.dim}│${RESET}  ${colors.dim}${squads.length} squads${RESET}`);
+    for (const run of ledger.running.slice(0, 8)) {
+      const mins = Math.round((Date.now() - new Date(run.ts).getTime()) / 60000);
+      writeLine(`    ${colors.yellow}◆${RESET} ${colors.cyan}${run.squad}${RESET}/${colors.white}${run.agent}${RESET} ${colors.dim}${run.provider} · ${mins}m${run.task ? ` · ${run.task.slice(0, 44)}` : ''}${RESET}`);
+    }
+    if (ledger.running.length > 8) {
+      writeLine(`    ${colors.dim}… and ${ledger.running.length - 8} more (squads board)${RESET}`);
+    }
+  } else {
+    writeLine(`  ${colors.dim}○ nothing running${RESET}  ${colors.dim}│${RESET}  ${colors.dim}24h:${RESET} ${execSummary}  ${colors.dim}│${RESET}  ${colors.dim}${squads.length} squads · memory: ${memoryDir ? 'enabled' : 'none'}${RESET}`);
+  }
   writeLine();
 
-  // Table
-  const w = { name: 16, agents: 8, memory: 14, activity: 12 };
-  const tableWidth = w.name + w.agents + w.memory + w.activity + 6;
-
-  writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
-
-  const header = `  ${colors.purple}${box.vertical}${RESET} ` +
-    `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
-    `${bold}${padEnd('AGENTS', w.agents)}${RESET}` +
-    `${bold}${padEnd('MEMORY', w.memory)}${RESET}` +
-    `${bold}ACTIVITY${RESET}` +
-    ` ${colors.purple}${box.vertical}${RESET}`;
-  writeLine(header);
-
-  writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+  // Roster: by default only squads that are moving — working now, or with a
+  // run/memory touch in the last 7 days. The rest collapse to one line.
+  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+  const rows: Array<{ name: string; agents: number; memory: string; activity: string }> = [];
+  let pausedCount = 0;
+  let idleCount = 0;
 
   for (const squadName of squads) {
-    const agents = listAgents(squadsDir, squadName);
     const squadData = loadSquad(squadName);
-    const isPaused = squadData?.status === 'paused';
+    if (squadData?.status === 'paused') { pausedCount++; if (!options.all) continue; }
 
-    // Check memory
-    let memoryStatus = `${colors.dim}none${RESET}`;
-    let lastActivity = `${colors.dim}—${RESET}`;
-    let activityColor = colors.dim;
-
+    // Last activity = the LATER of last terminal run (ledger) and last memory
+    // write. Memory alone kept dead squads looking alive for weeks.
+    let lastTouch = ledger.lastTerminalBySquad.get(squadName) ?? 0;
     if (memoryDir) {
       const squadMemoryPath = join(memoryDir, squadName);
       if (existsSync(squadMemoryPath)) {
-        const states = getSquadState(squadName);
-        memoryStatus = `${colors.green}${states.length} ${states.length === 1 ? 'entry' : 'entries'}${RESET}`;
-
-        // Find most recent file
-        let mostRecent = 0;
-        for (const state of states) {
+        for (const state of getSquadState(squadName)) {
           const stat = statSync(state.path);
-          if (stat.mtimeMs > mostRecent) {
-            mostRecent = stat.mtimeMs;
-          }
-        }
-
-        if (mostRecent > 0) {
-          const daysAgo = Math.floor((Date.now() - mostRecent) / (1000 * 60 * 60 * 24));
-          if (daysAgo === 0) {
-            lastActivity = 'today';
-            activityColor = colors.green;
-          } else if (daysAgo === 1) {
-            lastActivity = 'yesterday';
-            activityColor = colors.green;
-          } else if (daysAgo < 7) {
-            lastActivity = `${daysAgo}d ago`;
-            activityColor = colors.yellow;
-          } else {
-            lastActivity = `${daysAgo}d ago`;
-            activityColor = colors.dim;
-          }
+          if (stat.mtimeMs > lastTouch) lastTouch = stat.mtimeMs;
         }
       }
     }
 
-    // Paused squads shown in yellow with a ⏸ indicator
-    const nameDisplay = isPaused
-      ? `${colors.yellow}${padEnd(squadName, w.name)}${RESET}`
-      : `${colors.cyan}${padEnd(squadName, w.name)}${RESET}`;
+    const working = workingSquads.has(squadName);
+    if (!working && !options.all && Date.now() - lastTouch > SEVEN_DAYS) { idleCount++; continue; }
 
-    const activityDisplay = isPaused
-      ? padEnd(`${colors.yellow}⏸ paused${RESET}`, w.activity)
-      : padEnd(`${activityColor}${lastActivity}${RESET}`, w.activity);
+    const states = memoryDir ? getSquadState(squadName) : [];
+    const daysAgo = lastTouch > 0 ? Math.floor((Date.now() - lastTouch) / (24 * 60 * 60 * 1000)) : null;
+    const activity = working
+      ? `${colors.green}● working${RESET}`
+      : squadData?.status === 'paused'
+        ? `${colors.yellow}⏸ paused${RESET}`
+        : daysAgo === null
+          ? `${colors.dim}—${RESET}`
+          : daysAgo === 0
+            ? `${colors.green}today${RESET}`
+            : `${daysAgo < 7 ? colors.yellow : colors.dim}${daysAgo}d ago${RESET}`;
 
-    const row = `  ${colors.purple}${box.vertical}${RESET} ` +
-      nameDisplay +
-      `${padEnd(String(agents.length), w.agents)}` +
-      `${padEnd(memoryStatus, w.memory)}` +
-      activityDisplay +
-      `${colors.purple}${box.vertical}${RESET}`;
-
-    writeLine(row);
+    rows.push({
+      name: squadName,
+      agents: listAgents(squadsDir, squadName).length,
+      memory: states.length > 0 ? `${states.length} ${states.length === 1 ? 'entry' : 'entries'}` : 'none',
+      activity,
+    });
   }
 
-  writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  if (rows.length > 0) {
+    const w = { name: 16, agents: 8, memory: 14, activity: 12 };
+    const tableWidth = w.name + w.agents + w.memory + w.activity + 6;
+
+    writeLine(`  ${colors.purple}${box.topLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.topRight}${RESET}`);
+    writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +
+      `${bold}${padEnd('SQUAD', w.name)}${RESET}` +
+      `${bold}${padEnd('AGENTS', w.agents)}${RESET}` +
+      `${bold}${padEnd('MEMORY', w.memory)}${RESET}` +
+      `${bold}ACTIVITY${RESET}` +
+      ` ${colors.purple}${box.vertical}${RESET}`);
+    writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
+    for (const r of rows) {
+      writeLine(`  ${colors.purple}${box.vertical}${RESET} ` +
+        `${colors.cyan}${padEnd(r.name, w.name)}${RESET}` +
+        `${padEnd(String(r.agents), w.agents)}` +
+        `${padEnd(r.memory, w.memory)}` +
+        `${padEnd(r.activity, w.activity)}` +
+        `${colors.purple}${box.vertical}${RESET}`);
+    }
+    writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
+  }
+
+  if (!options.all && (idleCount > 0 || pausedCount > 0)) {
+    const parts: string[] = [];
+    if (idleCount > 0) parts.push(`${idleCount} idle >7d`);
+    if (pausedCount > 0) parts.push(`${pausedCount} paused`);
+    writeLine(`  ${colors.dim}${parts.join(' · ')} — squads status --all shows everything${RESET}`);
+  }
   writeLine();
 
   // Discover repos from squad definitions (SQUAD.md `repo` field)
@@ -233,10 +279,18 @@ async function showOverallStatus(
   const allRepoNames = [...ops.milestones.map(m => m.repo), ...ops.openPRs.map(p => p.repo)];
   const repoColWidth = Math.max(10, ...allRepoNames.map(r => r.length + 2));
 
-  if (ops.milestones.length > 0) {
-    writeLine(`  ${bold}Milestones${RESET}`);
+  // Milestones AHEAD — a finished milestone is history, not status. Parked
+  // ones aren't being worked either; both hide unless --all.
+  const isParked = (title: string) => /^parked\b/i.test(title.trim());
+  const ahead = options.all
+    ? ops.milestones
+    : ops.milestones.filter(ms => ms.percent < 100 && !isParked(ms.title));
+  const hiddenMs = ops.milestones.length - ahead.length;
+
+  if (ahead.length > 0) {
+    writeLine(`  ${bold}Milestones ahead${RESET}${hiddenMs > 0 ? ` ${colors.dim}(${hiddenMs} done/parked hidden — --all)${RESET}` : ''}`);
     writeLine();
-    for (const ms of ops.milestones) {
+    for (const ms of ahead) {
       const filled = Math.round(ms.percent / 10);
       const bar = `${colors.green}${'█'.repeat(filled)}${colors.dim}${'░'.repeat(10 - filled)}${RESET}`;
       const pctColor = ms.percent >= 80 ? colors.green : ms.percent >= 40 ? colors.yellow : colors.red;
@@ -249,8 +303,15 @@ async function showOverallStatus(
     writeLine(`  ${bold}Open PRs${RESET}`);
     writeLine();
     for (const pr of ops.openPRs) {
-      const title = pr.title.length > 50 ? pr.title.substring(0, 47) + '...' : pr.title;
-      writeLine(`  ${colors.dim}${padEnd(pr.repo, repoColWidth)}${RESET}${colors.cyan}#${pr.number}${RESET} ${title}`);
+      const title = pr.title.length > 44 ? pr.title.substring(0, 41) + '...' : pr.title;
+      const ciBadge = pr.ci === 'pass' ? `${colors.green}✓ ci${RESET}`
+        : pr.ci === 'fail' ? `${colors.red}✗ ci${RESET}`
+        : pr.ci === 'pending' ? `${colors.yellow}○ ci${RESET}`
+        : `${colors.dim}– ci${RESET}`;
+      const ageDays = pr.createdAt ? Math.floor((Date.now() - new Date(pr.createdAt).getTime()) / (24 * 60 * 60 * 1000)) : null;
+      const age = ageDays === null ? '' : ageDays === 0 ? 'today' : `${ageDays}d`;
+      const ageColor = ageDays !== null && ageDays > 30 ? colors.red : ageDays !== null && ageDays > 7 ? colors.yellow : colors.dim;
+      writeLine(`  ${colors.dim}${padEnd(pr.repo, repoColWidth)}${RESET}${colors.cyan}#${pr.number}${RESET} ${padEnd(title, 46)} ${ciBadge} ${colors.dim}→ ${pr.base}${RESET} ${ageColor}${age}${RESET}`);
     }
     writeLine();
   }
