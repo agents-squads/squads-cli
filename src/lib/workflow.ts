@@ -59,11 +59,13 @@ import { createRunWorktree } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import {
   logObservability,
+  logRunStarted,
   snapshotGoals,
   diffGoals,
   deriveCostFromTokens,
   type ObservabilityRecord,
 } from './observability.js';
+import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 import {
   StreamJsonAccumulator,
   emptyUsage,
@@ -618,6 +620,26 @@ export async function runConversation(
   const executionId = generateExecutionId();
   const goalsBefore = snapshotGoals(squad.name);
 
+  // Run-ledger start event for the cycle. pid is this CLI process — a
+  // foreground squad run lives and dies with it, so liveness is exact.
+  // The obsRecord at cycle end writes the terminal row for the same id.
+  logRunStarted({
+    id: executionId,
+    squad: squad.name,
+    agent: lead.name,
+    provider: 'anthropic',
+    model: options.model || modelForRole('lead'),
+    trigger: 'scheduled',
+    pid: process.pid,
+    task: options.task,
+  });
+  void reportExecutionStart(squad.name, lead.name, executionId, {
+    trigger: 'scheduled',
+    model: options.model || modelForRole('lead'),
+    brief: options.task?.slice(0, 500),
+    pid: process.pid,
+  });
+
   // Accumulate REAL cost/usage across every agent spawn in this conversation
   // (plan + workers + review + verify) — captured from stream-json result events.
   let cycleUsage: StreamUsage = emptyUsage();
@@ -1136,6 +1158,13 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
     goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
   };
   logObservability(obsRecord);
+  // Live terminal report — Postgres converges NOW, not at the next 5-minute
+  // batch ingest (which still runs and enriches the same row by id).
+  void reportExecutionComplete(executionId, 'completed', {
+    durationMs: cycleDurationMs,
+    squad: squad.name,
+    agent: lead.name,
+  });
 
   finishEvents(true);
   return {

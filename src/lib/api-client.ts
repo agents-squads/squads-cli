@@ -87,6 +87,7 @@ export async function reportExecutionStart(
     trigger?: string;
     model?: string;
     brief?: string;
+    pid?: number;
   },
 ): Promise<string | null> {
   const config = getApiConfig();
@@ -100,14 +101,19 @@ export async function reportExecutionStart(
         ...config.headers,
       },
       body: JSON.stringify({
+        // One run, one id (run-ledger contract): the API honors this id, so
+        // the terminal PATCH and the jsonl batch ingest land on the SAME row.
+        // The old flow let the server mint a second identity that nothing
+        // ever completed — every such row sat 'running' forever.
+        execution_id: executionId,
         squad,
         agent,
         executor: 'cli',
         brief: metadata?.brief,
         model: metadata?.model,
         metadata: {
-          local_execution_id: executionId,
           trigger: metadata?.trigger || 'manual',
+          ...(metadata?.pid ? { pid: metadata.pid } : {}),
         },
       }),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -124,14 +130,20 @@ export async function reportExecutionStart(
 /**
  * Report execution completion to the API.
  * Non-blocking: fire-and-forget.
+ *
+ * squad/agent ride along so a terminal report whose start never arrived
+ * (offline dispatch, killed process) still lands as a terminal row — the
+ * API upserts on identity instead of 404ing.
  */
 export async function reportExecutionComplete(
   executionId: string,
-  status: 'completed' | 'failed',
+  status: 'completed' | 'failed' | 'orphaned',
   details?: {
     summary?: string;
     error?: string;
     durationMs?: number;
+    squad?: string;
+    agent?: string;
   },
 ): Promise<boolean> {
   return apiRequest(agentExecutionPath(executionId), 'PATCH', {
@@ -139,6 +151,8 @@ export async function reportExecutionComplete(
     ...(details?.summary ? { summary: details.summary } : {}),
     ...(details?.error ? { error: details.error } : {}),
     ...(details?.durationMs ? { duration_ms: details.durationMs } : {}),
+    ...(details?.squad ? { squad: details.squad } : {}),
+    ...(details?.agent ? { agent: details.agent } : {}),
   });
 }
 

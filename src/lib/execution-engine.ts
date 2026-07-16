@@ -41,7 +41,7 @@ import {
   registerContextWithBridge,
   updateExecutionStatus,
 } from './execution-log.js';
-import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
+import { logObservability, logRunStarted, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
 import { parseStreamJson, StreamJsonAccumulator } from './stream-json.js';
 import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
@@ -816,6 +816,20 @@ export function executeForeground(config: {
       env: config.agentEnv,
     });
 
+    // Run-ledger start event: the close handler below writes the terminal row
+    // for the SAME id, so the fold sees running → completed/failed. pid is the
+    // spawned claude process — dies with the run, so the orphan reaper can
+    // tell "still working" from "crashed without reporting".
+    logRunStarted({
+      id: config.execContext.executionId,
+      squad: config.squadName,
+      agent: config.agentName,
+      provider: config.provider || 'anthropic',
+      model: config.agentEnv.SQUADS_MODEL || 'unknown',
+      trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
+      pid: claude.pid,
+    });
+
     claude.on('close', async (code) => {
       const durationMs = Date.now() - config.startMs;
 
@@ -1236,6 +1250,18 @@ export async function executeWithClaude(
     model: claudeModelAlias || resolvedModel,
     brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
   });
+  // Ledger start event. No pid: the wrapper's pidFile is the liveness
+  // authority for detached runs and reconcileDetachedRuns writes the
+  // terminal row; the reaper's 3h fallback covers a vanished pidFile.
+  logRunStarted({
+    id: execContext.executionId,
+    squad: squadName,
+    agent: agentName,
+    provider: 'anthropic',
+    model: claudeModelAlias || resolvedModel || 'unknown',
+    trigger: trigger as ObservabilityRecord['trigger'],
+    task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+  });
 
   if (runInWatch) {
     if (verbose) {
@@ -1432,6 +1458,11 @@ export async function executeWithProvider(
     }
   }
 
+  // One id for the whole run, resolved once: the start event, the terminal
+  // row, and the API report must share it or the ledger fold sees two runs —
+  // one forever 'running' (the exact bug the run-ledger kills).
+  const executionId = options.executionId || generateExecutionId();
+
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
@@ -1444,6 +1475,17 @@ export async function executeWithProvider(
           : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
+      });
+
+      logRunStarted({
+        id: executionId,
+        squad: squadName,
+        agent: agentName,
+        provider,
+        model: options.model || 'unknown',
+        trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+        pid: proc.pid,
+        task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
       });
 
       // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
@@ -1502,7 +1544,7 @@ export async function executeWithProvider(
           : null;
         logObservability({
           ts: new Date().toISOString(),
-          id: options.executionId || generateExecutionId(),
+          id: executionId,
           squad: squadName,
           agent: agentName,
           provider,
@@ -1621,14 +1663,6 @@ export async function executeWithProvider(
   const wrapperScript = `${buildPidFileWriteCmd(pidFile, options.executionId)}; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
 
   // Register run start with the API for provider background mode (#1100).
-  // brief carries the dispatch task text (#1131).
-  // Fire-and-forget: never block the dispatch on API reachability
-  void reportExecutionStart(squadName, agentName, options.executionId || generateExecutionId(), {
-    trigger: options.trigger || 'manual',
-    model: options.model,
-    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
-  });
-
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,
     detached: true,
@@ -1637,6 +1671,27 @@ export async function executeWithProvider(
   });
 
   child.unref();
+
+  // Register run start AFTER spawn so the report carries the wrapper pid —
+  // the sh wrapper lives for the run's duration, so it's the liveness signal
+  // the orphan reaper checks. Fire-and-forget (#1131 brief; never block on
+  // API reachability), same id as the spool's terminal report.
+  void reportExecutionStart(squadName, agentName, executionId, {
+    trigger: options.trigger || 'manual',
+    model: options.model,
+    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    pid: child.pid,
+  });
+  logRunStarted({
+    id: executionId,
+    squad: squadName,
+    agent: agentName,
+    provider,
+    model: options.model || 'unknown',
+    trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+    pid: child.pid,
+    task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+  });
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);

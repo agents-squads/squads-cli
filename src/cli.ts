@@ -533,6 +533,7 @@ program
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
   .option('-j, --json', 'Output as JSON')
+  .option('-a, --all', 'Show every squad and completed milestones (default: what is moving now)')
   .action(async (squad, options) => {
     const { statusCommand } = await import('./commands/status.js');
     return statusCommand(squad, options);
