@@ -136,6 +136,7 @@ const PROVIDER_FATAL = [
   /insufficient balance|please recharge|insufficient_quota|exceeded your current quota/i,
   /The supported API model names are/,
   /invalid api key|incorrect api key/i,
+  /AI_\w*Error/,  // opencode (Vercel AI SDK) — AI_APICallError, AI_LoadAPIKeyError, etc. (#978)
 ];
 
 /** Returns the matched failure line for logging, or null when output looks healthy. */

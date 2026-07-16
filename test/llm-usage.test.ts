@@ -143,6 +143,8 @@ describe('detectProviderFatalError (#936 — exit-0 API failures must fail loud)
     expect(detectProviderFatalError('[1113][Insufficient balance or no resource package. Please recharge.]')).toBeTruthy();
     expect(detectProviderFatalError('You exceeded your current quota, please check your plan')).toBeTruthy();
     expect(detectProviderFatalError('Error: invalid api key provided')).toBeTruthy();
+    expect(detectProviderFatalError('AI_APICallError: Incorrect API key provided')).toBeTruthy();
+    expect(detectProviderFatalError('AI_APICallError: No auth credentials found')).toBeTruthy();
   });
   it('stays quiet on healthy output', async () => {
     const { detectProviderFatalError } = await import('../src/lib/llm-clis.js');
