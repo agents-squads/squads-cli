@@ -1254,7 +1254,10 @@ export async function executeWithClaude(
 
   // ── Detached modes (watch + background) ──────────────────────────────
   const timestamp = Date.now();
-  const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
+  // targetRepoRoot, not projectRoot (dispatch root) — pid/log files must land
+  // where runs-inventory.ts's inventoryRoots() scans (squad's bound repo), or
+  // `squads runs` invoked from the target repo misses live lanes (#1125).
+  const { logFile, pidFile } = prepareLogFiles(targetRepoRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
     effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken, gitCredentialEnv: botGitCredentialEnv,
   });
@@ -1438,9 +1441,17 @@ export async function executeWithProvider(
     throw new Error(`CLI '${cliConfig.command}' not found. Install: ${cliConfig.install}`);
   }
 
-  const projectRoot = options.cwd || getProjectRoot();
+  const dispatchRoot = getProjectRoot();
   const squadName = options.squadName || 'unknown';
   const agentName = options.agentName || 'unknown';
+  // Callers that already resolved the squad's bound repo pass cwd (#1092
+  // task-reroute, agent-runner.ts / execution-engine.ts's own delegation).
+  // Callers that don't (lead/sequential modes in run-modes.ts) get the same
+  // resolution here — otherwise worktree, harvest, and pid/log placement
+  // (below) all land in the dispatch root instead of the squad's target
+  // repo, the same blind spot runs-inventory.ts scans around (#1125).
+  const projectRoot = options.cwd
+    || resolveTargetRepoRoot(dispatchRoot, squadName !== 'unknown' ? loadSquad(squadName) : null, options.task);
   const timestamp = Date.now();
 
   // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
@@ -1688,7 +1699,7 @@ export async function executeWithProvider(
   const timeoutFlag = `${pidFile}.timeout`;
   const spoolCmd = options.executionId
     ? buildSpoolWriterShell({
-        obsRoot: getProjectRoot(),
+        obsRoot: dispatchRoot,
         execId: options.executionId,
         squad: squadName,
         agent: agentName,
