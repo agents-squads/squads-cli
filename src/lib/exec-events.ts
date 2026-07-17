@@ -53,7 +53,9 @@ export type ExecEvent =
 
 /** Envelope stamped on every persisted line. */
 export interface PersistedExecEvent {
-  v: 1;
+  /** v2 (#1158) adds the optional source/provider/session_id fields below;
+   *  v1 lines remain valid — readers treat every v2 field as optional. */
+  v: 1 | 2;
   runId: string;
   /** Root of the dispatch chain (#920) — present only when ≠ runId (nested run). */
   root?: string;
@@ -61,6 +63,12 @@ export interface PersistedExecEvent {
   ts: string;
   /** Which agent in the run produced this event (fan-out attribution). */
   agent?: string;
+  /** Emitting runtime (v2): squads-cli | claude-code | claude-code-headless | opencode. */
+  source?: string;
+  /** LLM provider serving the run (v2): anthropic | deepseek | glm | ... */
+  provider?: string;
+  /** Claude Code session uuid backing the run, when known (v2). */
+  session_id?: string;
   event: ExecEvent;
 }
 
@@ -267,6 +275,64 @@ export function execEventsFile(obsRoot: string, executionId: string): string {
   return join(obsRoot, '.agents', 'observability', 'events', `${safeId}.jsonl`);
 }
 
+// ── API flusher (#1158) ───────────────────────────────────────────────
+
+const FLUSH_BATCH_SIZE = 25;
+const FLUSH_INTERVAL_MS = 2000;
+
+/**
+ * Best-effort batched POST of persisted events to the connected API
+ * (`POST /agent-executions/{id}/events`). The jsonl file stays authoritative:
+ * a failed batch is retried once, then dropped — the server reconciles from
+ * the file later, so losing a live batch costs latency, never data. The
+ * timer is unref'd and every failure is swallowed: the flusher must never
+ * hold the process open or throw into the run path.
+ */
+export class ExecEventFlusher {
+  private buf: PersistedExecEvent[] = [];
+  private timer: NodeJS.Timeout | null = null;
+  private chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly runId: string,
+    private readonly batchSize = FLUSH_BATCH_SIZE,
+    private readonly intervalMs = FLUSH_INTERVAL_MS,
+  ) {}
+
+  push(line: PersistedExecEvent): void {
+    this.buf.push(line);
+    if (this.buf.length >= this.batchSize) {
+      void this.flush();
+    } else if (!this.timer) {
+      this.timer = setTimeout(() => void this.flush(), this.intervalMs);
+      this.timer.unref?.();
+    }
+  }
+
+  /** Send everything buffered. Batches stay ordered via an internal chain. */
+  flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.buf.length === 0) return this.chain;
+    const batch = this.buf;
+    this.buf = [];
+    this.chain = this.chain.then(async () => {
+      // Lazy import: no network machinery loaded unless a flush actually runs.
+      const { reportExecutionEvents } = await import('./api-client.js');
+      const ok = await reportExecutionEvents(this.runId, batch);
+      if (!ok) await reportExecutionEvents(this.runId, batch); // once more, then let the file replay cover it
+    }).catch(() => {});
+    return this.chain;
+  }
+
+  /** Final flush at run end. Awaitable, but safe to fire-and-forget. */
+  close(): Promise<void> {
+    return this.flush();
+  }
+}
+
 /**
  * Append-only JSONL writer for a run's event stream.
  *
@@ -277,6 +343,8 @@ export function execEventsFile(obsRoot: string, executionId: string): string {
  *   dropped; terminal events still land; `close()` records an explicit
  *   `truncated{droppedCount}` so a capped stream is never mistaken for a
  *   complete one.
+ * - Optionally mirrors every persisted line to an `ExecEventFlusher` (#1158)
+ *   — always after the file append, so the projection never leads the source.
  */
 export class ExecEventWriter {
   private seq = 0;
@@ -287,15 +355,28 @@ export class ExecEventWriter {
   private readonly maxEvents: number;
   private readonly maxBytes: number;
 
+  private readonly source?: string;
+  private readonly provider?: string;
+  private readonly sessionId?: string;
+  private readonly flusher?: ExecEventFlusher;
+
   constructor(
     private readonly file: string,
     private readonly runId: string,
-    opts: { maxEvents?: number; maxBytes?: number } = {},
+    opts: {
+      maxEvents?: number; maxBytes?: number;
+      source?: string; provider?: string; sessionId?: string;
+      flusher?: ExecEventFlusher;
+    } = {},
   ) {
     const envMax = Number(process.env.SQUADS_EVENTS_MAX);
     const envBytes = Number(process.env.SQUADS_EVENTS_MAX_BYTES);
     this.maxEvents = opts.maxEvents ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_EVENTS);
     this.maxBytes = opts.maxBytes ?? (Number.isFinite(envBytes) && envBytes > 0 ? envBytes : DEFAULT_MAX_BYTES);
+    this.source = opts.source;
+    this.provider = opts.provider;
+    this.sessionId = opts.sessionId;
+    this.flusher = opts.flusher;
     try {
       const dir = dirname(file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -315,13 +396,17 @@ export class ExecEventWriter {
     // are queryable by one id. Read per-emit (cheap) — the env is set by
     // buildAgentEnv on the process that spawned this CLI.
     const root = process.env.SQUADS_ROOT_RUN_ID;
+    const v2 = Boolean(this.source || this.provider || this.sessionId);
     const line: PersistedExecEvent = {
-      v: 1,
+      v: v2 ? 2 : 1,
       runId: this.runId,
       ...(root && root !== this.runId ? { root } : {}),
       seq: this.seq,
       ts: new Date().toISOString(),
       ...(agent ? { agent } : {}),
+      ...(this.source ? { source: this.source } : {}),
+      ...(this.provider ? { provider: this.provider } : {}),
+      ...(this.sessionId ? { session_id: this.sessionId } : {}),
       event,
     };
     try {
@@ -331,7 +416,10 @@ export class ExecEventWriter {
       this.bytes += serialized.length;
     } catch {
       this.dead = true; // fs is broken — stop trying, never throw into the run
+      return;
     }
+    // After the append — the file is the source of truth, the API a projection.
+    this.flusher?.push(line);
   }
 
   /** Run every event an adapter extracts from one raw provider line through emit. */
@@ -353,6 +441,14 @@ export class ExecEventWriter {
       this.emit({ type: 'truncated', droppedCount: this.dropped, reason: `event cap reached (${this.maxEvents} events / ${this.maxBytes} bytes)` });
     }
     this.closed = true;
+    // Fire-and-forget: the engine keeps the process alive past close() (auto
+    // commit, terminal reports); anything the flush loses, file replay covers.
+    void this.flusher?.close();
+  }
+
+  /** Awaitable final flush for callers that can wait (reconcile paths). */
+  async drain(): Promise<void> {
+    await this.flusher?.close();
   }
 
   /** Events dropped by the cap so far (visible for tests/diagnostics). */
@@ -387,7 +483,13 @@ export function normalizeDetachedLog(
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
 ): number {
   const adapter = createClaudeStreamJsonAdapter();
-  const writer = new ExecEventWriter(execEventsFile(obsRoot, executionId), executionId);
+  // Reconcile doubles as API replay (#1158): the run's live flushes never
+  // happened (spawning CLI long gone), so POST the normalized stream now.
+  // Best-effort as always — no API, no auth, no problem.
+  const writer = new ExecEventWriter(execEventsFile(obsRoot, executionId), executionId, {
+    source: 'squads-cli',
+    flusher: new ExecEventFlusher(executionId),
+  });
   for (const line of rawLog.split('\n')) {
     writer.ingestProviderLine(adapter, line, agent);
   }
