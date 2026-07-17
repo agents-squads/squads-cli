@@ -8,6 +8,35 @@ vi.mock('../src/lib/api-client.js', () => ({
   reportExecutionComplete: vi.fn().mockResolvedValue(true),
 }));
 
+// #1147: a hook for one test to observe/intercept the exact readFileSync
+// call spool.ts makes on a claimed done-file — used to inject a second,
+// fully independent reconcile sweep at the precise moment a real race would
+// land. `vi.hoisted` is required because `vi.mock` factories run before any
+// module-scope `let` would otherwise be initialized.
+const fsReadHook = vi.hoisted(() => ({ intercept: null as null | ((target: string) => void) }));
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      const hook = fsReadHook.intercept;
+      // Real read happens FIRST — the caller (sweep A) captures the content
+      // exactly like a real process would before a concurrent sweep (B) can
+      // touch the file. Only then do we let B race in, so pre-fix behavior
+      // (no claim before read) is faithfully reproduced: A already has the
+      // bytes in hand and will still append its own record even though B
+      // deletes the file out from under it a moment later.
+      const result = actual.readFileSync(...args);
+      if (hook) {
+        fsReadHook.intercept = null;
+        hook(String(args[0]));
+      }
+      return result;
+    },
+  };
+});
+
 import {
   buildSpoolWriterShell,
   buildWatchdogShell,
@@ -147,6 +176,37 @@ describe('reconcileDetachedRuns', () => {
     expect(reconcileDetachedRuns(root)).toBe(1);
     expect(reconcileDetachedRuns(root)).toBe(0);
     expect(readExecutionsJsonl()).toHaveLength(1);
+  });
+
+  it('claims each done-file atomically — two sweeps racing on the same file yield exactly one record (#1147)', () => {
+    writeFileSync(join(root, 'run.log'), 'Tokens: 5k sent, 100 received. Cost: $0.002 message, $0.002 session.\n');
+    writeSpoolFile({ execId: 'exec_race_1', exitCode: 143, timedOut: true });
+
+    const dir = spoolDir(root);
+    // Simulate two CLI processes (e.g. `squads status` and `squads usage`)
+    // sweeping the spool at the same instant: sweep A is paused right as it
+    // opens the done-file's content — the exact window where, pre-#1147, a
+    // second sweep (B, a fully independent reconcileDetachedRuns() call)
+    // could also see and process the same still-present done-file. Post-fix,
+    // A has already claimed the file via an atomic rename before this read,
+    // so B's own directory listing finds nothing left to claim.
+    fsReadHook.intercept = (target) => {
+      if (target.startsWith(dir) && target.endsWith('.json')) {
+        reconcileDetachedRuns(root); // sweep B races in here
+      }
+    };
+
+    const ingestedByA = reconcileDetachedRuns(root); // sweep A
+    fsReadHook.intercept = null;
+
+    const records = readExecutionsJsonl();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ id: 'exec_race_1', status: 'timeout' });
+    // Exactly one sweep won the claim; the other ingested nothing for this entry.
+    expect(ingestedByA).toBeLessThanOrEqual(1);
+    expect(reportExecutionComplete).toHaveBeenCalledTimes(1);
+    // No orphaned claim file left behind by the loser.
+    expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
   });
 
   it('quarantines malformed done-files without breaking the sweep', () => {
