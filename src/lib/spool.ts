@@ -53,7 +53,7 @@ export interface SpoolRecord {
   startEpoch: number;
   endEpoch: number;
   exitCode: number;
-  /** 'merged' | 'preserved' | 'none' — provider harvest outcome, '' for claude runs */
+  /** 'preserved' | 'none' — provider harvest outcome (preserve-only, #1126), '' for claude runs */
   harvest: string;
   /** Watchdog fired (hq#450 D3) — run was reaped at its deadline. */
   timedOut?: boolean;
