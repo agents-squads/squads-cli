@@ -76,6 +76,7 @@ import {
   type RunOutcomes,
 } from './stream-json.js';
 import {
+  ExecEventFlusher,
   ExecEventWriter,
   createClaudeStreamJsonAdapter,
   execEventsFile,
@@ -668,6 +669,7 @@ export async function runConversation(
   const events = new ExecEventWriter(
     execEventsFile(findProjectRoot() || process.cwd(), executionId),
     executionId,
+    { source: 'squads-cli', flusher: new ExecEventFlusher(executionId) },
   );
   const finishEvents = (ok: boolean) => {
     events.emit({

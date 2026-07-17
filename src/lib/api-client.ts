@@ -157,6 +157,20 @@ export async function reportExecutionComplete(
 }
 
 /**
+ * Batch-report a run's step events (XEU: exec-event unification, #1158).
+ * Body mirrors the per-run jsonl envelopes verbatim; the API ingests
+ * idempotently on (run_id, seq), so replaying a file is safe.
+ * Returns false on any failure — callers treat the file as authoritative.
+ */
+export async function reportExecutionEvents(
+  executionId: string,
+  events: unknown[],
+): Promise<boolean> {
+  if (events.length === 0) return true;
+  return apiRequest(`${agentExecutionPath(executionId)}/events`, 'POST', { events });
+}
+
+/**
  * Report conversation result to the API.
  * Extends execution with conversation-specific data in extra_data.
  * Non-blocking: fire-and-forget.

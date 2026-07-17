@@ -206,3 +206,94 @@ describe('normalizeDetachedLog', () => {
     expect(existsSync(execEventsFile(root, 'exec_legacy'))).toBe(false);
   });
 });
+
+// ── ExecEventFlusher (#1158) ───────────────────────────────────────────────
+
+import { vi } from 'vitest';
+import { ExecEventFlusher } from '../src/lib/exec-events.js';
+
+vi.mock('../src/lib/api-client.js', () => ({
+  reportExecutionEvents: vi.fn(async () => true),
+}));
+
+describe('ExecEventFlusher', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'exec-flush-'));
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    vi.mocked(reportExecutionEvents).mockClear();
+    vi.mocked(reportExecutionEvents).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const envelope = (seq: number): PersistedExecEvent => ({
+    v: 2, runId: 'exec_flush_1', seq, ts: new Date().toISOString(),
+    source: 'squads-cli', event: { type: 'tool_call', tool: 'Bash', inputSummary: 'ls' },
+  });
+
+  it('flushes when the batch size is reached', async () => {
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    const flusher = new ExecEventFlusher('exec_flush_1', 3, 60_000);
+    flusher.push(envelope(0));
+    flusher.push(envelope(1));
+    expect(reportExecutionEvents).not.toHaveBeenCalled();
+    flusher.push(envelope(2));
+    await flusher.flush();
+    expect(reportExecutionEvents).toHaveBeenCalledTimes(1);
+    const [runId, batch] = vi.mocked(reportExecutionEvents).mock.calls[0];
+    expect(runId).toBe('exec_flush_1');
+    expect((batch as PersistedExecEvent[]).map((e) => e.seq)).toEqual([0, 1, 2]);
+  });
+
+  it('close() sends whatever is buffered', async () => {
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    const flusher = new ExecEventFlusher('exec_flush_1', 25, 60_000);
+    flusher.push(envelope(0));
+    await flusher.close();
+    expect(reportExecutionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed batch exactly once, then drops it silently', async () => {
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    vi.mocked(reportExecutionEvents).mockResolvedValue(false);
+    const flusher = new ExecEventFlusher('exec_flush_1', 25, 60_000);
+    flusher.push(envelope(0));
+    await flusher.close();
+    expect(reportExecutionEvents).toHaveBeenCalledTimes(2);
+    // A later flush with nothing buffered stays quiet.
+    await flusher.flush();
+    expect(reportExecutionEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it('writer mirrors persisted lines to the flusher, after the file append', async () => {
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    const file = execEventsFile(dir, 'exec_flush_2');
+    const flusher = new ExecEventFlusher('exec_flush_2', 25, 60_000);
+    const writer = new ExecEventWriter(file, 'exec_flush_2', {
+      source: 'squads-cli', provider: 'glm', flusher,
+    });
+    writer.emit({ type: 'run_start', squad: 's', mode: 'foreground', model: 'm', role: '', startedAt: 'now' });
+    writer.emit({ type: 'run_end', ok: true, durationMs: 1, totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0 } });
+    await writer.drain();
+
+    const persisted = readEvents(file);
+    expect(persisted).toHaveLength(2);
+    expect(persisted[0].v).toBe(2);
+    expect(persisted[0].source).toBe('squads-cli');
+    expect(persisted[0].provider).toBe('glm');
+
+    const flushed = vi.mocked(reportExecutionEvents).mock.calls.flatMap((c) => c[1] as PersistedExecEvent[]);
+    expect(flushed).toEqual(persisted);
+  });
+
+  it('writer without v2 fields keeps writing v1 lines', () => {
+    const file = execEventsFile(dir, 'exec_flush_3');
+    const writer = new ExecEventWriter(file, 'exec_flush_3');
+    writer.emit({ type: 'file_read', path: '/x' });
+    expect(readEvents(file)[0].v).toBe(1);
+  });
+});

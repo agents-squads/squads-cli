@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventWriter, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -1161,7 +1161,12 @@ export async function executeWithClaude(
   // CLI at dispatch (only we know the layers); the run's tool activity follows —
   // live for foreground, appended at reconcile for detached (from the raw
   // stream-json log the executor writes).
-  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId);
+  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId, {
+    source: 'squads-cli',
+    provider,
+    // Live projection to the connected API (#1158) — file write never blocks on it.
+    flusher: new ExecEventFlusher(execContext.executionId),
+  });
   events.emit({
     type: 'run_start',
     squad: squadName,
