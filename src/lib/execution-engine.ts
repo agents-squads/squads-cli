@@ -64,7 +64,7 @@ import {
   isProviderCLIAvailable,
 } from './llm-clis.js';
 import { gitIdentityArgs } from './git.js';
-import { reportExecutionStart } from './api-client.js';
+import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
@@ -1033,6 +1033,14 @@ export async function executeWatch(config: {
   logFile: string;
   pidFile?: string;
   wrapperScript: string;
+  /** Execution context for spawn-failure reporting (#1157) */
+  execContext?: {
+    executionId: string;
+    squadName: string;
+    agentName: string;
+    model?: string;
+    trigger?: string;
+  };
 }): Promise<string> {
   const child = spawn('sh', ['-c', config.wrapperScript], {
     cwd: config.projectRoot,
@@ -1041,6 +1049,44 @@ export async function executeWatch(config: {
     env: config.agentEnv,
   });
   child.unref();
+
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    if (config.execContext) {
+      const durationMs = Date.now(); // No start timestamp in watch mode
+      logObservability({
+        ts: new Date().toISOString(),
+        id: config.execContext!.executionId,
+        squad: config.execContext!.squadName,
+        agent: config.execContext!.agentName,
+        provider: 'anthropic',
+        model: config.execContext!.model || 'unknown',
+        trigger: (config.execContext!.trigger || 'manual') as ObservabilityRecord['trigger'],
+        status: 'failed',
+        duration_ms: durationMs,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: 0,
+        context_tokens: 0,
+        error: `Failed to spawn watch lane: ${err.message}`,
+      });
+      updateExecutionStatus(config.execContext!.squadName, config.execContext!.agentName, config.execContext!.executionId, 'failed', {
+        error: `Failed to spawn watch lane: ${err.message}`,
+        durationMs,
+      });
+      // Report spawn failure to the API (fire-and-forget)
+      void reportExecutionComplete(config.execContext!.executionId, 'failed', {
+        error: `Failed to spawn watch lane: ${err.message}`,
+        durationMs,
+        squad: config.execContext!.squadName,
+        agent: config.execContext!.agentName,
+      });
+    }
+  });
 
   await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
 
@@ -1334,7 +1380,20 @@ export async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, pidFile, wrapperScript });
+    return executeWatch({
+      projectRoot: targetRepoRoot,
+      agentEnv,
+      logFile,
+      pidFile,
+      wrapperScript,
+      execContext: {
+        executionId: execContext.executionId,
+        squadName,
+        agentName,
+        model: claudeModelAlias || resolvedModel,
+        trigger,
+      },
+    });
   }
 
   // ── Background mode ──────────────────────────────────────────────────
@@ -1353,6 +1412,42 @@ export async function executeWithClaude(
     env: agentEnv,
   });
   child.unref();
+
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    const durationMs = Date.now() - startMs;
+    logObservability({
+      ts: new Date().toISOString(),
+      id: execContext.executionId,
+      squad: squadName,
+      agent: agentName,
+      provider: 'anthropic',
+      model: claudeModelAlias || resolvedModel || 'unknown',
+      trigger: trigger as ObservabilityRecord['trigger'],
+      status: 'failed',
+      duration_ms: durationMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      context_tokens: 0,
+      error: `Failed to spawn background lane: ${err.message}`,
+    });
+    updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
+      error: `Failed to spawn background lane: ${err.message}`,
+      durationMs,
+    });
+    // Report spawn failure to the API (fire-and-forget)
+    void reportExecutionComplete(execContext.executionId, 'failed', {
+      error: `Failed to spawn background lane: ${err.message}`,
+      durationMs,
+      squad: squadName,
+      agent: agentName,
+    });
+  });
 
   if (verbose) {
     writeLine(`  ${colors.dim}Monitor: tail -f ${logFile}${RESET}`);
@@ -1727,6 +1822,38 @@ export async function executeWithProvider(
   });
 
   child.unref();
+
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    const durationMs = Date.now() - timestamp;
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squadName,
+      agent: agentName,
+      provider,
+      model: options.model || 'unknown',
+      trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+      status: 'failed',
+      duration_ms: durationMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      context_tokens: 0,
+      error: `Failed to spawn provider background lane: ${err.message}`,
+    });
+    // Report spawn failure to the API (fire-and-forget)
+    void reportExecutionComplete(executionId, 'failed', {
+      error: `Failed to spawn provider background lane: ${err.message}`,
+      durationMs,
+      squad: squadName,
+      agent: agentName,
+    });
+  });
 
   // Register run start AFTER spawn so the report carries the wrapper pid —
   // the sh wrapper lives for the run's duration, so it's the liveness signal
