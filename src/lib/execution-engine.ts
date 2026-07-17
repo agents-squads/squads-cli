@@ -705,6 +705,45 @@ export async function harvestProviderWork(
 // ── Detached execution helpers ───────────────────────────────────────
 
 /**
+ * Detached-lane shell equivalent of harvestProviderWork (#966/#1126): commit
+ * whatever the executor left in workDir and preserve it on the dedicated
+ * agent branch — NEVER merge/ff into projectRoot's checked-out branch. The
+ * pre-#966 version of this shell path fast-forwarded projectRoot whenever the
+ * branch was ahead, silently landing unreviewed agent commits on whatever the
+ * operator had checked out; the foreground TS path was fixed by #966 but this
+ * detached path was not until #1126. Integration is an inbox decision, never
+ * a side effect of a background run finishing — the branch ref is logged
+ * loudly to the run's log file so `squads inbox`'s stranded-branch scanner
+ * surfaces it. Returns '' when the agent ran in projectRoot directly (nothing
+ * to harvest). Exported standalone (mirroring buildDetachedShellScript) so
+ * the preserve-only contract can be exercised against a real git repo in
+ * tests, the same way harvestProviderWork is.
+ */
+export function buildDetachedHarvestShell(config: {
+  workDir: string;
+  projectRoot: string;
+  branchName: string;
+  squadName: string;
+  agentName: string;
+  provider: string;
+  logFile: string;
+}): string {
+  if (config.workDir === config.projectRoot) return '';
+  // Author = the user's git identity (same as the TS-side harvest); the
+  // repo-scoped fallback identity (#980, single source of truth via
+  // gitIdentityArgs) applies ONLY when no git identity is configured.
+  const harvestMsg = `-m 'feat(${config.squadName}/${config.agentName}): agent work via ${config.provider}' -m '${getCoAuthorTrailer(config.provider)}'`;
+  const harvestIdentity = gitIdentityArgs(config.workDir);
+  return `; git -C '${config.workDir}' add -A 2>/dev/null` +
+    `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
+    `; KEEP_BRANCH=''; HARVEST=none` +
+    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
+    `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
+    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
+}
+
+/**
  * Shell snippet writing a detached wrapper's pid file. Line 1 is always the
  * wrapper's pid (unchanged format — `squads runs`/liveness checks read only
  * this line). Line 2, when an executionId is known, is this run's API
@@ -1641,24 +1680,9 @@ export async function executeWithProvider(
   // lanes spawned with NO --allowedTools, so every Write/Edit was denied in
   // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
   const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-  // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
-  // the executor wrote, fast-forward the project root, and only delete the
-  // agent branch when its work is integrated or empty — never lose output.
-  // Author = the user's git identity (same as the TS-side harvest); the
-  // repo-scoped fallback identity (#980, single source of truth via
-  // gitIdentityArgs) applies ONLY when no git identity is configured.
-  const harvestMsg = `-m 'feat(${squadName}/${agentName}): agent work via ${provider}' -m '${getCoAuthorTrailer(provider)}'`;
-  const harvestIdentity = gitIdentityArgs(workDir);
-  const cleanupCmd = workDir !== projectRoot
-    ? `; git -C '${workDir}' add -A 2>/dev/null` +
-      `; git -C '${workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
-      `; KEEP_BRANCH=''; HARVEST=none` +
-      `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
-      ` { git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 && HARVEST=merged; } || { KEEP_BRANCH=1; HARVEST=preserved; }; fi` +
-      `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null` +
-      `; if [ -z "$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
-      ` else echo "agent work preserved on branch ${branchName} (merge manually)" >> '${logFile}'; fi`
-    : '';
+  const cleanupCmd = buildDetachedHarvestShell({
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+  });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.
   const timeoutFlag = `${pidFile}.timeout`;
