@@ -14,7 +14,7 @@
  * from the run's log (provider runs: the executor's printed usage via
  * `parseUsage`; claude runs: the session JSONL window).
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync, renameSync } from 'fs';
 import { join } from 'path';
 import { getCLIConfig, detectProviderFatalError } from './llm-clis.js';
 import {
@@ -311,6 +311,15 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
  * spool is empty, never throws (read paths must not break on a bad record —
  * a malformed file is renamed aside instead of retried forever).
  *
+ * Six independent read paths (status/usage/exec/run/runs/board) each call
+ * this on startup — separate CLI process invocations that can run at the
+ * same wall-clock moment and race on the same done-file. Each entry is
+ * claimed with an atomic rename before it's read (#1147): `rename()` within
+ * the same directory is a single atomic syscall on POSIX filesystems, so
+ * when two sweeps race on the same entry only one rename can succeed — the
+ * loser gets ENOENT and skips the entry instead of both reading it and
+ * double-reporting the terminal record.
+ *
  * Returns the number of runs ingested.
  */
 export function reconcileDetachedRuns(obsRoot: string): number {
@@ -327,8 +336,17 @@ export function reconcileDetachedRuns(obsRoot: string): number {
 
   for (const entry of entries) {
     const path = join(dir, entry);
+    // Claim the done-file before touching its contents — losing this race
+    // means another sweep already owns (or finished) this entry.
+    const claimPath = join(dir, `.processing-${entry}`);
     try {
-      const spool = JSON.parse(readFileSync(path, 'utf8')) as SpoolRecord;
+      renameSync(path, claimPath);
+    } catch {
+      continue;
+    }
+
+    try {
+      const spool = JSON.parse(readFileSync(claimPath, 'utf8')) as SpoolRecord;
       const { record, resultSummary } = toRecord(spool, obsRoot);
       logObservability(record);
       const tokenSummary = `Detached run reconciled (${record.input_tokens} in / ${record.output_tokens} out, $${record.cost_usd.toFixed(4)})`;
@@ -351,11 +369,11 @@ export function reconcileDetachedRuns(obsRoot: string): number {
         durationMs: record.duration_ms,
       });
 
-      unlinkSync(path);
+      unlinkSync(claimPath);
       ingested++;
     } catch {
       // Malformed/unreadable — quarantine so the sweep never loops on it.
-      try { unlinkSync(path); } catch { /* leave it; next sweep retries */ }
+      try { unlinkSync(claimPath); } catch { /* leave it; next sweep retries */ }
     }
   }
   return ingested;
