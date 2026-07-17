@@ -267,6 +267,54 @@ describe('assistant-event usage (cut-off fallback)', () => {
   });
 });
 
+describe('open background subagents (#1130)', () => {
+  it('flags an Agent tool_use with no matching tool_result by stream end', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'explore', run_in_background: true } },
+      ] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'text', text: "I'll pause here until it completes." },
+      ] } }),
+      JSON.stringify({ type: 'result', result: "I'll pause here until it completes.", is_error: false, total_cost_usd: 0.01, usage: {} }),
+    ].join('\n');
+    const out = parseStreamJson(jsonl);
+    expect(out.sawResult).toBe(true);
+    expect(out.isError).toBe(false);
+    expect(out.openBackgroundSubagents).toBe(1);
+  });
+
+  it('does NOT flag a subagent whose tool_result arrived before the stream ended', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'explore' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'exploration done' },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'done', is_error: false, total_cost_usd: 0.01, usage: {} }),
+    ].join('\n');
+    const out = parseStreamJson(jsonl);
+    expect(out.openBackgroundSubagents).toBe(0);
+  });
+
+  it('ignores non-subagent tools (e.g. Bash) when counting open subagents', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'done', is_error: false, total_cost_usd: 0.01, usage: {} }),
+    ].join('\n');
+    const out = parseStreamJson(jsonl);
+    expect(out.openBackgroundSubagents).toBe(0);
+  });
+
+  it('is 0 by default (no tool_use blocks at all)', () => {
+    const out = parseStreamJson(JSON.stringify({ type: 'result', result: 'ok', is_error: false, total_cost_usd: 0, usage: {} }));
+    expect(out.openBackgroundSubagents).toBe(0);
+  });
+});
+
 describe('usage helpers', () => {
   it('emptyUsage is all zeros', () => {
     expect(emptyUsage()).toEqual({

@@ -568,3 +568,91 @@ describe('claude terminal-state classification + result summary (#1131)', () => 
     }));
   });
 });
+
+// ── #1130: detached lane ends its turn waiting on its own background
+// subagent — a clean, non-error terminal result with zero deliverable and an
+// unresolved Agent/Task tool_use must not be recorded as completed ──────────
+
+describe('open-background-subagent + no-deliverable classification (#1130)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('marks failed: clean is_error:false result, zero commits/PRs/issues, subagent left hanging', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'explore the codebase', run_in_background: true } },
+      ] }, model: 'claude-sonnet-5' }),
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'text', text: "I'm waiting on the background exploration agent's report before I write the migration and endpoint code. I'll pause here until it completes." },
+      ] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: "I'll pause here until it completes.", is_error: false,
+        total_cost_usd: 1.58, num_turns: 34, model: 'claude-sonnet-5',
+        usage: { input_tokens: 500, output_tokens: 80 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_bg_wait_1', provider: 'anthropic', model: 'sonnet', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(String(rec.error)).toContain('background subagent');
+    expect(String(rec.error)).toContain('#1130');
+  });
+
+  it('stays completed when the subagent spawned but its result came back before the terminal result', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'explore' } },
+      ] }, model: 'claude-sonnet-5' }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'exploration complete: found the endpoint' },
+      ] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: "git commit -m 'feat: endpoint'" } },
+      ] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'Implemented and committed.', is_error: false,
+        total_cost_usd: 0.9, num_turns: 10, model: 'claude-sonnet-5',
+        usage: { input_tokens: 500, output_tokens: 80 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_bg_resolved_1', provider: 'anthropic', model: 'sonnet', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+  });
+
+  it('stays completed when a subagent is left open but the lane still delivered a PR', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'background followup', run_in_background: true } },
+        { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'gh pr create --title x' } },
+      ] }, model: 'claude-sonnet-5' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'Opened PR #42, kicked off a background followup task.', is_error: false,
+        total_cost_usd: 0.5, num_turns: 12, model: 'claude-sonnet-5',
+        usage: { input_tokens: 500, output_tokens: 80 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_bg_delivered_1', provider: 'anthropic', model: 'sonnet', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+  });
+
+  it('leaves legacy plain-text logs untouched — no false positive', () => {
+    writeFileSync(join(root, 'run.log'), 'plain old buffered output, not JSON at all\n');
+    writeSpoolFile({ execId: 'exec_bg_legacy_1', provider: 'anthropic', model: 'sonnet', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+  });
+});

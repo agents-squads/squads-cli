@@ -228,6 +228,18 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
       } else if (!stream.sawResult && hasStreamEvidence) {
         status = 'failed';
         fatalError = `stream ended without a terminal result — likely interrupted mid-response (${stream.outcomes.actions} action(s) logged)`;
+      } else if (
+        stream.sawResult && stream.openBackgroundSubagents > 0 &&
+        stream.outcomes.commits === 0 && stream.outcomes.prs_created === 0 && stream.outcomes.issues_created === 0
+      ) {
+        // #1130: a clean, non-error terminal result can still be a no-op — the
+        // lane spawned a background subagent (Task/Agent tool) and ended its
+        // turn waiting on it instead of delegating synchronously. In a
+        // detached lane there is no next turn to resume that wait on, so a
+        // "success" with zero commits/PRs/issues and a subagent left hanging
+        // is not a real completion.
+        status = 'failed';
+        fatalError = `run ended its turn with ${stream.openBackgroundSubagents} background subagent(s) still open and no commit/PR/issue created — not a real completion (#1130)`;
       }
     }
     if (stream?.text) {
