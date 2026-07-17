@@ -108,13 +108,33 @@ export interface ParsedLine {
     usage: StreamUsage;
     isError: boolean;
   };
+  /**
+   * tool_use ids for Agent/Task blocks on this `assistant` event — subagent
+   * spawns to track for open-background-subagent detection (#1130).
+   */
+  subagentToolUseIds?: string[];
+  /** tool_use_ids resolved by a `user` event's `tool_result` blocks (#1130). */
+  resolvedToolUseIds?: string[];
 }
 
 export interface AssistantContentBlock {
   type?: string;
   text?: string;
+  id?: string;                       // tool_use id (correlates to a later tool_result)
   name?: string;                     // tool name on `tool_use` blocks
   input?: Record<string, unknown>;   // tool input (e.g. Bash `command`)
+}
+
+/** A `tool_result` block from a `user` event, correlated back to its tool_use id. */
+export interface ToolResultBlock {
+  type?: string;
+  tool_use_id?: string;
+}
+
+/** True for the built-in subagent-spawning tool, under either name Claude Code has used. */
+function isSubagentTool(name: string | undefined): boolean {
+  const lower = (name || '').toLowerCase();
+  return lower === 'agent' || lower === 'task';
 }
 
 /** Count what the agent did from a message's `tool_use` blocks. */
@@ -185,10 +205,29 @@ export function parseStreamJsonLine(line: string): ParsedLine {
       if (text) out.text = text;
       const outcomes = parseOutcomes(blocks);
       if (outcomes.actions > 0) out.outcomes = outcomes;
+      const subagentIds = blocks
+        .filter((b) => b && b.type === 'tool_use' && typeof b.id === 'string' && isSubagentTool(b.name))
+        .map((b) => b.id as string);
+      if (subagentIds.length > 0) out.subagentToolUseIds = subagentIds;
     }
     const assistantUsage = parseAssistantUsage(message);
     if (assistantUsage) out.assistantUsage = assistantUsage;
     return out;
+  }
+
+  if (ev.type === 'user') {
+    // Tool results arrive on `user` events, carrying only the tool_use_id they
+    // answer — this is what lets us tell "spawned a subagent and got its
+    // result back" from "spawned a subagent and moved on without it" (#1130).
+    const message = ev.message as ({ content?: ToolResultBlock[] } & Record<string, unknown>) | undefined;
+    const blocks = message?.content;
+    if (Array.isArray(blocks)) {
+      const ids = blocks
+        .filter((b) => b && b.type === 'tool_result' && typeof b.tool_use_id === 'string')
+        .map((b) => b.tool_use_id as string);
+      if (ids.length > 0) return { resolvedToolUseIds: ids };
+    }
+    return {};
   }
 
   if (ev.type === 'result') {
@@ -224,6 +263,14 @@ export interface StreamResult {
   sawResult: boolean;
   /** What the agent did: tool actions / commits / PRs / issues / file edits. */
   outcomes: RunOutcomes;
+  /**
+   * Agent/Task subagent spawns whose `tool_use` never got a matching
+   * `tool_result` before the stream ended (#1130). A synchronous subagent
+   * call can't let the parent turn finish without first returning its
+   * result, so a nonzero count here is structural evidence the run ended
+   * its turn on a subagent it launched in the background and never awaited.
+   */
+  openBackgroundSubagents: number;
 }
 
 /**
@@ -251,6 +298,8 @@ export class StreamJsonAccumulator {
   private sawResult = false;
   /** Running sum of what the agent did across the whole stream. */
   private outcomes: RunOutcomes = emptyOutcomes();
+  /** tool_use ids of Agent/Task spawns awaiting a `tool_result` (#1130). */
+  private pendingSubagents = new Set<string>();
 
   /**
    * @param onText optional sink for live display of assistant text chunks.
@@ -292,6 +341,12 @@ export class StreamJsonAccumulator {
     if (parsed.outcomes) {
       this.outcomes = addOutcomes(this.outcomes, parsed.outcomes);
     }
+    if (parsed.subagentToolUseIds) {
+      for (const id of parsed.subagentToolUseIds) this.pendingSubagents.add(id);
+    }
+    if (parsed.resolvedToolUseIds) {
+      for (const id of parsed.resolvedToolUseIds) this.pendingSubagents.delete(id);
+    }
     if (parsed.result) {
       this.sawResult = true;
       this.resultText = parsed.result.text;
@@ -313,7 +368,10 @@ export class StreamJsonAccumulator {
     // quota numbers — cost_usd may be 0 here (assistant events don't report it),
     // which is fine: the caller derives cost from tokens × pricing.
     const usage = this.sawResult ? this.usage : this.assistantUsage;
-    return { text, usage, isError: this.isError, sawResult: this.sawResult, outcomes: this.outcomes };
+    return {
+      text, usage, isError: this.isError, sawResult: this.sawResult, outcomes: this.outcomes,
+      openBackgroundSubagents: this.pendingSubagents.size,
+    };
   }
 }
 
