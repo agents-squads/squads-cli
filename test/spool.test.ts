@@ -443,6 +443,9 @@ describe('stream-json log normalization (#902)', () => {
         { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git add -A && git commit -m "feat: x"' } },
         { type: 'tool_use', id: 't2', name: 'Write', input: { file_path: '/repo/x.ts', content: 'abc' } },
       ], model: 'claude-haiku-4-5' } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 't1', content: '[main fe12ab3] feat: x\n 1 file changed, 2 insertions(+)' },
+      ] } }),
       JSON.stringify({ type: 'result', subtype: 'success', result: 'done', is_error: false,
         total_cost_usd: 0.05, num_turns: 2, model: 'claude-haiku-4-5',
         usage: { input_tokens: 500, output_tokens: 80, cache_read_input_tokens: 2000, cache_creation_input_tokens: 100 } }),
@@ -625,6 +628,9 @@ describe('open-background-subagent + no-deliverable classification (#1130)', () 
       JSON.stringify({ type: 'assistant', message: { content: [
         { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: "git commit -m 'feat: endpoint'" } },
       ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_2', content: '[main ab12cd3] feat: endpoint\n 1 file changed, 10 insertions(+)' },
+      ] } }),
       JSON.stringify({ type: 'result', subtype: 'success', result: 'Implemented and committed.', is_error: false,
         total_cost_usd: 0.9, num_turns: 10, model: 'claude-sonnet-5',
         usage: { input_tokens: 500, output_tokens: 80 } }),
@@ -642,6 +648,9 @@ describe('open-background-subagent + no-deliverable classification (#1130)', () 
         { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { description: 'background followup', run_in_background: true } },
         { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'gh pr create --title x' } },
       ] }, model: 'claude-sonnet-5' }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_2', content: 'https://github.com/agents-squads/x/pull/42' },
+      ] } }),
       JSON.stringify({ type: 'result', subtype: 'success', result: 'Opened PR #42, kicked off a background followup task.', is_error: false,
         total_cost_usd: 0.5, num_turns: 12, model: 'claude-sonnet-5',
         usage: { input_tokens: 500, output_tokens: 80 } }),
