@@ -32,7 +32,10 @@ describe('session outcomes extraction (#1060)', () => {
 
   const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
-  it('counts tool_use blocks into outcomes', () => {
+  it('derives artifacts from tool_results, not command text (cli#1134)', () => {
+    // The Bash create commands only flag candidates; the count comes from the
+    // paired tool_result on the next `user` event. The `gh pr create` here has
+    // NO result URL, so it must count 0 — counting its command text was the bug.
     writeSession('sess-real', [
       {
         type: 'assistant',
@@ -41,9 +44,15 @@ describe('session outcomes extraction (#1060)', () => {
           usage,
           content: [
             { type: 'text', text: 'editing' },
-            { type: 'tool_use', name: 'Edit', input: { file_path: '/x' } },
-            { type: 'tool_use', name: 'Bash', input: { command: 'git add -A && git commit -m "x"' } },
+            { type: 'tool_use', id: 'toolu_e', name: 'Edit', input: { file_path: '/x' } },
+            { type: 'tool_use', id: 'toolu_c', name: 'Bash', input: { command: 'git add -A && git commit -m "x"' } },
           ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_c', content: '[main abc1234] x\n 1 file changed' }],
         },
       },
       {
@@ -51,9 +60,10 @@ describe('session outcomes extraction (#1060)', () => {
         message: {
           model: 'claude-sonnet-5',
           usage,
-          content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gh pr create --title x' } }],
+          content: [{ type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create --title x' } }],
         },
       },
+      // No tool_result for toolu_p with a verified URL → prs_created stays 0.
     ]);
 
     const out = captureSessionUsageById('sess-real');
@@ -61,10 +71,64 @@ describe('session outcomes extraction (#1060)', () => {
     expect(out!.outcomes).toEqual({
       actions: 3,
       files_edited: 1,
-      commits: 1,
-      prs_created: 1,
+      commits: 1,        // verified [main abc1234] in toolu_c's result
+      prs_created: 0,    // command ran but no verified /pull/N URL → 0 (cli#1134)
       issues_created: 0,
     });
+  });
+
+  it('counts a verified PR URL from the tool_result (cli#1134)', () => {
+    writeSession('sess-pr', [
+      {
+        type: 'assistant',
+        message: {
+          model: 'claude-sonnet-5',
+          usage,
+          content: [{ type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_p',
+            content: 'https://github.com/agents-squads/squads-cli/pull/1134',
+          }],
+        },
+      },
+    ]);
+    const out = captureSessionUsageById('sess-pr');
+    expect(out).not.toBeNull();
+    expect(out!.outcomes!.prs_created).toBe(1);
+    expect(out!.outcomes!.commits).toBe(0);
+  });
+
+  it('counts ZERO for a failed gh pr create (is_error result)', () => {
+    writeSession('sess-fail', [
+      {
+        type: 'assistant',
+        message: {
+          model: 'claude-sonnet-5',
+          usage,
+          content: [{ type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_p',
+            is_error: true,
+            content: 'Warning: no commits resolved; exiting',
+          }],
+        },
+      },
+    ]);
+    const out = captureSessionUsageById('sess-fail');
+    expect(out).not.toBeNull();
+    expect(out!.outcomes!.prs_created).toBe(0);
   });
 
   it('omits outcomes (unknown, not zero) when no tool_use blocks are seen', () => {

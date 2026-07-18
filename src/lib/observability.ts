@@ -10,7 +10,17 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
-import { parseOutcomes, emptyOutcomes, addOutcomes, type RunOutcomes, type AssistantContentBlock } from './stream-json.js';
+import {
+  parseOutcomes,
+  parseBashCandidates,
+  parseToolResultBlocks,
+  resolveBashOutcome,
+  emptyOutcomes,
+  addOutcomes,
+  type RunOutcomes,
+  type BashOutcomeKind,
+  type AssistantContentBlock,
+} from './stream-json.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -263,6 +273,13 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
     };
 
     let outcomes = emptyOutcomes();
+    // cli#1134: Bash create commands (gh pr create / gh issue create / git
+    // commit) only mark their tool_use_id as a candidate here; the count comes
+    // from the paired tool_result on the later `user` event — a verified
+    // URL/SHA in a non-error result. Mirrors squads-api#207 / PR #220's
+    // _session_aggregate: counting the command text fabricated artifacts that
+    // were never created.
+    const pendingBash = new Map<string, BashOutcomeKind[]>();
 
     for (const line of lines) {
       try {
@@ -282,10 +299,27 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
 
           if (Array.isArray(msg.content)) {
             outcomes = addOutcomes(outcomes, parseOutcomes(msg.content as AssistantContentBlock[]));
+            for (const c of parseBashCandidates(msg.content as AssistantContentBlock[])) {
+              pendingBash.set(c.id, [...c.kinds]);
+            }
           }
 
           if (!usage.model || usage.model === 'unknown') {
             usage.model = msg.model || 'unknown';
+          }
+        }
+
+        if (record.type === 'user') {
+          const msg = record.message || {};
+          for (const r of parseToolResultBlocks(msg.content)) {
+            const kinds = pendingBash.get(r.toolUseId);
+            pendingBash.delete(r.toolUseId);
+            if (kinds && !r.isError) {
+              const inc = resolveBashOutcome(r.text, kinds);
+              outcomes.commits += inc.commits;
+              outcomes.prs_created += inc.prs_created;
+              outcomes.issues_created += inc.issues_created;
+            }
           }
         }
 

@@ -10,6 +10,10 @@ import {
   StreamJsonAccumulator,
   emptyUsage,
   addUsage,
+  extractPrNumbers,
+  extractIssueNumbers,
+  extractCommitShas,
+  toolResultText,
 } from '../src/lib/stream-json.js';
 
 // A realistic JSONL event stream: system init → two assistant chunks → result.
@@ -57,30 +61,26 @@ describe('parseStreamJsonLine', () => {
     expect(parsed.text).toBeUndefined();
   });
 
-  it('counts outcomes from tool_use blocks (commits, PRs, issues, files, actions)', () => {
+  it('counts INVOCATIONS (actions/files) from tool_use blocks, but NOT artifacts (cli#1134)', () => {
+    // The command text alone creates nothing — commits/PRs/issues stay 0 until
+    // a verified tool_result arrives. The Bash create commands are flagged as
+    // candidates instead, to be resolved against their paired result.
     const parsed = parseStreamJsonLine(
       JSON.stringify({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Bash', input: { command: "git commit -m 'x'" } },
-        { type: 'tool_use', name: 'Bash', input: { command: 'gh pr create --base develop' } },
-        { type: 'tool_use', name: 'Bash', input: { command: 'gh issue create --title y' } },
+        { type: 'tool_use', id: 'toolu_c', name: 'Bash', input: { command: "git commit -m 'x'" } },
+        { type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create --base develop' } },
+        { type: 'tool_use', id: 'toolu_i', name: 'Bash', input: { command: 'gh issue create --title y' } },
         { type: 'tool_use', name: 'Edit', input: { file_path: '/a' } },
         { type: 'text', text: 'done' },
       ] } })
     );
-    expect(parsed.outcomes).toEqual({ actions: 4, files_edited: 1, commits: 1, prs_created: 1, issues_created: 1 });
+    expect(parsed.outcomes).toEqual({ actions: 4, files_edited: 1, commits: 0, prs_created: 0, issues_created: 0 });
+    expect(parsed.bashCandidates).toEqual([
+      { id: 'toolu_c', kinds: ['commit'] },
+      { id: 'toolu_p', kinds: ['pr'] },
+      { id: 'toolu_i', kinds: ['issue'] },
+    ]);
     expect(parsed.text).toBe('done');
-  });
-
-  it('accumulates outcomes across a full stream via parseStreamJson', () => {
-    const jsonl = [
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'git commit -m a' } }] } }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gh pr create' } }] } }),
-      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
-    ].join('\n');
-    const res = parseStreamJson(jsonl);
-    expect(res.outcomes.commits).toBe(1);
-    expect(res.outcomes.prs_created).toBe(1);
-    expect(res.outcomes.actions).toBe(2);
   });
 
   it('captures result text + usage + cost from the result event', () => {
@@ -312,6 +312,156 @@ describe('open background subagents (#1130)', () => {
   it('is 0 by default (no tool_use blocks at all)', () => {
     const out = parseStreamJson(JSON.stringify({ type: 'result', result: 'ok', is_error: false, total_cost_usd: 0, usage: {} }));
     expect(out.openBackgroundSubagents).toBe(0);
+  });
+});
+
+describe('result-derived outcomes — cli#1134', () => {
+  // A PR-creating turn: assistant runs `gh pr create`, the next `user` event
+  // carries the tool_result with the new PR URL. Only that verified URL counts.
+  const prTurn = (resultContent: unknown, isError = false) => [
+    JSON.stringify({ type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create --base develop' } },
+    ] } }),
+    JSON.stringify({ type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'toolu_p', is_error: isError, content: resultContent },
+    ] } }),
+    JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+  ].join('\n');
+
+  it('counts a PR from a verified /pull/N URL in the tool_result', () => {
+    const out = parseStreamJson(prTurn('https://github.com/agents-squads/squads-cli/pull/1134'));
+    expect(out.outcomes.prs_created).toBe(1);
+    expect(out.outcomes.commits).toBe(0);
+    expect(out.outcomes.issues_created).toBe(0);
+  });
+
+  it('counts an issue from a verified /issues/N URL in the tool_result', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_i', name: 'Bash', input: { command: 'gh issue create --title x' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_i', content: 'https://github.com/o/r/issues/42' },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    expect(parseStreamJson(jsonl).outcomes.issues_created).toBe(1);
+  });
+
+  it('counts a commit from a `[branch sha]` line in the tool_result', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_c', name: 'Bash', input: { command: 'git commit -m fix' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_c', content: '[main abc1234] fix\n 1 file changed' },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    expect(parseStreamJson(jsonl).outcomes.commits).toBe(1);
+  });
+
+  it('counts a mention with no verified URL as ZERO (the cli#1134 bug)', () => {
+    // The agent grepped for the literal "gh pr create" string. Old code counted
+    // the command; the result has no /pull/N URL, so it must count 0.
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_g', name: 'Bash', input: { command: 'grep -rn "gh pr create" src/' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_g', content: 'src/x.ts:  if (/gh pr create/.test(cmd))' },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    expect(parseStreamJson(jsonl).outcomes.prs_created).toBe(0);
+  });
+
+  it('counts ZERO when the create command FAILED (is_error result)', () => {
+    // gh pr create errored (e.g. no changes to push). The result carries an
+    // error and no URL — nothing was created.
+    const out = parseStreamJson(prTurn('Warning: no commits resolved; exiting', true));
+    expect(out.outcomes.prs_created).toBe(0);
+  });
+
+  it('counts ZERO when the candidate never got a tool_result (stream ended)', () => {
+    // Command ran but we never saw its result — don't claim a creation.
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create' } },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'cut off', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    expect(parseStreamJson(jsonl).outcomes.prs_created).toBe(0);
+  });
+
+  it('counts every artifact when one Bash call creates several (a loop)', () => {
+    // A loop creating 2 PRs in one tool_result → findall counts both.
+    const out = parseStreamJson(prTurn(
+      'https://github.com/o/r/pull/11\nhttps://github.com/o/r/pull/12',
+    ));
+    expect(out.outcomes.prs_created).toBe(2);
+  });
+
+  it('still counts actions/files from tool_use while artifacts come from results', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_e', name: 'Edit', input: { file_path: '/a' } },
+        { type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_e', content: 'ok' },
+        { type: 'tool_result', tool_use_id: 'toolu_p', content: 'https://github.com/o/r/pull/9' },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    const o = parseStreamJson(jsonl).outcomes;
+    expect(o.actions).toBe(2);       // both tool_use calls
+    expect(o.files_edited).toBe(1);  // the Edit
+    expect(o.prs_created).toBe(1);   // verified from result
+  });
+
+  it('parses tool_result content that is a list of text blocks', () => {
+    // Claude Code sometimes sends content as [{type:'text', text:'…'}, …].
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_p', name: 'Bash', input: { command: 'gh pr create' } },
+      ] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'toolu_p', content: [
+          { type: 'text', text: 'Creating PR…' },
+          { type: 'text', text: 'https://github.com/o/r/pull/77' },
+        ] },
+      ] } }),
+      JSON.stringify({ type: 'result', result: 'ok', total_cost_usd: 0.1, usage: {}, is_error: false }),
+    ].join('\n');
+    expect(parseStreamJson(jsonl).outcomes.prs_created).toBe(1);
+  });
+});
+
+describe('result-extraction helpers (cli#1134)', () => {
+  it('extractPrNumbers pulls every /pull/N', () => {
+    expect(extractPrNumbers('see https://x/y/pull/1 and /pull/22 ok')).toEqual([1, 22]);
+    expect(extractPrNumbers('no match here')).toEqual([]);
+  });
+
+  it('extractIssueNumbers pulls every /issues/N', () => {
+    expect(extractIssueNumbers('https://x/y/issues/5 done')).toEqual([5]);
+  });
+
+  it('extractCommitShas pulls the sha out of `[branch sha]`', () => {
+    expect(extractCommitShas('[main abc1234] msg')).toEqual(['abc1234']);
+    expect(extractCommitShas('[feature/x 0123456789abcdef0123456789abcdef01234567] m')).toEqual(['0123456789abcdef0123456789abcdef01234567']);
+    expect(extractCommitShas('no bracket line')).toEqual([]);
+  });
+
+  it('toolResultText normalizes string and block-list content', () => {
+    expect(toolResultText('plain string')).toBe('plain string');
+    expect(toolResultText([
+      { type: 'text', text: 'a' },
+      { type: 'text', text: 'b' },
+    ])).toBe('a\nb');
+    expect(toolResultText(undefined)).toBe('');
+    expect(toolResultText([{ type: 'image', src: 'x' }])).toBe('');
   });
 });
 
