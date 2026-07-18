@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -1634,6 +1634,27 @@ export async function executeWithProvider(
   // one forever 'running' (the exact bug the run-ledger kills).
   const executionId = options.executionId || generateExecutionId();
 
+  // Exec events for provider lanes (#1159): stream-json lanes (claude-harness
+  // foreign providers — glm, deepseek) normalize through the Claude adapter
+  // live in foreground; detached lanes get run_start here and the rest at
+  // spool reconcile (normalizeDetachedLog resumes the seq counter).
+  const events = cliConfig.streamJson
+    ? new ExecEventWriter(execEventsFile(dispatchRoot, executionId), executionId, {
+        source: 'squads-cli',
+        provider,
+        flusher: new ExecEventFlusher(executionId),
+      })
+    : null;
+  events?.emit({
+    type: 'run_start',
+    squad: squadName,
+    agent: agentName,
+    mode: options.foreground ? 'foreground' : 'background',
+    model: options.model || '',
+    role: '',
+    startedAt: new Date(timestamp).toISOString(),
+  });
+
   // Foreground mode: run directly in terminal
   if (options.foreground) {
     return new Promise((resolve, reject) => {
@@ -1664,6 +1685,9 @@ export async function executeWithProvider(
       // tight tail would undercount long runs (#1077).
       const OUTPUT_TAIL_MAX = cliConfig.streamJson ? 4 * 1024 * 1024 : 256 * 1024;
       let outputTail = '';
+      // Live exec-event normalization (#1159) — one adapter per run.
+      const adapter = events ? createClaudeStreamJsonAdapter() : null;
+      let lineBuf = '';
       if (captureUsage) {
         const append = (chunk: Buffer) => {
           outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
@@ -1671,7 +1695,16 @@ export async function executeWithProvider(
         if (cliConfig.streamJson) {
           // Render assistant text live instead of echoing raw JSONL (#1077).
           const renderer = new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'));
-          proc.stdout?.on('data', (c: Buffer) => { renderer.push(c.toString('utf-8')); append(c); });
+          proc.stdout?.on('data', (c: Buffer) => {
+            renderer.push(c.toString('utf-8'));
+            append(c);
+            if (events && adapter) {
+              lineBuf += c.toString('utf-8');
+              const lines = lineBuf.split('\n');
+              lineBuf = lines.pop() ?? '';
+              for (const l of lines) events.ingestProviderLine(adapter, l, agentName);
+            }
+          });
           proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
         } else {
           proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
@@ -1742,6 +1775,23 @@ export async function executeWithProvider(
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
+        }
+        if (events) {
+          if (lineBuf.trim() && adapter) events.ingestProviderLine(adapter, lineBuf, agentName);
+          events.emit({
+            type: 'run_end',
+            ok: code === 0 && !fatal && !suspect,
+            durationMs: Date.now() - startMs,
+            totalUsage: {
+              input: usage?.input_tokens || 0,
+              output: usage?.output_tokens || 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              costEst: usage?.cost_usd || 0,
+            },
+            ...(streamOutcomes && streamOutcomes.actions > 0 ? { outcomes: streamOutcomes } : {}),
+          });
+          events.close();
         }
 
         switch (harvest.outcome) {

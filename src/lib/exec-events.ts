@@ -19,7 +19,7 @@
  *   event — never a silent cap.
  */
 
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 
 // ── Event schema ──────────────────────────────────────────────────────
@@ -380,6 +380,17 @@ export class ExecEventWriter {
     try {
       const dir = dirname(file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      // Resume seq after any events already persisted for this run (#1159):
+      // spawn-time run_start + reconcile-time tool events share one file, and
+      // the Postgres projection's (run_id, seq) identity silently drops
+      // colliding seqs — a restarted counter would eat real events.
+      if (existsSync(file)) {
+        const existing = readFileSync(file, 'utf8');
+        for (let i = 0; i < existing.length; i++) {
+          if (existing.charCodeAt(i) === 10) this.seq++;
+        }
+        this.bytes = existing.length;
+      }
     } catch {
       this.dead = true;
     }
@@ -483,13 +494,8 @@ export function normalizeDetachedLog(
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
 ): number {
   const adapter = createClaudeStreamJsonAdapter();
-  // Reconcile doubles as API replay (#1158): the run's live flushes never
-  // happened (spawning CLI long gone), so POST the normalized stream now.
-  // Best-effort as always — no API, no auth, no problem.
-  const writer = new ExecEventWriter(execEventsFile(obsRoot, executionId), executionId, {
-    source: 'squads-cli',
-    flusher: new ExecEventFlusher(executionId),
-  });
+  const file = execEventsFile(obsRoot, executionId);
+  const writer = new ExecEventWriter(file, executionId, { source: 'squads-cli' });
   for (const line of rawLog.split('\n')) {
     writer.ingestProviderLine(adapter, line, agent);
   }
@@ -497,5 +503,23 @@ export function normalizeDetachedLog(
   // zero events, and a run_end there would fabricate an event file.
   if (runEnd && writer.writtenCount > 0) writer.emit(runEnd, agent);
   writer.close();
+  // Reconcile doubles as API replay (#1158/#1159): the run's live flushes
+  // never happened (spawning CLI long gone), so POST the WHOLE file — spawn-
+  // time run_start included. Idempotent server-side; best-effort as always.
+  if (writer.writtenCount > 0) void replayEventsFile(file, executionId);
   return writer.writtenCount;
+}
+
+/** Best-effort replay of a run's full events file to the connected API. */
+export async function replayEventsFile(file: string, executionId: string): Promise<void> {
+  try {
+    const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as PersistedExecEvent; } catch { return null; } })
+      .filter((e): e is PersistedExecEvent => e !== null);
+    if (!lines.length) return;
+    const { reportExecutionEvents } = await import('./api-client.js');
+    for (let i = 0; i < lines.length; i += 500) {
+      if (!await reportExecutionEvents(executionId, lines.slice(i, i + 500))) return;
+    }
+  } catch { /* offline-first: the file remains the source of truth */ }
 }

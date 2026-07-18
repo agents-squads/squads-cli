@@ -297,3 +297,27 @@ describe('ExecEventFlusher', () => {
     expect(readEvents(file)[0].v).toBe(1);
   });
 });
+
+// ── seq resume + whole-file replay (#1159) ─────────────────────────────────
+
+describe('ExecEventWriter seq resume (#1159)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'exec-seq-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('a second writer on the same file continues the seq counter', () => {
+    const file = execEventsFile(dir, 'exec_seq_1');
+    const w1 = new ExecEventWriter(file, 'exec_seq_1');
+    w1.emit({ type: 'run_start', squad: 's', mode: 'background', model: 'm', role: '', startedAt: 'now' });
+    w1.close();
+
+    // Reconcile-time writer (normalizeDetachedLog) — must NOT restart at 0,
+    // or the Postgres (run_id, seq) identity silently drops the collisions.
+    const w2 = new ExecEventWriter(file, 'exec_seq_1');
+    w2.emit({ type: 'file_read', path: '/x' });
+    w2.close();
+
+    const seqs = readEvents(file).map((e) => e.seq);
+    expect(seqs).toEqual([0, 1]);
+  });
+});
