@@ -243,6 +243,12 @@ describe('deriveClaudeHarnessRows (fixture tree, #1119)', () => {
     writeFileSync(
       join(interactiveDir, 'session-a.jsonl'),
       [
+        // First user message — captured as brief (#1165)
+        JSON.stringify({
+          type: 'user',
+          timestamp: new Date(ago(4)).toISOString(),
+          message: { content: [{ type: 'text', text: 'Review the current PR and check for issues' }] },
+        }),
         aline(ago(3), 'claude-sonnet-4-6'),
         aline(ago(1), 'claude-opus-4-8', { output_tokens: 100 }),
         // Outside the day (tomorrow) — must not be summed or shift `ts`/`duration_ms`.
@@ -297,5 +303,32 @@ describe('deriveClaudeHarnessRows (fixture tree, #1119)', () => {
     process.env.HOME = join(ROOT, 'nonexistent-home');
     const rows = await deriveClaudeHarnessRows({ start: DAY_START, end: DAY_END }, { scope: 'all' });
     expect(rows).toEqual([]);
+  });
+
+  it('extracts brief from first user message (#1165)', async () => {
+    const rows = await deriveClaudeHarnessRows({ start: DAY_START, end: DAY_END }, { scope: 'all' });
+    const row = rows[0];
+    expect(row.brief).toBe('Review the current PR and check for issues');
+  });
+
+  it('caps brief at 200 characters (#1165)', async () => {
+    // Build a session with a long user message
+    const longDir = join(PROJECTS, '-Users-x-agents-squads-longmsg');
+    mkdirSync(longDir, { recursive: true });
+    const longText = 'x'.repeat(500);
+    writeFileSync(
+      join(longDir, 'session-long.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        timestamp: new Date(ago(2)).toISOString(),
+        message: { content: [{ type: 'text', text: longText }] },
+      }) + '\n' +
+      aline(ago(2), 'claude-sonnet-4-6') + '\n'
+    );
+    const rows = await deriveClaudeHarnessRows({ start: DAY_START, end: DAY_END }, { scope: 'all' });
+    const row = rows.find(r => r.id === 'claude:session-long');
+    expect(row).not.toBeUndefined();
+    expect(row!.brief!.length).toBe(200);
+    expect(row!.brief).toBe('x'.repeat(200));
   });
 });
