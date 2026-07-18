@@ -2,12 +2,14 @@
  * #1060 — outcomes on foreground runs come from the session JSONL, never
  * fabricated zeros. Locks the parseSessionUsage outcome extraction via the
  * public captureSessionUsageById reader against a hermetic HOME fixture.
+ * #1165 — ledger run brief/title: verifies logRunStarted writes brief and
+ * the 200-char PII cap.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { captureSessionUsageById } from '../src/lib/observability.js';
+import { captureSessionUsageById, logRunStarted, queryExecutions } from '../src/lib/observability.js';
 
 describe('session outcomes extraction (#1060)', () => {
   let home: string;
@@ -176,5 +178,90 @@ describe('session_id on captured usage (#1129)', () => {
     const out = captureSessionUsageById('11111111-2222-3333-4444-555555555555');
     expect(out).not.toBeNull();
     expect(out!.session_id).toBe('11111111-2222-3333-4444-555555555555');
+  });
+});
+
+// ─── #1165: ledger run brief/title ───────────────────────────────────────
+
+vi.mock('../src/lib/squad-parser.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/lib/squad-parser.js')>();
+  return { ...actual, findProjectRoot: vi.fn(() => {
+    const { env } = process;
+    return env.SQUADS_TEST_ROOT || null;
+  })};
+});
+
+describe('ledger run brief (#1165)', () => {
+  let testRoot: string;
+  let oldRoot: string | undefined;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(tmpdir(), 'squads-brief-'));
+    oldRoot = process.env.SQUADS_TEST_ROOT;
+    process.env.SQUADS_TEST_ROOT = testRoot;
+    // Create .git + observability dir so findProjectRoot resolves
+    mkdirSync(join(testRoot, '.git'));
+    mkdirSync(join(testRoot, '.agents', 'observability'), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (oldRoot === undefined) delete process.env.SQUADS_TEST_ROOT;
+    else process.env.SQUADS_TEST_ROOT = oldRoot;
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('writes brief from task text in the ledger record', () => {
+    logRunStarted({
+      id: 'exec_test_brief_001',
+      squad: 'test-squad',
+      agent: 'test-agent',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      trigger: 'manual',
+      task: 'fix authentication bug in login flow',
+      brief: 'fix authentication bug in login flow',
+    });
+
+    const records = queryExecutions({});
+    expect(records.length).toBeGreaterThan(0);
+    const record = records.find(r => r.id === 'exec_test_brief_001');
+    expect(record).not.toBeUndefined();
+    expect(record!.brief).toBe('fix authentication bug in login flow');
+  });
+
+  it('caps brief at 200 characters', () => {
+    const longText = 'a'.repeat(500);
+    logRunStarted({
+      id: 'exec_test_brief_002',
+      squad: 'test-squad',
+      agent: 'test-agent',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      trigger: 'manual',
+      task: longText,
+      brief: longText.slice(0, 200),
+    });
+
+    const records = queryExecutions({});
+    const record = records.find(r => r.id === 'exec_test_brief_002');
+    expect(record).not.toBeUndefined();
+    expect(record!.brief!.length).toBe(200);
+    expect(record!.brief).toBe('a'.repeat(200));
+  });
+
+  it('omits brief when not provided', () => {
+    logRunStarted({
+      id: 'exec_test_brief_003',
+      squad: 'test-squad',
+      agent: 'test-agent',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      trigger: 'manual',
+    });
+
+    const records = queryExecutions({});
+    const record = records.find(r => r.id === 'exec_test_brief_003');
+    expect(record).not.toBeUndefined();
+    expect(record!.brief).toBeUndefined();
   });
 });

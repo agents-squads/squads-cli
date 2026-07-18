@@ -339,9 +339,35 @@ function deriveRowForSessionFile(
     let firstTs: number | null = null;
     let lastTs: number | null = null;
     let model = '';
+    let brief: string | undefined;
     const tokens: Tokens = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
 
     rl.on('line', (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let rec: Record<string, unknown>;
+      try {
+        rec = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      // Capture the first user message as brief (#1165)
+      if (!brief && rec.type === 'user') {
+        const msg = rec.message as Record<string, unknown> | undefined;
+        if (msg?.content) {
+          const content = msg.content;
+          if (typeof content === 'string') {
+            brief = content.slice(0, 200);
+          } else if (Array.isArray(content)) {
+            const textBlock = content.find((b: Record<string, unknown>) => b.type === 'text');
+            if (textBlock?.text && typeof textBlock.text === 'string') {
+              brief = (textBlock.text as string).slice(0, 200);
+            }
+          }
+        }
+      }
+
       const parsed = parseSessionLine(line);
       if (!parsed) return;
       const { tokens: t, model: m, tsMs } = parsed;
@@ -364,6 +390,7 @@ function deriveRowForSessionFile(
         agent,
         provider: 'claude-code',
         model: model || 'unknown',
+        brief,
         // Same session UUID a squads-cli ledger row would carry for this run
         // (#1129) — lets the board merge dedup instead of double-counting.
         session_id: sessionId,

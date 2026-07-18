@@ -58,6 +58,10 @@ export interface ObservabilityRecord {
   cache_write_tokens: number;
   cost_usd: number;
   context_tokens: number;
+  // Run brief/title — short human-readable summary of what the run was for (#1165).
+  // Lanes: first 200 chars of the --task text (PII-capped). Interactive
+  // sessions: first user message from the session transcript, same cap.
+  brief?: string;
   // What the agent DID this run (parsed from its tool_use blocks) — real output,
   // not just spend. Lets "did squad X move its backlog?" be a query, not a guess.
   actions?: number;        // total tool calls (0 ≈ noise)
@@ -597,6 +601,7 @@ export function logRunStarted(rec: {
   trigger: ObservabilityRecord['trigger'];
   pid?: number;
   task?: string;
+  brief?: string;
 }): void {
   logObservability({
     ts: new Date().toISOString(),
@@ -609,6 +614,7 @@ export function logRunStarted(rec: {
     status: 'running',
     pid: rec.pid,
     task: rec.task,
+    brief: rec.brief,
     duration_ms: 0,
     input_tokens: 0,
     output_tokens: 0,

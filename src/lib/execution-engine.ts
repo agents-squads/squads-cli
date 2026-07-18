@@ -73,6 +73,8 @@ export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
 /** Cap on the dispatch task text reported to the API as the execution's brief (#1131). */
 export const TASK_BRIEF_MAX_CHARS = 500;
+/** Cap on the ledger brief (#1165) — shorter than TASK_BRIEF_MAX_CHARS to prevent PII leakage in user-facing surfaces. */
+export const BRIEF_MAX_CHARS = 200;
 
 /**
  * The default agent tool surface — the compiler fallback when an agent
@@ -860,6 +862,7 @@ export function executeForeground(config: {
   execContext: ExecutionContext;
   startMs: number;
   provider?: string;
+  task?: string;
   /** Exec-event stream (#902) — run_end/token_usage emitted here on close. */
   events?: ExecEventWriter;
 }): Promise<string> {
@@ -887,6 +890,7 @@ export function executeForeground(config: {
       model: config.agentEnv.SQUADS_MODEL || 'unknown',
       trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
       pid: claude.pid,
+      brief: config.task?.slice(0, BRIEF_MAX_CHARS),
     });
 
     claude.on('close', async (code) => {
@@ -916,6 +920,7 @@ export function executeForeground(config: {
         cache_write_tokens: sessionUsage?.cache_write_tokens || 0,
         cost_usd: sessionUsage?.cost_usd || 0,
         context_tokens: 0,
+        brief: config.task?.slice(0, BRIEF_MAX_CHARS),
         error: code !== 0 ? `Claude exited with code ${code}` : undefined,
         goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
         goals_after: Object.keys(goalsAfter).length > 0 ? goalsAfter : undefined,
@@ -999,6 +1004,7 @@ export function executeForeground(config: {
         duration_ms: durationMs,
         input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
         cost_usd: 0, context_tokens: 0,
+        brief: config.task?.slice(0, BRIEF_MAX_CHARS),
         error: String(err),
       });
 
@@ -1300,6 +1306,7 @@ export async function executeWithClaude(
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
       squadName, agentName, execContext, startMs, provider, events,
+      task: options.task,
     });
   }
 
@@ -1375,6 +1382,7 @@ export async function executeWithClaude(
     model: claudeModelAlias || resolvedModel || 'unknown',
     trigger: trigger as ObservabilityRecord['trigger'],
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    brief: options.task?.slice(0, BRIEF_MAX_CHARS),
   });
 
   if (runInWatch) {
@@ -1678,6 +1686,7 @@ export async function executeWithProvider(
         trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
         pid: proc.pid,
         task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+        brief: options.task?.slice(0, BRIEF_MAX_CHARS),
       });
 
       // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
@@ -1762,6 +1771,7 @@ export async function executeWithProvider(
           cache_write_tokens: 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
+          brief: options.task?.slice(0, BRIEF_MAX_CHARS),
           ...(streamOutcomes && streamOutcomes.actions > 0 ? {
             actions: streamOutcomes.actions,
             files_edited: streamOutcomes.files_edited,
@@ -1929,6 +1939,7 @@ export async function executeWithProvider(
     trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
     pid: child.pid,
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    brief: options.task?.slice(0, BRIEF_MAX_CHARS),
   });
 
   if (options.verbose) {
