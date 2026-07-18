@@ -139,7 +139,12 @@ describe('buildSpoolWriterShell', () => {
 
 describe('reconcileDetachedRuns', () => {
   it('turns a provider done-file into an ObservabilityRecord with parsed usage', () => {
-    writeFileSync(join(root, 'run.log'), 'noise\nTokens: 21k sent, 740 received. Cost: $0.0063 message, $0.0063 session.\n');
+    // deepseek runs the claude harness now (#1159): raw logs are stream-json.
+    const resultLine = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false,
+      usage: { input_tokens: 21000, output_tokens: 740 }, model: 'deepseek-chat',
+    });
+    writeFileSync(join(root, 'run.log'), `noise\n${resultLine}\n`);
     writeSpoolFile();
     const n = reconcileDetachedRuns(root);
     expect(n).toBe(1);

@@ -81,25 +81,31 @@ function parseTokenCount(raw: string): number {
 }
 
 /**
- * Usage from a claude-harness stream-json tail (#1077 — glm lane). Token
- * counts come from the stream's events. The result event's cost_usd is
- * DISCARDED: the claude CLI prices foreign models at Claude rates (measured
- * ~25× overstatement on glm-4.7), which would corrupt every ROI comparison.
- * Cost = tokens × env rates (SQUADS_GLM_COST_PER_MTOK_IN/OUT, $ per million
- * tokens); unset rates leave cost 0 — a visible gap, never a fabricated number.
+ * Usage from a claude-harness stream-json tail (#1077 — glm lane; #1159 —
+ * every foreign lane on the claude harness). Token counts come from the
+ * stream's events. The result event's cost_usd is DISCARDED: the claude CLI
+ * prices foreign models at Claude rates (measured ~25× overstatement on
+ * glm-4.7), which would corrupt every ROI comparison. Cost = tokens × env
+ * rates (SQUADS_<PROVIDER>_COST_PER_MTOK_IN/OUT, $ per million tokens);
+ * unset rates leave cost 0 — a visible gap, never a fabricated number.
  */
-export function parseGlmStreamUsage(output: string): ProviderUsage | null {
-  const stream = parseStreamJson(output);
-  const u = stream.usage;
-  if (!u.input_tokens && !u.output_tokens) return null;
-  let cost = 0;
-  const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
-  const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
-  if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
-    cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
-  }
-  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost };
+function makeClaudeHarnessStreamUsage(envPrefix: string): (output: string) => ProviderUsage | null {
+  return (output) => {
+    const stream = parseStreamJson(output);
+    const u = stream.usage;
+    if (!u.input_tokens && !u.output_tokens) return null;
+    let cost = 0;
+    const inRate = parseFloat(process.env[`SQUADS_${envPrefix}_COST_PER_MTOK_IN`] || '');
+    const outRate = parseFloat(process.env[`SQUADS_${envPrefix}_COST_PER_MTOK_OUT`] || '');
+    if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
+      cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
+    }
+    return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost };
+  };
 }
+
+export const parseGlmStreamUsage = makeClaudeHarnessStreamUsage('GLM');
+export const parseDeepseekStreamUsage = makeClaudeHarnessStreamUsage('DEEPSEEK');
 
 /**
  * Parse aider's usage lines, e.g.:
@@ -205,15 +211,18 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     buildArgs: (prompt) => ['exec', prompt],
   },
 
-  // DeepSeek has no first-party agentic CLI; delegate to aider, which speaks
-  // DeepSeek's chat-completions API natively via DEEPSEEK_API_KEY. (codex was
-  // considered but recent versions dropped chat-completions wire support, and
-  // DeepSeek does not implement the Responses API.)
+  // DeepSeek serves an Anthropic-compatible endpoint (api.deepseek.com/anthropic
+  // — verified live 2026-07-17: proper Anthropic message shape + usage block),
+  // so the claude CLI is the agentic harness, same pattern as glm below (#1159).
+  // Replaces the aider delegation: one harness → one stream shape → the Claude
+  // adapter emits exec-events for every lane, and deepseek lanes gain tool
+  // allowlists, subagents, and artifact mining aider never had. (The earlier
+  // aider rationale predated DeepSeek's Anthropic-format support.)
   deepseek: {
     provider: 'deepseek',
-    displayName: 'DeepSeek (via aider)',
-    command: 'aider',
-    install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
+    displayName: 'DeepSeek (via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set DEEPSEEK_API_KEY',
     buildArgs: (prompt, opts) => {
       // Agents re-laned to deepseek keep their anthropic `model:` frontmatter,
       // and DeepSeek's API rejects foreign names (#937) — only honor a model
@@ -223,17 +232,26 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
         ? requested
         : process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
       return [
-        '--model',
-        `deepseek/${model}`,
-        '--message',
+        '--print',
+        // Structured event stream so usage + outcomes are parseable (#1077);
+        // --verbose is required by the claude CLI for stream-json in print mode.
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--model', model,
+        // In --print mode permission prompts can't be answered (#1073).
+        ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+        '--disable-slash-commands',
         prompt,
-        '--yes',
-        '--no-auto-commits',
-        '--no-gitignore',
-        ...aiderMapTokensArgs(),
       ];
     },
-    parseUsage: parseAiderUsage,
+    streamJson: true,
+    parseUsage: parseDeepseekStreamUsage,
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.DEEPSEEK_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
   },
 
   // GLM (z.ai) serves an Anthropic-compatible endpoint, so the claude CLI is

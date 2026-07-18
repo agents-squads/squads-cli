@@ -26,7 +26,9 @@ describe('parseAiderUsage (#824 — provider runs must be observable)', () => {
 
   it('is wired into the aider-backed registry entries', () => {
     expect(LLM_CLIS.aider.parseUsage).toBe(parseAiderUsage);
-    expect(LLM_CLIS.deepseek.parseUsage).toBe(parseAiderUsage);
+    // deepseek moved to the claude harness (#1159) — stream-json usage now.
+    expect(LLM_CLIS.deepseek.parseUsage).not.toBe(parseAiderUsage);
+    expect(LLM_CLIS.deepseek.streamJson).toBe(true);
   });
 });
 
@@ -37,23 +39,21 @@ describe('aider map-tokens knob (#845)', () => {
 
   it('unset env keeps aider defaults (no --map-tokens)', () => {
     delete process.env.SQUADS_AIDER_MAP_TOKENS;
-    const args = LLM_CLIS.deepseek.buildArgs('hi');
+    const args = LLM_CLIS.aider.buildArgs('hi');
     expect(args).not.toContain('--map-tokens');
   });
 
   it('caps the repo map when SQUADS_AIDER_MAP_TOKENS is set', () => {
     process.env.SQUADS_AIDER_MAP_TOKENS = '2048';
-    for (const provider of ['deepseek', 'aider']) {
-      const args = LLM_CLIS[provider].buildArgs('hi');
-      const i = args.indexOf('--map-tokens');
-      expect(i).toBeGreaterThan(-1);
-      expect(args[i + 1]).toBe('2048');
-    }
+    const args = LLM_CLIS.aider.buildArgs('hi');
+    const i = args.indexOf('--map-tokens');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toBe('2048');
   });
 
   it('rejects non-integer values (no flag emitted)', () => {
     process.env.SQUADS_AIDER_MAP_TOKENS = 'lots';
-    expect(LLM_CLIS.deepseek.buildArgs('hi')).not.toContain('--map-tokens');
+    expect(LLM_CLIS.aider.buildArgs('hi')).not.toContain('--map-tokens');
   });
 });
 
@@ -62,13 +62,29 @@ describe('deepseek model guard (#937 — foreign model names must not reach the 
 
   it('ignores anthropic frontmatter models and uses the lane default', () => {
     const args = LLM_CLIS.deepseek.buildArgs('hi', { model: 'claude-sonnet-4-5' });
-    expect(args[args.indexOf('--model') + 1]).toBe('deepseek/deepseek-v4-flash');
+    // Bare model name on the claude harness (#1159) — the endpoint routes it.
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek-v4-flash');
   });
 
   it('honors real deepseek model overrides and DEEPSEEK_MODEL env', () => {
-    expect(LLM_CLIS.deepseek.buildArgs('hi', { model: 'deepseek/deepseek-v4-pro' })).toContain('deepseek/deepseek-v4-pro');
+    let args = LLM_CLIS.deepseek.buildArgs('hi', { model: 'deepseek/deepseek-v4-pro' });
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek-v4-pro');
     process.env.DEEPSEEK_MODEL = 'deepseek-v4-pro';
-    expect(LLM_CLIS.deepseek.buildArgs('hi')).toContain('deepseek/deepseek-v4-pro');
+    args = LLM_CLIS.deepseek.buildArgs('hi');
+    expect(args[args.indexOf('--model') + 1]).toBe('deepseek-v4-pro');
+  });
+
+  it('runs the claude harness against the DeepSeek Anthropic endpoint (#1159)', () => {
+    const cfg = LLM_CLIS.deepseek;
+    expect(cfg.command).toBe('claude');
+    const args = cfg.buildArgs('do the task', { allowedTools: ['Edit', 'Write'] });
+    expect(args[args.indexOf('--output-format') + 1]).toBe('stream-json');
+    expect(args).toContain('--verbose');
+    expect(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--allowedTools') + 3)).toEqual(['Edit', 'Write']);
+    expect(args[args.length - 1]).toBe('do the task');
+    const env = cfg.env!();
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com/anthropic');
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });
 
