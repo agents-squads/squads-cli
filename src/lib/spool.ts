@@ -184,71 +184,66 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   // legacy spools without one fall back to whatever the mtime-window scan found.
   let sessionId: string | undefined = spool.sessionId || undefined;
 
-  if (spool.provider && spool.provider !== 'anthropic') {
-    const tail = spool.logFile ? readLogTail(spool.logFile) : '';
-    // #936: providers exit 0 after printing fatal API errors — never credit
-    // a failed run as completed in the ledger the scoreboard reads.
-    const fatal = tail ? detectProviderFatalError(tail) : null;
-    if (fatal && status === 'completed') {
-      status = 'failed';
-      fatalError = fatal;
-    }
-    const parse = getCLIConfig(spool.provider)?.parseUsage;
-    if (parse && tail) {
-      const usage = parse(tail);
-      if (usage) {
-        input = usage.input_tokens;
-        output = usage.output_tokens;
-        cost = usage.cost_usd;
-      }
-    }
-  } else {
-    // Claude run: the log IS the raw stream-json event stream (#902) — parse
-    // it for what the agent actually DID (outcomes, previously always zero on
-    // detached runs) and as the usage fallback; normalize it into the run's
-    // events file so the black box stays killed after the log rotates.
-    const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
-    const stream = rawLog ? parseStreamJson(rawLog) : null;
-    if (stream && stream.outcomes.actions > 0) outcomes = stream.outcomes;
+  // Observability parity across providers (cli#1175). Decide by OUTPUT FORMAT,
+  // not provider: every lane that ran through the claude harness
+  // (`--output-format stream-json`) — claude, glm, deepseek, kimi, gpt,
+  // whatever comes next — emits the same stream-json, so it gets the same rich
+  // pipeline: real outcomes, normalized exec-events, model + cost. Only a log
+  // that ISN'T stream-json (a legacy aider/plain-text provider run) falls back
+  // to the per-provider usage parser. (Was `if provider !== 'anthropic'`, which
+  // skipped the ENTIRE pipeline for non-Claude runs — 0 events, unknown model,
+  // no artifacts: the black box the founder caught 2026-07-19.)
+  const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
+  const stream = rawLog ? parseStreamJson(rawLog) : null;
+  const hasStreamEvidence = !!stream && (
+    stream.sawResult || stream.outcomes.actions > 0 || stream.text.length > 0 ||
+    stream.usage.input_tokens > 0 || stream.usage.output_tokens > 0
+  );
+  const nonAnthropic = !!spool.provider && spool.provider !== 'anthropic';
 
-    // #1131: classify claude's OWN terminal state — a clean process exit
-    // doesn't mean the conversation actually finished. `is_error` on the
-    // terminal result event, or real stream activity that never reached a
-    // terminal result at all (e.g. an API disconnect mid-turn), both read as
-    // silent "completed" runs today. Only reclassify on positive stream-json
-    // evidence so legacy plain-text detached logs (pre-#902) are untouched.
-    const hasStreamEvidence = !!stream && (
-      stream.outcomes.actions > 0 || stream.text.length > 0 ||
-      stream.usage.input_tokens > 0 || stream.usage.output_tokens > 0
-    );
-    if (status === 'completed' && stream) {
+  // ── (1) Outcomes + terminal-state classification from the stream ──────────
+  // Runs for ANY provider whose log is stream-json (all claude-harness lanes:
+  // claude/glm/deepseek/kimi/gpt). (Was gated on `provider === 'anthropic'`,
+  // so non-Claude runs never got outcomes/classification — cli#1175.)
+  if (hasStreamEvidence && stream) {
+    if (stream.outcomes.actions > 0) outcomes = stream.outcomes;
+
+    // #936: some providers print a fatal API error then exit 0 — the
+    // stream-json can still look "complete". Scan the raw log for the
+    // provider's own fatal signature (glm/deepseek 429/401/quota) too.
+    if (status === 'completed' && nonAnthropic) {
+      const fatal = detectProviderFatalError(rawLog);
+      if (fatal) { status = 'failed'; fatalError = fatal; }
+    }
+
+    // #1131: a clean process exit doesn't mean the conversation finished.
+    if (status === 'completed') {
       if (stream.sawResult && stream.isError) {
         status = 'failed';
-        fatalError = `claude reported is_error on its terminal result (${stream.usage.num_turns} turn(s))`;
-      } else if (!stream.sawResult && hasStreamEvidence) {
+        fatalError = `${spool.provider || 'claude'} reported is_error on its terminal result (${stream.usage.num_turns} turn(s))`;
+      } else if (!stream.sawResult) {
         status = 'failed';
         fatalError = `stream ended without a terminal result — likely interrupted mid-response (${stream.outcomes.actions} action(s) logged)`;
       } else if (
-        stream.sawResult && stream.openBackgroundSubagents > 0 &&
+        stream.openBackgroundSubagents > 0 &&
         stream.outcomes.commits === 0 && stream.outcomes.prs_created === 0 && stream.outcomes.issues_created === 0
       ) {
-        // #1130: a clean, non-error terminal result can still be a no-op — the
-        // lane spawned a background subagent (Task/Agent tool) and ended its
-        // turn waiting on it instead of delegating synchronously. In a
-        // detached lane there is no next turn to resume that wait on, so a
-        // "success" with zero commits/PRs/issues and a subagent left hanging
-        // is not a real completion.
+        // #1130: a clean terminal result can still be a no-op — a background
+        // subagent left un-awaited with no commit/PR/issue.
         status = 'failed';
         fatalError = `run ended its turn with ${stream.openBackgroundSubagents} background subagent(s) still open and no commit/PR/issue created — not a real completion (#1130)`;
       }
     }
-    if (stream?.text) {
-      resultSummary = stream.text.slice(0, RESULT_SUMMARY_MAX_CHARS);
-    }
+    if (stream.text) resultSummary = stream.text.slice(0, RESULT_SUMMARY_MAX_CHARS);
+  }
 
-    // Exact session-id attribution when the wrapper recorded one (#857);
-    // legacy fallback = mtime-window scan BOUNDED by endEpoch so a session
-    // still active after this run can't absorb the attribution.
+  // ── (2) Usage / cost / model attribution ──────────────────────────────────
+  // Claude: the per-session JSONL is the most precise attribution and works
+  // even with no stream log (interactive-style), so it stays log-independent.
+  // Non-Claude: trust the stream's own total_cost_usd (harness-reported,
+  // accurate per provider; the claude-session pricing table wouldn't know the
+  // model), with the model backfilled from assistant events (stream-json.ts).
+  if (!nonAnthropic) {
     const session = spool.sessionId
       ? captureSessionUsageById(spool.sessionId)
       : spool.startEpoch > 0
@@ -263,8 +258,6 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
       if (session.model) model = session.model;
       if (!sessionId) sessionId = session.session_id;
     } else if (stream && stream.sawResult) {
-      // No session JSONL visible — the stream's terminal result event still
-      // carries the run's canonical usage (incl. cache), so use it.
       input = stream.usage.input_tokens;
       output = stream.usage.output_tokens;
       cost = stream.usage.cost_usd;
@@ -272,18 +265,38 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
       cacheWrite = stream.usage.cache_write_tokens;
       if (stream.usage.model) model = stream.usage.model;
     }
-
-    if (rawLog) {
-      try {
-        normalizeDetachedLog(rawLog, obsRoot, spool.execId, spool.agent, {
-          type: 'run_end',
-          ok: status === 'completed',
-          durationMs,
-          totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
-          outcomes,
-        });
-      } catch { /* events are best-effort; the obs record below is the source of truth */ }
+  } else if (hasStreamEvidence && stream && stream.sawResult) {
+    // Non-Claude stream-json: canonical usage + cost + backfilled model.
+    input = stream.usage.input_tokens;
+    output = stream.usage.output_tokens;
+    cost = stream.usage.cost_usd;
+    cacheRead = stream.usage.cache_read_tokens;
+    cacheWrite = stream.usage.cache_write_tokens;
+    if (stream.usage.model) model = stream.usage.model;
+  } else if (nonAnthropic) {
+    // Legacy non-stream-json provider log (aider/plain-text) — usage only.
+    const tail = rawLog || (spool.logFile ? readLogTail(spool.logFile) : '');
+    const fatal = tail ? detectProviderFatalError(tail) : null;
+    if (fatal && status === 'completed') { status = 'failed'; fatalError = fatal; }
+    const parse = getCLIConfig(spool.provider)?.parseUsage;
+    if (parse && tail) {
+      const usage = parse(tail);
+      if (usage) { input = usage.input_tokens; output = usage.output_tokens; cost = usage.cost_usd; }
     }
+  }
+
+  // ── (3) Event normalization — any provider whose log is stream-json ───────
+  // The provider travels with the events (cli#1175) so the app badges them.
+  if (hasStreamEvidence && stream && rawLog) {
+    try {
+      normalizeDetachedLog(rawLog, obsRoot, spool.execId, spool.agent, {
+        type: 'run_end',
+        ok: status === 'completed',
+        durationMs,
+        totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
+        outcomes,
+      }, spool.provider);
+    } catch { /* events are best-effort; the obs record below is the source of truth */ }
   }
 
   const record: ObservabilityRecord = {

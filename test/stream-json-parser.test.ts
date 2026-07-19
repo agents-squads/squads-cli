@@ -483,3 +483,31 @@ describe('usage helpers', () => {
     });
   });
 });
+
+describe('model backfill for non-Claude harness runs (cli#1175)', () => {
+  it('backfills model from assistant events when the result event omits it', () => {
+    // glm/deepseek via `claude --model glm-4.7`: the terminal result reports
+    // model only via modelUsage (no top-level `model`), so the result usage's
+    // model is empty — it must come from the assistant events' message.model.
+    const log = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'a1', name: 'Read', input: { file_path: '/x' } },
+      ], model: 'glm-4.7', usage: { input_tokens: 100, output_tokens: 20 } } }),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+        total_cost_usd: 0.42, usage: { input_tokens: 100, output_tokens: 20 },
+        modelUsage: { 'glm-4.7': { costUSD: 0.42 } } }),
+    ].join('\n');
+    const r = parseStreamJson(log);
+    expect(r.sawResult).toBe(true);
+    expect(r.usage.model).toBe('glm-4.7');      // backfilled (was '')
+    expect(r.usage.cost_usd).toBe(0.42);
+  });
+
+  it('does not override a model the result event already carries (Claude)', () => {
+    const log = [
+      JSON.stringify({ type: 'assistant', message: { content: [], model: 'claude-sonnet-5', usage: { input_tokens: 10, output_tokens: 2 } } }),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, model: 'claude-sonnet-5', total_cost_usd: 0.1, usage: { input_tokens: 10, output_tokens: 2 } }),
+    ].join('\n');
+    expect(parseStreamJson(log).usage.model).toBe('claude-sonnet-5');
+  });
+});

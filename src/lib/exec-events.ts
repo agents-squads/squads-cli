@@ -492,10 +492,14 @@ export function normalizeDetachedLog(
   executionId: string,
   agent?: string,
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
+  provider?: string,
 ): number {
   const adapter = createClaudeStreamJsonAdapter();
   const file = execEventsFile(obsRoot, executionId);
-  const writer = new ExecEventWriter(file, executionId, { source: 'squads-cli' });
+  // provider attribution on every event (cli#1175): the run's model provider
+  // (glm/deepseek/anthropic/…) travels with the normalized events so the app
+  // can badge them per-provider — same as live-flushed events carry it.
+  const writer = new ExecEventWriter(file, executionId, { source: 'squads-cli', provider });
   for (const line of rawLog.split('\n')) {
     writer.ingestProviderLine(adapter, line, agent);
   }
