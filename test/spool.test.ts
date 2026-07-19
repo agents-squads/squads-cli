@@ -492,6 +492,70 @@ describe('stream-json log normalization (#902)', () => {
     expect(rec.input_tokens).toBe(0);
     expect(existsSync(join(root, '.agents', 'observability', 'events', 'exec_ev_legacy.jsonl'))).toBe(false);
   });
+
+  // cli#1175: provider parity. A non-Claude lane runs the SAME claude harness
+  // (`claude --model glm-4.7 --output-format stream-json`), so its log is
+  // stream-json and must get the SAME rich pipeline — events, outcomes, model,
+  // cost — not the old usage-only non-anthropic branch that produced a black
+  // box (0 events, unknown model). The glm result event carries model only via
+  // modelUsage (no top-level `model`), so model is backfilled from the
+  // assistant events; cost comes from total_cost_usd.
+  function writeGlmStreamJsonLog(): void {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'g1', name: 'Bash', input: { command: 'git add -A && git commit -m "fix: y"' } },
+        { type: 'tool_use', id: 'g2', name: 'Edit', input: { file_path: '/repo/y.ts', content: 'zz' } },
+      ], model: 'glm-4.7' } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'g1', content: '[main ab12cd3] fix: y\n 1 file changed' },
+      ] } }),
+      // glm/deepseek terminal result: total_cost_usd + usage, but NO top-level
+      // `model` (it lives in modelUsage) — the exact shape that made the board
+      // show "unknown / unpriced".
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'done', is_error: false,
+        total_cost_usd: 1.52, num_turns: 3,
+        usage: { input_tokens: 34590, output_tokens: 10612 },
+        modelUsage: { 'glm-4.7': { inputTokens: 34590, outputTokens: 10612, costUSD: 1.52 } } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+  }
+
+  it('a non-Claude (glm) stream-json lane gets full observability parity', () => {
+    writeGlmStreamJsonLog();
+    writeSpoolFile({ execId: 'exec_glm_1', provider: 'glm', model: 'glm-4.7' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+
+    const [rec] = readExecutionsJsonl();
+    expect(rec.provider).toBe('glm');
+    expect(rec.model).toBe('glm-4.7');          // backfilled from assistant events (was "unknown")
+    expect(rec.cost_usd).toBe(1.52);            // from total_cost_usd (was 0/unpriced)
+    expect(rec.input_tokens).toBe(34590);
+    expect(rec.output_tokens).toBe(10612);
+    expect(rec.status).toBe('completed');
+    expect(rec.actions).toBe(2);                // outcomes (was always 0)
+    expect(rec.commits).toBe(1);
+    expect(rec.files_edited).toBe(1);
+
+    // The GLM run now has a normalized events file — the same stream the
+    // Claude run gets. This is the black box being killed.
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_glm_1.jsonl');
+    expect(existsSync(eventsPath)).toBe(true);
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const types = events.map((e) => e.event.type);
+    expect(types).toContain('tool_call');
+    expect(types).toContain('artifact');
+    expect(types).toContain('file_write');
+    expect(types[types.length - 1]).toBe('run_end');
+    expect(events.every((e) => e.provider === 'glm')).toBe(true);
+  });
+
+  it('a legacy non-stream-json provider log still uses the usage-only path (no events)', () => {
+    // An aider-style plain-text log (no JSON) — no stream to normalize.
+    writeFileSync(join(root, 'run.log'), 'aider: applied edit to y.ts\nTokens: 1000 sent, 200 received\n');
+    writeSpoolFile({ execId: 'exec_glm_legacy', provider: 'glm', model: 'glm-4.7' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    expect(existsSync(join(root, '.agents', 'observability', 'events', 'exec_glm_legacy.jsonl'))).toBe(false);
+  });
 });
 
 // ── #1131: postmortem fields on the execution row (error/result.summary) ──

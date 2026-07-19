@@ -543,6 +543,13 @@ export class StreamJsonAccumulator {
     // quota numbers — cost_usd may be 0 here (assistant events don't report it),
     // which is fine: the caller derives cost from tokens × pricing.
     const usage = this.sawResult ? this.usage : this.assistantUsage;
+    // Model backfill (provider parity): the terminal `result` event carries a
+    // top-level `model` for Claude, but non-Claude harness runs (glm/deepseek/
+    // kimi/gpt via `claude --model <x>`) report it only per-message via
+    // `modelUsage`, so the result-event model is empty. The assistant events
+    // DO carry `message.model`, accumulated into assistantUsage — use it so
+    // every provider records its real model, never "unknown".
+    if (!usage.model && this.assistantUsage.model) usage.model = this.assistantUsage.model;
     return {
       text, usage, isError: this.isError, sawResult: this.sawResult, outcomes: this.outcomes,
       openBackgroundSubagents: this.pendingSubagents.size,
