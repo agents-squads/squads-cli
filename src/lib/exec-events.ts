@@ -21,6 +21,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { parseOpencodeLine } from './stream-json.js';
 
 // ── Event schema ──────────────────────────────────────────────────────
 
@@ -253,6 +254,112 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
           costEst: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : 0,
           model: typeof ev.model === 'string' ? ev.model : '',
         }];
+      }
+
+      return [];
+    },
+  };
+}
+
+// ── opencode adapter (#1177) ──────────────────────────────────────────
+
+/** Input summary for an opencode tool call (opencode uses camelCase keys). */
+function summarizeOpencodeInput(tool: string, input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  const pick = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
+  let summary = '';
+  if (tool === 'bash') summary = pick('command');
+  else if (tool === 'read' || tool === 'write' || tool === 'edit' || tool === 'patch') summary = pick('filePath');
+  else if (tool === 'webfetch') summary = pick('url');
+  else if (tool === 'websearch') summary = pick('query');
+  else if (tool === 'task') summary = pick('description') || pick('prompt');
+  else if (tool === 'glob' || tool === 'grep') summary = pick('pattern');
+  if (!summary) {
+    try { summary = JSON.stringify(input); } catch { summary = ''; }
+  }
+  return summary.slice(0, INPUT_SUMMARY_MAX);
+}
+
+/**
+ * The opencode adapter: normalizes `opencode run --format json` JSONL lines
+ * into ExecEvents (#1177 — the fallback harness gets the same observable-
+ * execution treatment as claude-harness lanes, cli#1175/#1176).
+ *
+ * Two structural differences from Claude stream-json:
+ *  - tool calls arrive RESOLVED: one `tool_use` event carries input AND the
+ *    terminal state, so call + result + artifact mining happen in one line
+ *    (no pending-tool correlation map needed);
+ *  - usage arrives incrementally on `step_finish` events; the adapter
+ *    accumulates and emits ONE cumulative `token_usage` at the terminal
+ *    `step_finish{reason:'stop'}` — same one-usage-event contract as the
+ *    Claude adapter's terminal `result`.
+ */
+export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
+  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+
+  return {
+    parseLine(raw: string): ExecEvent[] {
+      const ev = parseOpencodeLine(raw);
+      if (!ev) return [];
+      const part = ev.part;
+
+      if (ev.type === 'tool_use' && part) {
+        const tool = part.tool || 'unknown';
+        const lower = tool.toLowerCase();
+        const state = part.state ?? {};
+        const toolInput = (state.input ?? undefined) as Record<string, unknown> | undefined;
+        const ok = state.status !== 'error';
+        const outputText = typeof state.output === 'string' ? state.output : '';
+        const str = (k: string) => (toolInput && typeof toolInput[k] === 'string' ? (toolInput[k] as string) : '');
+
+        const events: ExecEvent[] = [{ type: 'tool_call', tool, inputSummary: summarizeOpencodeInput(lower, toolInput) }];
+        if (lower === 'read') {
+          if (str('filePath')) events.push({ type: 'file_read', path: str('filePath') });
+        } else if (lower === 'write' || lower === 'edit' || lower === 'patch') {
+          const bytes = (str('content') || str('newString')).length;
+          if (str('filePath')) events.push({ type: 'file_write', path: str('filePath'), bytes });
+        } else if (lower === 'webfetch' || lower === 'websearch') {
+          const target = str('url') || str('query');
+          if (target) events.push({ type: 'web_fetch', url: target });
+        } else if (lower === 'task') {
+          events.push({
+            type: 'subagent_spawn',
+            childRunId: part.callID || '',
+            squad: '',
+            agent: str('subagent_type') || tool,
+            task: (str('description') || str('prompt')).slice(0, INPUT_SUMMARY_MAX),
+          });
+        } else if (lower === 'bash') {
+          const cmd = str('command');
+          if (/\bgit\b/.test(cmd) && /\bcommit\b/.test(cmd)) events.push({ type: 'artifact', kind: 'commit', ref: cmd.slice(0, INPUT_SUMMARY_MAX) });
+          // Artifact-creating command resolved in this same event — mine its
+          // output for the created artifact's canonical URL (#817 parity).
+          if (ok && /\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) {
+            const url = extractArtifactUrl(outputText, 'pr');
+            if (url) events.push({ type: 'artifact', kind: 'pr', ref: url });
+          }
+          if (ok && /\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) {
+            const url = extractArtifactUrl(outputText, 'issue');
+            if (url) events.push({ type: 'artifact', kind: 'issue', ref: url });
+          }
+        }
+        events.push({ type: 'tool_result', tool, ok, summary: outputText.slice(0, INPUT_SUMMARY_MAX) });
+        if (lower === 'task') {
+          events.push({ type: 'subagent_done', childRunId: part.callID || '', agent: tool, ok });
+        }
+        return events;
+      }
+
+      if (ev.type === 'step_finish' && part) {
+        const t = part.tokens || {};
+        input += t.input || 0;
+        output += (t.output || 0) + (t.reasoning || 0); // reasoning bills as output
+        cacheRead += t.cache?.read || 0;
+        cacheWrite += t.cache?.write || 0;
+        cost += typeof part.cost === 'number' ? part.cost : 0;
+        if (part.reason === 'stop') {
+          return [{ type: 'token_usage', input, output, cacheRead, cacheWrite, costEst: cost, model: '' }];
+        }
       }
 
       return [];
@@ -493,8 +600,14 @@ export function normalizeDetachedLog(
   agent?: string,
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
   provider?: string,
+  harness?: string,
 ): number {
-  const adapter = createClaudeStreamJsonAdapter();
+  // Adapter selection by HARNESS, not provider (#1177): the same provider can
+  // run through either harness (e.g. deepseek via `claude --model` OR via
+  // `opencode run`), and each harness has its own stream shape.
+  const adapter = harness === 'opencode'
+    ? createOpencodeStreamJsonAdapter()
+    : createClaudeStreamJsonAdapter();
   const file = execEventsFile(obsRoot, executionId);
   // provider attribution on every event (cli#1175): the run's model provider
   // (glm/deepseek/anthropic/…) travels with the normalized events so the app

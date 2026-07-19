@@ -734,3 +734,77 @@ describe('open-background-subagent + no-deliverable classification (#1130)', () 
     expect(rec.status).toBe('completed');
   });
 });
+
+describe('opencode harness reconcile (#1177)', () => {
+  // Real `opencode run --format json` v1.18.3 shapes (captured live 2026-07-19).
+  function writeOpencodeJsonLog(): void {
+    const oc = (type: string, part: Record<string, unknown>) =>
+      JSON.stringify({ type, timestamp: 1784487629681, sessionID: 'ses_fix', part });
+    const lines = [
+      oc('step_start', { id: 'p1', type: 'step-start' }),
+      oc('tool_use', { type: 'tool', tool: 'bash', callID: 'c1', state: {
+        status: 'completed', input: { command: 'git add -A && git commit -m "fix: z"' },
+        output: '[main ab12cd3] fix: z\n 1 file changed', title: 't', time: { start: 1, end: 2 } } }),
+      oc('tool_use', { type: 'tool', tool: 'edit', callID: 'c2', state: {
+        status: 'completed', input: { filePath: '/repo/z.ts', newString: 'zz' },
+        output: 'ok', title: 't', time: { start: 1, end: 2 } } }),
+      oc('step_finish', { id: 'p2', reason: 'tool-calls', type: 'step-finish',
+        tokens: { total: 13508, input: 13373, output: 104, reasoning: 31, cache: { write: 0, read: 0 } }, cost: 0.0019 }),
+      oc('text', { id: 'p3', type: 'text', text: 'done' }),
+      oc('step_finish', { id: 'p4', reason: 'stop', type: 'step-finish',
+        tokens: { total: 13760, input: 167, output: 9, reasoning: 16, cache: { write: 0, read: 13568 } }, cost: 0.0001 }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+  }
+
+  it('an opencode lane gets full observability parity via the harness field', () => {
+    writeOpencodeJsonLog();
+    writeSpoolFile({ execId: 'exec_oc_1', provider: 'opencode', model: 'deepseek/deepseek-chat', harness: 'opencode' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+
+    const [rec] = readExecutionsJsonl();
+    expect(rec.provider).toBe('opencode');
+    expect(rec.model).toBe('deepseek/deepseek-chat'); // from the spool — opencode events carry no model
+    expect(rec.status).toBe('completed');
+    expect(rec.cost_usd).toBeCloseTo(0.002, 10);      // REAL provider-priced cost from step_finish
+    expect(rec.input_tokens).toBe(13373 + 167);
+    expect(rec.output_tokens).toBe(104 + 31 + 9 + 16);
+    expect(rec.actions).toBe(2);
+    expect(rec.commits).toBe(1);
+    expect(rec.files_edited).toBe(1);
+
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_oc_1.jsonl');
+    expect(existsSync(eventsPath)).toBe(true);
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const types = events.map((e) => e.event.type);
+    expect(types).toContain('tool_call');
+    expect(types).toContain('artifact');
+    expect(types).toContain('file_write');
+    expect(types).toContain('token_usage');
+    expect(types[types.length - 1]).toBe('run_end');
+    expect(events.every((e) => e.provider === 'opencode')).toBe(true);
+  });
+
+  it('an opencode log WITHOUT the harness stamp falls back to usage-only (no fabricated events)', () => {
+    writeOpencodeJsonLog();
+    writeSpoolFile({ execId: 'exec_oc_legacy', provider: 'opencode', model: 'x' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    // Claude parser finds no stream evidence in opencode-shaped JSONL → no events file.
+    expect(existsSync(join(root, '.agents', 'observability', 'events', 'exec_oc_legacy.jsonl'))).toBe(false);
+  });
+
+  it('an opencode run cut off before its stop step reconciles as failed (#1131 parity)', () => {
+    const oc = (type: string, part: Record<string, unknown>) =>
+      JSON.stringify({ type, timestamp: 1, sessionID: 'ses_fix', part });
+    writeFileSync(join(root, 'run.log'), [
+      oc('step_start', { id: 'p1', type: 'step-start' }),
+      oc('tool_use', { type: 'tool', tool: 'read', callID: 'c1', state: {
+        status: 'completed', input: { filePath: '/repo/a.ts' }, output: 'x', title: 't', time: { start: 1, end: 2 } } }),
+    ].join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_oc_cut', provider: 'opencode', model: 'x', harness: 'opencode' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(String(rec.error)).toContain('without a terminal result');
+  });
+});
