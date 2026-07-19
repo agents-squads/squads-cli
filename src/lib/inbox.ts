@@ -339,15 +339,19 @@ export function scanGoalEvents(obsRoot: string): InboxItem[] {
   const memoryDir = join(obsRoot, '.agents', 'memory');
   if (!existsSync(memoryDir)) return [];
   const items: InboxItem[] = [];
-  let squadsDir = join(obsRoot, '.agents', 'squads');
-  if (!existsSync(squadsDir)) squadsDir = join(dirname(obsRoot), '.agents', 'squads');
-  if (!existsSync(squadsDir)) return [];
 
-  // Build goal status map to check actual goal state (#1040)
+  // #1040: the status field is the source of truth for "achieved" — so this
+  // must run whenever goals.md exists, NOT only when a sibling .agents/squads
+  // dir happens to be present (that stale guard returned [] on any workspace
+  // laid out memory-first, which silently disabled the whole status check).
+  // Build the map from memory directly (buildGoalStatusMap already falls back
+  // to reading squad dirs out of memory).
   const goalStatusMap = buildGoalStatusMap(memoryDir);
 
   try {
-    const validateScript = join(squadsDir, '..', '..', 'scripts', 'validate-goals.sh');
+    // validate-goals.sh lives under the workspace root's scripts/, resolved
+    // from obsRoot rather than a .agents/squads relative dance.
+    const validateScript = join(obsRoot, 'scripts', 'validate-goals.sh');
     if (!existsSync(validateScript)) return [];
     const raw = runValidationScript(validateScript, 120_000);
     for (const line of raw.split('\n')) {
