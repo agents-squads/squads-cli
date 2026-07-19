@@ -2,6 +2,50 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 
 import { join, dirname } from 'path';
 import { withLock } from './lock.js';
 
+/**
+ * Validate a single memory path segment (squad / agent / type) before it
+ * becomes a directory or file name (cli#1045). The write path used to
+ * join(memoryDir, squad, agent, `${type}.md`) with whatever it was handed —
+ * an absolute path, a falsy stringification ("0", "null"), or a `.md`-suffixed
+ * name would produce corrupt trees (falsy-named dirs under the memory root, a
+ * `.md` FILE turned into a directory chain). 15+ such trees were found in a
+ * corpus audit and they broke hq commits (the guardrail hook rejects them).
+ * Fail loud here instead of writing garbage.
+ */
+export function assertValidMemorySegment(segment: unknown, role: string): string {
+  if (typeof segment !== 'string' || segment.length === 0) {
+    throw new Error(`invalid memory ${role}: expected a non-empty string, got ${JSON.stringify(segment)} (cli#1045)`);
+  }
+  const s = segment.trim();
+  const bad = new Set(['0', 'null', 'undefined', 'none', 'nan', '.', '..']);
+  if (s.length === 0 || bad.has(s.toLowerCase())) {
+    throw new Error(`invalid memory ${role}: falsy/reserved segment ${JSON.stringify(segment)} (cli#1045)`);
+  }
+  // Path separators / absolute fragments would blow the segment across
+  // directory levels (the nested-home-dir corruption class).
+  if (/[/\\]/.test(s)) {
+    throw new Error(`invalid memory ${role}: contains a path separator ${JSON.stringify(segment)} — segments are single names (cli#1045)`);
+  }
+  // A `.md` (or any extension) on a squad/agent name means a file name is
+  // being used where a directory is expected.
+  if (/\.[A-Za-z0-9]+$/.test(s)) {
+    throw new Error(`invalid memory ${role}: looks like a file name ${JSON.stringify(segment)} — expected a bare directory name (cli#1045)`);
+  }
+  return s;
+}
+
+/** Build the canonical memory file path for a squad/agent/type triple,
+ * validating every segment first (cli#1045) — single source of truth for the
+ * write paths. */
+function memoryFilePath(memoryDir: string, squad: unknown, agent: unknown, type: unknown): string {
+  return join(
+    memoryDir,
+    assertValidMemorySegment(squad, 'squad'),
+    assertValidMemorySegment(agent, 'agent'),
+    `${assertValidMemorySegment(type, 'type')}.md`,
+  );
+}
+
 export interface MemoryEntry {
   squad: string;
   agent: string;
@@ -268,7 +312,7 @@ export async function updateMemory(
     throw new Error('No .agents/memory directory found');
   }
 
-  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+  const filePath = memoryFilePath(memoryDir, squadName, agentName, type);
   const dir = dirname(filePath);
 
   await withLock(filePath, () => {
@@ -294,7 +338,7 @@ export function updateMemorySync(
     throw new Error('No .agents/memory directory found');
   }
 
-  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+  const filePath = memoryFilePath(memoryDir, squadName, agentName, type);
   const dir = dirname(filePath);
 
   if (!existsSync(dir)) {
@@ -319,7 +363,7 @@ export async function appendToMemory(
     throw new Error('No .agents/memory directory found');
   }
 
-  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+  const filePath = memoryFilePath(memoryDir, squadName, agentName, type);
 
   await withLock(filePath, () => {
     let existing = '';
@@ -360,7 +404,7 @@ export function appendToMemorySync(
     throw new Error('No .agents/memory directory found');
   }
 
-  const filePath = join(memoryDir, squadName, agentName, `${type}.md`);
+  const filePath = memoryFilePath(memoryDir, squadName, agentName, type);
 
   let existing = '';
   if (existsSync(filePath)) {
