@@ -170,3 +170,29 @@ describe('parseSquadFile also_owns (#1092)', () => {
     expect(parseSquadFile(file).also_owns).toEqual(['agents-squads/squads-api']);
   });
 });
+
+describe('explicit repo marker beats issue-ref order (#1121)', () => {
+  const squad = () => squadWith({
+    repo: 'agents-squads/squads-app',
+    also_owns: ['agents-squads/squads-api'],
+  });
+
+  it('the observed failure: first ref names repo-B, explicit marker names repo-A', () => {
+    const task = 'Work the app surface of agents-squads/squads-api#180 (app side, repo agents-squads/squads-app) — wire the QR claim flow';
+    expect(resolveTargetRepoRoot(projectRoot, squad(), task)).toBe(join(base, 'squads-app'));
+  });
+
+  it('"in repo" and "target repo:" phrasings work too', () => {
+    expect(resolveTargetRepoRoot(projectRoot, squad(), 'fix squads-app#5 in repo agents-squads/squads-api')).toBe(join(base, 'squads-api'));
+    expect(resolveTargetRepoRoot(projectRoot, squad(), 'target repo: agents-squads/squads-api — burn down squads-app#5')).toBe(join(base, 'squads-api'));
+  });
+
+  it('a marker naming an UNOWNED repo is ignored (allowlist holds); refs still route', () => {
+    const task = 'work repo evil-org/not-ours — also touch squads-api#3';
+    expect(resolveTargetRepoRoot(projectRoot, squad(), task)).toBe(join(base, 'squads-api'));
+  });
+
+  it('no marker → ref order unchanged (existing #1092 behavior)', () => {
+    expect(resolveTargetRepoRoot(projectRoot, squad(), 'work squads-api#3 then squads-app#4')).toBe(join(base, 'squads-api'));
+  });
+});

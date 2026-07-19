@@ -502,6 +502,25 @@ export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null, 
   if (!squad?.repo) return projectRoot;
   if (task) {
     const owned = [squad.repo, ...(squad.also_owns ?? [])];
+    // cli#1121: an EXPLICIT repo marker ("repo <owner>/<name>", "in repo X",
+    // "target repo: X") beats issue-ref order — a task like "work repo-B#180
+    // (app side, repo repo-A)" used to bind to repo-B because the first
+    // owner/repo#N token won, wasting a full lane run on the wrong sandbox.
+    // Same allowlist discipline: a marker naming a repo the squad does NOT
+    // own is ignored, never routed to.
+    const marker = task.match(/(?:\bin\s+repo|\btarget\s+repo|\brepo)[:\s]+([\w.-]+\/[\w.-]+)/i);
+    if (marker) {
+      const [mOrg, mName] = [marker[1].slice(0, marker[1].lastIndexOf('/')), marker[1].split('/').pop()!];
+      const hit = owned.find((o) => {
+        const slash = o.lastIndexOf('/');
+        const [oOrg, oName] = slash === -1 ? [undefined, o] : [o.slice(0, slash), o.slice(slash + 1)];
+        return oName === mName && (!oOrg || oOrg === mOrg);
+      });
+      if (hit) {
+        const candidate = join(projectRoot, '..', hit.split('/').pop()!);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
     for (const ref of task.matchAll(/(?:([\w.-]+)\/)?([\w.-]+)#\d+/g)) {
       const [, refOrg, refName] = ref;
       const hit = owned.find((o) => {
