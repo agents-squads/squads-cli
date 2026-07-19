@@ -51,8 +51,9 @@ import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv, buildBotG
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
+import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
 import {
   colors,
   RESET,
@@ -826,7 +827,12 @@ export function buildDetachedShellScript(config: {
   // Repo-scoped fallback identity (#980) computed once here (TS side) rather
   // than inline in the shell — single source of truth via gitIdentityArgs.
   const identity = gitIdentityArgs(config.projectRoot);
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
+  // cli#1166: worktree creation failure used to SILENTLY fall back to the
+  // primary checkout — that's exactly how a lane switched the live
+  // checkout's branch under foreign uncommitted work. An autonomous lane
+  // never runs in the primary root: fail loud, keep the pid file (the
+  // lane-death backstop reports the postmortem, #1131).
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; if ! git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD >> '${config.logFile}' 2>&1; then echo 'FATAL: worktree creation failed — refusing to run the lane in the primary checkout (cli#1166)' >> '${config.logFile}'; exit 1; fi; WORK_DIR='${worktreeDir}'; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
   // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4). Its
   // second line (when known) is this run's API execution id (#1131) — the
@@ -1280,19 +1286,32 @@ export async function executeWithClaude(
     // sandbox (Seatbelt/bubblewrap) — FS isolation (write = worktree + memory) + denyRead
     // of credential dirs + a network domain allowlist — merging the guardrail hooks in.
     const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
+    // Worktree guard (cli#1166/#1153): a per-spawn PreToolUse hook that
+    // blocks mutations aimed at the primary checkout. It self-disarms when
+    // the session cwd IS the primary root (foreground fallback mode), so
+    // injecting it unconditionally is safe.
+    const guardScript = writeWorktreeGuardScript(
+      targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
+    );
+    const guardHooks = buildWorktreeGuardHooks(guardScript);
     if (sandboxEnabled()) {
       const memDir = findMemoryDir();
       const settings = buildSandboxSettings({
         cwd: targetRepoRoot,
         writeScope: memDir ? [memDir] : [],
-        guardrailHooks: readGuardrailHooks(guardrailPath),
+        guardrailHooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
         guardrailPermissions: readGuardrailPermissions(guardrailPath),
         strict: sandboxStrict(),
       });
       const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
       claudeArgs.push('--settings', settingsPath);
-    } else if (guardrailPath) {
-      claudeArgs.push('--settings', guardrailPath);
+    } else {
+      const settings: Record<string, unknown> = {
+        hooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
+      };
+      const perms = readGuardrailPermissions(guardrailPath);
+      if (perms) settings.permissions = perms;
+      claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git')));
     }
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
@@ -1329,19 +1348,30 @@ export async function executeWithClaude(
   // lives in the repo's .git (shared across a repo's runs — same content).
   const detachedGuardrail = resolveGuardrailSettings(targetRepoRoot);
   let detachedSettingsFile: string | undefined;
+  // Worktree guard (cli#1166/#1153) — same per-spawn mutation block as
+  // foreground; detached lanes are where both escapes actually happened.
+  const detachedGuardScript = writeWorktreeGuardScript(
+    targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
+  );
+  const detachedGuardHooks = buildWorktreeGuardHooks(detachedGuardScript);
   if (sandboxEnabled()) {
     const memDirDetached = findMemoryDir();
     const settings = buildSandboxSettings({
       cwd: targetRepoRoot,
       writeScope: memDirDetached ? [memDirDetached] : [],
-      guardrailHooks: readGuardrailHooks(detachedGuardrail),
+      guardrailHooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
       guardrailPermissions: readGuardrailPermissions(detachedGuardrail),
       strict: sandboxStrict(),
     });
     detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
     agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
-  } else if (detachedGuardrail) {
-    detachedSettingsFile = detachedGuardrail;
+  } else {
+    const settings: Record<string, unknown> = {
+      hooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
+    };
+    const detachedPerms = readGuardrailPermissions(detachedGuardrail);
+    if (detachedPerms) settings.permissions = detachedPerms;
+    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
   }
 
   const wrapperScript = buildDetachedShellScript({
