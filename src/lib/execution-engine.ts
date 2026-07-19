@@ -533,6 +533,12 @@ export function resolveOwnedRepoRoots(projectRoot: string, squad: Squad | null):
   return roots;
 }
 
+/** Whether a compiled tool surface grants gh — i.e. the agent is expected to
+ * open PRs/comment on issues, so a dead bot mint means a wasted run (cli#1150). */
+export function toolsRequireGh(tools: string[]): boolean {
+  return tools.some((t) => /^Bash\(gh([ :]|\))/.test(t));
+}
+
 /** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
 export function createAgentWorktree(projectRoot: string, squadName: string, agentName: string): string {
   const timestamp = Date.now();
@@ -1245,10 +1251,29 @@ export async function executeWithClaude(
 
   // Get bot token so agents create PRs/issues as bot identity (not user's personal gh auth)
   let botGhToken: string | undefined;
+  let mintError: string | undefined;
   try {
     const ghEnv = await getBotGhEnv();
     botGhToken = ghEnv.GH_TOKEN;
-  } catch { /* graceful: falls back to user's gh auth */ }
+  } catch (e) {
+    mintError = e instanceof Error ? e.message : String(e);
+  }
+  // cli#1150: an agent granted Bash(gh:*) is EXPECTED to open PRs / comment
+  // on issues. Detached lanes are fresh subprocesses with no interactive gh
+  // login — with a failed mint they run their whole budget issuing failing
+  // gh calls (or worse, land personal-auth PRs from ambient credentials).
+  // Fail at dispatch, not at the end of a wasted run. Foreground keeps the
+  // graceful fallback: the operator is present and may have gh auth.
+  if (!botGhToken && !runInForeground) {
+    const compiledForMint = compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS);
+    if (toolsRequireGh(compiledForMint.tools)) {
+      throw new Error(
+        `bot token mint failed and this agent's tools include gh (${mintError ?? 'unknown error'}) — ` +
+        `a detached lane would burn its whole run on failing gh calls (cli#1150). ` +
+        `Fix the GitHub App credentials (~/.squads/secrets/github-app.json) and re-dispatch.`,
+      );
+    }
+  }
   const botGitCredentialEnv = buildBotGitCredentialEnv();
 
   // ── Foreground mode ──────────────────────────────────────────────────
