@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -42,7 +42,7 @@ import {
   updateExecutionStatus,
 } from './execution-log.js';
 import { logObservability, logRunStarted, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
-import { parseStreamJson, StreamJsonAccumulator } from './stream-json.js';
+import { parseStreamJson, parseOpencodeJson, parseOpencodeLine, StreamJsonAccumulator } from './stream-json.js';
 import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
@@ -63,6 +63,7 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  commandExists,
 } from './llm-clis.js';
 import { gitIdentityArgs } from './git.js';
 import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
@@ -141,6 +142,13 @@ export interface ExecuteWithClaudeOptions {
   squadName: string;
   agentName: string;
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  /**
+   * Executor harness override (#1177). 'opencode' reroutes an anthropic-model
+   * run through `opencode run` instead of the claude CLI. Defaults from
+   * SQUADS_HARNESS; independent of this, a missing claude binary auto-falls
+   * back to opencode when installed (anti-lock-in).
+   */
+  harness?: string;
   /** Task directive — `<repo>#<n>` refs route the run to an also_owns repo (#1092) */
   task?: string;
   /** Assembly-time context stats from gatherSquadContext — emitted as the run's `context_assembled` event (#902). */
@@ -831,6 +839,7 @@ export function buildDetachedShellScript(config: {
         logFile: config.logFile,
         timeoutFlag,
         sessionId: safeSessionId,
+        harness: 'claude',
       })
     : '';
   // stream-json (#902): the detached log is a LIVE event stream instead of a
@@ -1153,6 +1162,18 @@ export async function executeWatch(config: {
 
 // ── Main execution functions ─────────────────────────────────────────
 
+/**
+ * Map a resolved anthropic model to opencode's `provider/model` syntax
+ * (#1177). Aliases (sonnet/opus/haiku) return undefined — opencode then uses
+ * its own configured default model, which never drifts with Claude releases.
+ */
+function toOpencodeModel(model: string | null | undefined): string | undefined {
+  if (!model) return undefined;
+  if (model.includes('/')) return model;
+  if (/^claude-/i.test(model)) return `anthropic/${model}`;
+  return undefined;
+}
+
 export async function executeWithClaude(
   prompt: string,
   options: ExecuteWithClaudeOptions
@@ -1226,6 +1247,36 @@ export async function executeWithClaude(
     return executeWithProvider(provider, prompt, {
       verbose, foreground, cwd: targetRepoRoot, squadName, agentName, task: options.task,
     });
+  }
+
+  // Fallback harness (#1177, anti-lock-in): reroute an anthropic-model run
+  // through `opencode run` when explicitly requested (options.harness /
+  // SQUADS_HARNESS=opencode) or when the claude binary itself is missing and
+  // opencode is installed. Downstream this is the provider path — worktree,
+  // spool (harness-stamped), reconcile — with opencode-shaped observability
+  // at full parity (cli#1175 contract).
+  const requestedHarness = options.harness || process.env.SQUADS_HARNESS || '';
+  if (requestedHarness === 'opencode' || !commandExists('claude')) {
+    if (commandExists('opencode')) {
+      if (requestedHarness !== 'opencode') {
+        writeLine(`  ${colors.yellow}claude CLI not found — falling back to the opencode harness (#1177)${RESET}`);
+      }
+      return executeWithProvider('opencode', prompt, {
+        verbose,
+        foreground: !(background === true) && !watch,
+        cwd: targetRepoRoot,
+        squadName,
+        agentName,
+        model: toOpencodeModel(resolvedModel),
+        trigger,
+        timeoutMinutes,
+        task: options.task,
+      });
+    }
+    if (requestedHarness === 'opencode') {
+      throw new Error(`harness 'opencode' requested but the opencode CLI is not installed. Install: ${getCLIConfig('opencode')?.install}`);
+    }
+    // claude missing, opencode missing — fall through; the claude spawn fails loud.
   }
 
   const claudeModelAlias = resolvedModel ? getClaudeModelAlias(resolvedModel) : undefined;
@@ -1725,7 +1776,7 @@ export async function executeWithProvider(
   // foreign providers — glm, deepseek) normalize through the Claude adapter
   // live in foreground; detached lanes get run_start here and the rest at
   // spool reconcile (normalizeDetachedLog resumes the seq counter).
-  const events = cliConfig.streamJson
+  const events = (cliConfig.streamJson || cliConfig.opencodeJson)
     ? new ExecEventWriter(execEventsFile(dispatchRoot, executionId), executionId, {
         source: 'squads-cli',
         provider,
@@ -1771,26 +1822,38 @@ export async function executeWithProvider(
       // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
       // lanes get a larger cap — outcomes accumulate across ALL events, so a
       // tight tail would undercount long runs (#1077).
-      const OUTPUT_TAIL_MAX = cliConfig.streamJson ? 4 * 1024 * 1024 : 256 * 1024;
+      const OUTPUT_TAIL_MAX = (cliConfig.streamJson || cliConfig.opencodeJson) ? 4 * 1024 * 1024 : 256 * 1024;
       let outputTail = '';
-      // Live exec-event normalization (#1159) — one adapter per run.
-      const adapter = events ? createClaudeStreamJsonAdapter() : null;
+      // Live exec-event normalization (#1159) — one adapter per run, shaped
+      // for the harness that emits the stream (#1177).
+      const adapter = events
+        ? (cliConfig.opencodeJson ? createOpencodeStreamJsonAdapter() : createClaudeStreamJsonAdapter())
+        : null;
       let lineBuf = '';
       if (captureUsage) {
         const append = (chunk: Buffer) => {
           outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
         };
-        if (cliConfig.streamJson) {
+        if (cliConfig.streamJson || cliConfig.opencodeJson) {
           // Render assistant text live instead of echoing raw JSONL (#1077).
-          const renderer = new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'));
+          const renderer = cliConfig.streamJson
+            ? new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'))
+            : null;
           proc.stdout?.on('data', (c: Buffer) => {
-            renderer.push(c.toString('utf-8'));
+            renderer?.push(c.toString('utf-8'));
             append(c);
-            if (events && adapter) {
-              lineBuf += c.toString('utf-8');
-              const lines = lineBuf.split('\n');
-              lineBuf = lines.pop() ?? '';
-              for (const l of lines) events.ingestProviderLine(adapter, l, agentName);
+            lineBuf += c.toString('utf-8');
+            const lines = lineBuf.split('\n');
+            lineBuf = lines.pop() ?? '';
+            for (const l of lines) {
+              if (events && adapter) events.ingestProviderLine(adapter, l, agentName);
+              // opencode: text parts render live from the same line split.
+              if (cliConfig.opencodeJson) {
+                const ev = parseOpencodeLine(l);
+                if (ev?.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text) {
+                  process.stdout.write(ev.part.text + '\n');
+                }
+              }
             }
           });
           proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
@@ -1831,9 +1894,11 @@ export async function executeWithProvider(
         const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
         // Stream-json lanes carry real outcomes in the event stream (#1077) —
         // same omit-when-unknown convention as everywhere else (#1060).
-        const streamOutcomes = cliConfig.streamJson && outputTail
+        const streamOutcomes = outputTail && cliConfig.streamJson
           ? parseStreamJson(outputTail).outcomes
-          : null;
+          : outputTail && cliConfig.opencodeJson
+            ? parseOpencodeJson(outputTail).outcomes
+            : null;
         logObservability({
           ts: new Date().toISOString(),
           id: executionId,
@@ -1947,6 +2012,10 @@ export async function executeWithProvider(
         trigger: options.trigger || 'manual',
         logFile,
         timeoutFlag,
+        // Harness stamp (#1177) — reconcile picks the stream parser/adapter by
+        // this, not by provider: claude-harness lanes and opencode lanes emit
+        // different JSONL shapes; plain provider CLIs (aider) stamp nothing.
+        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : '',
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);

@@ -24,7 +24,7 @@ import {
   type ObservabilityRecord,
 } from './observability.js';
 import { updateExecutionStatus } from './execution-log.js';
-import { parseStreamJson } from './stream-json.js';
+import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
 import { normalizeDetachedLog } from './exec-events.js';
 import { reportExecutionComplete } from './api-client.js';
 
@@ -64,6 +64,14 @@ export interface SpoolRecord {
    * usage before this. Empty/absent on provider runs and legacy spools.
    */
   sessionId?: string;
+  /**
+   * Executor harness the run went through (#1177): 'claude' (Claude Code —
+   * claude/glm/deepseek/kimi/gpt lanes), 'opencode' (`opencode run`).
+   * Reconcile picks the stream parser + event adapter by THIS, not by
+   * provider — the same provider can run through either harness.
+   * Empty/absent on legacy spools and non-stream provider CLIs (aider).
+   */
+  harness?: string;
 }
 
 export function spoolDir(obsRoot: string): string {
@@ -99,6 +107,8 @@ export function buildSpoolWriterShell(fields: {
   timeoutFlag?: string;
   /** Claude session id the executor was launched with (#857) — '' for provider runs. */
   sessionId?: string;
+  /** Executor harness (#1177): 'claude' | 'opencode' | '' (non-stream provider CLIs). */
+  harness?: string;
 }): string {
   const q = (s: string) => s.replace(/'/g, '');
   // execIds are CLI-generated, but the done-file name and embedded id are
@@ -114,7 +124,7 @@ export function buildSpoolWriterShell(fields: {
   return (
     `; mkdir -p '${dir}'` +
     `; SPOOL_TMP=$(mktemp '${dir}/.tmp.XXXXXX')` +
-    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","sessionId":"${q(fields.sessionId || '').replace(/[^A-Za-z0-9-]/g, '')}","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s","timedOut":%s}' ` +
+    `; printf '{"execId":"%s","squad":"%s","agent":"%s","provider":"%s","model":"%s","trigger":"%s","logFile":"%s","sessionId":"${q(fields.sessionId || '').replace(/[^A-Za-z0-9-]/g, '')}","harness":"${(fields.harness || '').replace(/[^a-z-]/g, '')}","startEpoch":%s,"endEpoch":%s,"exitCode":%s,"harvest":"%s","timedOut":%s}' ` +
     `'${safeId}' '${q(fields.squad)}' '${q(fields.agent)}' '${q(fields.provider)}' '${q(fields.model)}' '${q(fields.trigger)}' '${q(fields.logFile)}' ` +
     `"\${START:-0}" "$(date +%s)" "\${EXIT:-1}" "\${HARVEST:-}" ${timedOutExpr} > "$SPOOL_TMP"` +
     `; mv "$SPOOL_TMP" '${file}'${flagCleanup}`
@@ -194,7 +204,12 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   // skipped the ENTIRE pipeline for non-Claude runs — 0 events, unknown model,
   // no artifacts: the black box the founder caught 2026-07-19.)
   const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
-  const stream = rawLog ? parseStreamJson(rawLog) : null;
+  // Parser selection by HARNESS (#1177): opencode lanes emit a different JSONL
+  // shape (`opencode run --format json`) with the same StreamResult contract.
+  const harness = spool.harness || '';
+  const stream = rawLog
+    ? (harness === 'opencode' ? parseOpencodeJson(rawLog) : parseStreamJson(rawLog))
+    : null;
   const hasStreamEvidence = !!stream && (
     stream.sawResult || stream.outcomes.actions > 0 || stream.text.length > 0 ||
     stream.usage.input_tokens > 0 || stream.usage.output_tokens > 0
@@ -295,7 +310,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
         durationMs,
         totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
         outcomes,
-      }, spool.provider);
+      }, spool.provider, harness);
     } catch { /* events are best-effort; the obs record below is the source of truth */ }
   }
 

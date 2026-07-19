@@ -8,7 +8,7 @@
  */
 
 import { execSync } from 'child_process';
-import { parseStreamJson } from './stream-json.js';
+import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
 
 export interface CLIConfig {
   /** Provider identifier (matches provider field in SQUAD.md/agent.md) */
@@ -41,6 +41,14 @@ export interface CLIConfig {
    * JSONL, and parses outcomes from the same stream.
    */
   streamJson?: boolean;
+
+  /**
+   * The CLI emits opencode `--format json` JSONL events (#1177) — a different
+   * shape from Claude stream-json, normalized by its own adapter
+   * (createOpencodeStreamJsonAdapter) and parser (parseOpencodeJson).
+   * Mutually exclusive with `streamJson`.
+   */
+  opencodeJson?: boolean;
 
   /**
    * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
@@ -106,6 +114,18 @@ function makeClaudeHarnessStreamUsage(envPrefix: string): (output: string) => Pr
 
 export const parseGlmStreamUsage = makeClaudeHarnessStreamUsage('GLM');
 export const parseDeepseekStreamUsage = makeClaudeHarnessStreamUsage('DEEPSEEK');
+
+/**
+ * Usage from an opencode `--format json` log (#1177). Unlike the claude
+ * harness (which prices foreign models at Claude rates — discarded above),
+ * opencode's step_finish cost is the provider's REAL price, so it's trusted.
+ */
+export function parseOpencodeUsage(output: string): ProviderUsage | null {
+  const stream = parseOpencodeJson(output);
+  const u = stream.usage;
+  if (!u.input_tokens && !u.output_tokens) return null;
+  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: u.cost_usd };
+}
 
 /**
  * Parse aider's usage lines, e.g.:
@@ -311,17 +331,29 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     parseUsage: parseAiderUsage,
   },
 
+  // opencode is the FALLBACK HARNESS (#1177, anti-lock-in): a second
+  // multi-provider agentic executor so the fleet survives a broken/locked-out
+  // claude CLI. `--format json` emits a structured event stream (normalized by
+  // createOpencodeStreamJsonAdapter); `--auto` approves permissions — lanes
+  // run in isolated worktrees, same containment as every other lane. Cost in
+  // its step_finish events is REAL provider pricing (models.dev rates), so no
+  // env-rate table is needed.
   opencode: {
     provider: 'opencode',
-    displayName: 'OpenCode',
+    displayName: 'OpenCode (fallback harness)',
     command: 'opencode',
     install: 'curl -fsSL https://opencode.ai/install.sh | bash',
     buildArgs: (prompt, opts) => {
-      const args = ['run', '--auto', prompt];
+      const args = ['run', '--format', 'json', '--auto'];
+      // opencode wants `provider/model` (e.g. deepseek/deepseek-chat,
+      // anthropic/claude-sonnet-5); bare names pass through for its default.
       if (opts?.model) args.push('--model', opts.model);
       if (opts?.cwd) args.push('--dir', opts.cwd);
+      args.push(prompt);
       return args;
     },
+    opencodeJson: true,
+    parseUsage: parseOpencodeUsage,
   },
 
   ollama: {

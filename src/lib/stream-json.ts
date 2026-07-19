@@ -567,3 +567,126 @@ export function parseStreamJson(jsonl: string, onText?: (t: string) => void): St
   acc.flush();
   return acc.getResult();
 }
+
+// ── opencode --format json (#1177) ────────────────────────────────────
+//
+// The opencode harness (`opencode run --format json`) emits a different
+// JSONL shape from Claude Code stream-json: every line is
+// `{type, timestamp, sessionID, part}` where `part` carries the payload.
+// Tool calls arrive RESOLVED — one `tool_use` event holds both the input
+// and the terminal state (status/output) — and usage arrives incrementally
+// on `step_finish` events (with REAL provider-priced cost from models.dev
+// rates, unlike the claude harness which prices foreign models at Claude
+// rates). Shapes verified against a live opencode v1.18.3 run (2026-07-19).
+
+/** One `opencode run --format json` line's payload. */
+export interface OpencodePart {
+  type?: string;
+  tool?: string;
+  callID?: string;
+  state?: {
+    status?: string;
+    input?: Record<string, unknown>;
+    output?: unknown;
+  };
+  text?: string;
+  reason?: string;
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
+  cost?: number;
+}
+
+/** Parse one opencode JSONL line into `{type, part}`, or null for non-events. */
+export function parseOpencodeLine(line: string): { type: string; part?: OpencodePart } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const ev = JSON.parse(trimmed) as { type?: unknown; part?: OpencodePart };
+    if (typeof ev.type !== 'string') return null;
+    return { type: ev.type, part: ev.part };
+  } catch {
+    return null; // stray non-JSON line (stderr noise in the same log) — ignore
+  }
+}
+
+/** Which artifact kinds an opencode bash command is a candidate for. */
+export function bashCommandKinds(cmd: string): BashOutcomeKind[] {
+  const kinds: BashOutcomeKind[] = [];
+  if (PR_CREATE_RE.test(cmd)) kinds.push('pr');
+  if (ISSUE_CREATE_RE.test(cmd)) kinds.push('issue');
+  if (GIT_COMMIT_RE.test(cmd)) kinds.push('commit');
+  return kinds;
+}
+
+/**
+ * One-shot parser for a complete opencode `--format json` log. Same
+ * `StreamResult` contract as `parseStreamJson`, so the spool reconcile
+ * applies identical honesty rules to opencode runs:
+ *  - outcomes count verified artifacts from the tool's OWN output
+ *    (cli#1134 — command text alone never counts),
+ *  - `sawResult` means a terminal `step_finish{reason:'stop'}` was seen —
+ *    a log without one is an interrupted run (#1131),
+ *  - `isError` reflects a fatal `error` event on the stream.
+ * opencode resolves tool calls in-event, so `openBackgroundSubagents` is
+ * structurally always 0.
+ */
+export function parseOpencodeJson(jsonl: string, onText?: (t: string) => void): StreamResult {
+  const usage = emptyUsage();
+  const outcomes = emptyOutcomes();
+  let text = '';
+  let sawStop = false;
+  let sawError = false;
+
+  for (const line of jsonl.split('\n')) {
+    const ev = parseOpencodeLine(line);
+    if (!ev) continue;
+    const part = ev.part;
+
+    if (ev.type === 'text' && typeof part?.text === 'string' && part.text) {
+      text += text ? '\n' + part.text : part.text;
+      onText?.(part.text);
+    } else if (ev.type === 'tool_use' && part) {
+      outcomes.actions += 1;
+      const tool = (part.tool || '').toLowerCase();
+      if (tool === 'write' || tool === 'edit' || tool === 'patch') outcomes.files_edited += 1;
+      const state = part.state;
+      if (tool === 'bash' && state && state.status !== 'error') {
+        const cmd = String(state.input?.command ?? '');
+        const kinds = bashCommandKinds(cmd);
+        if (kinds.length > 0) {
+          const inc = resolveBashOutcome(typeof state.output === 'string' ? state.output : '', kinds);
+          outcomes.commits += inc.commits;
+          outcomes.prs_created += inc.prs_created;
+          outcomes.issues_created += inc.issues_created;
+        }
+      }
+    } else if (ev.type === 'step_finish' && part) {
+      const t = part.tokens || {};
+      usage.input_tokens += t.input || 0;
+      // reasoning tokens are billed as output — fold them in
+      usage.output_tokens += (t.output || 0) + (t.reasoning || 0);
+      usage.cache_read_tokens += t.cache?.read || 0;
+      usage.cache_write_tokens += t.cache?.write || 0;
+      usage.cost_usd += typeof part.cost === 'number' ? part.cost : 0;
+      if (part.reason === 'stop') {
+        sawStop = true;
+        usage.num_turns += 1;
+      }
+    } else if (ev.type === 'error') {
+      sawError = true;
+    }
+  }
+
+  return {
+    text,
+    usage,
+    isError: sawError,
+    sawResult: sawStop,
+    outcomes,
+    openBackgroundSubagents: 0,
+  };
+}

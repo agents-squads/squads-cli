@@ -126,28 +126,29 @@ describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)'
   });
 });
 
-describe('opencode lane (#978 — headless `opencode run`, aider-tier file executor)', () => {
+describe('opencode lane (#1177 — fallback harness, `opencode run --format json`)', () => {
   it('is registered in LLM_CLIS with the right identity', () => {
     expect(LLM_CLIS.opencode.provider).toBe('opencode');
-    expect(LLM_CLIS.opencode.displayName).toBe('OpenCode');
+    expect(LLM_CLIS.opencode.displayName).toBe('OpenCode (fallback harness)');
     expect(LLM_CLIS.opencode.command).toBe('opencode');
   });
 
-  it('builds a headless run with --auto and the prompt', () => {
+  it('builds a headless run with --format json, --auto, and the prompt LAST', () => {
     const args = LLM_CLIS.opencode.buildArgs('do the thing');
-    expect(args).toEqual(['run', '--auto', 'do the thing']);
+    expect(args).toEqual(['run', '--format', 'json', '--auto', 'do the thing']);
   });
 
-  it('appends --model and --dir only when provided', () => {
-    const args = LLM_CLIS.opencode.buildArgs('hi', { model: 'claude-sonnet-4-5', cwd: '/repo' });
-    expect(args).toEqual(['run', '--auto', 'hi', '--model', 'claude-sonnet-4-5', '--dir', '/repo']);
+  it('appends --model and --dir before the prompt when provided', () => {
+    const args = LLM_CLIS.opencode.buildArgs('hi', { model: 'deepseek/deepseek-chat', cwd: '/repo' });
+    expect(args).toEqual(['run', '--format', 'json', '--auto', '--model', 'deepseek/deepseek-chat', '--dir', '/repo', 'hi']);
   });
 
-  // Scope guard (#978): opencode is a plain one-shot file-editing executor,
-  // same tier as aider — not a conversational tool-use harness like claude/glm.
-  it('stays a plain one-shot executor: no streamJson, no parseUsage', () => {
+  // #1177: opencode is the fallback HARNESS — full observability parity
+  // (its own JSONL shape + real provider-priced usage), never Claude stream-json.
+  it('declares opencodeJson (not streamJson) and parses its own usage', () => {
     expect(LLM_CLIS.opencode.streamJson).toBeUndefined();
-    expect(LLM_CLIS.opencode.parseUsage).toBeUndefined();
+    expect(LLM_CLIS.opencode.opencodeJson).toBe(true);
+    expect(typeof LLM_CLIS.opencode.parseUsage).toBe('function');
   });
 });
 
