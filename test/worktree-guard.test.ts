@@ -145,4 +145,22 @@ describe('detached script fail-loud (cli#1166)', () => {
     expect(script).toContain('FATAL: worktree creation failed');
     expect(script).toContain('exit 1');
   });
+
+  it('cli#1135: the whole wrapper exec-redirects into the lane log before any segment runs', async () => {
+    const { buildDetachedShellScript } = await import('../src/lib/execution-engine.js');
+    const script = buildDetachedShellScript({
+      projectRoot: '/repo/primary',
+      squadName: 'cli',
+      agentName: 'lane',
+      timestamp: 1,
+      escapedPrompt: 'x',
+      logFile: '/tmp/l.log',
+      pidFile: '/tmp/l.pid',
+    });
+    const execIdx = script.indexOf(`exec >> '/tmp/l.log' 2>&1`);
+    const worktreeIdx = script.indexOf('worktree add');
+    expect(execIdx).toBeGreaterThan(-1);
+    expect(worktreeIdx).toBeGreaterThan(-1);
+    expect(execIdx).toBeLessThan(worktreeIdx); // log live before anything can die
+  });
 });

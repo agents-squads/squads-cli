@@ -845,7 +845,12 @@ export function buildDetachedShellScript(config: {
   // only way cleanStaleRuns' lane-death backstop can report a postmortem for
   // a wrapper that died before it ever reached the spool writer.
   const pidFileWrite = buildPidFileWriteCmd(config.pidFile, config.executionId);
-  return `${pidFileWrite}; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
+  // cli#1135: a wrapper segment dying before its own redirect used to leave
+  // NO log file — 'exited with code 1' was the whole postmortem. exec-redirect
+  // the entire wrapper into the lane log first thing: the log file now exists
+  // from the instant the wrapper starts, and every segment's stderr (mkdir,
+  // worktree add, cd, executor spawn, spool) lands in it.
+  return `${pidFileWrite}; exec >> '${config.logFile}' 2>&1; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
 }
 
 /** Prepare log directory and file paths for detached execution */
