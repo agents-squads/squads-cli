@@ -252,20 +252,106 @@ function runValidationScript(script: string, timeoutMs: number): string {
 }
 
 /**
+ * Parse a goals.md file and return a map of goal name to status.
+ * Only considers a goal achieved when its status field explicitly says so
+ * (e.g., `status: achieved`, `status: complete`) OR it's in the `## Achieved` section.
+ * A merged PR ref is at most a signal, never the sole trigger (#1040).
+ */
+function buildGoalStatusMap(memoryDir: string): Map<string, { status: string; section: string }> {
+  const goalMap = new Map<string, { status: string; section: string }>();
+  try {
+    // Get list of squad directories - can be in .agents/squads/ or directly in .agents/memory/
+    let squadDirs: string[] = [];
+
+    // First try: squads directory at .agents/squads/
+    let squadsDir = join(dirname(memoryDir), 'squads');
+    if (!existsSync(squadsDir)) {
+      // Fallback: .agents/squads/ relative to obsRoot
+      const obsRoot = dirname(memoryDir);
+      squadsDir = join(obsRoot, '.agents', 'squads');
+    }
+
+    if (existsSync(squadsDir)) {
+      squadDirs = readdirSync(squadsDir).filter(name => {
+        const fullPath = join(squadsDir, name);
+        return existsSync(fullPath) && statSync(fullPath).isDirectory();
+      });
+    }
+
+    // If no squad dirs found in .agents/squads/, check memory directory directly
+    if (squadDirs.length === 0 && existsSync(memoryDir)) {
+      squadDirs = readdirSync(memoryDir).filter(name => {
+        const goalsPath = join(memoryDir, name, 'goals.md');
+        const fullPath = join(memoryDir, name);
+        return existsSync(fullPath) && statSync(fullPath).isDirectory() && existsSync(goalsPath);
+      });
+    }
+
+    if (squadDirs.length === 0) return goalMap;
+
+    for (const squad of squadDirs) {
+      const goalsPath = join(memoryDir, squad, 'goals.md');
+      if (!existsSync(goalsPath)) continue;
+
+      const content = readFileSync(goalsPath, 'utf-8');
+      const lines = content.split('\n');
+      let currentSection: string = 'active';
+
+      for (const line of lines) {
+        if (line.startsWith('## Active')) currentSection = 'active';
+        else if (line.startsWith('## Achieved')) currentSection = 'achieved';
+        else if (line.startsWith('## Abandoned')) currentSection = 'abandoned';
+        else if (line.startsWith('## Proposed')) currentSection = 'proposed';
+
+        const nameMatch = line.match(/\*\*([^*]+)\*\*/);
+        if (!nameMatch) continue;
+
+        const goalName = nameMatch[1].trim();
+        const statusMatch = line.match(/status:\s*(\S+)/);
+        const status = statusMatch ? statusMatch[1].trim() : '';
+
+        // Goals in the Achieved section are considered achieved even without explicit status
+        const isAchieved = currentSection === 'achieved' ||
+          status === 'achieved' ||
+          status === 'complete' ||
+          status === 'completed';
+
+        goalMap.set(goalName, { status: isAchieved ? 'achieved' : status, section: currentSection });
+      }
+    }
+  } catch {
+    // Parsing failed — return empty map, fail open
+  }
+  return goalMap;
+}
+
+/**
  * Machine-detected goal lifecycle events (hq#478). Reads goals.md across
  * squads and surfaces: achieved (all PR refs merged), contradicted (refs not
  * found), stale (no activity). Detection is from validate-goals.sh; this
  * scanner creates inbox items from its structured output.
+ *
+ * FIXED (#1040): Only considers a goal achieved when its status field says so
+ * (or it's in the Achieved section). A merged-PR ref is at most a signal,
+ * never the sole trigger.
  */
 export function scanGoalEvents(obsRoot: string): InboxItem[] {
   const memoryDir = join(obsRoot, '.agents', 'memory');
   if (!existsSync(memoryDir)) return [];
   const items: InboxItem[] = [];
-  let squadsDir = join(obsRoot, '.agents', 'squads');
-  if (!existsSync(squadsDir)) squadsDir = join(dirname(obsRoot), '.agents', 'squads');
-  if (!existsSync(squadsDir)) return [];
+
+  // #1040: the status field is the source of truth for "achieved" — so this
+  // must run whenever goals.md exists, NOT only when a sibling .agents/squads
+  // dir happens to be present (that stale guard returned [] on any workspace
+  // laid out memory-first, which silently disabled the whole status check).
+  // Build the map from memory directly (buildGoalStatusMap already falls back
+  // to reading squad dirs out of memory).
+  const goalStatusMap = buildGoalStatusMap(memoryDir);
+
   try {
-    const validateScript = join(squadsDir, '..', '..', 'scripts', 'validate-goals.sh');
+    // validate-goals.sh lives under the workspace root's scripts/, resolved
+    // from obsRoot rather than a .agents/squads relative dance.
+    const validateScript = join(obsRoot, 'scripts', 'validate-goals.sh');
     if (!existsSync(validateScript)) return [];
     const raw = runValidationScript(validateScript, 120_000);
     for (const line of raw.split('\n')) {
@@ -273,12 +359,26 @@ export function scanGoalEvents(obsRoot: string): InboxItem[] {
       if (!trimmed || trimmed.startsWith('✓')) continue;
       const reviewMatch = trimmed.match(/⤴ REVIEW.*:\s+(.+)/);
       if (reviewMatch) {
-        items.push({
-          id: `goal-${reviewMatch[1].slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
-          kind: 'goal', ref: reviewMatch[1], title: `Goal achieved: ${reviewMatch[1].slice(0, 80)}`,
-          ageDays: 0, approveSemantics: 'move to Achieved in goals.md',
-          detail: 'all PR refs merged — appears complete',
-        });
+        const goalName = reviewMatch[1].trim();
+        const goalState = goalStatusMap.get(goalName);
+
+        // #1040: Only surface as achieved if the goal's status field says so
+        // A merged PR ref alone is not sufficient
+        const isActuallyAchieved = goalState?.status === 'achieved' ||
+          goalState?.section === 'achieved';
+
+        if (isActuallyAchieved) {
+          items.push({
+            id: `goal-${goalName.slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
+            kind: 'goal',
+            ref: goalName,
+            title: `Goal achieved: ${goalName.slice(0, 80)}`,
+            ageDays: 0,
+            approveSemantics: 'confirm achieved status in goals.md',
+            detail: 'status field or section confirms achieved',
+          });
+        }
+        // If not actually achieved, skip — active goals with merged PR refs stay active
         continue;
       }
       const contraMatch = trimmed.match(/✗ CONTRADICTED:\s+(.+)/);

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
-import { scanStrandedBranches, scanRunsWithArtifacts, buildInbox } from '../src/lib/inbox.js';
+import { scanStrandedBranches, scanRunsWithArtifacts, buildInbox, scanGoalEvents } from '../src/lib/inbox.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'squads-inbox-')); });
@@ -210,5 +210,164 @@ describe('ambient proposal class (#983 — squads propose lands distinctly)', ()
 
     const [item] = scanStrandedBranches(dir);
     expect(item.title).toContain('PROPOSAL (partial) —');
+  });
+});
+
+describe('scanGoalEvents (#1040 — goal-achieved heuristic false-positives)', () => {
+  it('DEBUG: test basic setup', () => {
+    // Debug test to check if basic setup works
+    const memoryDir = join(dir, '.agents', 'memory');
+    const squadDir = join(memoryDir, 'cli');
+    mkdirSync(squadDir, { recursive: true });
+    writeFileSync(join(squadDir, 'goals.md'), '# Test\n\n## Active\n\n1. **Test goal** — status: achieved');
+
+    const squadsDir = join(dir, '.agents', 'squads');
+    mkdirSync(squadsDir, { recursive: true });
+
+    const mockScript = join(dir, 'scripts', 'validate-goals.sh');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(mockScript, `#!/bin/bash
+echo "⤴ REVIEW: Test goal"
+`);
+    // Make script executable
+    execSync(`chmod +x ${mockScript}`, { stdio: 'ignore' });
+
+    // Check if files exist
+    expect(existsSync(join(squadDir, 'goals.md'))).toBe(true);
+    expect(existsSync(mockScript)).toBe(true);
+
+    const items = scanGoalEvents(dir);
+    console.log('DEBUG items:', JSON.stringify(items, null, 2));
+    expect(items).toHaveLength(1);
+  });
+
+  it('active goal with merged PR ref stays active (not marked as achieved)', () => {
+    // Setup: create goals.md with an active goal that has a merged PR
+    const memoryDir = join(dir, '.agents', 'memory');
+    const squadDir = join(memoryDir, 'cli');
+    mkdirSync(squadDir, { recursive: true });
+    writeFileSync(join(squadDir, 'goals.md'), [
+      '# CLI Goals',
+      '',
+      '## Active',
+      '',
+      '1. **Fix goal-achieved heuristic** — metric: bug-fixed | baseline: false-positives exist | target: zero | deadline: 2026-07-20 | status: in-progress',
+      '',
+      '## Achieved',
+      '',
+      '(none)',
+    ].join('\n'));
+
+    // Mock validate-goals.sh output suggesting this goal for review
+    // (simulating the case where a merged PR references the goal)
+    const squadsDir = join(dir, '.agents', 'squads');
+    mkdirSync(squadsDir, { recursive: true });
+    const mockScript = join(dir, 'scripts', 'validate-goals.sh');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(mockScript, `#!/bin/bash
+echo "⤴ REVIEW: Fix goal-achieved heuristic"
+`);
+    // Make script executable
+    execSync(`chmod +x ${mockScript}`, { stdio: 'ignore' });
+
+    const items = scanGoalEvents(dir);
+
+    // Should NOT create a "Goal achieved" inbox item because status is in-progress
+    expect(items).toHaveLength(0);
+  });
+
+  it('status=achieved is respected (marked as achieved)', () => {
+    // Setup: create goals.md with an achieved goal
+    const memoryDir = join(dir, '.agents', 'memory');
+    const squadDir = join(memoryDir, 'cli');
+    mkdirSync(squadDir, { recursive: true });
+    writeFileSync(join(squadDir, 'goals.md'), [
+      '# CLI Goals',
+      '',
+      '## Active',
+      '',
+      '(none)',
+      '',
+      '## Achieved',
+      '',
+      '1. **Fix goal-achieved heuristic** — metric: bug-fixed | baseline: false-positives exist | target: zero | deadline: 2026-07-20 | status: achieved',
+    ].join('\n'));
+
+    // Mock validate-goals.sh output
+    const mockScript = join(dir, 'scripts', 'validate-goals.sh');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(mockScript, `#!/bin/bash
+echo "⤴ REVIEW: Fix goal-achieved heuristic"
+`);
+
+    const items = scanGoalEvents(dir);
+
+    // Should create a "Goal achieved" inbox item because status=achieved
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('goal');
+    expect(items[0].title).toContain('Goal achieved');
+    expect(items[0].title).toContain('Fix goal-achieved heuristic');
+    expect(items[0].approveSemantics).toContain('confirm achieved');
+  });
+
+  it('goal in Achieved section is respected even without explicit status', () => {
+    // Setup: goal in Achieved section without explicit status field
+    const memoryDir = join(dir, '.agents', 'memory');
+    const squadDir = join(memoryDir, 'cli');
+    mkdirSync(squadDir, { recursive: true });
+    writeFileSync(join(squadDir, 'goals.md'), [
+      '# CLI Goals',
+      '',
+      '## Achieved',
+      '',
+      '1. **Another completed goal** — metric: shipped | baseline: zero | target: one | deadline: 2026-07-15',
+      '',
+      '## Active',
+      '',
+      '(none)',
+    ].join('\n'));
+
+    // Mock validate-goals.sh output
+    const mockScript = join(dir, 'scripts', 'validate-goals.sh');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(mockScript, `#!/bin/bash
+echo "⤴ REVIEW: Another completed goal"
+`);
+
+    const items = scanGoalEvents(dir);
+
+    // Should create a "Goal achieved" inbox item because it's in the Achieved section
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('goal');
+    expect(items[0].title).toContain('Goal achieved');
+    expect(items[0].title).toContain('Another completed goal');
+  });
+
+  it('active goal with status=complete is treated as achieved', () => {
+    // Setup: active goal with status=complete (variant of achieved)
+    const memoryDir = join(dir, '.agents', 'memory');
+    const squadDir = join(memoryDir, 'cli');
+    mkdirSync(squadDir, { recursive: true });
+    writeFileSync(join(squadDir, 'goals.md'), [
+      '# CLI Goals',
+      '',
+      '## Active',
+      '',
+      '1. **Some completed work** — metric: delivered | baseline: zero | target: one | deadline: 2026-07-19 | status: complete',
+    ].join('\n'));
+
+    // Mock validate-goals.sh output
+    const mockScript = join(dir, 'scripts', 'validate-goals.sh');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(mockScript, `#!/bin/bash
+echo "⤴ REVIEW: Some completed work"
+`);
+
+    const items = scanGoalEvents(dir);
+
+    // Should create a "Goal achieved" inbox item because status=complete
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('goal');
+    expect(items[0].title).toContain('Goal achieved');
   });
 });
