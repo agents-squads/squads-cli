@@ -90,12 +90,15 @@ export function loadConfig(): SquadsConfig {
 
   try {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<SquadsConfig>;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
-      current: parsed.current || 'local',
+      // Spread everything from disk first so unknown/extra fields (email,
+      // future additions) survive a load → save cycle.
+      ...(parsed as unknown as SquadsConfig),
+      current: (parsed.current as string) || 'local',
       environments: {
         ...DEFAULT_CONFIG.environments,
-        ...parsed.environments,
+        ...(parsed.environments as Record<string, EnvironmentConfig> || {}),
       },
     };
   } catch {
@@ -133,6 +136,23 @@ export function getEnv(): EnvironmentConfig {
 export function getEnvName(): string {
   const config = loadConfig();
   return process.env.SQUADS_ENV || config.current;
+}
+
+/**
+ * Switch the active environment. Validates that the name is a known key in
+ * the environments map. Returns `true` on success, throws on invalid name.
+ */
+export function switchEnv(name: string): SquadsConfig {
+  const config = loadConfig();
+  if (!config.environments[name]) {
+    const valid = Object.keys(config.environments).join(', ');
+    throw new Error(
+      `Unknown environment "${name}". Valid environments: ${valid}`,
+    );
+  }
+  config.current = name;
+  saveConfig(config);
+  return config;
 }
 
 export function getApiUrl(): string {
