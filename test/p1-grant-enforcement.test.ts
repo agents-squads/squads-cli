@@ -113,7 +113,12 @@ describe('root_run_id chain (#920)', () => {
 
   it('nested runs stamp root on persisted events; top-level runs do not', () => {
     const old = process.env.SQUADS_ROOT_RUN_ID;
+    const oldSess = process.env.CLAUDE_CODE_SESSION_ID;
     try {
+      // #1181: the writer now also derives from the ambient Claude session —
+      // clear it so this test exercises the pure #920 inheritance path (it IS
+      // set when this suite runs inside a Claude Code session).
+      delete process.env.CLAUDE_CODE_SESSION_ID;
       process.env.SQUADS_ROOT_RUN_ID = 'exec_root_1';
       mkdirSync(join(dir, '.agents'), { recursive: true });
       const file = execEventsFile(dir, 'exec_child_2');
@@ -134,6 +139,29 @@ describe('root_run_id chain (#920)', () => {
     } finally {
       if (old === undefined) delete process.env.SQUADS_ROOT_RUN_ID;
       else process.env.SQUADS_ROOT_RUN_ID = old;
+      if (oldSess === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = oldSess;
+    }
+  });
+
+  it('#1181: the WRITER derives root from the ambient Claude session — the dispatching process stamps, not just children', () => {
+    const old = process.env.SQUADS_ROOT_RUN_ID;
+    const oldSess = process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      delete process.env.SQUADS_ROOT_RUN_ID;
+      process.env.CLAUDE_CODE_SESSION_ID = 'dddd-eeee-ffff';
+      mkdirSync(join(dir, '.agents'), { recursive: true });
+      const file = execEventsFile(dir, 'exec_lane_9');
+      const w = new ExecEventWriter(file, 'exec_lane_9');
+      w.emit({ type: 'run_start', squad: 's', mode: 'background', model: '', role: '', startedAt: 'x' });
+      w.close();
+      const line = JSON.parse(readFileSync(file, 'utf8').trim()) as PersistedExecEvent;
+      expect(line.root).toBe('sess_dddd-eeee-ffff');
+    } finally {
+      if (old === undefined) delete process.env.SQUADS_ROOT_RUN_ID;
+      else process.env.SQUADS_ROOT_RUN_ID = old;
+      if (oldSess === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = oldSess;
     }
   });
 });

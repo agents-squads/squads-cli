@@ -10,6 +10,7 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
+import { deriveRootRunId } from './exec-events.js';
 import {
   parseOutcomes,
   parseBashCandidates,
@@ -555,10 +556,12 @@ async function pingIngestTrigger(): Promise<void> {
 
 export function logObservability(record: ObservabilityRecord): void {
   // Audit chain (#920): when this CLI process was itself spawned by an agent
-  // run, buildAgentEnv gave it the chain — stamp every record it writes.
-  // Explicit fields on the record win (callers that know better).
-  if (!record.root_run_id && process.env.SQUADS_ROOT_RUN_ID) {
-    record.root_run_id = process.env.SQUADS_ROOT_RUN_ID;
+  // run, buildAgentEnv gave it the chain; when it runs inside an interactive
+  // Claude Code session, the session IS the root (#1181). Explicit fields on
+  // the record win (callers that know better).
+  if (!record.root_run_id) {
+    const derived = deriveRootRunId();
+    if (derived) record.root_run_id = derived;
   }
   if (!record.parent_run_id && process.env.SQUADS_PARENT_RUN_ID) {
     record.parent_run_id = process.env.SQUADS_PARENT_RUN_ID;
