@@ -223,6 +223,46 @@ describe('assistant-event usage (cut-off fallback)', () => {
     expect(parsed.assistantUsage).toBeUndefined();
   });
 
+  it('cli#1179: keeps message.model even when the usage block is empty (GLM shape)', () => {
+    // GLM's Anthropic-compat endpoint omits usage numbers on assistant
+    // events entirely — the model id is still a fact.
+    const parsed = parseStreamJsonLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: 'glm-4.7', content: [{ type: 'text', text: 'hola' }] },
+      })
+    );
+    expect(parsed.assistantUsage).toBeDefined();
+    expect(parsed.assistantUsage!.model).toBe('glm-4.7');
+    expect(parsed.assistantUsage!.input_tokens).toBe(0);
+    expect(parsed.assistantUsage!.output_tokens).toBe(0);
+  });
+
+  it('cli#1179: skips the "<synthetic>" placeholder on error-injected events', () => {
+    const parsed = parseStreamJsonLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { model: '<synthetic>', content: [{ type: 'text', text: 'err' }] },
+      })
+    );
+    expect(parsed.assistantUsage).toBeUndefined();
+  });
+
+  it('cli#1179: GLM lane end-to-end — result without model backfills from usage-less assistant events', () => {
+    const glmLane = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'g' }),
+      JSON.stringify({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text: 'retrying…' }] } }),
+      JSON.stringify({ type: 'assistant', message: { model: 'glm-4.7', content: [{ type: 'text', text: 'working' }] } }),
+      // GLM terminal result: usage totals but NO top-level model.
+      JSON.stringify({ type: 'result', result: 'done', total_cost_usd: 0, usage: { input_tokens: 900, output_tokens: 120 }, num_turns: 2, is_error: false }),
+    ].join('\n');
+
+    const out = parseStreamJson(glmLane);
+    expect(out.sawResult).toBe(true);
+    expect(out.usage.input_tokens).toBe(900); // result stays canonical for tokens
+    expect(out.usage.model).toBe('glm-4.7'); // was '' → reconciled as model=unknown
+  });
+
   it('CUT-OFF: assistant events but NO result event → summed tokens (non-zero), no cost', () => {
     // Simulates an agent killed mid-tool-call (timeout / turn limit): assistant
     // events stream usage, but the terminal `result` event never arrives.

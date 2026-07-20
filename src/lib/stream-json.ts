@@ -306,8 +306,23 @@ function parseAssistantUsage(message: Record<string, unknown> | undefined): Stre
   const output = u.output_tokens || 0;
   const cacheRead = u.cache_read_input_tokens || 0;
   const cacheWrite = u.cache_creation_input_tokens || 0;
-  // No usage numbers on this event → nothing to accumulate.
-  if (!input && !output && !cacheRead && !cacheWrite) return undefined;
+  // Claude Code stamps "<synthetic>" on error-injected assistant events —
+  // a placeholder, never a model fact.
+  const rawModel = typeof message.model === 'string' ? message.model : '';
+  const model = rawModel === '<synthetic>' ? '' : rawModel;
+  // No usage numbers on this event → nothing to add to the token math, but
+  // the model id is still a fact worth keeping (cli#1179): GLM's
+  // Anthropic-compat endpoint omits usage on assistant events entirely, so
+  // dropping these lines left glm lanes reconciling as model=unknown even
+  // though every event named the model.
+  if (!input && !output && !cacheRead && !cacheWrite) {
+    if (!model) return undefined;
+    return {
+      cost_usd: 0, input_tokens: 0, output_tokens: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, num_turns: 0,
+      model,
+    };
+  }
   return {
     cost_usd: 0, // assistant events don't carry cost — derived later from tokens
     input_tokens: input,
@@ -315,7 +330,7 @@ function parseAssistantUsage(message: Record<string, unknown> | undefined): Stre
     cache_read_tokens: cacheRead,
     cache_write_tokens: cacheWrite,
     num_turns: 0,
-    model: typeof message.model === 'string' ? message.model : '',
+    model,
   };
 }
 
