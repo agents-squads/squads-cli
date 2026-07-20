@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -440,14 +440,10 @@ export function buildAgentEnv(
     // nested dispatches (an agent running `squads run` inherits these). Root
     // propagates unchanged; parent is always the run doing THIS spawn.
     // #1181: a dispatch from inside an interactive Claude Code session roots
-    // at that session's own run record (sess_<id>, the session-events
-    // pipeline's id) — otherwise the lane becomes its own root, the envelope
-    // omits `root` (only stamped when ≠ runId), and the session→lane edge is
-    // never recorded anywhere. Explicit SQUADS_ROOT_RUN_ID keeps precedence.
-    SQUADS_ROOT_RUN_ID:
-      baseEnv.SQUADS_ROOT_RUN_ID
-      || (baseEnv.CLAUDE_CODE_SESSION_ID ? `sess_${baseEnv.CLAUDE_CODE_SESSION_ID}` : '')
-      || execContext.executionId,
+    // at that session's own run record (sess_<id>) — shared derivation with
+    // the event writer and the observability reporter, so all three stamping
+    // sites agree. Explicit SQUADS_ROOT_RUN_ID keeps precedence.
+    SQUADS_ROOT_RUN_ID: deriveRootRunId(baseEnv) || execContext.executionId,
     SQUADS_PARENT_RUN_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };

@@ -382,6 +382,23 @@ export function execEventsFile(obsRoot: string, executionId: string): string {
   return join(obsRoot, '.agents', 'observability', 'events', `${safeId}.jsonl`);
 }
 
+/**
+ * Root of the dispatch chain as seen from a process env (#920, #1181).
+ *
+ * Precedence: explicit SQUADS_ROOT_RUN_ID (a nested lane inherited it from
+ * buildAgentEnv) → the interactive Claude Code session this CLI is running
+ * inside (sess_<id>, the id the session-events pipeline records the session
+ * under) → undefined. ONE derivation for every stamping site — the #1182 fix
+ * covered only the child env, while the dispatching process's own writer
+ * (envelope `root`) and reporter (record `root_run_id`) read their OWN env
+ * and kept recording nothing.
+ */
+export function deriveRootRunId(env: Record<string, string | undefined> = process.env): string | undefined {
+  if (env.SQUADS_ROOT_RUN_ID) return env.SQUADS_ROOT_RUN_ID;
+  if (env.CLAUDE_CODE_SESSION_ID) return `sess_${env.CLAUDE_CODE_SESSION_ID}`;
+  return undefined;
+}
+
 // ── API flusher (#1158) ───────────────────────────────────────────────
 
 const FLUSH_BATCH_SIZE = 25;
@@ -511,9 +528,10 @@ export class ExecEventWriter {
       return;
     }
     // Audit chain (#920): a nested run stamps its root so a cascade's events
-    // are queryable by one id. Read per-emit (cheap) — the env is set by
-    // buildAgentEnv on the process that spawned this CLI.
-    const root = process.env.SQUADS_ROOT_RUN_ID;
+    // are queryable by one id. Read per-emit (cheap) — inherited from
+    // buildAgentEnv, or derived from the interactive session this CLI runs
+    // inside (#1181).
+    const root = deriveRootRunId();
     const v2 = Boolean(this.source || this.provider || this.sessionId);
     const line: PersistedExecEvent = {
       v: v2 ? 2 : 1,
