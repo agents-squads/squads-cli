@@ -237,16 +237,25 @@ describe('gatherSquadContext — injection contract', () => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('injects layers in action-first order: founder→alignment→feedback→goals→state→agent→strategy', () => {
+  it('injects layers in action-first order: feedback→goals→state→agent→strategy', () => {
     writeFixture();
     const ctx = gatherSquadContext(SQUAD, AGENT, { agentPath, role: 'worker' });
-    const order = [M.founder, M.alignment, M.feedback, M.goals, M.state, M.agent, M.strategy];
+    const order = [M.feedback, M.goals, M.state, M.agent, M.strategy];
     const positions = order.map((m) => ctx.indexOf(m));
     // every marker present
     expect(positions.every((p) => p >= 0)).toBe(true);
     // strictly increasing → documented order holds
     for (let i = 1; i < positions.length; i++) {
       expect(positions[i]).toBeGreaterThan(positions[i - 1]);
+    }
+  });
+
+  it('never loads retired digest layers, even when the files exist on disk (#1188)', () => {
+    writeFixture(); // fixture still writes founder-context.md + founder-alignment.md
+    for (const role of ['scanner', 'worker', 'lead', 'coo', 'verifier'] as const) {
+      const ctx = gatherSquadContext(SQUAD, AGENT, { agentPath, role });
+      expect(ctx).not.toContain(M.founder);
+      expect(ctx).not.toContain(M.alignment);
     }
   });
 
@@ -267,7 +276,6 @@ describe('gatherSquadContext — injection contract', () => {
 
     // Universal layers present for every role
     for (const ctx of [scanner, worker, lead]) {
-      expect(ctx).toContain(M.founder);
       expect(ctx).toContain(M.strategy);
       expect(ctx).toContain(M.goals);
     }
@@ -281,11 +289,11 @@ describe('gatherSquadContext — injection contract', () => {
     expect(lead).toContain(M.briefing);
   });
 
-  it('drops late layers (strategy) before early ones (founder-context) when budget is tight', () => {
+  it('drops late layers (strategy) before early ones (feedback) when budget is tight', () => {
     writeFixture();
     // ~50 tokens = 200 chars: only the first-injected layer survives.
     const ctx = gatherSquadContext(SQUAD, AGENT, { agentPath, role: 'worker', maxTokens: 50 });
-    expect(ctx).toContain(M.founder); // injected first → survives
+    expect(ctx).toContain(M.feedback); // injected first → survives
     expect(ctx).not.toContain(M.strategy); // injected late → dropped
   });
 
