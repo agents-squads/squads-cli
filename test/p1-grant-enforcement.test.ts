@@ -94,6 +94,23 @@ describe('root_run_id chain (#920)', () => {
     expect(env.SQUADS_PARENT_RUN_ID).toBe('exec_child_2');
   });
 
+  it('#1181: dispatch from inside a Claude Code session roots at sess_<session id>', () => {
+    const inherited = { PATH: '/bin', CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb-cccc' };
+    const env = buildAgentEnv(inherited, ctx('exec_lane_3'));
+    expect(env.SQUADS_ROOT_RUN_ID).toBe('sess_aaaa-bbbb-cccc');
+    expect(env.SQUADS_PARENT_RUN_ID).toBe('exec_lane_3');
+  });
+
+  it('#1181: explicit SQUADS_ROOT_RUN_ID keeps precedence over the session id', () => {
+    const inherited = {
+      PATH: '/bin',
+      SQUADS_ROOT_RUN_ID: 'exec_root_1',
+      CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb-cccc',
+    };
+    const env = buildAgentEnv(inherited, ctx('exec_child_2'));
+    expect(env.SQUADS_ROOT_RUN_ID).toBe('exec_root_1');
+  });
+
   it('nested runs stamp root on persisted events; top-level runs do not', () => {
     const old = process.env.SQUADS_ROOT_RUN_ID;
     try {

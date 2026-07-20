@@ -439,7 +439,15 @@ export function buildAgentEnv(
     // Audit chain (#920): the root anchors aggregate cost/traceability across
     // nested dispatches (an agent running `squads run` inherits these). Root
     // propagates unchanged; parent is always the run doing THIS spawn.
-    SQUADS_ROOT_RUN_ID: baseEnv.SQUADS_ROOT_RUN_ID || execContext.executionId,
+    // #1181: a dispatch from inside an interactive Claude Code session roots
+    // at that session's own run record (sess_<id>, the session-events
+    // pipeline's id) — otherwise the lane becomes its own root, the envelope
+    // omits `root` (only stamped when ≠ runId), and the session→lane edge is
+    // never recorded anywhere. Explicit SQUADS_ROOT_RUN_ID keeps precedence.
+    SQUADS_ROOT_RUN_ID:
+      baseEnv.SQUADS_ROOT_RUN_ID
+      || (baseEnv.CLAUDE_CODE_SESSION_ID ? `sess_${baseEnv.CLAUDE_CODE_SESSION_ID}` : '')
+      || execContext.executionId,
     SQUADS_PARENT_RUN_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };
