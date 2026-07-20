@@ -143,27 +143,12 @@ export async function runCommand(
 
   // MODE 0: Org cycle — run all squads as a coordinated system
   if (target === '--org' || options.org) {
-    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan, refreshFounderContext } = await import('../lib/org-cycle.js');
+    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan } = await import('../lib/org-cycle.js');
 
     writeLine();
     const focusLabel = options.focus ? ` ${bold}[${options.focus}]${RESET}` : '';
     writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}${focusLabel}`);
     writeLine();
-
-    // Step 0: REFRESH founder context — distill recent sessions + git activity
-    // into per-squad alignment files so agents run aligned with the founder's
-    // current pipeline, not generic squad goals.
-    if (!options.dryRun) {
-      // --force means "re-run squads that already completed today" — it must NOT
-      // force a synchronous digest regen (staleness governs; SQUADS_DIGEST_SYNC=1
-      // for an explicit sync regen). Conflating the two made every forced dispatch
-      // rebuild founder-context.md, drifting it between back-to-back runs (#1093).
-      const ctxResult = refreshFounderContext();
-      if (ctxResult === 'failed') {
-        writeLine(`  ${colors.red}Aborting org cycle. Fix the digest script and retry.${RESET}\n`);
-        return;
-      }
-    }
 
     // Step 1: SCAN
     const scan = scanOrg();
@@ -557,16 +542,6 @@ export async function runCommand(
     if (!checksOk) {
       process.exit(1);
     }
-  }
-
-  // Refresh founder context for single-squad runs (same as --org, so agents
-  // always see aligned strategic context regardless of how they're invoked).
-  // Never forced by --force: that flag re-runs completed squads, it does not
-  // mean "rebuild the digest" — forcing it here regenerated founder-context.md
-  // on every dispatch and drifted it between back-to-back runs (#1093).
-  if (squad && !options.dryRun) {
-    const { refreshFounderContext: refreshCtx } = await import('../lib/org-cycle.js');
-    refreshCtx();
   }
 
   if (squad) {

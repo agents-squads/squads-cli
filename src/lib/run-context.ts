@@ -10,17 +10,6 @@
  *   L3:  agent.md                     — You    (agent role, specific instructions)
  *   L4:  state.md                     — Memory (continuity from last run)
  *   L5+: Supporting                   — feedback, daily-briefing, cross-squad learnings
- *   L9:  founder-context.md           — Live strategic state (universal, all squads see)
- *   L10: founder-alignment.md         — Per-squad contribution to founder's current pipeline
- *
- * L9 + L10 are auto-generated (e.g. by hq/.claude/hooks/founder-context-digest.py) from
- * interactive sessions, git activity, and open PRs/issues. They translate the
- * founder's live strategic context into per-squad, named contributions so each
- * squad shows up aligned with current priorities rather than inventing generic work.
- *
- * Business-specific structural reference (Drive folder map, ERP architecture,
- * canonical sheet schemas) can be embedded inline into founder-context.md by
- * the digest script. The CLI loader stays generic; users decide what to embed.
  *
  * SQUAD.md is metadata only (repo, agents, config) — NOT injected into prompt.
  * Each layer adds a unique dimension. No layer contradicts another.
