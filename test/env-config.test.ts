@@ -153,6 +153,53 @@ describe('env-config', () => {
       const loaded = loadConfig();
       expect(loaded.current).toBe('staging');
     });
+
+    it('preserves email field through load→save cycle (#1184)', () => {
+      // Simulate a config with email on disk
+      const onDisk = {
+        current: 'staging',
+        environments: {
+          staging: {
+            api_url: 'https://staging.example.com',
+            admin_api_url: '',
+            console_url: '',
+            bridge_url: '',
+            database_url: '',
+            redis_url: '',
+            execution: 'cloud',
+          },
+        },
+        email: 'user@example.com',
+      };
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify(onDisk));
+
+      // loadConfig should preserve email
+      const config = loadConfig();
+      expect(config.email).toBe('user@example.com');
+
+      // saveConfig should write it back
+      saveConfig(config);
+      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
+      expect(written.email).toBe('user@example.com');
+    });
+
+    it('preserves unknown extra fields through load→save cycle (#1184)', () => {
+      const onDisk = {
+        current: 'staging',
+        environments: {},
+        someFutureField: 'should-survive',
+      };
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify(onDisk));
+
+      const config = loadConfig() as Record<string, unknown>;
+      expect(config.someFutureField).toBe('should-survive');
+
+      saveConfig(config as Parameters<typeof saveConfig>[0]);
+      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
+      expect(written.someFutureField).toBe('should-survive');
+    });
   });
 
   // ---------------------------------------------------------------------------

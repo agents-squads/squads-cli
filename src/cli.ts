@@ -1186,6 +1186,32 @@ registerCredentialsCommand(program);
 registerReviewCommand(program);
 registerBriefCommand(program);
 
+// Config command group - environment configuration
+const configCmd = program
+  .command('config')
+  .description('View and switch environment configuration (local, staging, prod)')
+  .action(() => {
+    configCmd.outputHelp();
+  });
+
+configCmd
+  .command('use <env>')
+  .description('Switch to a named environment (local, staging, prod)')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (env, options) => {
+    const { configUseCommand } = await import('./commands/config.js');
+    return configUseCommand(env, options);
+  });
+
+configCmd
+  .command('show')
+  .description('Show current environment config and resolved URLs')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (options) => {
+    const { configShowCommand } = await import('./commands/config.js');
+    return configShowCommand(options);
+  });
+
 // Providers command - show LLM CLI availability for multi-LLM support
 program
   .command('providers')

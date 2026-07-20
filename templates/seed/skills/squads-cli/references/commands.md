@@ -38,6 +38,8 @@
 | `squads whoami` | Show current logged in user |
 | `squads contract validate` | Derive + validate every agent contract; non-zero exit on any violation |
 | `squads brief` | Morning catch-up: delivered work, pending approvals, active agents |
+| `squads config use <env>` | Switch to a named environment (local, staging, prod) |
+| `squads config show` | Show current environment config and resolved URLs |
 | `squads providers` | Show available LLM CLI providers (claude, gemini, codex, etc.) |
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
