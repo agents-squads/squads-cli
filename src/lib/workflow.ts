@@ -1180,6 +1180,7 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
     durationMs: cycleDurationMs,
     squad: squad.name,
     agent: lead.name,
+    model: obsRecord.model,
   });
 
   finishEvents(true);

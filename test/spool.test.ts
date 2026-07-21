@@ -225,6 +225,16 @@ describe('reconcileDetachedRuns', () => {
     expect(readExecutionsJsonl()).toHaveLength(1);
     expect(existsSync(join(dir, 'broken.json'))).toBe(false);
   });
+
+  it('never writes model="unknown" on the wire when the model cannot be determined (#1186)', () => {
+    // No stream evidence (empty log), no model in spool, no session JSONL.
+    // The model should be absent/undefined, not 'unknown'.
+    writeFileSync(join(root, 'run.log'), '');
+    writeSpoolFile({ execId: 'exec_no_model_1', model: '', provider: 'deepseek' });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec).not.toHaveProperty('model');
+  });
 });
 
 describe('buildWatchdogShell (#450 D3)', () => {

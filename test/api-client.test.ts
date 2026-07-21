@@ -359,4 +359,46 @@ describe('reportExecutionComplete', () => {
     expect(body.status).toBe('failed');
     expect(body.error).toBe('Provider API timeout');
   });
+
+  it('includes stream-derived model in PATCH payload (#1186)', async () => {
+    mockLoadSession.mockReturnValue({
+      email: 'user@acme.com',
+      domain: 'acme.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'valid-token',
+      apiUrl: 'https://api.test.com',
+    });
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await reportExecutionComplete('exec-124', 'completed', {
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('omits model from PATCH payload when not provided (#1186)', async () => {
+    mockLoadSession.mockReturnValue({
+      email: 'user@acme.com',
+      domain: 'acme.com',
+      status: 'active',
+      createdAt: '2024-01-01',
+      accessToken: 'valid-token',
+      apiUrl: 'https://api.test.com',
+    });
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await reportExecutionComplete('exec-125', 'completed', {
+      summary: 'No model available',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty('model');
+  });
 });

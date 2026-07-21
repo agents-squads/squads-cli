@@ -188,7 +188,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   let resultSummary: string | undefined;
 
   let input = 0, output = 0, cost = 0, cacheRead = 0, cacheWrite = 0;
-  let model = spool.model || 'unknown';
+  let model: string | undefined = spool.model || undefined;
   let outcomes: ReturnType<typeof parseStreamJson>['outcomes'] | undefined;
   // Run identity (#1129): the id the wrapper launched with is authoritative;
   // legacy spools without one fall back to whatever the mtime-window scan found.
@@ -407,6 +407,7 @@ export function reconcileDetachedRuns(obsRoot: string): number {
         summary: resultSummary || tokenSummary,
         error: record.error,
         durationMs: record.duration_ms,
+        model: record.model,
       });
 
       unlinkSync(claimPath);

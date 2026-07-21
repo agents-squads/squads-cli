@@ -37,7 +37,7 @@ export interface ObservabilityRecord {
   squad: string;
   agent: string;
   provider: string;
-  model: string;
+  model?: string;
   // Claude Code session UUID this run's transcript was written under (#1129).
   // Detached runs: the id the wrapper was launched with (`--session-id`, #857).
   // Foreground runs: the basename of the session file run-capture located.
@@ -600,7 +600,7 @@ export function logRunStarted(rec: {
   squad: string;
   agent: string;
   provider: string;
-  model: string;
+  model?: string;
   trigger: ObservabilityRecord['trigger'];
   pid?: number;
   task?: string;
@@ -842,9 +842,10 @@ export function calculateCostSummary(period: 'today' | '7d' | '30d' | 'all' = '7
     bySquad[r.squad].cost += r.cost_usd;
     bySquad[r.squad].runs += 1;
 
-    if (!byModel[r.model]) byModel[r.model] = { cost: 0, runs: 0 };
-    byModel[r.model].cost += r.cost_usd;
-    byModel[r.model].runs += 1;
+    const modelKey = r.model || 'unknown';
+    if (!byModel[modelKey]) byModel[modelKey] = { cost: 0, runs: 0 };
+    byModel[modelKey].cost += r.cost_usd;
+    byModel[modelKey].runs += 1;
   }
 
   for (const squad of Object.values(bySquad)) {
