@@ -20,9 +20,10 @@ describe('deriveContract — maps existing frontmatter + role defaults', () => {
     expect(c.role).toBe('scanner');
     expect(c.tool_grants.every((t) => t.sensitivity === 'read')).toBe(true);
     expect(c.write_scope).toEqual([]); // no write grants → no write scope
+    // L0–L6 taxonomy (#1049): scanner gets [0=SYSTEM, 1=Company, 2=Goals, 3=Agent, 4=State].
     // Layer 2 (priorities) was eliminated per the single-strategy-file change (cli#876);
-    // goals (3) is the ordering source now. Digest layers (9, 10) retired (#1188).
-    expect(c.scoped_context.layers).toEqual([1, 3, 4, 5]);
+    // goals remain the ordering source. Digest layers (9, 10) retired (#1188).
+    expect(c.scoped_context.layers).toEqual([0, 1, 2, 3, 4]);
     expect(c.default).toBe('deny');
     expect(c.workspace_id).toBe('local');
   });

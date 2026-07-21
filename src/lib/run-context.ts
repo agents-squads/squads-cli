@@ -3,13 +3,19 @@
  *
  * Squad Context System — context assembly for agent execution.
  *
- * Layers flow from general to particular (no overrides, each answers a different question):
+ * L0–L6 taxonomy (cache-stable, deterministic, per #1049):
  *   L0:  SYSTEM.md                    — How    (system, tools, principles — immutable, outside budget)
- *   L1:  memory/company/strategy.md   — Why    (company identity, alignment; falls back to company.md → directives.md)
- *   L2:  goals.md                     — What   (measurable targets)
- *   L3:  agent.md                     — You    (agent role, specific instructions)
- *   L4:  state.md                     — Memory (continuity from last run)
- *   L5+: Supporting                   — feedback, daily-briefing, cross-squad learnings
+ *   L1:  Company (strategy)           — Why    (company identity, direction; falls back to company.md → directives.md)
+ *   L2:  Goals                        — What   (measurable targets)
+ *   L3:  Agent                        — You    (agent role, specific instructions)
+ *   L4:  State                        — Memory (continuity from last run)
+ *   L5:  Feedback                     — Act on (corrections from last cycle)
+ *   L6:  Supporting (rollup)          — Context (daily briefing, cross-squad learnings)
+ *
+ * Policy-driven via context-policy.ts (#1049):
+ *   - ROLE_BUDGETS and ROLE_SECTIONS are externalised into .agents/context-policy.yml
+ *   - Required layers (L0, L1, L2) fail loud when missing
+ *   - Decay-as-policy for staleness caveats
  *
  * SQUAD.md is metadata only (repo, agents, config) — NOT injected into prompt.
  * Each layer adds a unique dimension. No layer contradicts another.
@@ -42,27 +48,30 @@ export interface ContextStats {
 }
 
 // ── Token Budgets (chars, ~4 chars/token) ────────────────────────────
+// NOTE: These are the built-in defaults. They can be overridden by a
+// `.agents/context-policy.yml` file — see context-policy.ts (#1049).
 
 export const ROLE_BUDGETS: Record<ContextRole, number> = {
-  scanner: 50000,  // ~12500 tokens — identity layers
-  worker: 60000,   // ~15000 tokens — identity + feedback
-  lead: 80000,     // ~20000 tokens — all layers
-  coo: 100000,     // ~25000 tokens — all layers + expanded budget
-  verifier: 60000, // ~15000 tokens — same as worker
+  scanner: 50000,  // ~12500 tokens — L0–L4 identity layers
+  worker: 60000,   // ~15000 tokens — L0–L5 identity + feedback
+  lead: 80000,     // ~20000 tokens — L0–L6 all layers
+  coo: 100000,     // ~25000 tokens — L0–L6 all layers + expanded budget
+  verifier: 60000, // ~15000 tokens — L0–L5 same as worker
 };
 
 /**
- * Which layers each role gets access to.
- * Numbers correspond to layer IDs in the Squad Context System:
- *   1=company (strategy.md → company.md → directives.md), 3=goals, 4=agent, 5=state,
- *   6=feedback, 7=daily-briefing, 8=cross-squad
+ * Which layers each role gets access to (L0–L6 taxonomy, #1049).
+ *   0=SYSTEM.md, 1=Company, 2=Goals, 3=Agent, 4=State,
+ *   5=Feedback, 6=Supporting (briefing + cross-squad)
+ *
+ * L0 (SYSTEM.md) is always included but counted outside the budget.
  */
 export const ROLE_SECTIONS: Record<ContextRole, Set<number>> = {
-  scanner:  new Set([1, 3, 4, 5]),            // company + goals + role + memory
-  worker:   new Set([1, 3, 4, 5, 6]),         // + feedback
-  lead:     new Set([1, 3, 4, 5, 6, 7, 8]),   // all layers
-  coo:      new Set([1, 3, 4, 5, 6, 7, 8]),   // all layers + expanded budget
-  verifier: new Set([1, 3, 4, 5, 6]),         // same as worker
+  scanner:  new Set([0, 1, 2, 3, 4]),          // identity layers (L0–L4)
+  worker:   new Set([0, 1, 2, 3, 4, 5]),       // + feedback (L5)
+  lead:     new Set([0, 1, 2, 3, 4, 5, 6]),    // all layers (L0–L6)
+  coo:      new Set([0, 1, 2, 3, 4, 5, 6]),    // all layers + expanded budget
+  verifier: new Set([0, 1, 2, 3, 4, 5]),       // same as worker
 };
 
 // ── Agent Frontmatter ─────────────────────────────────────────────────
@@ -459,17 +468,20 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
 /**
  * Gather context for agent execution.
  *
- * Layers flow general → particular (each adds a unique dimension):
- *    1. strategy.md            — Why    (company identity; falls back to company.md → directives.md)
- *    2. goals.md               — What   (measurable targets)
- *    3. agent.md               — You    (agent role, instructions)
- *    4. state.md               — Memory (continuity from last run)
- *    5. feedback.md            — Supporting (squad feedback)
- *    6. daily-briefing         — Supporting (org pulse, leads+coo only)
- *    7. cross-squad            — Supporting (learnings from other squads)
+ * L0–L6 taxonomy (cache-stable, #1049):
+ *    L0: SYSTEM.md             — How    (immutable base, outside budget, prepended by agent-runner)
+ *    L1: Company (strategy)    — Why    (company identity; falls back to company.md → directives.md)
+ *    L2: Goals                 — What   (measurable targets)
+ *    L3: Agent                 — You    (agent role, instructions)
+ *    L4: State                 — Memory (continuity from last run)
+ *    L5: Feedback              — Act on (corrections from last cycle)
+ *    L6: Supporting (rollup)   — Context (daily briefing, cross-squad learnings)
  *
  * SQUAD.md is NOT injected — it's metadata for the CLI (repo, agents, config).
  * Missing files are skipped gracefully — no crashes on first run or new squads.
+ *
+ * NOTE: L0 (SYSTEM.md) is not assembled here; it is loaded and prepended
+ * by agent-runner.ts. L1 (Company) IS assembled here.
  */
 export function gatherSquadContext(
   squadName: string,
@@ -530,29 +542,33 @@ export function gatherSquadContext(
   // LLMs pay most attention to the beginning and end of context.
   // Put what the agent should ACT ON first (feedback, goals, state).
   // Put reference material last (company, agent definition).
+  //
+  // Layer numbering follows the L0–L6 taxonomy (#1049):
+  //   0=SYSTEM.md (outside budget, prepended by agent-runner)
+  //   1=Company, 2=Goals, 3=Agent, 4=State, 5=Feedback, 6=Supporting
   // ═══════════════════════════════════════════════════════════════════
 
-  // ── L6: feedback.md — ACT ON THIS (corrections from last cycle) ──
+  // ── L5: feedback.md — ACT ON THIS (corrections from last cycle) ──
   if (memoryDir) {
     const feedbackFile = join(memoryDir, squadName, 'feedback.md');
     const content = safeRead(feedbackFile);
     if (content) {
       // Caveat stale feedback (audit F1): without it, a correction from months
       // ago is injected under "act on this first" as if it were current.
-      addLayer(6, 'Feedback (act on this first)', stalenessNote(feedbackFile) + content);
+      addLayer(5, 'Feedback (act on this first)', stalenessNote(feedbackFile) + content);
     }
   }
 
-  // ── L3: goals.md — What to achieve this cycle ──
+  // ── L2: goals.md — What to achieve this cycle ──
   if (memoryDir) {
     const goalsFile = join(memoryDir, squadName, 'goals.md');
     const content = safeRead(goalsFile);
     if (content) {
-      addLayer(3, 'Goals', stripYamlFrontmatter(content));
+      addLayer(2, 'Goals', stripYamlFrontmatter(content));
     }
   }
 
-  // ── L5: state.md — Where we left off ──
+  // ── L4: state.md — Where we left off ──
   if (memoryDir) {
     const stateFile = join(memoryDir, squadName, agentName, 'state.md');
     const content = safeRead(stateFile);
@@ -560,16 +576,16 @@ export function gatherSquadContext(
       const body = stripYamlFrontmatter(content);
       const stateCap = (role === 'scanner' || role === 'verifier') ? 2000 : undefined;
       // Staleness caveat (#721) so agents know if their memory is outdated.
-      addLayer(5, 'Previous State', stalenessNote(stateFile) + body, stateCap);
+      addLayer(4, 'Previous State', stalenessNote(stateFile) + body, stateCap);
     }
   }
 
-  // ── L4: agent.md — Your role and instructions ──
+  // ── L3: agent.md — Your role and instructions ──
   if (options.agentPath) {
     const agentContent = safeRead(options.agentPath);
     if (agentContent) {
       const body = stripYamlFrontmatter(agentContent);
-      addLayer(4, `Agent: ${agentName}`, body);
+      addLayer(3, `Agent: ${agentName}`, body);
     }
   }
 
@@ -579,16 +595,14 @@ export function gatherSquadContext(
     addLayer(1, 'Company', stripYamlFrontmatter(companyContext));
   }
 
-  // ── L7: Daily briefing — Org pulse (leads+coo only, reference) ──
+  // ── L6: Supporting (daily briefing + cross-squad learnings) ──
   if (memoryDir) {
     const dailyFile = join(memoryDir, 'daily-briefing.md');
     const content = safeRead(dailyFile);
     if (content) {
-      addLayer(7, 'Daily Briefing', content);
+      addLayer(6, 'Daily Briefing', content);
     }
   }
-
-  // ── L8: Cross-squad learnings (leads+coo only, reference) ──
   if (memoryDir) {
     const frontmatter = options.agentPath ? parseAgentFrontmatter(options.agentPath) : {};
     const contextSquads = frontmatter.context_from || [];
@@ -603,7 +617,7 @@ export function gatherSquadContext(
       }
     }
     if (learningParts.length > 0) {
-      addLayer(8, 'Cross-Squad Learnings', learningParts.join('\n\n'));
+      addLayer(6, 'Cross-Squad Learnings', learningParts.join('\n\n'));
     }
   }
 

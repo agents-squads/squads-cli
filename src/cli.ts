@@ -549,7 +549,22 @@ program
   .option('-a, --agent', 'Output JSON for agent consumption')
   .option('-j, --json', 'Output as JSON (alias for --agent)')
   .option('-v, --verbose', 'Show additional details')
+  .option('--for <type>', 'Context assembly manifest: run, tick, session (#1049)')
+  .option('--agent-name <name>', 'Agent name for assembly manifest (requires --for --squad)')
   .action(async (options) => {
+    // #1049: when --for is provided, route to the context assembler manifest
+    if (options.for) {
+      if (!options.squad) {
+        console.error(chalk.red('\n  --squad is required when using --for\n'));
+        process.exit(1);
+      }
+      if (!options.agentName) {
+        console.error(chalk.red('\n  --agent-name is required when using --for\n'));
+        process.exit(1);
+      }
+      const { contextAssembleCommand } = await import('./commands/context.js');
+      return contextAssembleCommand(options.squad, options.agentName, options.for, { json: options.json, verbose: options.verbose });
+    }
     const { contextFeedCommand } = await import('./commands/context-feed.js');
     return contextFeedCommand(options);
   });
