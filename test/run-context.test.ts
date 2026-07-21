@@ -354,12 +354,12 @@ describe('gatherSquadContext — onStats per-layer accounting', () => {
     expect(stats).toBeDefined();
     expect(stats!.role).toBe('worker');
     expect(stats!.budgetChars).toBe(60000); // ROLE_BUDGETS.worker
-    // Layers present: 3 (goals), 4 (agent), 1 (company/strategy)
+    // Layers present: 2 (goals), 3 (agent), 1 (company/strategy) — L0–L6 taxonomy (#1049)
     const byLayer = Object.fromEntries(stats!.layers.map((l) => [l.layer, l]));
-    expect(byLayer[3]).toMatchObject({ evicted: false });
-    expect(byLayer[3].chars).toBeGreaterThanOrEqual(600);
+    expect(byLayer[2]).toMatchObject({ evicted: false });
+    expect(byLayer[2].chars).toBeGreaterThanOrEqual(600);
     expect(byLayer[1].chars).toBeGreaterThan(0);
-    expect(byLayer[4].chars).toBeGreaterThan(0);
+    expect(byLayer[3].chars).toBeGreaterThan(0);
     // Totals are consistent with the layers.
     const sumChars = stats!.layers.reduce((a, l) => a + l.chars, 0);
     expect(stats!.totalChars).toBe(sumChars);

@@ -401,3 +401,83 @@ Read your agent definition at ${agentPath} and your context layers. Execute your
     console.log(prompt);
   }
 }
+
+// ─── Context Assembler Manifest (--for mode, #1049) ─────────────────────
+
+/**
+ * `squads context --for <run|tick|session> --squad <squad> --agent-name <agent>`
+ *
+ * Produces a structured per-layer manifest for the given scope, squad, and
+ * agent. The manifest shows each L0–L6 layer with its resolved status, size,
+ * staleness, and budget position.
+ *
+ * With --json, outputs the full manifest as JSON for programmatic consumption.
+ */
+export async function contextAssembleCommand(
+  squadName: string,
+  agentName: string,
+  scope: string,
+  options: { json?: boolean; verbose?: boolean } = {},
+): Promise<void> {
+  const { assembleContextManifest, renderContextManifest, formatManifestJson } = await import('../lib/context-assembler.js');
+  const { findSquadsDir, loadSquad } = await import('../lib/squad-parser.js');
+
+  const squadsDir = findSquadsDir();
+  if (!squadsDir) {
+    if (options.json) {
+      console.log(JSON.stringify({ error: 'No .agents/squads directory found' }));
+    } else {
+      writeLine(`${colors.red}No .agents/squads directory found${RESET}`);
+      writeLine(`${colors.dim}Run \`squads init\` to create one.${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  // Validate squad and resolve agent path
+  const squad = loadSquad(squadName);
+  if (!squad) {
+    if (options.json) {
+      console.log(JSON.stringify({ error: `Squad "${squadName}" not found.` }));
+    } else {
+      writeLine(`${colors.red}Squad "${squadName}" not found.${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  const agentPath = `${squadsDir}/${squadName}/${agentName}.md`;
+
+  // Resolve role from agent (same logic as run path)
+  const { resolveContextRoleFromAgent } = await import('../lib/run-context.js');
+  const role = resolveContextRoleFromAgent(agentPath, agentName);
+
+  // Build the manifest
+  const manifest = assembleContextManifest(
+    squadName,
+    agentName,
+    scope as 'run' | 'tick' | 'session',
+    role,
+    { agentPath },
+  );
+
+  // Required layers fail loud
+  if (manifest.failedRequired.length > 0) {
+    const failedStr = manifest.failedRequired.join(', ');
+    if (options.json) {
+      // Include the data even when required layers fail
+      console.log(formatManifestJson(manifest));
+    } else {
+      writeLine(`  ${colors.red}Required context layers missing: ${failedStr}${RESET}`);
+      writeLine(`  ${colors.dim}These layers are mandatory and could not be resolved.${RESET}`);
+      writeLine(`  ${colors.dim}Check that the files exist under your .agents/ directory.${RESET}`);
+      writeLine();
+      writeLine(renderContextManifest(manifest));
+    }
+    process.exit(1);
+  }
+
+  if (options.json) {
+    console.log(formatManifestJson(manifest));
+  } else {
+    writeLine(renderContextManifest(manifest));
+  }
+}
