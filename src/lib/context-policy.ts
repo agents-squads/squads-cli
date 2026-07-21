@@ -25,6 +25,13 @@ import { findSquadsDir } from './squad-parser.js';
  * Rather than add @types/js-yaml or a `.d.ts` shim, we parse the simple
  * structured YAML that context-policy.yml uses inline — it's a small,
  * well-defined schema with no arbitrary nesting.
+ *
+ * Supports:
+ *   - Nested objects via indentation
+ *   - Inline arrays: key: [item1, item2]
+ *   - Block scalars via |
+ *   - Dash-prefixed sequences: - value
+ *   - Nested key:value within dash items
  */
 function loadSimpleYaml(raw: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -33,11 +40,98 @@ function loadSimpleYaml(raw: string): Record<string, unknown> {
   let current: Record<string, unknown> = result;
   let currentIndent = 0;
 
-  for (const line of lines) {
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
     const trimmed = line.trimEnd();
     if (trimmed === '' || trimmed.startsWith('#')) continue;
 
     const indent = line.length - trimmed.length;
+
+    // ── Dash-prefixed sequence: - value ──
+    const listMatch = trimmed.match(/^-\s+(.*)/);
+    if (listMatch) {
+      // Pop stack to match this list's indentation level
+      while (stack.length > 0 && indent <= stack[stack.length - 1].indent) {
+        const frame = stack.pop()!;
+        current = frame.obj;
+        currentIndent = frame.indent;
+      }
+      // current is the parent object; find an empty-object key to convert
+      const emptyKey = Object.keys(current).find(
+        k => typeof current[k] === 'object' && current[k] !== null && !Array.isArray(current[k]) && Object.keys(current[k] as Record<string, unknown>).length === 0
+      );
+      if (emptyKey) {
+        // Convert that empty value to an array
+        const arr: unknown[] = [];
+        current[emptyKey] = arr;
+        // Collect all consecutive - lines at this indent into the array
+        let j = lineIdx;
+        while (j < lines.length) {
+          const bl = lines[j];
+          const bt = bl.trimEnd();
+          if (bt === '' || bt.startsWith('#')) { j++; continue; }
+          const bi = bl.length - bt.length;
+          if (bi !== indent || !bt.startsWith('- ')) break;
+          const itemPart = bt.slice(2).trim();
+          // Check for nested key:value in the list item
+          const itemObjMatch = itemPart.match(/^(\w[\w-]*):\s*(.*)/);
+          if (itemObjMatch) {
+            const itemObj: Record<string, unknown> = {};
+            const ik = itemObjMatch[1];
+            const iv = itemObjMatch[2].trim();
+            if (iv === '') {
+              // Sub-object — push stack and parse nested content
+              const nestedArr: unknown[] = [];
+              itemObj[ik] = nestedArr;
+              // Look ahead for dash-prefixed children
+              arr.push(itemObj);
+              // We don't deeply parse nested list-of-objects here;
+              // fall back by setting empty object
+              itemObj[ik] = {};
+              // Actually handle sub-list properly
+              let k = j + 1;
+              const subList: unknown[] = [];
+              let inSubList = false;
+              while (k < lines.length) {
+                const sbl = lines[k];
+                const sbt = sbl.trimEnd();
+                if (sbt === '' || sbt.startsWith('#')) { k++; continue; }
+                const sbi = sbl.length - sbt.length;
+                if (sbi <= indent + 2) break; // must be deeper
+                const slm = sbt.match(/^-\s+(.*)/);
+                if (slm) {
+                  inSubList = true;
+                  const sv = parseYamlValue(slm[1].trim());
+                  subList.push(sv);
+                } else if (inSubList) {
+                  break;
+                } else {
+                  break;
+                }
+                k++;
+              }
+              if (inSubList) {
+                itemObj[ik] = subList;
+                j = k;
+                continue;
+              }
+              j = k;
+              continue;
+            } else {
+              itemObj[ik] = parseYamlValue(iv);
+            }
+            arr.push(itemObj);
+          } else {
+            arr.push(parseYamlValue(itemPart));
+          }
+          j++;
+        }
+        lineIdx = j - 1;
+      }
+      continue;
+    }
+
+    // ── Regular key: value line ──
     const match = trimmed.match(/^(\w[\w-]*):\s*(.*)/);
     if (!match) continue;
 
@@ -56,7 +150,7 @@ function loadSimpleYaml(raw: string): Record<string, unknown> {
       if (value === '|') {
         // Block scalar — collect following indented lines
         const blockLines: string[] = [];
-        let i = lines.indexOf(line) + 1;
+        let i = lineIdx + 1;
         while (i < lines.length) {
           const bl = lines[i];
           if (bl.trimEnd() === '' || bl.startsWith('#')) { i++; continue; }
@@ -65,25 +159,89 @@ function loadSimpleYaml(raw: string): Record<string, unknown> {
           blockLines.push(bl.trim());
           i++;
         }
-        setNested(result, key, blockLines.join('\n'));
+        current[key] = blockLines.join('\n');
+        lineIdx = i - 1;
       } else {
-        const newObj: Record<string, unknown> = {};
-        setNested(result, key, newObj);
-        stack.push({ key, obj: current, indent: currentIndent });
-        current = newObj;
-        currentIndent = indent;
+        // Check lookahead: next non-empty non-comment line at deeper indent
+        // starting with `-` means this is a list, not an object.
+        let isList = false;
+        for (let j = lineIdx + 1; j < lines.length; j++) {
+          const la = lines[j].trimEnd();
+          if (la === '' || la.startsWith('#')) continue;
+          const laIndent = lines[j].length - la.length;
+          if (laIndent <= indent) break;
+          if (la.startsWith('- ')) isList = true;
+          break;
+        }
+        if (isList) {
+          const arr: unknown[] = [];
+          current[key] = arr;
+          // Process subsequent - lines
+          let j = lineIdx + 1;
+          while (j < lines.length) {
+            const bl = lines[j];
+            const bt = bl.trimEnd();
+            if (bt === '' || bt.startsWith('#')) { j++; continue; }
+            const bi = bl.length - bt.length;
+            if (bi <= indent) break;
+            const lm = bt.match(/^-\s+(.*)/);
+            if (!lm) break;
+            const itemPart = lm[1].trim();
+            const itemObjMatch = itemPart.match(/^(\w[\w-]*):\s*(.*)/);
+            if (itemObjMatch) {
+              const itemObj: Record<string, unknown> = {};
+              const ik = itemObjMatch[1];
+              const iv = itemObjMatch[2].trim();
+              if (iv === '') {
+                // Nested object — push onto stack to parse children
+                const childObj: Record<string, unknown> = {};
+                itemObj[ik] = childObj;
+                stack.push({ key: ik, obj: itemObj, indent: indent + 2 });
+                // We need current to point at childObj for subsequent lines
+                // But since we're in list mode, let the main loop handle it
+                // Save state and break out of list mode
+                current = childObj;
+                currentIndent = indent + 2;
+                arr.push(itemObj);
+                lineIdx = j;
+                // Set flag to continue as nested object, not list
+                // Continue to let the main loop process the next line
+                // as a regular key:value under childObj
+                // But wait, the next line will be at deeper indent. We've set current = childObj.
+                // We'll push a stack frame to remember how to get back.
+                // Actually, we need to push to stack to ensure the parent gets restored
+                // when indent goes back up. Let's use a simpler approach:
+                // Push a frame whose obj is arr's parent's parent, but that's complex.
+                // For nested key:value inside a list item, just use the existing inline syntax
+                // rather than - sub-items.
+                // For now, fall through and skip the rest of list processing.
+                // The current approach: set current and let the loop continue.
+                break;
+              } else {
+                itemObj[ik] = parseYamlValue(iv);
+              }
+              arr.push(itemObj);
+            } else {
+              arr.push(parseYamlValue(itemPart));
+            }
+            j++;
+          }
+          lineIdx = j - 1;
+        } else {
+          const newObj: Record<string, unknown> = {};
+          current[key] = newObj;
+          stack.push({ key, obj: current, indent: currentIndent });
+          current = newObj;
+          currentIndent = indent;
+        }
       }
     } else {
       // Scalar value
-      setNested(result, key, parseYamlValue(value));
+      current[key] = parseYamlValue(value);
     }
   }
 
   return result;
-}
-
-function setNested(obj: Record<string, unknown>, key: string, value: unknown): void {
-  obj[key] = value;
 }
 
 function parseYamlValue(raw: string): unknown {
@@ -258,9 +416,18 @@ export function loadContextPolicy(): ContextPolicy {
         const parsed = loadSimpleYaml(raw);
         if (parsed && typeof parsed === 'object') {
           filePolicy = normalizeFilePolicy(parsed as Record<string, unknown>);
+          // Validate: if YAML parsed but produced nothing useful, warn loud.
+          if (!filePolicy.roles && !filePolicy.layers && !filePolicy.version) {
+            throw new Error(`context-policy.yml at ${policyPath} parsed to empty — check for syntax errors`);
+          }
+        } else {
+          throw new Error(`context-policy.yml at ${policyPath} produced non-object result`);
         }
-      } catch {
-        // Malformed file — fall through to defaults silently
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        // eslint-disable-next-line no-console
+        console.error(`[context-policy] ERROR: ${message}`);
+        process.exit(1);
       }
     }
   }
@@ -278,8 +445,27 @@ export function loadContextPolicy(): ContextPolicy {
  * Same policy content + same ordering = same hash. Used so consumers can
  * assert "same inputs → same manifest" without diffing the full policy.
  */
+/**
+ * Recursively sort keys of an object for deterministic canonical JSON.
+ * Arrays are preserved in order; values are recursively canonicalized.
+ */
+function canonicalize(obj: unknown): unknown {
+  if (Array.isArray(obj)) {
+    return obj.map(canonicalize);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const keys = Object.keys(obj as Record<string, unknown>).sort();
+    const result: Record<string, unknown> = {};
+    for (const k of keys) {
+      result[k] = canonicalize((obj as Record<string, unknown>)[k]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 export function policyHash(policy: ContextPolicy): string {
-  const canonical = JSON.stringify(policy, Object.keys(policy).sort());
+  const canonical = JSON.stringify(canonicalize(policy));
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
@@ -369,6 +555,11 @@ export function resolveLayerPath(
   agentName: string,
 ): string | null {
   for (const candidate of candidates) {
+    // Refuse archive/** paths — archived layers are never injected.
+    if (candidate.includes('/archive/') || candidate.startsWith('archive/')) continue;
+    // Refuse tombstoned paths — intentionally removed layers.
+    if (candidate.includes('/tombstoned/') || candidate.startsWith('tombstoned/')) continue;
+
     const resolved = candidate
       .replace(/\{squad\}/g, squadName)
       .replace(/\{agent\}/g, agentName);

@@ -29,6 +29,7 @@ import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import { type ContextLayerStat } from './exec-events.js';
+import { loadContextPolicy } from './context-policy.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -497,15 +498,21 @@ export function gatherSquadContext(
 
   const memoryDir = findMemoryDir();
   const role = options.role || 'worker';
-  const budget = options.maxTokens ? options.maxTokens * 4 : (ROLE_BUDGETS[role] ?? ROLE_BUDGETS.worker);
-  const allowedSections = ROLE_SECTIONS[role] ?? ROLE_SECTIONS.worker;
+
+  // Load resolved policy — shared context-policy.yml or compiled defaults (#1049).
+  // This is the SAME policy used by assembleContextManifest for the --for path,
+  // ensuring the run path and the manifest path agree on layers and budgets.
+  const policy = loadContextPolicy();
+  const rolePolicy = policy.roles[role] ?? policy.roles.worker;
+  const budget = options.maxTokens ? options.maxTokens * 4 : rolePolicy.budgetChars;
+  const allowedLayerIds = new Set(rolePolicy.layers);
   const sections: string[] = [];
   const layerStats: ContextLayerStat[] = [];
   let usedChars = 0;
 
   /** Try to add a layer. Returns true if added (possibly truncated), false if no budget left. */
   function addLayer(layerNum: number, header: string, content: string, maxChars?: number): boolean {
-    if (!allowedSections.has(layerNum)) return false;
+    if (!allowedLayerIds.has(layerNum)) return false;
     if (!content) return false;
 
     const TRUNCATION_SUFFIX = '\n...';
