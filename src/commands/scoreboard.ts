@@ -48,7 +48,7 @@ export async function scoreboardCommand(options: { json?: boolean; days?: string
       const prs = outcome.artifacts.filter((a) => a.kind === 'pr');
       if (prs.length === 0) continue;
       checkedRuns++;
-      const key = { provider: r.provider || 'unknown', model: modelFamily(r.model), taskClass: detectTaskType(r.agent) || 'execution' };
+      const key = { provider: r.provider || 'unknown', model: modelFamily(r.model || 'unknown'), taskClass: detectTaskType(r.agent) || 'execution' };
       const row = board.rows.find((x) => x.provider === key.provider && x.model === key.model && x.taskClass === key.taskClass);
       if (!row) continue;
       row.landed = row.landed ?? { checked: 0, merged: 0, rate: 0 };

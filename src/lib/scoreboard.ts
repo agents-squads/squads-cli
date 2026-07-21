@@ -97,7 +97,7 @@ export function buildScoreboard(
 
   for (const r of records) {
     const taskClass = detectTaskType(r.agent) || 'execution';
-    const family = modelFamily(r.model);
+    const family = modelFamily(r.model || 'unknown');
     const key = `${r.provider}|${family}|${taskClass}`;
     let row = groups.get(key);
     if (!row) {

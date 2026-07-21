@@ -389,7 +389,7 @@ function deriveRowForSessionFile(
         squad,
         agent,
         provider: 'claude-code',
-        model: model || 'unknown',
+        model: model || undefined,
         brief,
         // Same session UUID a squads-cli ledger row would carry for this run
         // (#1129) — lets the board merge dedup instead of double-counting.
@@ -596,7 +596,7 @@ export async function deriveOpenCodeRows(
       squad,
       agent: squad === 'interactive' ? lastSeg : agentTag,
       provider: provider || 'opencode',
-      model: modelId || 'unknown',
+      model: modelId || undefined,
       session_id: id,
       trigger: 'manual' as const,
       status: 'completed' as const,

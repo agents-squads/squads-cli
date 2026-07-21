@@ -144,6 +144,7 @@ export async function reportExecutionComplete(
     durationMs?: number;
     squad?: string;
     agent?: string;
+    model?: string;
   },
 ): Promise<boolean> {
   return apiRequest(agentExecutionPath(executionId), 'PATCH', {
@@ -153,6 +154,7 @@ export async function reportExecutionComplete(
     ...(details?.durationMs ? { duration_ms: details.durationMs } : {}),
     ...(details?.squad ? { squad: details.squad } : {}),
     ...(details?.agent ? { agent: details.agent } : {}),
+    ...(details?.model ? { model: details.model } : {}),
   });
 }
 
