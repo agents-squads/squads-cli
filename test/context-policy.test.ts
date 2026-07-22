@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadContextPolicy, policyHash, type ContextPolicy } from '../src/lib/context-policy.js';
+import { loadContextPolicy, policyHash, resolveLayerPath, type ContextPolicy } from '../src/lib/context-policy.js';
 
 // #1049 CRITICAL-1 (policy not consumed) + CRITICAL-2 (inert hand-rolled YAML
 // parser). js-yaml now parses the file; these tests prove a nested override in
@@ -56,6 +56,45 @@ describe('loadContextPolicy — YAML override consumption (#1049 / #1194)', () =
     expect(policy.layers).toHaveLength(1);
     expect(policy.layers[0].description).toBe('overridden system layer');
     expect(policy.layers[0].paths).toEqual(['SYSTEM.md']);
+  });
+
+  // The policy file is OPTIONAL and documented to fall back to defaults. An
+  // empty or comment-only file (js-yaml → undefined|null) must NOT crash — this
+  // path runs on every `squads run`, so a scaffolded-but-empty file would
+  // otherwise hard-fail all squad execution.
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', '   \n\n'],
+    ['comment-only', '# no overrides yet\n'],
+  ])('falls back to compiled defaults for a %s policy file (no crash)', (_label, contents) => {
+    writeFileSync(join(dir, '.agents', 'context-policy.yml'), contents);
+    process.chdir(dir);
+
+    const policy = loadContextPolicy();
+
+    expect(policy.roles.worker.budgetChars).toBe(60000); // compiled default
+    expect(policy.layers).toHaveLength(7);               // full L0–L6 defaults
+  });
+});
+
+describe('resolveLayerPath — archive/tombstoned guard (#1194 coverage)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'squads-resolvepath-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('skips archived/tombstoned candidates even when they exist on disk', () => {
+    mkdirSync(join(dir, 'archive'), { recursive: true });
+    mkdirSync(join(dir, 'tombstoned'), { recursive: true });
+    writeFileSync(join(dir, 'archive', 'old.md'), 'archived');
+    writeFileSync(join(dir, 'tombstoned', 'dead.md'), 'removed');
+    writeFileSync(join(dir, 'live.md'), 'current');
+
+    // archive/** and tombstoned/** must be refused; the first live path wins.
+    expect(resolveLayerPath(['archive/old.md', 'tombstoned/dead.md', 'live.md'], dir, 'sq', 'ag'))
+      .toBe(join(dir, 'live.md'));
+    // when only forbidden candidates exist (even on disk), nothing resolves.
+    expect(resolveLayerPath(['archive/old.md', 'tombstoned/dead.md'], dir, 'sq', 'ag'))
+      .toBeNull();
   });
 });
 

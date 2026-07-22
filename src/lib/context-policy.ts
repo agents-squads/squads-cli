@@ -171,18 +171,24 @@ export function loadContextPolicy(): ContextPolicy {
       try {
         const raw = readFileSync(policyPath, 'utf-8');
         const parsed = yaml.load(raw);
-        if (parsed && typeof parsed === 'object') {
+        if (parsed === undefined || parsed === null) {
+          // Empty / comment-only / whitespace file — js-yaml returns
+          // undefined|null. This is the documented "no overrides" case, so
+          // fall back to compiled defaults exactly as an absent file would.
+          // The file is OPTIONAL; a scaffolded-but-empty one must never crash
+          // a squad run (loadContextPolicy runs on every `squads run`).
+          filePolicy = {};
+        } else if (typeof parsed === 'object') {
           filePolicy = normalizeFilePolicy(parsed as Record<string, unknown>);
           // Validate: if YAML parsed but produced nothing useful, warn loud.
           if (!filePolicy.roles && !filePolicy.layers && !filePolicy.version) {
             throw new Error(`context-policy.yml at ${policyPath} parsed to empty — check for syntax errors`);
           }
         } else {
-          throw new Error(`context-policy.yml at ${policyPath} produced non-object result`);
+          throw new Error(`context-policy.yml at ${policyPath} produced a non-object result`);
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        // eslint-disable-next-line no-console
         console.error(`[context-policy] ERROR: ${message}`);
         process.exit(1);
       }
