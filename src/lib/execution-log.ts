@@ -155,7 +155,7 @@ export function tombstoneZombieRuns(squadName: string, agentName: string): numbe
   const logPath = getExecutionLogPath(squadName, agentName);
   if (!logPath || !existsSync(logPath)) return 0;
 
-  let content = readFileSync(logPath, 'utf-8');
+  const content = readFileSync(logPath, 'utf-8');
 
   // Quick check — no running entries means nothing to do
   if (!content.includes('Status: running')) return 0;
