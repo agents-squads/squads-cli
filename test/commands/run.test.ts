@@ -453,6 +453,58 @@ describe('runCommand', () => {
     });
   });
 
+  describe('empty squad (no role table) (#872)', () => {
+    function makeEmptySquad() {
+      return {
+        name: 'empty-squad',
+        dir: 'empty-squad',
+        mission: 'No agents defined',
+        agents: [] as Array<Record<string, string>>,
+        pipelines: [],
+        triggers: { scheduled: [], event: [], manual: [] },
+        routines: [],
+        dependencies: [],
+        outputPath: '',
+        goals: [],
+        frontmatter: {},
+      };
+    }
+
+    it('warns and sets exitCode 1 when squad has no participants', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makeEmptySquad() as ReturnType<typeof mockLoadSquad>);
+
+      const savedExitCode = process.exitCode;
+      process.exitCode = 0;
+
+      try {
+        await runCommand('empty-squad', { dryRun: true });
+
+        expect(mockWriteLine).toHaveBeenCalledWith(
+          expect.stringContaining('0 participants')
+        );
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = savedExitCode;
+      }
+    });
+
+    it('does not set exitCode 1 when --agent is specified on empty squad', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makeEmptySquad() as ReturnType<typeof mockLoadSquad>);
+
+      const savedExitCode = process.exitCode;
+      process.exitCode = 0;
+
+      try {
+        // Guard only fires in default mode, not when -a specifies an agent
+        await runCommand('empty-squad', { dryRun: true, agent: 'some-agent' });
+      } finally {
+        process.exitCode = savedExitCode;
+      }
+    });
+  });
+
   describe('preflight check', () => {
     // The preflight only runs for a target that EXISTS (#912): a nonexistent
     // squad now reports "not found" BEFORE any executor CLI check, so these

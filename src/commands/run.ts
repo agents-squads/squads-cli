@@ -711,6 +711,18 @@ async function runSquad(
         return;
       }
     } else {
+      // Guard: squad has no participants defined in role table (#872)
+      if (squad.agents.length === 0) {
+        writeLine(`  ${icons.warning} ${colors.yellow}Squad "${squad.dir}" has 0 participants — add agents to the role table in SQUAD.md${RESET}`);
+        writeLine(`  ${colors.dim}Example role table:${RESET}`);
+        writeLine(`  ${colors.dim}  | Agent  | Role          | Trigger |${RESET}`);
+        writeLine(`  ${colors.dim}  |--------|---------------|---------|${RESET}`);
+        writeLine(`  ${colors.dim}  | lead   | Orchestrator  | manual  |${RESET}`);
+        writeLine();
+        process.exitCode = 1;
+        return;
+      }
+
       // Determine provider for mode selection
       const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
 

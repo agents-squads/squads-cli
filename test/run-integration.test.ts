@@ -306,7 +306,7 @@ provider: google
       ).rejects.toThrow();
     });
 
-    it('handles squad with no agents gracefully', async () => {
+    it('warns and sets exitCode 1 when squad has no agents in role table (#872)', async () => {
       const squadDir = join(squadsDir, 'empty-squad');
       mkdirSync(squadDir);
 
@@ -316,10 +316,17 @@ provider: google
 No agents yet
 `);
 
-      // Should not crash on empty squad
-      await expect(
-        runSquadCommand('empty-squad', { dryRun: true })
-      ).resolves.not.toThrow();
+      // Save and reset exit code before test
+      const savedExitCode = process.exitCode;
+      process.exitCode = 0;
+
+      try {
+        await runSquadCommand('empty-squad', { dryRun: true });
+        // Should not crash, but warn and mark failure
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = savedExitCode;
+      }
     });
   });
 
