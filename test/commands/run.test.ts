@@ -124,6 +124,8 @@ vi.mock('../../src/lib/providers.js', () => ({
 vi.mock('../../src/lib/auth.js', () => ({
   loadSession: vi.fn(() => null),
   isLoggedIn: vi.fn(() => false),
+  // Defer to the real env var so tests can toggle the auth-config preflight (#1208).
+  isAuthConfigured: vi.fn(() => !!process.env.SQUADS_AUTH_URL),
 }));
 
 vi.mock('../../src/lib/env-config.js', () => ({
@@ -238,6 +240,34 @@ describe('runCommand', () => {
   });
 
   describe('--cloud flag', () => {
+    let originalAuthUrl: string | undefined;
+
+    beforeEach(() => {
+      originalAuthUrl = process.env.SQUADS_AUTH_URL;
+      // These tests exercise logic past the auth-config preflight, so pretend
+      // the auth endpoint is configured (#1208). The unconfigured case has its
+      // own test below.
+      process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
+    });
+
+    afterEach(() => {
+      if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+      else process.env.SQUADS_AUTH_URL = originalAuthUrl;
+    });
+
+    it('fails at preflight when auth is not configured (#1208)', async () => {
+      delete process.env.SQUADS_AUTH_URL;
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+
+      // Even with an agent specified, --cloud must fail before any run setup.
+      await expect(runCommand('demo/researcher', { cloud: true })).rejects.toThrow('process.exit');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(mockWriteLine).toHaveBeenCalledWith(
+        expect.stringContaining('Cloud dispatch requires login, which is not available in this build.')
+      );
+    });
+
     it('exits with code 1 when --cloud used without agent name', async () => {
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
 
@@ -582,6 +612,19 @@ describe('runCommand', () => {
   });
 
   describe('slash syntax parsing', () => {
+    let originalAuthUrl: string | undefined;
+
+    beforeEach(() => {
+      originalAuthUrl = process.env.SQUADS_AUTH_URL;
+      // The cloud test below must pass the auth-config preflight (#1208).
+      process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
+    });
+
+    afterEach(() => {
+      if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+      else process.env.SQUADS_AUTH_URL = originalAuthUrl;
+    });
+
     it('splits target on slash to extract squad and agent', async () => {
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
       mockLoadSquad.mockReturnValue(null);
@@ -617,16 +660,22 @@ describe('runCommand', () => {
 // ── Tests: runSquadCommand ─────────────────────────────────────────────────
 describe('runSquadCommand', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
+  let originalAuthUrl: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.SQUADS_SKIP_CHECKS = '1';
+    // The cloud test below must pass the auth-config preflight (#1208).
+    originalAuthUrl = process.env.SQUADS_AUTH_URL;
+    process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
     exitSpy = makeExitSpy();
   });
 
   afterEach(() => {
     exitSpy.mockRestore();
     delete process.env.SQUADS_SKIP_CHECKS;
+    if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+    else process.env.SQUADS_AUTH_URL = originalAuthUrl;
   });
 
   it('delegates to runCommand and exits when no squads dir', async () => {

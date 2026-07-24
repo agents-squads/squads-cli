@@ -1154,8 +1154,11 @@ program
   });
 
 // Auth commands
+// `login` is hidden from --help until the auth endpoint is configured
+// (SQUADS_AUTH_URL). Invoking it when unconfigured prints a one-line
+// "not available in this build" message (#1208).
 program
-  .command('login')
+  .command('login', { hidden: !process.env.SQUADS_AUTH_URL })
   .description('Log in to Squads (Pro & Enterprise)')
   .action(async () => {
     const { loginCommand } = await import('./commands/login.js');

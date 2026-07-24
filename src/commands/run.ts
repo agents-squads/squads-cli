@@ -27,6 +27,7 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
+import { isAuthConfigured } from '../lib/auth.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { isQuotaMessage } from '../lib/conversation.js';
 import { probeQuota, waitForQuota } from '../lib/quota-probe.js';
@@ -487,6 +488,13 @@ export async function runCommand(
 
   // Cloud dispatch: skip local execution entirely
   if (options.cloud) {
+    // Cloud dispatch depends on `squads login`, which is unavailable until the
+    // auth endpoint is deployed. Fail fast at preflight before any run setup so
+    // `--cloud` never appears to start a run it can never complete (#1208).
+    if (!isAuthConfigured()) {
+      writeLine(`  ${colors.red}${icons.error} Cloud dispatch requires login, which is not available in this build.${RESET}`);
+      process.exit(1);
+    }
     const agentName = options.agent || agentFromSlash;
     if (!agentName) {
       writeLine(`  ${colors.red}${icons.error} --cloud requires a specific agent${RESET}`);

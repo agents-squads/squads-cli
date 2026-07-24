@@ -49,7 +49,7 @@ squads propose                 # Draft one extra deliverable on a proposal branc
 | Lead mode | `squads run engineering --lead` | Single orchestrator using Task tool |
 | Background | `squads run engineering -b` | Detached process, check with `squads runs` |
 | Background+watch | `squads run engineering -w` | Background but tail log |
-| Cloud dispatch | `squads run engineering --cloud` | Via API (requires `squads login`) |
+| Cloud dispatch | `squads run engineering --cloud` | Via API; unavailable until `SQUADS_AUTH_URL` is set (`squads login`) |
 | Org cycle | `squads run --org` | All squads run as a coordinated cycle |
 | Autopilot | `squads run` (no target) | Continuous autonomous cycles |
 
@@ -167,7 +167,7 @@ squads commands                # List the live command tree (--json for machine-
 ### System
 
 ```bash
-squads login                   # Authenticate with Squads (Pro & Enterprise)
+squads login                   # Cloud login (hidden until SQUADS_AUTH_URL is set)
 squads logout                  # Clear authentication
 squads whoami                  # Show current logged-in user
 squads session start           # Register a new session

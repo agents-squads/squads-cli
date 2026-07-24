@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import open from 'open';
 import {
-  isPersonalEmail,
+  isAuthConfigured,
   getEmailDomain,
   saveSession,
   loadSession,
@@ -13,14 +13,13 @@ import {
 import { track } from '../lib/telemetry.js';
 import { writeLine } from '../lib/terminal.js';
 
-const AUTH_URL = process.env.SQUADS_AUTH_URL || '';
 const CALLBACK_PORT = 54321;
 
-async function isAuthEndpointAvailable(): Promise<boolean> {
+async function isAuthEndpointAvailable(url: string): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(AUTH_URL, {
+    const response = await fetch(url, {
       method: 'HEAD',
       signal: controller.signal,
     });
@@ -32,6 +31,14 @@ async function isAuthEndpointAvailable(): Promise<boolean> {
 }
 
 export async function loginCommand(): Promise<void> {
+  // The auth endpoint is not deployed yet. Hide the login surface rather than
+  // probing an empty URL and degrading to a "Coming Soon" waitlist (#1208).
+  // Read at call time so tests/processes that set the env after import are honored.
+  if (!isAuthConfigured()) {
+    writeLine('Cloud login is not available in this build.');
+    return;
+  }
+
   const existingSession = loadSession();
 
   if (existingSession && existingSession.status === 'active') {
@@ -42,8 +49,9 @@ export async function loginCommand(): Promise<void> {
   }
 
   // Check if auth endpoint is available
+  const url = process.env.SQUADS_AUTH_URL || '';
   const spinner = ora('Checking authentication service...').start();
-  const isAvailable = await isAuthEndpointAvailable();
+  const isAvailable = await isAuthEndpointAvailable(url);
 
   if (!isAvailable) {
     spinner.stop();
@@ -80,34 +88,18 @@ ${chalk.dim('─'.repeat(40))}
     const callbackPromise = startAuthCallbackServer(CALLBACK_PORT);
 
     // Open browser to auth page
-    const authUrl = `${AUTH_URL}?callback=http://localhost:${CALLBACK_PORT}/callback`;
-    await open(authUrl);
+    const authPageUrl = `${url}?callback=http://localhost:${CALLBACK_PORT}/callback`;
+    await open(authPageUrl);
 
     // Wait for callback
     const { email, token } = await callbackPromise;
 
-    // Check if personal email
-    if (isPersonalEmail(email)) {
-      authSpinner.fail('Personal emails not supported');
-      writeLine(`
-${chalk.yellow('⚠ Squads CLI is for Pro & Enterprise teams only.')}
-
-Personal email domains (Gmail, Yahoo, etc.) are not supported.
-
-${chalk.dim('Want to stay updated?')}
-  → Get our free research report: ${chalk.cyan('https://agents-squads.com/research')}
-  → Follow us: ${chalk.cyan('https://x.com/agents_squads')}
-`);
-
-      await track('cli.login.personal_email', { domain: getEmailDomain(email) });
-      return;
-    }
-
-    // Save session
+    // Save active session. All authenticated signups are accepted — segmentation
+    // of signups is a server-side concern, not a CLI gate (#1208).
     const session: AuthSession = {
       email,
       domain: getEmailDomain(email),
-      status: 'pending', // Will be 'active' after sales contact
+      status: 'active',
       createdAt: new Date().toISOString(),
       accessToken: token,
     };
@@ -118,17 +110,11 @@ ${chalk.dim('Want to stay updated?')}
     await track('cli.login.success', { domain: session.domain });
 
     writeLine(`
-${chalk.green('✓ Thanks for signing up!')}
+${chalk.green('✓ You are logged in.')}
 
-${chalk.bold('What happens next:')}
-  1. Our team will reach out within 24 hours
-  2. We'll discuss your AI agent needs
-  3. You'll get access to Pro features
-
-${chalk.dim('In the meantime:')}
+${chalk.dim('Get started:')}
   → Explore squads: ${chalk.cyan('squads status')}
-  → Set goals: ${chalk.cyan('squads goal set <squad> "<goal>"')}
-  → Read our research: ${chalk.cyan('https://agents-squads.com/research')}
+  → Dispatch to cloud: ${chalk.cyan('squads run <squad>/<agent> --cloud')}
 
 ${chalk.dim('Questions? Email us at')} ${chalk.cyan('hello@agents-squads.com')}
 `);

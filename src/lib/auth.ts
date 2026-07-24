@@ -3,23 +3,6 @@ import { join } from 'path';
 import { homedir } from 'os';
 import http from 'http';
 
-// Personal email domains to reject
-const PERSONAL_DOMAINS = [
-  'gmail.com', 'googlemail.com',
-  'yahoo.com', 'yahoo.co.uk', 'yahoo.fr',
-  'hotmail.com', 'outlook.com', 'live.com', 'msn.com',
-  'icloud.com', 'me.com', 'mac.com',
-  'aol.com',
-  'protonmail.com', 'proton.me',
-  'zoho.com',
-  'mail.com',
-  'yandex.com', 'yandex.ru',
-  'gmx.com', 'gmx.de',
-  'fastmail.com',
-  'tutanota.com',
-  'hey.com',
-];
-
 const AUTH_DIR = join(homedir(), '.squads-cli');
 const AUTH_PATH = join(AUTH_DIR, 'auth.json');
 
@@ -31,9 +14,16 @@ export interface AuthSession {
   accessToken?: string;
 }
 
-export function isPersonalEmail(email: string): boolean {
-  const domain = email.split('@')[1]?.toLowerCase();
-  return PERSONAL_DOMAINS.includes(domain);
+/**
+ * Whether the cloud auth endpoint is configured for this build.
+ *
+ * `squads login` and `squads run --cloud` depend on an auth server that is not
+ * deployed yet. Until `SQUADS_AUTH_URL` is set, the login surface is hidden and
+ * `--cloud` fails fast at preflight rather than degrading to a waitlist screen
+ * or an unreachable dispatch (#1208).
+ */
+export function isAuthConfigured(): boolean {
+  return !!process.env.SQUADS_AUTH_URL && process.env.SQUADS_AUTH_URL.trim() !== '';
 }
 
 export function getEmailDomain(email: string): string {
