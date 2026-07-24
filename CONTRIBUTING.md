@@ -64,6 +64,13 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
    npm test
    ```
 
+   The unit and E2E suite runs without Docker. The optional infrastructure
+   integration tests (`test/infra.test.ts`) probe a local postgres/redis/bridge
+   stack and **auto-skip** in CI or when that stack isn't running, so `npm test`
+   stays green without it. That docker-compose stack lives in the separate
+   engineering repo and is intentionally not duplicated here — bring it up there
+   if you want the infra tests to execute.
+
 ## Project Structure
 
 ```

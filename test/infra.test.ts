@@ -6,9 +6,12 @@
  * Run with: npm test -- --grep "infra"
  *
  * Prerequisites:
- *   cd docker && docker compose up -d
+ *   The squads docker-compose stack is maintained in the separate engineering
+ *   repo and is intentionally NOT duplicated in squads-cli (no `docker/` dir
+ *   here). Bring that stack up before running these tests.
  *
- * Note: These tests are skipped in CI or when local Docker services aren't running.
+ * Note: These tests are skipped in CI or when the local stack isn't running,
+ *       so `npm test` stays green on a machine without Docker.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -60,7 +63,7 @@ const infraAvailable = checkInfraAvailable();
 if (!infraAvailable && !process.env.CI) {
   console.warn(
     '\n⚠️  Infrastructure services not running - skipping infra tests.\n' +
-      '   Start with: cd docker && docker compose up -d\n'
+      '   Bring up the squads docker-compose stack (engineering repo) to run them.\n'
   );
 }
 
