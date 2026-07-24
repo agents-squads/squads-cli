@@ -16,93 +16,8 @@
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
+import yaml from 'js-yaml';
 import { findSquadsDir } from './squad-parser.js';
-
-/**
- * Minimal YAML loader for context-policy.yml.
- *
- * js-yaml (already a transitive dep via gray-matter) has no TS declarations.
- * Rather than add @types/js-yaml or a `.d.ts` shim, we parse the simple
- * structured YAML that context-policy.yml uses inline — it's a small,
- * well-defined schema with no arbitrary nesting.
- */
-function loadSimpleYaml(raw: string): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const lines = raw.split('\n');
-  const stack: Array<{ key: string; obj: Record<string, unknown>; indent: number }> = [];
-  let current: Record<string, unknown> = result;
-  let currentIndent = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trimEnd();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-
-    const indent = line.length - trimmed.length;
-    const match = trimmed.match(/^(\w[\w-]*):\s*(.*)/);
-    if (!match) continue;
-
-    const key = match[1];
-    const value = match[2].trim();
-
-    // Adjust indent-based nesting
-    while (stack.length > 0 && indent <= stack[stack.length - 1].indent) {
-      const frame = stack.pop()!;
-      current = frame.obj;
-      currentIndent = frame.indent;
-    }
-
-    if (value === '' || value === '|') {
-      // Object or block scalar start
-      if (value === '|') {
-        // Block scalar — collect following indented lines
-        const blockLines: string[] = [];
-        let i = lines.indexOf(line) + 1;
-        while (i < lines.length) {
-          const bl = lines[i];
-          if (bl.trimEnd() === '' || bl.startsWith('#')) { i++; continue; }
-          const bi = bl.length - bl.trimEnd().length;
-          if (bi <= indent) break;
-          blockLines.push(bl.trim());
-          i++;
-        }
-        setNested(result, key, blockLines.join('\n'));
-      } else {
-        const newObj: Record<string, unknown> = {};
-        setNested(result, key, newObj);
-        stack.push({ key, obj: current, indent: currentIndent });
-        current = newObj;
-        currentIndent = indent;
-      }
-    } else {
-      // Scalar value
-      setNested(result, key, parseYamlValue(value));
-    }
-  }
-
-  return result;
-}
-
-function setNested(obj: Record<string, unknown>, key: string, value: unknown): void {
-  obj[key] = value;
-}
-
-function parseYamlValue(raw: string): unknown {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (raw === 'null' || raw === '~') return null;
-  // Number
-  const num = Number(raw);
-  if (!isNaN(num) && raw !== '' && raw !== 'true' && raw !== 'false') return num;
-  // Array: [item1, item2]
-  if (raw.startsWith('[') && raw.endsWith(']')) {
-    return raw.slice(1, -1).split(',').map(s => parseYamlValue(s.trim())).filter(v => v !== null);
-  }
-  // String — strip quotes
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
-  }
-  return raw;
-}
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -255,12 +170,27 @@ export function loadContextPolicy(): ContextPolicy {
     if (existsSync(policyPath)) {
       try {
         const raw = readFileSync(policyPath, 'utf-8');
-        const parsed = loadSimpleYaml(raw);
-        if (parsed && typeof parsed === 'object') {
+        const parsed = yaml.load(raw);
+        if (parsed === undefined || parsed === null) {
+          // Empty / comment-only / whitespace file — js-yaml returns
+          // undefined|null. This is the documented "no overrides" case, so
+          // fall back to compiled defaults exactly as an absent file would.
+          // The file is OPTIONAL; a scaffolded-but-empty one must never crash
+          // a squad run (loadContextPolicy runs on every `squads run`).
+          filePolicy = {};
+        } else if (typeof parsed === 'object') {
           filePolicy = normalizeFilePolicy(parsed as Record<string, unknown>);
+          // Validate: if YAML parsed but produced nothing useful, warn loud.
+          if (!filePolicy.roles && !filePolicy.layers && !filePolicy.version) {
+            throw new Error(`context-policy.yml at ${policyPath} parsed to empty — check for syntax errors`);
+          }
+        } else {
+          throw new Error(`context-policy.yml at ${policyPath} produced a non-object result`);
         }
-      } catch {
-        // Malformed file — fall through to defaults silently
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[context-policy] ERROR: ${message}`);
+        process.exit(1);
       }
     }
   }
@@ -278,8 +208,27 @@ export function loadContextPolicy(): ContextPolicy {
  * Same policy content + same ordering = same hash. Used so consumers can
  * assert "same inputs → same manifest" without diffing the full policy.
  */
+/**
+ * Recursively sort keys of an object for deterministic canonical JSON.
+ * Arrays are preserved in order; values are recursively canonicalized.
+ */
+function canonicalize(obj: unknown): unknown {
+  if (Array.isArray(obj)) {
+    return obj.map(canonicalize);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const keys = Object.keys(obj as Record<string, unknown>).sort();
+    const result: Record<string, unknown> = {};
+    for (const k of keys) {
+      result[k] = canonicalize((obj as Record<string, unknown>)[k]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 export function policyHash(policy: ContextPolicy): string {
-  const canonical = JSON.stringify(policy, Object.keys(policy).sort());
+  const canonical = JSON.stringify(canonicalize(policy));
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
@@ -369,6 +318,11 @@ export function resolveLayerPath(
   agentName: string,
 ): string | null {
   for (const candidate of candidates) {
+    // Refuse archive/** paths — archived layers are never injected.
+    if (candidate.includes('/archive/') || candidate.startsWith('archive/')) continue;
+    // Refuse tombstoned paths — intentionally removed layers.
+    if (candidate.includes('/tombstoned/') || candidate.startsWith('tombstoned/')) continue;
+
     const resolved = candidate
       .replace(/\{squad\}/g, squadName)
       .replace(/\{agent\}/g, agentName);
