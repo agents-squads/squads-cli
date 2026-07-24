@@ -85,6 +85,7 @@ export function modelFamily(model: string): string {
   if (m.includes('gpt')) return m.replace(/[^a-z0-9.-]/g, '').slice(0, 16);
   if (m.includes('qwen')) return 'qwen';
   if (m.includes('glm')) return 'glm';
+  if (m.includes('kimi')) return 'kimi';
   if (m.includes('gemini')) return 'gemini';
   return m === 'unknown' ? 'unknown' : m.slice(0, 16);
 }

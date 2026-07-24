@@ -114,6 +114,7 @@ function makeClaudeHarnessStreamUsage(envPrefix: string): (output: string) => Pr
 
 export const parseGlmStreamUsage = makeClaudeHarnessStreamUsage('GLM');
 export const parseDeepseekStreamUsage = makeClaudeHarnessStreamUsage('DEEPSEEK');
+export const parseKimiStreamUsage = makeClaudeHarnessStreamUsage('KIMI');
 
 /**
  * Usage from an opencode `--format json` log (#1177). Unlike the claude
@@ -301,6 +302,42 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     env: () => ({
       ANTHROPIC_BASE_URL: process.env.GLM_BASE_URL || 'https://api.z.ai/api/anthropic',
       ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
+  },
+
+  // Kimi (Moonshot) serves an Anthropic-compatible endpoint (verified live
+  // 2026-07-24: proper Anthropic message shape + usage on /anthropic/v1/messages
+  // for kimi-k3), so the claude CLI is the agentic harness, same pattern as
+  // glm/deepseek. K3 is a reasoning model that emits `thinking` blocks — the
+  // stream adapter already handles those (glm-4.7/5.2 do the same). Point it at
+  // Moonshot and auth with KIMI_API_KEY; ANTHROPIC_API_KEY is removed so an
+  // inherited key can't shadow the token.
+  kimi: {
+    provider: 'kimi',
+    displayName: 'Kimi (Moonshot via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set KIMI_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--print',
+      // Structured event stream so usage + outcomes are parseable (#1077);
+      // --verbose is required by the claude CLI for stream-json in print mode.
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--model',
+      opts?.model || process.env.KIMI_MODEL || 'kimi-k3',
+      // In --print mode permission prompts can't be answered, so without an
+      // allowlist every Edit/Write is denied and the lane is read-only (#1073).
+      ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+      '--disable-slash-commands',
+      prompt,
+    ],
+    streamJson: true,
+    parseUsage: parseKimiStreamUsage,
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.KIMI_BASE_URL || 'https://api.moonshot.ai/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.KIMI_API_KEY,
       ANTHROPIC_API_KEY: undefined,
       ANTHROPIC_MODEL: undefined,
     }),

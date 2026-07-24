@@ -162,19 +162,24 @@ function formatCost(usd: number): string {
 }
 
 /**
- * Reprice GLM runs at display time when env rates are now set.
- * GLM runs recorded with cost_usd=0 (because env rates weren't set at run time)
- * are re-priced using current SQUADS_GLM_COST_PER_MTOK_IN/OUT values.
- * This is display-only; the ledger is not modified.
+ * Reprice claude-harness lane runs at display time when env rates are now set.
+ * These lanes (glm/deepseek/kimi) discard the claude CLI's Claude-priced cost and
+ * fall back to SQUADS_<PROVIDER>_COST_PER_MTOK_IN/OUT (see makeClaudeHarnessStreamUsage);
+ * rows recorded with cost_usd=0 because those rates weren't set at run time are
+ * re-priced using the current values. Display-only; the ledger is not modified.
  */
+const REPRICEABLE_PROVIDERS = new Set(['glm', 'deepseek', 'kimi']);
+
 export function repriceIfNeeded(r: ObservabilityRecord): ObservabilityRecord {
-  // Only reprice GLM provider records with cost_usd=0 but tokens>0
-  if (r.provider !== 'glm' || r.cost_usd > 0) return r;
+  // Only reprice claude-harness-lane records with cost_usd=0 but tokens>0
+  const provider = (r.provider || '').toLowerCase();
+  if (!REPRICEABLE_PROVIDERS.has(provider) || r.cost_usd > 0) return r;
   const tokens = (r.input_tokens || 0) + (r.output_tokens || 0);
   if (tokens === 0) return r;
 
-  const inRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_IN || '');
-  const outRate = parseFloat(process.env.SQUADS_GLM_COST_PER_MTOK_OUT || '');
+  const prefix = provider.toUpperCase();
+  const inRate = parseFloat(process.env[`SQUADS_${prefix}_COST_PER_MTOK_IN`] || '');
+  const outRate = parseFloat(process.env[`SQUADS_${prefix}_COST_PER_MTOK_OUT`] || '');
   if (!Number.isFinite(inRate) || !Number.isFinite(outRate)) return r;
 
   const recost = ((r.input_tokens || 0) * inRate + (r.output_tokens || 0) * outRate) / 1_000_000;
