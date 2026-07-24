@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auditor Evidence Pack — agents-squads/squads-cli</title>
+  <style>
+    :root {
+      --fg: #1a1a1a; --muted: #666; --line: #d0d4da;
+      --bg: #fff; --alt: #f6f7f9;
+      --green: #1a7f37; --red: #cf222e; --amber: #9a6700;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: var(--fg); background: var(--bg); margin: 0; padding: 32px;
+      font-size: 13px; line-height: 1.5;
+    }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 28px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--line); page-break-after: avoid; }
+    h3 { font-size: 14px; margin: 16px 0 6px; }
+    .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .meta div { margin: 2px 0; }
+    table { border-collapse: collapse; width: 100%; margin: 8px 0 14px; page-break-inside: avoid; }
+    th, td { text-align: left; padding: 5px 8px; border: 1px solid var(--line); vertical-align: top; }
+    th { background: var(--alt); font-weight: 600; font-size: 12px; }
+    td.num, th.num, .num { text-align: right; font-variant-numeric: tabular-nums; }
+    tbody tr:nth-child(even) { background: var(--alt); }
+    .nodata { color: var(--muted); font-style: italic; padding: 8px 0; }
+    .source { color: var(--muted); font-size: 12px; font-style: italic; margin: 4px 0 2px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--alt); padding: 1px 4px; border-radius: 3px; }
+    .commits { list-style: none; padding: 0; margin: 8px 0; }
+    .commits li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+    .stat { color: var(--muted); font-size: 12px; }
+    .date { color: var(--muted); }
+    .decision { font-weight: 600; text-transform: capitalize; }
+    .decision.approve { color: var(--green); }
+    .decision.reject { color: var(--red); }
+    .decision.defer { color: var(--amber); }
+    .footer { color: var(--muted); font-size: 12px; font-style: italic; margin-top: 8px; }
+    @media print {
+      body { padding: 0; font-size: 11px; }
+      h1, .meta { page-break-after: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Auditor Evidence Pack</h1>
+  <div class="meta">
+    <div><strong>Project:</strong> agents-squads/squads-cli</div>
+    <div><strong>Period:</strong> 7d (2026-07-17 → 2026-07-24)</div>
+    <div><strong>Generated:</strong> 2026-07-24T19:18:56.943Z</div>
+    <div><strong>CLI version:</strong> squads-cli v0.9.0</div>
+  </div>
+
+  <h2 id="summary">Summary</h2>
+  <table>
+    <thead><tr><th>Metric</th><th class="num">Value</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Runs</td>
+        <td><span class="num">0</span></td>
+      </tr>
+      <tr>
+        <td>Approvals</td>
+        <td><span class="num">0</span></td>
+      </tr>
+      <tr>
+        <td>Rejections</td>
+        <td><span class="num">0</span></td>
+      </tr>
+      <tr>
+        <td>Deferrals</td>
+        <td><span class="num">0</span></td>
+      </tr>
+      <tr>
+        <td>Commits</td>
+        <td><span class="num">27</span></td>
+      </tr>
+      <tr>
+        <td>Total tokens (in+out)</td>
+        <td><span class="num">0</span></td>
+      </tr>
+      <tr>
+        <td>Total cost (USD)</td>
+        <td><span class="num">$0.00</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="actions">Actions</h2>
+  <p class="source">Source: <code>.agents/observability/executions.jsonl</code> — one row per run (folded).</p>
+    <p class="nodata">No data recorded for this period.</p>
+
+  <h2 id="decisions">Decisions</h2>
+  <p class="source">Source: <code>.agents/observability/reviewed.jsonl</code> — human-gate decisions.</p>
+    <p class="nodata">No data recorded for this period.</p>
+
+  <h2 id="diffs">Diffs</h2>
+  <p class="source">Source: <code>git log</code> (project repo) — non-merge commits in the period.</p>
+      <ul class="commits">
+        <li><code>6096f0e6</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: fix(ci): suppress duplicate Codecov comments per PR with behavior:once (#1201)<br><span class="stat">1 files changed, 1 insertions(+), 0 deletions(-)</span></li>
+        <li><code>e8dee0c8</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: fix(run): warn and exit 1 when squad has 0 participants (no role table) (#1200)<br><span class="stat">3 files changed, 76 insertions(+), 5 deletions(-)</span></li>
+        <li><code>b291e618</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: fix: tombstone zombie &#39;running&#39; entries in execution logs (#889) (#1199)<br><span class="stat">2 files changed, 267 insertions(+), 1 deletions(-)</span></li>
+        <li><code>cbc489cf</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: fix(observability): extract real model from stream-json output for foreground provider runs (#937) (#1198)<br><span class="stat">1 files changed, 11 insertions(+), 1 deletions(-)</span></li>
+        <li><code>820642ac</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: docs: document all CLI commands in docs/commands.md (#1197)<br><span class="stat">1 files changed, 274 insertions(+), 28 deletions(-)</span></li>
+        <li><code>1cd304e5</code> <span class="date">2026-07-24</span> <strong>agents-squads[bot]</strong>: fix(context): parse context-policy.yml with js-yaml so overrides apply (#1194) (#1195)<br><span class="stat">4 files changed, 193 insertions(+), 94 deletions(-)</span></li>
+        <li><code>5691921e</code> <span class="date">2026-07-21</span> <strong>agents-squads[bot]</strong>: feat(context): implement smart-context assembler surface with context-policy.yml (L0-L6 taxonomy) (#1193)<br><span class="stat">8 files changed, 1469 insertions(+), 47 deletions(-)</span></li>
+        <li><code>bfa45faf</code> <span class="date">2026-07-21</span> <strong>agents-squads[bot]</strong>: fix(observability): never send model=&#39;unknown&#39; on the wire — omit instead (#1192)<br><span class="stat">0 files changed, 0 insertions(+), 0 deletions(-)</span></li>
+        <li><code>071ee006</code> <span class="date">2026-07-21</span> <strong>agents-squads[bot]</strong>: fix(observability): never send model=&#39;unknown&#39; on the wire — omit instead (#1191)<br><span class="stat">10 files changed, 76 insertions(+), 19 deletions(-)</span></li>
+        <li><code>83aeaae0</code> <span class="date">2026-07-20</span> <strong>agents-squads[bot]</strong>: refactor(context): retire L9/L10 founder-context digest layers (#1190)<br><span class="stat">6 files changed, 28 insertions(+), 232 deletions(-)</span></li>
+        <li><code>ef8331eb</code> <span class="date">2026-07-20</span> <strong>agents-squads[bot]</strong>: feat(config): implement `squads config use &lt;env&gt;` / `squads config show` (#1185)<br><span class="stat">6 files changed, 393 insertions(+), 3 deletions(-)</span></li>
+        <li><code>8b1082ba</code> <span class="date">2026-07-20</span> <strong>agents-squads[bot]</strong>: fix(observability): derive the session root at every stamping site, not just the child environment (#1183)<br><span class="stat">4 files changed, 61 insertions(+), 16 deletions(-)</span></li>
+        <li><code>cfec7995</code> <span class="date">2026-07-20</span> <strong>agents-squads[bot]</strong>: fix(dispatch): root runs dispatched from a Claude Code session at sess_&lt;session id&gt; (#1182)<br><span class="stat">2 files changed, 26 insertions(+), 1 deletions(-)</span></li>
+        <li><code>a67f0c0a</code> <span class="date">2026-07-20</span> <strong>agents-squads[bot]</strong>: fix(stream-json): keep message.model when the usage block is empty — GLM lanes no longer reconcile as model=unknown (#1180)<br><span class="stat">2 files changed, 58 insertions(+), 3 deletions(-)</span></li>
+        <li><code>93ec76bc</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: feat(harness): opencode fallback harness with full observability parity (#1177) (#1178)<br><span class="stat">8 files changed, 643 insertions(+), 35 deletions(-)</span></li>
+        <li><code>151979fe</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(observability): provider parity — glm/deepseek/any harness lane gets full exec-events, model, cost (#1175) (#1176)<br><span class="stat">5 files changed, 181 insertions(+), 65 deletions(-)</span></li>
+        <li><code>7c6a8a2f</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(inbox): goal-achieved detection is status-field-driven (#1174)<br><span class="stat">2 files changed, 271 insertions(+), 12 deletions(-)</span></li>
+        <li><code>0a19be42</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(routing): explicit &#39;repo X&#39; marker beats issue-ref order (#1121) (#1173)<br><span class="stat">2 files changed, 45 insertions(+), 0 deletions(-)</span></li>
+        <li><code>5d7bb2b0</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(lanes): exec-redirect the whole detached wrapper into the lane log (#1135) (#1172)<br><span class="stat">2 files changed, 24 insertions(+), 1 deletions(-)</span></li>
+        <li><code>a6542c19</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(memory): validate path segments before any mkdir/write (#1045) (#1171)<br><span class="stat">2 files changed, 80 insertions(+), 4 deletions(-)</span></li>
+        <li><code>572b36d6</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(spawn): fail loud at dispatch when bot mint fails and the agent&#39;s tools grant gh (#1150) (#1169)<br><span class="stat">2 files changed, 44 insertions(+), 1 deletions(-)</span></li>
+        <li><code>a82c099a</code> <span class="date">2026-07-19</span> <strong>agents-squads[bot]</strong>: fix(lanes): worktree isolation becomes mechanical — guard hook + fail-loud spawn (#1166, #1153) (#1168)<br><span class="stat">4 files changed, 311 insertions(+), 11 deletions(-)</span></li>
+        <li><code>eb2f1802</code> <span class="date">2026-07-18</span> <strong>agents-squads[bot]</strong>: feat(ledger): populate run brief — lanes from --task, sess_* from first user message (#1165) (#1167)<br><span class="stat">5 files changed, 167 insertions(+), 3 deletions(-)</span></li>
+        <li><code>9e5039e8</code> <span class="date">2026-07-18</span> <strong>agents-squads[bot]</strong>: feat(parser): stream-json parser hardening — salvaged lane work for #1134 (#1164)<br><span class="stat">5 files changed, 484 insertions(+), 52 deletions(-)</span></li>
+        <li><code>490ed472</code> <span class="date">2026-07-17</span> <strong>agents-squads[bot]</strong>: feat(providers): deepseek runs the claude harness; stream-json lanes emit exec-events live (#1163)<br><span class="stat">6 files changed, 192 insertions(+), 55 deletions(-)</span></li>
+        <li><code>5588adea</code> <span class="date">2026-07-17</span> <strong>agents-squads[bot]</strong>: feat(exec-events): best-effort batched POST of run step-events to the connected API (#1161)<br><span class="stat">5 files changed, 220 insertions(+), 6 deletions(-)</span></li>
+        <li><code>2059555f</code> <span class="date">2026-07-17</span> <strong>agents-squads[bot]</strong>: fix(execution-engine): log spawn failures for background lanes (#1157) (#1162)<br><span class="stat">1 files changed, 129 insertions(+), 2 deletions(-)</span></li>
+      </ul>
+
+  <h2 id="cost-detail">Cost detail</h2>
+  <h3>By model</h3>
+  <table>
+    <thead><tr><th>Model</th><th class="num">Runs</th><th class="num">Cost (USD)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><em>no runs</em></td>
+        <td>0</td>
+        <td>$0.00</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3>By squad</h3>
+  <table>
+    <thead><tr><th>Squad</th><th class="num">Runs</th><th class="num">Cost (USD)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><em>no runs</em></td>
+        <td>0</td>
+        <td>$0.00</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="completeness">Data completeness</h2>
+  <table>
+    <thead><tr><th>Source</th><th>Present</th><th class="num">Records in period</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>executions.jsonl</td>
+        <td>no</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>reviewed.jsonl</td>
+        <td>yes</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>git log</td>
+        <td>yes</td>
+        <td>27</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="footer">Every figure above traces to a record in these sources. Empty sections mean the source had no records for this period — not that data was inferred.</p>
+</body>
+</html>

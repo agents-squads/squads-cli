@@ -109,6 +109,7 @@ squads obs cost                # Spend summary by squad and model
 squads cost                    # Cost summary (today, week, by squad)
 squads budget <squad>          # Pre-flight budget validation for a squad
 squads usage                   # Local cost/token usage (sliding window)
+squads report --for auditor    # Auditor evidence pack: runs, decisions, diffs, cost (md/html)
 squads history                 # Recent agent execution history
 squads scoreboard              # Compare models/executors by quality per cost
 ```
@@ -120,6 +121,7 @@ squads scoreboard              # Compare models/executors by quality per cost
 | `obs cost` | `--json` |
 | `cost` | `-s, --squad`, `--json` |
 | `usage` | `-w, --window <hours>`, `--all-claude`, `--json` |
+| `report` | `--for <audience>`, `--period <7d\|30d\|YYYY-MM-DD..YYYY-MM-DD>`, `--format <md\|html>`, `--out <path>` |
 | `history` | `-d, --days`, `-s, --squad`, `-v, --verbose`, `-j, --json` |
 | `scoreboard` | `--json`, `--days <n>`, `--resolve` |
 
