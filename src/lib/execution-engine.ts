@@ -1878,6 +1878,16 @@ export async function executeWithProvider(
         // Token/cost figures come from the provider's own output when parseable.
         const startMs = options.startMs || timestamp;
         const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        // Model attribution for stream-json providers (#937): the provider's
+        // own output carries the real model name (e.g. deepseek-v4-flash).
+        // options.model may carry a leaked Claude model from frontmatter when
+        // an agent is re-laned (provider: deepseek, model: claude-sonnet-4).
+        // Use the stream's model for observability so cost analysis records
+        // the truth, not a leak. The spool reconcile path already does this
+        // for detached runs (spool.ts:283-290); foreground needs it here.
+        const streamModel = outputTail && cliConfig.streamJson
+          ? parseStreamJson(outputTail).usage.model
+          : undefined;
         // #936: providers can exit 0 after printing a fatal API error — detect
         // from output so the ledger never credits a failed run as completed.
         const fatal = detectProviderFatalError(outputTail);
@@ -1909,7 +1919,7 @@ export async function executeWithProvider(
           squad: squadName,
           agent: agentName,
           provider,
-          model: options.model || undefined,
+          model: streamModel || options.model || undefined,
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
           status: code === 0 && !fatal && !suspect ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
