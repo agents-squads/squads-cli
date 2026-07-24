@@ -17,6 +17,7 @@ coverage:
 
 comment:
   require_changes: true # comment only when coverage actually moves
+  behavior: once       # update the same comment, don't spam new ones per push
   layout: "condensed_header, diff, files"
   hide_project_coverage: false
 
