@@ -34,7 +34,6 @@
 | `squads memory sync` | Sync memory from git: pull remote changes, process commits, optionally push to Postgres |
 | `squads memory search <query>` | Search stored conversations (requires authentication: squads login) |
 | `squads memory extract` | Extract memories from recent conversations into Engram |
-| `squads login` | Log in to Squads (Pro & Enterprise) |
 | `squads logout` | Log out from Squads |
 | `squads whoami` | Show current logged in user |
 | `squads contract validate` | Derive + validate every agent contract; non-zero exit on any violation |
