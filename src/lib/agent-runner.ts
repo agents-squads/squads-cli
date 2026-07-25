@@ -42,6 +42,12 @@ import {
 } from './execution-engine.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
+  snapshotAgentMemory,
+  computeMemoryDelta,
+  formatMemoryDeltaLine,
+  agentMemoryPath,
+} from './memory-delta.js';
+import {
   type ContextRole,
   type ContextStats,
   parseAgentFrontmatter,
@@ -326,6 +332,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
     ? await checkClaudeCliAvailable()
     : isProviderCLIAvailable(provider);
 
+  // #693: snapshot agent memory before execution so we can report a growth
+  // delta ("+N patterns learned") once the run completes.
+  const memoryBefore = snapshotAgentMemory(squadName, agentName);
+
   if (options.execute && cliAvailable) {
     const cliConfig = getCLIConfig(provider);
     const cliName = cliConfig?.displayName || provider;
@@ -416,6 +426,12 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
           writeLine(`  ${colors.green}Run completed${RESET} — ${squadName}/${agentName} (${formatRunDuration(Date.now() - startMs)})`);
+          // #693: show how much the agent's memory grew this run.
+          const memoryAfter = snapshotAgentMemory(squadName, agentName);
+          if (memoryAfter.exists) {
+            const delta = computeMemoryDelta(memoryBefore, memoryAfter);
+            writeLine(`  ${colors.dim}${formatMemoryDeltaLine(delta, agentMemoryPath(squadName, agentName))}${RESET}`);
+          }
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
           writeLine(`  ${colors.green}Run started${RESET} — ${squadName}/${agentName} (background)`);
