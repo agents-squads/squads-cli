@@ -126,6 +126,48 @@ describe('glm lane (#926 — z.ai Anthropic-compatible endpoint via claude CLI)'
   });
 });
 
+describe('kimi lane (Moonshot Anthropic-compatible endpoint via claude CLI)', () => {
+  afterEach(() => {
+    delete process.env.KIMI_API_KEY;
+    delete process.env.KIMI_BASE_URL;
+    delete process.env.KIMI_MODEL;
+  });
+
+  it('delegates to the claude CLI in non-interactive print mode with a stream-json argv', () => {
+    expect(LLM_CLIS.kimi.command).toBe('claude');
+    expect(LLM_CLIS.kimi.streamJson).toBe(true);
+    const args = LLM_CLIS.kimi.buildArgs('do the thing', { allowedTools: ['Read', 'Edit'] });
+    expect(args[0]).toBe('--print');
+    expect(args).toContain('stream-json');
+    expect(args).toContain('--allowedTools');
+    expect(args).toContain('Read');
+    expect(args[args.length - 1]).toBe('do the thing');
+  });
+
+  it('defaults to kimi-k3 and honors override precedence (opts > KIMI_MODEL)', () => {
+    expect(LLM_CLIS.kimi.buildArgs('hi')).toContain('kimi-k3');
+    process.env.KIMI_MODEL = 'kimi-k2.7-code';
+    expect(LLM_CLIS.kimi.buildArgs('hi')).toContain('kimi-k2.7-code');
+    expect(LLM_CLIS.kimi.buildArgs('hi', { model: 'kimi-k3' })).toContain('kimi-k3');
+  });
+
+  it('maps KIMI_API_KEY to ANTHROPIC_AUTH_TOKEN and removes shadowing vars', () => {
+    process.env.KIMI_API_KEY = 'moonshot-test-key';
+    const env = LLM_CLIS.kimi.env!();
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.moonshot.ai/anthropic');
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('moonshot-test-key');
+    // undefined = the runner must DELETE these, or an inherited ANTHROPIC_API_KEY
+    // silently routes the Kimi run to Anthropic instead.
+    expect(env).toHaveProperty('ANTHROPIC_API_KEY', undefined);
+    expect(env).toHaveProperty('ANTHROPIC_MODEL', undefined);
+  });
+
+  it('honors KIMI_BASE_URL override', () => {
+    process.env.KIMI_BASE_URL = 'https://proxy.example/anthropic';
+    expect(LLM_CLIS.kimi.env!().ANTHROPIC_BASE_URL).toBe('https://proxy.example/anthropic');
+  });
+});
+
 describe('opencode lane (#1177 — fallback harness, `opencode run --format json`)', () => {
   it('is registered in LLM_CLIS with the right identity', () => {
     expect(LLM_CLIS.opencode.provider).toBe('opencode');
