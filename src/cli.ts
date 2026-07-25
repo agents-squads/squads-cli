@@ -630,6 +630,19 @@ program
     return usageCommand(options);
   });
 
+// Report command — auditor evidence pack from executions.jsonl + reviewed.jsonl + git log (#1207)
+program
+  .command('report')
+  .description('Generate an evidence pack from local observability (default: auditor)')
+  .option('--for <audience>', 'Report audience (currently supported: auditor)')
+  .option('--period <period>', 'Time window: Nd (e.g. 30d) or YYYY-MM-DD..YYYY-MM-DD', '30d')
+  .option('--format <format>', 'Output format: md or html', 'md')
+  .option('--out <path>', 'Write to <path> (default: stdout for md, .agents/reports/ for html). Use "-" for stdout.')
+  .action(async (options) => {
+    const { reportCommand } = await import('./commands/report.js');
+    return reportCommand(options);
+  });
+
 // Health command - quick infrastructure check
 program
   .command('health')
