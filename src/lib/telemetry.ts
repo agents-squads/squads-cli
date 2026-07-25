@@ -16,7 +16,16 @@ interface TelemetryConfig {
   enabled: boolean;
   anonymousId: string;
   firstRun: string;
+  /** GA4 session id (epoch seconds, the form GA4 expects). Rolls after inactivity. */
+  sessionId?: string;
+  /** Epoch ms of the last flushed event — used to expire the session. */
+  lastEventAt?: number;
+  /** Whether `first_open` has been sent for this anonymousId. */
+  firstOpenSent?: boolean;
 }
+
+/** GA4 closes a session after 30 minutes of inactivity. */
+const SESSION_WINDOW_MS = 30 * 60 * 1000;
 
 const TELEMETRY_DIR = join(homedir(), '.squads-cli');
 const CONFIG_PATH = join(TELEMETRY_DIR, 'telemetry.json');
@@ -128,6 +137,45 @@ function getConfig(): TelemetryConfig {
 function saveConfig(config: TelemetryConfig): void {
   ensureDir();
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Resolve the GA4 session for this flush.
+ *
+ * GA4's Measurement Protocol will not construct sessions unless every event
+ * carries a `session_id` param — without it the property reports `sessions=0`
+ * and every session-scoped report (funnels, paths, retention, new-vs-returning)
+ * is empty regardless of how many events arrive (#1214).
+ *
+ * A CLI has no natural session, so we mirror GA4's own rule: reuse the stored
+ * id while commands keep arriving, and start a new one after 30 minutes of
+ * inactivity. Persisting it means consecutive commands group into one session
+ * instead of each invocation looking like a separate visit.
+ *
+ * Also reports whether `first_open` still needs to be sent for this install —
+ * GA4 derives `newUsers` from that event alone.
+ */
+export function resolveSession(
+  config: TelemetryConfig,
+  now: number = Date.now()
+): { sessionId: string; needsFirstOpen: boolean } {
+  const expired = !config.lastEventAt || now - config.lastEventAt > SESSION_WINDOW_MS;
+  const sessionId = expired || !config.sessionId
+    ? String(Math.floor(now / 1000))
+    : config.sessionId;
+  const needsFirstOpen = !config.firstOpenSent;
+
+  config.sessionId = sessionId;
+  config.lastEventAt = now;
+  config.firstOpenSent = true;
+  try {
+    saveConfig(config);
+  } catch {
+    // Persisting is best-effort; a fresh session id per process is still
+    // better than none at all.
+  }
+
+  return { sessionId, needsFirstOpen };
 }
 
 /**
@@ -252,11 +300,19 @@ export async function flushEvents(): Promise<void> {
   flushScheduled = false;
 
   const config = getConfig();
+  const { sessionId, needsFirstOpen } = resolveSession(config);
   try {
     // GA4 MP accepts ≤25 events per request; names snake_case ≤40 chars;
     // params must be scalars with names ≤40 / values ≤100 chars.
-    for (let i = 0; i < batch.length; i += 25) {
-      const events = batch.slice(i, i + 25).map(toMpEvent);
+    // `first_open` leads the first batch this install ever sends — GA4 derives
+    // newUsers from it and will otherwise report 0 forever.
+    const queued = batch.map((e) => toMpEvent(e, sessionId));
+    const all = needsFirstOpen
+      ? [{ name: 'first_open', params: { engagement_time_msec: 1, session_id: sessionId } }, ...queued]
+      : queued;
+
+    for (let i = 0; i < all.length; i += 25) {
+      const events = all.slice(i, i + 25);
       await fetch(TELEMETRY_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -271,9 +327,13 @@ export async function flushEvents(): Promise<void> {
 }
 
 /** GA4 Measurement Protocol shape: snake_case name ≤40 chars, scalar params. */
-export function toMpEvent(e: TelemetryEvent): { name: string; params: Record<string, string | number> } {
+export function toMpEvent(
+  e: TelemetryEvent,
+  sessionId?: string
+): { name: string; params: Record<string, string | number> } {
   const name = e.event.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').slice(0, 40);
   const params: Record<string, string | number> = { engagement_time_msec: 1 };
+  if (sessionId) params.session_id = sessionId;
   for (const [k, v] of Object.entries(e.properties || {})) {
     if (v === undefined || v === null) continue;
     const key = k.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
