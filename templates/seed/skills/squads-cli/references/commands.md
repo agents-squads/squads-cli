@@ -18,6 +18,7 @@
 | `squads status [squad]` | Show squad status and state |
 | `squads board` | Day-scoped execution board: tiles, live runs, executions, incoming queue |
 | `squads usage` | Show local cost/token usage (today, rolling window, by squad) |
+| `squads report` | Generate an evidence pack from local observability (default: auditor) |
 | `squads doctor` | Check local tools, auth, and project readiness |
 | `squads goal set <squad> <description>` | Set a goal for a squad |
 | `squads goal list [squad]` | List goals for squad(s) |

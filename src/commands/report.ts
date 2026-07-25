@@ -34,7 +34,7 @@ type Audience = (typeof SUPPORTED_AUDIENCES)[number];
 
 function periodFileLabel(period: string): string {
   // `30d` / `7d` are already path-safe; a range's `..` is too.
-  return (period || '30d').replace(/[^\w.\-]/g, '_');
+  return (period || '30d').replace(/[^\w.-]/g, '_');
 }
 
 /** Default output path for html (and explicit md --out writes a file too). */
