@@ -202,8 +202,8 @@ describe('computeScorecard', () => {
 
   it('calculates merge rate correctly', () => {
     const records = [
-      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
-      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsOpen: 1 }) }),
+      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }), settled: true }),
+      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsOpen: 1 }), settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -214,8 +214,8 @@ describe('computeScorecard', () => {
 
   it('calculates waste rate correctly', () => {
     const records = [
-      makeRecord({ executionId: 'e1' }), // No artifacts = waste
-      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 } }),
+      makeRecord({ executionId: 'e1', settled: true }), // No artifacts = waste
+      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -225,7 +225,7 @@ describe('computeScorecard', () => {
 
   it('calculates cost per outcome', () => {
     const records = [
-      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
+      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }), settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -235,7 +235,7 @@ describe('computeScorecard', () => {
 
   it('handles 30d period', () => {
     const oldDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-    const record = makeRecord({ completedAt: oldDate });
+    const record = makeRecord({ completedAt: oldDate, settled: true });
     setupStore([record]);
     const result = computeScorecard('cli', 'issue-solver', '30d');
     expect(result).not.toBeNull(); // 15 days ago is within 30d window
@@ -254,9 +254,9 @@ describe('computeAllScorecards', () => {
 
   it('groups by unique squad/agent', () => {
     const records = [
-      makeRecord({ executionId: 'e1', squad: 'cli', agent: 'issue-solver' }),
-      makeRecord({ executionId: 'e2', squad: 'cli', agent: 'code-eval' }),
-      makeRecord({ executionId: 'e3', squad: 'cli', agent: 'issue-solver' }),
+      makeRecord({ executionId: 'e1', squad: 'cli', agent: 'issue-solver', settled: true }),
+      makeRecord({ executionId: 'e2', squad: 'cli', agent: 'code-eval', settled: true }),
+      makeRecord({ executionId: 'e3', squad: 'cli', agent: 'issue-solver', settled: true }),
     ];
     setupStore(records);
     const result = computeAllScorecards('7d');
@@ -266,7 +266,7 @@ describe('computeAllScorecards', () => {
   });
 
   it('persists scorecards to store', () => {
-    const records = [makeRecord({ executionId: 'e1' })];
+    const records = [makeRecord({ executionId: 'e1', settled: true })];
     setupStore(records);
     computeAllScorecards();
     expect(mockWriteFileSync).toHaveBeenCalled();
@@ -320,22 +320,24 @@ describe('getAgentQualityScore', () => {
 // ── getOutcomeScoreModifier ──────────────────────────────────────────
 
 describe('getOutcomeScoreModifier', () => {
-  it('returns 0 when no scorecard data', () => {
+  it('returns 0 modifier when no scorecard data', () => {
     setupStore([], []);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBe(0);
+    expect(result.modifier).toBe(0);
+    expect(result.reason).toBe('No scorecard data');
   });
 
-  it('returns 0 when fewer than 3 executions', () => {
+  it('returns 0 modifier when fewer than 5 executions', () => {
     const card: AgentScorecard = {
       squad: 'cli', agent: 'issue-solver', period: '7d',
-      executions: 2, wasteRate: 0.8, mergeRate: 0.1,
+      executions: 4, wasteRate: 0.8, mergeRate: 0.1,
       issueResolutionRate: 0, ciPassRate: 0,
       avgReviewCycleHours: 0, costPerOutcome: 10,
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBe(0);
+    expect(result.modifier).toBe(0);
+    expect(result.reason).toContain('Insufficient data');
   });
 
   it('applies waste rate penalty when > 50%', () => {
@@ -347,10 +349,11 @@ describe('getOutcomeScoreModifier', () => {
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBeLessThan(0); // penalty applied
+    expect(result.modifier).toBeLessThan(0); // penalty applied
+    expect(result.reason).toContain('High waste');
   });
 
-  it('applies bonus when high merge rate and issue resolution rate', () => {
+  it('applies bonus when high merge rate and CI pass rate', () => {
     const card: AgentScorecard = {
       squad: 'cli', agent: 'issue-solver', period: '7d',
       executions: 5, wasteRate: 0.1, mergeRate: 0.8,
@@ -359,7 +362,58 @@ describe('getOutcomeScoreModifier', () => {
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBeGreaterThan(0); // bonus applied
+    expect(result.modifier).toBeGreaterThan(0); // bonus applied
+    expect(result.reason).toContain('Strong performance');
+  });
+
+  it('applies graduated waste penalties', () => {
+    // Test >0.35 tier (-15)
+    const card1: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.4, mergeRate: 0.6,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card1]);
+    const result1 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result1.modifier).toBe(-15);
+
+    // Test >0.5 tier (-30)
+    const card2: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.6, mergeRate: 0.4,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card2]);
+    const result2 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result2.modifier).toBeLessThanOrEqual(-30); // -30 or less due to low merge rate
+  });
+
+  it('applies graduated merge penalties', () => {
+    // Test <0.5 tier (-10)
+    const card1: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.2, mergeRate: 0.4,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card1]);
+    const result1 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result1.modifier).toBe(-10);
+    expect(result1.reason).toContain('Subpar merge rate');
+
+    // Test <0.25 tier (-20)
+    const card2: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.2, mergeRate: 0.2,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card2]);
+    const result2 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result2.modifier).toBe(-20);
+    expect(result2.reason).toContain('Low merge rate');
   });
 });
 

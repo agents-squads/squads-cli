@@ -341,6 +341,8 @@ export function pollOutcomes(ghEnv?: Record<string, string>): {
 
 /**
  * Compute scorecard for an agent over a time period.
+ * Filters to SETTLED records only — agents must have real outcomes,
+ * not just runs that never completed artifact polling.
  */
 export function computeScorecard(
   squad: string,
@@ -353,6 +355,7 @@ export function computeScorecard(
 
   const records = data.records.filter(
     r => r.squad === squad && r.agent === agent &&
+         r.settled &&
          new Date(r.completedAt).getTime() > cutoff,
   );
 
@@ -439,6 +442,79 @@ export function computeAllScorecards(period: '7d' | '30d' = '7d'): AgentScorecar
  */
 export function getScorecards(): AgentScorecard[] {
   return loadOutcomes().scorecards;
+}
+
+/**
+ * Reconcile unsettled records via git state.
+ * For records that never settled (branch pushed but no PR/PR never closes),
+ * use branch naming and git merge-base to determine merged/rejected/abandoned.
+ */
+export function reconcileUnsettledRecords(
+  repo: string,
+  ghEnv?: Record<string, string>,
+): { settled: number; merged: number; rejected: number; abandoned: number } {
+  const data = loadOutcomes();
+  const unsettled = data.records.filter(r => !r.settled && r.artifacts.prsCreated.length === 0);
+
+  if (unsettled.length === 0) {
+    return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  }
+
+  let settled = 0, merged = 0, rejected = 0, abandoned = 0;
+
+  for (const record of unsettled) {
+    // Branch naming pattern: agent/{squad}/{agent}/{timestamp}
+    // Extract from executionId format: daemon_{squad}_{agent}_{timestamp}
+    const match = record.executionId.match(/daemon_([^_]+)_([^_]+)_(\d+)/);
+    if (!match) continue;
+
+    const [, squad, agent, timestamp] = match;
+    const branchName = `agent/${squad}/${agent}/${timestamp}`;
+
+    // Check if branch exists
+    const combinedEnv = ghEnv ? { ...process.env, ...ghEnv } as Record<string, string> : undefined;
+    const branchExists = ghExec(
+      `git ls-remote --heads origin ${branchName}`,
+      combinedEnv,
+    );
+
+    if (!branchExists) {
+      // Branch deleted — likely merged (squash merges delete the branch)
+      // Verify by checking if commit is in main branch
+      const isMerged = ghExec(
+        `git merge-base --is-ancestor origin/${branchName} origin/main 2>/dev/null && echo "yes"`,
+        combinedEnv,
+      );
+
+      if (isMerged?.includes('yes')) {
+        record.outcomes.prsMerged = 1; // No PR, but work landed
+        record.settled = true;
+        settled++;
+        merged++;
+      } else {
+        // Branch deleted without merge — rejected or abandoned
+        const age = Date.now() - new Date(record.completedAt).getTime();
+        if (age > 7 * 24 * 60 * 60 * 1000) {
+          record.settled = true;
+          settled++;
+          abandoned++;
+        }
+      }
+    } else {
+      // Branch still exists — check if stale (>30 days)
+      const age = Date.now() - new Date(record.completedAt).getTime();
+      if (age > 30 * 24 * 60 * 60 * 1000) {
+        record.settled = true;
+        settled++;
+        abandoned++;
+      }
+    }
+
+    record.lastPolledAt = new Date().toISOString();
+  }
+
+  saveOutcomes(data);
+  return { settled, merged, rejected, abandoned };
 }
 
 /**
@@ -539,36 +615,77 @@ export function getAgentQualityScore(squad: string, agent: string): number | nul
 
 /**
  * Apply outcome-based score modifiers to daemon squad scoring.
- * Returns a score adjustment (positive or negative).
+ * Returns a score adjustment (positive or negative) and the reason.
+ *
+ * Graduated tiers with small-n guard (minimum 5 settled runs for modifiers).
  */
-export function getOutcomeScoreModifier(squad: string, agent: string): number {
+export function getOutcomeScoreModifier(squad: string, agent: string): {
+  modifier: number;
+  reason: string;
+} {
   const scorecards = getScorecards();
   const card = scorecards.find(s => s.squad === squad && s.agent === agent);
 
-  // Minimum data threshold: need 3+ executions for modifiers
-  if (!card || card.executions < 3) return 0;
+  // Minimum data threshold: need 5+ settled executions for modifiers
+  if (!card || card.executions < 5) {
+    return {
+      modifier: 0,
+      reason: card?.executions
+        ? `Insufficient data (${card.executions} settled runs, need 5+)`
+        : 'No scorecard data',
+    };
+  }
 
+  const reasons: string[] = [];
   let modifier = 0;
 
-  // High waste rate penalty
-  if (card.wasteRate > 0.5) modifier -= 30;
+  // Graduated waste penalty
+  if (card.wasteRate > 0.5) {
+    modifier -= 30;
+    reasons.push(`High waste (${(card.wasteRate * 100).toFixed(0)}%): -30`);
+  } else if (card.wasteRate > 0.35) {
+    modifier -= 15;
+    reasons.push(`Elevated waste (${(card.wasteRate * 100).toFixed(0)}%): -15`);
+  }
 
-  // Low merge rate penalty
-  if (card.mergeRate < 0.3 && card.executions >= 3) modifier -= 20;
+  // Graduated merge penalty
+  if (card.mergeRate < 0.25) {
+    modifier -= 20;
+    reasons.push(`Low merge rate (${(card.mergeRate * 100).toFixed(0)}%): -20`);
+  } else if (card.mergeRate < 0.5) {
+    modifier -= 10;
+    reasons.push(`Subpar merge rate (${(card.mergeRate * 100).toFixed(0)}%): -10`);
+  }
 
-  // High performance bonus
-  if (card.mergeRate > 0.7 && card.issueResolutionRate > 0.5) modifier += 15;
+  // High performance bonus (using ciPassRate, not issueResolutionRate)
+  if (card.mergeRate > 0.7 && card.ciPassRate > 0.5) {
+    modifier += 15;
+    reasons.push(`Strong performance (${(card.mergeRate * 100).toFixed(0)}% merge, ${(card.ciPassRate * 100).toFixed(0)}% CI pass): +15`);
+  }
 
   // Expensive + low-scoring penalty
-  if (card.costPerOutcome > 5) modifier -= 10;
+  if (card.costPerOutcome > 5) {
+    modifier -= 10;
+    reasons.push(`High cost per outcome ($${card.costPerOutcome.toFixed(2)}): -10`);
+  }
 
   // Quality grade modifier (heuristic grading)
   const qualityScore = getAgentQualityScore(squad, agent);
   if (qualityScore !== null) {
-    if (qualityScore >= 3.0) modifier += 10;       // A/B average → boost
-    else if (qualityScore < 1.5) modifier -= 25;    // D/F average → strong deprioritize
-    else if (qualityScore < 2.0) modifier -= 15;    // C/D average → deprioritize
+    if (qualityScore >= 3.0) {
+      modifier += 10;
+      reasons.push(`Strong quality grades (A/B avg): +10`);
+    } else if (qualityScore < 1.5) {
+      modifier -= 25;
+      reasons.push(`Poor quality grades (D/F avg): -25`);
+    } else if (qualityScore < 2.0) {
+      modifier -= 15;
+      reasons.push(`Weak quality grades (C/D avg): -15`);
+    }
   }
 
-  return modifier;
+  return {
+    modifier,
+    reason: reasons.length > 0 ? reasons.join('; ') : 'No modifiers applied',
+  };
 }

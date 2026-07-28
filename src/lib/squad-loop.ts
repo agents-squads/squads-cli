@@ -392,10 +392,10 @@ export function scoreSquads(
         score -= 10 * failures;
       }
 
-      const outcomeModifier = getOutcomeScoreModifier(squadName, agentForStaleness);
-      if (outcomeModifier !== 0) {
-        score += outcomeModifier;
-        reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
+      const outcomeResult = getOutcomeScoreModifier(squadName, agentForStaleness);
+      if (outcomeResult.modifier !== 0) {
+        score += outcomeResult.modifier;
+        reason += ` (outcome: ${outcomeResult.modifier > 0 ? '+' : ''}${outcomeResult.modifier}: ${outcomeResult.reason})`;
       }
 
       if (score > 0 && (issues.length > 0 || !repo)) {
