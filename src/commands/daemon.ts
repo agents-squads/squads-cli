@@ -178,8 +178,8 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   const squadRepos = getSquadRepos();
 
   // Reconcile unsettled records via git state (branches with no PRs)
-  let totalReconciled = { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
-  for (const [squad, repo] of Object.entries(squadRepos)) {
+  const totalReconciled = { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  for (const repo of Object.values(squadRepos)) {
     const reconciled = reconcileUnsettledRecords(repo, botGhEnv);
     totalReconciled.settled += reconciled.settled;
     totalReconciled.merged += reconciled.merged;

@@ -471,7 +471,8 @@ export function reconcileUnsettledRecords(
 
   const MAX_CALLS = 20;
   let apiCalls = 0;
-  let settled = 0, merged = 0, rejected = 0, abandoned = 0;
+  let settled = 0, merged = 0, abandoned = 0;
+  const rejected = 0; // no-PR records resolve merged|abandoned only; rejected needs PR state (pollOutcomes' job)
 
   // Reachability guard: ghExec collapses all failures to null, so verify the
   // repo responds before trusting per-branch 404s — otherwise an API/auth
