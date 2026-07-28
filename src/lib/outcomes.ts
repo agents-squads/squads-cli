@@ -447,7 +447,16 @@ export function getScorecards(): AgentScorecard[] {
 /**
  * Reconcile unsettled records via git state.
  * For records that never settled (branch pushed but no PR/PR never closes),
- * use branch naming and git merge-base to determine merged/rejected/abandoned.
+ * resolve merged/rejected/abandoned from branch + compare state.
+ *
+ * All checks go through the GitHub API (gh api) with the repo slug — never
+ * local git: the daemon's cwd is arbitrary, and local clones may not have the
+ * refs. Branch naming: agent/{squad}/{agent}-{startedAtMs} (DASH before the
+ * epoch — execution-engine.ts stamps it this way; the epoch is embedded in
+ * executionId as daemon_{squad}_{agent}_{ts}).
+ *
+ * Rate-limited to MAX_CALLS API calls per cycle; unprocessed records wait
+ * for the next cycle.
  */
 export function reconcileUnsettledRecords(
   repo: string,
@@ -460,50 +469,64 @@ export function reconcileUnsettledRecords(
     return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
   }
 
+  const MAX_CALLS = 20;
+  let apiCalls = 0;
   let settled = 0, merged = 0, rejected = 0, abandoned = 0;
 
+  // Reachability guard: ghExec collapses all failures to null, so verify the
+  // repo responds before trusting per-branch 404s — otherwise an API/auth
+  // outage reads as "every branch deleted" and misclassifies records as
+  // abandoned. One call per cycle buys a clean discriminator.
+  if (!ghExec(`gh api repos/${repo} --jq .full_name`, ghEnv)) {
+    return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  }
+
   for (const record of unsettled) {
-    // Branch naming pattern: agent/{squad}/{agent}/{timestamp}
-    // Extract from executionId format: daemon_{squad}_{agent}_{timestamp}
+    if (apiCalls >= MAX_CALLS) break;
     const match = record.executionId.match(/daemon_([^_]+)_([^_]+)_(\d+)/);
     if (!match) continue;
 
     const [, squad, agent, timestamp] = match;
-    const branchName = `agent/${squad}/${agent}/${timestamp}`;
+    const branchName = `agent/${squad}/${agent}-${timestamp}`;
+    const age = Date.now() - new Date(record.completedAt).getTime();
 
-    // Check if branch exists
-    const combinedEnv = ghEnv ? { ...process.env, ...ghEnv } as Record<string, string> : undefined;
-    const branchExists = ghExec(
-      `git ls-remote --heads origin ${branchName}`,
-      combinedEnv,
+    // Branch still on the remote? (git refs API takes the full path after
+    // heads/, slashes included; null on error OR 404)
+    apiCalls++;
+    const refRaw = ghExec(
+      `gh api repos/${repo}/git/refs/heads/${branchName} --jq .ref`,
+      ghEnv,
     );
 
-    if (!branchExists) {
-      // Branch deleted — likely merged (squash merges delete the branch)
-      // Verify by checking if commit is in main branch
-      const isMerged = ghExec(
-        `git merge-base --is-ancestor origin/${branchName} origin/main 2>/dev/null && echo "yes"`,
-        combinedEnv,
+    if (refRaw) {
+      // Branch exists. Did its commits land in the base anyway (hand-merge,
+      // squash without deleting)? Compare is the API merge-base: ahead_by 0
+      // means fully contained. Product repos branch from develop.
+      apiCalls++;
+      const cmp = ghExec(
+        `gh api repos/${repo}/compare/develop...${branchName} --jq .ahead_by`,
+        ghEnv,
+      ) ?? ghExec(
+        `gh api repos/${repo}/compare/main...${branchName} --jq .ahead_by`,
+        ghEnv,
       );
 
-      if (isMerged?.includes('yes')) {
-        record.outcomes.prsMerged = 1; // No PR, but work landed
+      if (cmp !== null && cmp.trim() === '0') {
+        record.outcomes.prsMerged = 1; // landed without a PR
         record.settled = true;
         settled++;
         merged++;
-      } else {
-        // Branch deleted without merge — rejected or abandoned
-        const age = Date.now() - new Date(record.completedAt).getTime();
-        if (age > 7 * 24 * 60 * 60 * 1000) {
-          record.settled = true;
-          settled++;
-          abandoned++;
-        }
+      } else if (age > 30 * 24 * 60 * 60 * 1000) {
+        record.settled = true;
+        settled++;
+        abandoned++;
       }
+      // else: branch in flight — leave unsettled, next cycle rechecks
     } else {
-      // Branch still exists — check if stale (>30 days)
-      const age = Date.now() - new Date(record.completedAt).getTime();
-      if (age > 30 * 24 * 60 * 60 * 1000) {
+      // No such branch: never pushed (run died first) or deleted. Without a
+      // PR there is no merge record to find, so a deleted no-PR branch is
+      // abandoned work — after a grace period for fetch lag and retries.
+      if (age > 7 * 24 * 60 * 60 * 1000) {
         record.settled = true;
         settled++;
         abandoned++;

@@ -40,6 +40,7 @@ import {
   getOutcomeScoreModifier,
   recordArtifacts,
   pollOutcomes,
+  reconcileUnsettledRecords,
   getScorecards,
   getOutcomeRecords,
   type OutcomeRecord,
@@ -560,6 +561,148 @@ describe('pollOutcomes', () => {
 
     const result = pollOutcomes();
     expect(result.settled).toBeGreaterThan(0); // aged out
+  });
+});
+
+// ── reconcileUnsettledRecords ───────────────────────────────────────
+
+describe('reconcileUnsettledRecords', () => {
+  const TS = '1785264541901';
+  const EXEC_ID = `daemon_cli_solver-lane-glm_${TS}`;
+  const DASH_BRANCH = `agent/cli/solver-lane-glm-${TS}`;
+  const recent = () => new Date().toISOString();
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  function makeGitRecord(completedAt: string) {
+    return makeRecord({
+      executionId: EXEC_ID,
+      completedAt,
+      artifacts: { prsCreated: [], issuesCreated: [], commits: 1 },
+      outcomes: makeOutcomes(),
+    });
+  }
+
+  // The store round-trips through JSON, so mutations land on parsed copies —
+  // assert against what saveOutcomes wrote, not the seed objects.
+  function savedRecords(): OutcomeRecord[] {
+    const calls = mockWriteFileSync.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return JSON.parse(calls[calls.length - 1][1] as string).records;
+  }
+
+  function mockApi(handlers: Record<string, string | Error>) {
+    mockExecSync.mockImplementation(((cmd: string) => {
+      for (const [frag, res] of Object.entries(handlers)) {
+        if (cmd.includes(frag)) {
+          if (res instanceof Error) throw res;
+          return res;
+        }
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    }) as never);
+  }
+
+  it('builds the branch name with a DASH before the epoch (regression)', () => {
+    setupStore([makeGitRecord(recent())]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      if (cmd.includes('--jq .full_name')) return 'owner/repo';
+      if (cmd.includes('git/refs/heads/')) return `refs/heads/${DASH_BRANCH}`;
+      if (cmd.includes('/compare/')) return '3';
+      throw new Error(`unexpected command: ${cmd}`);
+    }) as never);
+
+    reconcileUnsettledRecords('owner/repo');
+    const refCall = seen.find(c => c.includes('git/refs/heads/'));
+    expect(refCall).toContain(`heads/${DASH_BRANCH}`);
+    expect(refCall).not.toContain(`heads/agent/cli/solver-lane-glm/${TS}`);
+  });
+
+  it('marks merged when compare shows ahead_by 0 (landed without PR)', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '0',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.merged).toBe(1);
+    const saved = savedRecords();
+    expect(saved[0].settled).toBe(true);
+    expect(saved[0].outcomes.prsMerged).toBe(1);
+  });
+
+  it('leaves a recent in-flight branch unsettled', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '3',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
+  });
+
+  it('marks a stale (>30d) unlanded branch abandoned', () => {
+    setupStore([makeGitRecord(daysAgo(31))]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '3',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.abandoned).toBe(1);
+    expect(savedRecords()[0].settled).toBe(true);
+  });
+
+  it('marks a missing branch abandoned after the 7d grace period', () => {
+    setupStore([makeGitRecord(daysAgo(8))]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': new Error('Not Found'),
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.abandoned).toBe(1);
+    expect(savedRecords()[0].settled).toBe(true);
+  });
+
+  it('leaves a recently-missing branch unsettled (fetch-lag grace)', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': new Error('Not Found'),
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
+  });
+
+  it('skips reconciliation entirely when the repo is unreachable', () => {
+    const record = makeGitRecord(daysAgo(60));
+    setupStore([record]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      throw new Error('API down');
+    }) as never);
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result).toEqual({ settled: 0, merged: 0, rejected: 0, abandoned: 0 });
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(seen.filter(c => c.includes('git/refs/heads/'))).toHaveLength(0);
+  });
+
+  it('skips records whose executionId is not a daemon id', () => {
+    setupStore([makeRecord({
+      executionId: 'exec_manual_1',
+      artifacts: { prsCreated: [], issuesCreated: [], commits: 0 },
+      outcomes: makeOutcomes(),
+    })]);
+    mockApi({ '--jq .full_name': 'owner/repo' });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
   });
 });
 
