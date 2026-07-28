@@ -14,6 +14,7 @@ import {
   gradeExecution,
   pollOutcomes,
   computeAllScorecards,
+  reconcileUnsettledRecords,
 } from '../lib/outcomes.js';
 import {
   colors,
@@ -175,6 +176,20 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
   const squadRepos = getSquadRepos();
+
+  // Reconcile unsettled records via git state (branches with no PRs)
+  const totalReconciled = { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  for (const repo of Object.values(squadRepos)) {
+    const reconciled = reconcileUnsettledRecords(repo, botGhEnv);
+    totalReconciled.settled += reconciled.settled;
+    totalReconciled.merged += reconciled.merged;
+    totalReconciled.rejected += reconciled.rejected;
+    totalReconciled.abandoned += reconciled.abandoned;
+  }
+  if (totalReconciled.settled > 0) {
+    writeLine(`  ${colors.dim}Reconciled ${totalReconciled.settled} record(s) via git (${totalReconciled.merged} merged, ${totalReconciled.abandoned} abandoned)${RESET}`);
+  }
+
   const signals = scoreSquads(state, squadRepos, botGhEnv);
 
   if (signals.length === 0) {

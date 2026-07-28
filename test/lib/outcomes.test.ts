@@ -40,6 +40,7 @@ import {
   getOutcomeScoreModifier,
   recordArtifacts,
   pollOutcomes,
+  reconcileUnsettledRecords,
   getScorecards,
   getOutcomeRecords,
   type OutcomeRecord,
@@ -202,8 +203,8 @@ describe('computeScorecard', () => {
 
   it('calculates merge rate correctly', () => {
     const records = [
-      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
-      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsOpen: 1 }) }),
+      makeRecord({ executionId: 'e1', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }), settled: true }),
+      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 2 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsOpen: 1 }), settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -214,8 +215,8 @@ describe('computeScorecard', () => {
 
   it('calculates waste rate correctly', () => {
     const records = [
-      makeRecord({ executionId: 'e1' }), // No artifacts = waste
-      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 } }),
+      makeRecord({ executionId: 'e1', settled: true }), // No artifacts = waste
+      makeRecord({ executionId: 'e2', artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -225,7 +226,7 @@ describe('computeScorecard', () => {
 
   it('calculates cost per outcome', () => {
     const records = [
-      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }) }),
+      makeRecord({ executionId: 'e1', costUsd: 2.0, artifacts: { prsCreated: [{ repo: 'r', number: 1 }], issuesCreated: [], commits: 0 }, outcomes: makeOutcomes({ prsMerged: 1 }), settled: true }),
     ];
     setupStore(records);
     const result = computeScorecard('cli', 'issue-solver', '7d');
@@ -235,7 +236,7 @@ describe('computeScorecard', () => {
 
   it('handles 30d period', () => {
     const oldDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-    const record = makeRecord({ completedAt: oldDate });
+    const record = makeRecord({ completedAt: oldDate, settled: true });
     setupStore([record]);
     const result = computeScorecard('cli', 'issue-solver', '30d');
     expect(result).not.toBeNull(); // 15 days ago is within 30d window
@@ -254,9 +255,9 @@ describe('computeAllScorecards', () => {
 
   it('groups by unique squad/agent', () => {
     const records = [
-      makeRecord({ executionId: 'e1', squad: 'cli', agent: 'issue-solver' }),
-      makeRecord({ executionId: 'e2', squad: 'cli', agent: 'code-eval' }),
-      makeRecord({ executionId: 'e3', squad: 'cli', agent: 'issue-solver' }),
+      makeRecord({ executionId: 'e1', squad: 'cli', agent: 'issue-solver', settled: true }),
+      makeRecord({ executionId: 'e2', squad: 'cli', agent: 'code-eval', settled: true }),
+      makeRecord({ executionId: 'e3', squad: 'cli', agent: 'issue-solver', settled: true }),
     ];
     setupStore(records);
     const result = computeAllScorecards('7d');
@@ -266,7 +267,7 @@ describe('computeAllScorecards', () => {
   });
 
   it('persists scorecards to store', () => {
-    const records = [makeRecord({ executionId: 'e1' })];
+    const records = [makeRecord({ executionId: 'e1', settled: true })];
     setupStore(records);
     computeAllScorecards();
     expect(mockWriteFileSync).toHaveBeenCalled();
@@ -320,22 +321,24 @@ describe('getAgentQualityScore', () => {
 // ── getOutcomeScoreModifier ──────────────────────────────────────────
 
 describe('getOutcomeScoreModifier', () => {
-  it('returns 0 when no scorecard data', () => {
+  it('returns 0 modifier when no scorecard data', () => {
     setupStore([], []);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBe(0);
+    expect(result.modifier).toBe(0);
+    expect(result.reason).toBe('No scorecard data');
   });
 
-  it('returns 0 when fewer than 3 executions', () => {
+  it('returns 0 modifier when fewer than 5 executions', () => {
     const card: AgentScorecard = {
       squad: 'cli', agent: 'issue-solver', period: '7d',
-      executions: 2, wasteRate: 0.8, mergeRate: 0.1,
+      executions: 4, wasteRate: 0.8, mergeRate: 0.1,
       issueResolutionRate: 0, ciPassRate: 0,
       avgReviewCycleHours: 0, costPerOutcome: 10,
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBe(0);
+    expect(result.modifier).toBe(0);
+    expect(result.reason).toContain('Insufficient data');
   });
 
   it('applies waste rate penalty when > 50%', () => {
@@ -347,10 +350,11 @@ describe('getOutcomeScoreModifier', () => {
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBeLessThan(0); // penalty applied
+    expect(result.modifier).toBeLessThan(0); // penalty applied
+    expect(result.reason).toContain('High waste');
   });
 
-  it('applies bonus when high merge rate and issue resolution rate', () => {
+  it('applies bonus when high merge rate and CI pass rate', () => {
     const card: AgentScorecard = {
       squad: 'cli', agent: 'issue-solver', period: '7d',
       executions: 5, wasteRate: 0.1, mergeRate: 0.8,
@@ -359,7 +363,58 @@ describe('getOutcomeScoreModifier', () => {
     };
     setupStore([], [card]);
     const result = getOutcomeScoreModifier('cli', 'issue-solver');
-    expect(result).toBeGreaterThan(0); // bonus applied
+    expect(result.modifier).toBeGreaterThan(0); // bonus applied
+    expect(result.reason).toContain('Strong performance');
+  });
+
+  it('applies graduated waste penalties', () => {
+    // Test >0.35 tier (-15)
+    const card1: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.4, mergeRate: 0.6,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card1]);
+    const result1 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result1.modifier).toBe(-15);
+
+    // Test >0.5 tier (-30)
+    const card2: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.6, mergeRate: 0.4,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card2]);
+    const result2 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result2.modifier).toBeLessThanOrEqual(-30); // -30 or less due to low merge rate
+  });
+
+  it('applies graduated merge penalties', () => {
+    // Test <0.5 tier (-10)
+    const card1: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.2, mergeRate: 0.4,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card1]);
+    const result1 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result1.modifier).toBe(-10);
+    expect(result1.reason).toContain('Subpar merge rate');
+
+    // Test <0.25 tier (-20)
+    const card2: AgentScorecard = {
+      squad: 'cli', agent: 'issue-solver', period: '7d',
+      executions: 5, wasteRate: 0.2, mergeRate: 0.2,
+      issueResolutionRate: 0.5, ciPassRate: 0.5,
+      avgReviewCycleHours: 2, costPerOutcome: 1,
+    };
+    setupStore([], [card2]);
+    const result2 = getOutcomeScoreModifier('cli', 'issue-solver');
+    expect(result2.modifier).toBe(-20);
+    expect(result2.reason).toContain('Low merge rate');
   });
 });
 
@@ -506,6 +561,148 @@ describe('pollOutcomes', () => {
 
     const result = pollOutcomes();
     expect(result.settled).toBeGreaterThan(0); // aged out
+  });
+});
+
+// ── reconcileUnsettledRecords ───────────────────────────────────────
+
+describe('reconcileUnsettledRecords', () => {
+  const TS = '1785264541901';
+  const EXEC_ID = `daemon_cli_solver-lane-glm_${TS}`;
+  const DASH_BRANCH = `agent/cli/solver-lane-glm-${TS}`;
+  const recent = () => new Date().toISOString();
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  function makeGitRecord(completedAt: string) {
+    return makeRecord({
+      executionId: EXEC_ID,
+      completedAt,
+      artifacts: { prsCreated: [], issuesCreated: [], commits: 1 },
+      outcomes: makeOutcomes(),
+    });
+  }
+
+  // The store round-trips through JSON, so mutations land on parsed copies —
+  // assert against what saveOutcomes wrote, not the seed objects.
+  function savedRecords(): OutcomeRecord[] {
+    const calls = mockWriteFileSync.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return JSON.parse(calls[calls.length - 1][1] as string).records;
+  }
+
+  function mockApi(handlers: Record<string, string | Error>) {
+    mockExecSync.mockImplementation(((cmd: string) => {
+      for (const [frag, res] of Object.entries(handlers)) {
+        if (cmd.includes(frag)) {
+          if (res instanceof Error) throw res;
+          return res;
+        }
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    }) as never);
+  }
+
+  it('builds the branch name with a DASH before the epoch (regression)', () => {
+    setupStore([makeGitRecord(recent())]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      if (cmd.includes('--jq .full_name')) return 'owner/repo';
+      if (cmd.includes('git/refs/heads/')) return `refs/heads/${DASH_BRANCH}`;
+      if (cmd.includes('/compare/')) return '3';
+      throw new Error(`unexpected command: ${cmd}`);
+    }) as never);
+
+    reconcileUnsettledRecords('owner/repo');
+    const refCall = seen.find(c => c.includes('git/refs/heads/'));
+    expect(refCall).toContain(`heads/${DASH_BRANCH}`);
+    expect(refCall).not.toContain(`heads/agent/cli/solver-lane-glm/${TS}`);
+  });
+
+  it('marks merged when compare shows ahead_by 0 (landed without PR)', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '0',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.merged).toBe(1);
+    const saved = savedRecords();
+    expect(saved[0].settled).toBe(true);
+    expect(saved[0].outcomes.prsMerged).toBe(1);
+  });
+
+  it('leaves a recent in-flight branch unsettled', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '3',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
+  });
+
+  it('marks a stale (>30d) unlanded branch abandoned', () => {
+    setupStore([makeGitRecord(daysAgo(31))]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
+      '/compare/': '3',
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.abandoned).toBe(1);
+    expect(savedRecords()[0].settled).toBe(true);
+  });
+
+  it('marks a missing branch abandoned after the 7d grace period', () => {
+    setupStore([makeGitRecord(daysAgo(8))]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': new Error('Not Found'),
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.abandoned).toBe(1);
+    expect(savedRecords()[0].settled).toBe(true);
+  });
+
+  it('leaves a recently-missing branch unsettled (fetch-lag grace)', () => {
+    setupStore([makeGitRecord(recent())]);
+    mockApi({
+      '--jq .full_name': 'owner/repo',
+      'git/refs/heads/': new Error('Not Found'),
+    });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
+  });
+
+  it('skips reconciliation entirely when the repo is unreachable', () => {
+    const record = makeGitRecord(daysAgo(60));
+    setupStore([record]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      throw new Error('API down');
+    }) as never);
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result).toEqual({ settled: 0, merged: 0, rejected: 0, abandoned: 0 });
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(seen.filter(c => c.includes('git/refs/heads/'))).toHaveLength(0);
+  });
+
+  it('skips records whose executionId is not a daemon id', () => {
+    setupStore([makeRecord({
+      executionId: 'exec_manual_1',
+      artifacts: { prsCreated: [], issuesCreated: [], commits: 0 },
+      outcomes: makeOutcomes(),
+    })]);
+    mockApi({ '--jq .full_name': 'owner/repo' });
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.settled).toBe(0);
+    expect(savedRecords()[0].settled).toBe(false);
   });
 });
 

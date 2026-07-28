@@ -341,6 +341,8 @@ export function pollOutcomes(ghEnv?: Record<string, string>): {
 
 /**
  * Compute scorecard for an agent over a time period.
+ * Filters to SETTLED records only — agents must have real outcomes,
+ * not just runs that never completed artifact polling.
  */
 export function computeScorecard(
   squad: string,
@@ -353,6 +355,7 @@ export function computeScorecard(
 
   const records = data.records.filter(
     r => r.squad === squad && r.agent === agent &&
+         r.settled &&
          new Date(r.completedAt).getTime() > cutoff,
   );
 
@@ -439,6 +442,103 @@ export function computeAllScorecards(period: '7d' | '30d' = '7d'): AgentScorecar
  */
 export function getScorecards(): AgentScorecard[] {
   return loadOutcomes().scorecards;
+}
+
+/**
+ * Reconcile unsettled records via git state.
+ * For records that never settled (branch pushed but no PR/PR never closes),
+ * resolve merged/rejected/abandoned from branch + compare state.
+ *
+ * All checks go through the GitHub API (gh api) with the repo slug — never
+ * local git: the daemon's cwd is arbitrary, and local clones may not have the
+ * refs. Branch naming: agent/{squad}/{agent}-{startedAtMs} (DASH before the
+ * epoch — execution-engine.ts stamps it this way; the epoch is embedded in
+ * executionId as daemon_{squad}_{agent}_{ts}).
+ *
+ * Rate-limited to MAX_CALLS API calls per cycle; unprocessed records wait
+ * for the next cycle.
+ */
+export function reconcileUnsettledRecords(
+  repo: string,
+  ghEnv?: Record<string, string>,
+): { settled: number; merged: number; rejected: number; abandoned: number } {
+  const data = loadOutcomes();
+  const unsettled = data.records.filter(r => !r.settled && r.artifacts.prsCreated.length === 0);
+
+  if (unsettled.length === 0) {
+    return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  }
+
+  const MAX_CALLS = 20;
+  let apiCalls = 0;
+  let settled = 0, merged = 0, abandoned = 0;
+  const rejected = 0; // no-PR records resolve merged|abandoned only; rejected needs PR state (pollOutcomes' job)
+
+  // Reachability guard: ghExec collapses all failures to null, so verify the
+  // repo responds before trusting per-branch 404s — otherwise an API/auth
+  // outage reads as "every branch deleted" and misclassifies records as
+  // abandoned. One call per cycle buys a clean discriminator.
+  if (!ghExec(`gh api repos/${repo} --jq .full_name`, ghEnv)) {
+    return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  }
+
+  for (const record of unsettled) {
+    if (apiCalls >= MAX_CALLS) break;
+    const match = record.executionId.match(/daemon_([^_]+)_([^_]+)_(\d+)/);
+    if (!match) continue;
+
+    const [, squad, agent, timestamp] = match;
+    const branchName = `agent/${squad}/${agent}-${timestamp}`;
+    const age = Date.now() - new Date(record.completedAt).getTime();
+
+    // Branch still on the remote? (git refs API takes the full path after
+    // heads/, slashes included; null on error OR 404)
+    apiCalls++;
+    const refRaw = ghExec(
+      `gh api repos/${repo}/git/refs/heads/${branchName} --jq .ref`,
+      ghEnv,
+    );
+
+    if (refRaw) {
+      // Branch exists. Did its commits land in the base anyway (hand-merge,
+      // squash without deleting)? Compare is the API merge-base: ahead_by 0
+      // means fully contained. Product repos branch from develop.
+      apiCalls++;
+      const cmp = ghExec(
+        `gh api repos/${repo}/compare/develop...${branchName} --jq .ahead_by`,
+        ghEnv,
+      ) ?? ghExec(
+        `gh api repos/${repo}/compare/main...${branchName} --jq .ahead_by`,
+        ghEnv,
+      );
+
+      if (cmp !== null && cmp.trim() === '0') {
+        record.outcomes.prsMerged = 1; // landed without a PR
+        record.settled = true;
+        settled++;
+        merged++;
+      } else if (age > 30 * 24 * 60 * 60 * 1000) {
+        record.settled = true;
+        settled++;
+        abandoned++;
+      }
+      // else: branch in flight — leave unsettled, next cycle rechecks
+    } else {
+      // No such branch: never pushed (run died first) or deleted. Without a
+      // PR there is no merge record to find, so a deleted no-PR branch is
+      // abandoned work — after a grace period for fetch lag and retries.
+      if (age > 7 * 24 * 60 * 60 * 1000) {
+        record.settled = true;
+        settled++;
+        abandoned++;
+      }
+    }
+
+    record.lastPolledAt = new Date().toISOString();
+  }
+
+  saveOutcomes(data);
+  return { settled, merged, rejected, abandoned };
 }
 
 /**
@@ -539,36 +639,77 @@ export function getAgentQualityScore(squad: string, agent: string): number | nul
 
 /**
  * Apply outcome-based score modifiers to daemon squad scoring.
- * Returns a score adjustment (positive or negative).
+ * Returns a score adjustment (positive or negative) and the reason.
+ *
+ * Graduated tiers with small-n guard (minimum 5 settled runs for modifiers).
  */
-export function getOutcomeScoreModifier(squad: string, agent: string): number {
+export function getOutcomeScoreModifier(squad: string, agent: string): {
+  modifier: number;
+  reason: string;
+} {
   const scorecards = getScorecards();
   const card = scorecards.find(s => s.squad === squad && s.agent === agent);
 
-  // Minimum data threshold: need 3+ executions for modifiers
-  if (!card || card.executions < 3) return 0;
+  // Minimum data threshold: need 5+ settled executions for modifiers
+  if (!card || card.executions < 5) {
+    return {
+      modifier: 0,
+      reason: card?.executions
+        ? `Insufficient data (${card.executions} settled runs, need 5+)`
+        : 'No scorecard data',
+    };
+  }
 
+  const reasons: string[] = [];
   let modifier = 0;
 
-  // High waste rate penalty
-  if (card.wasteRate > 0.5) modifier -= 30;
+  // Graduated waste penalty
+  if (card.wasteRate > 0.5) {
+    modifier -= 30;
+    reasons.push(`High waste (${(card.wasteRate * 100).toFixed(0)}%): -30`);
+  } else if (card.wasteRate > 0.35) {
+    modifier -= 15;
+    reasons.push(`Elevated waste (${(card.wasteRate * 100).toFixed(0)}%): -15`);
+  }
 
-  // Low merge rate penalty
-  if (card.mergeRate < 0.3 && card.executions >= 3) modifier -= 20;
+  // Graduated merge penalty
+  if (card.mergeRate < 0.25) {
+    modifier -= 20;
+    reasons.push(`Low merge rate (${(card.mergeRate * 100).toFixed(0)}%): -20`);
+  } else if (card.mergeRate < 0.5) {
+    modifier -= 10;
+    reasons.push(`Subpar merge rate (${(card.mergeRate * 100).toFixed(0)}%): -10`);
+  }
 
-  // High performance bonus
-  if (card.mergeRate > 0.7 && card.issueResolutionRate > 0.5) modifier += 15;
+  // High performance bonus (using ciPassRate, not issueResolutionRate)
+  if (card.mergeRate > 0.7 && card.ciPassRate > 0.5) {
+    modifier += 15;
+    reasons.push(`Strong performance (${(card.mergeRate * 100).toFixed(0)}% merge, ${(card.ciPassRate * 100).toFixed(0)}% CI pass): +15`);
+  }
 
   // Expensive + low-scoring penalty
-  if (card.costPerOutcome > 5) modifier -= 10;
+  if (card.costPerOutcome > 5) {
+    modifier -= 10;
+    reasons.push(`High cost per outcome ($${card.costPerOutcome.toFixed(2)}): -10`);
+  }
 
   // Quality grade modifier (heuristic grading)
   const qualityScore = getAgentQualityScore(squad, agent);
   if (qualityScore !== null) {
-    if (qualityScore >= 3.0) modifier += 10;       // A/B average → boost
-    else if (qualityScore < 1.5) modifier -= 25;    // D/F average → strong deprioritize
-    else if (qualityScore < 2.0) modifier -= 15;    // C/D average → deprioritize
+    if (qualityScore >= 3.0) {
+      modifier += 10;
+      reasons.push(`Strong quality grades (A/B avg): +10`);
+    } else if (qualityScore < 1.5) {
+      modifier -= 25;
+      reasons.push(`Poor quality grades (D/F avg): -25`);
+    } else if (qualityScore < 2.0) {
+      modifier -= 15;
+      reasons.push(`Weak quality grades (C/D avg): -15`);
+    }
   }
 
-  return modifier;
+  return {
+    modifier,
+    reason: reasons.length > 0 ? reasons.join('; ') : 'No modifiers applied',
+  };
 }
