@@ -76,7 +76,7 @@ vi.mock('../../src/lib/outcomes.js', () => ({
   recordArtifacts: vi.fn(),
   pollOutcomes: vi.fn(() => ({ polled: 0, settled: 0 })),
   computeAllScorecards: vi.fn(),
-  getOutcomeScoreModifier: vi.fn(() => 0),
+  getOutcomeScoreModifier: vi.fn(() => ({ modifier: 0, reason: '' })),
 }));
 
 import { daemonCommand } from '../../src/commands/daemon.js';
