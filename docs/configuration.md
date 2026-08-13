@@ -7,7 +7,7 @@ Starter squads, building your own, customizing context layers, and secrets.
 The first experience matters. Rather than shipping an empty framework and
 asking you to figure out what to build, `squads init` ships with 4 squads
 designed to deliver visible output from the very first run. These aren't
-demo squads — they're the foundation of an operational AI workforce.
+demo squads — they're the foundation of operational squads.
 
 | Squad | What It Does | Agents |
 |-------|-------------|--------|

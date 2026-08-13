@@ -2,7 +2,7 @@
 
 # Agents Squads
 
-**Your AI workforce.**
+**Boot AI teammates for the work you never get around to.**
 
 Autonomous AI agents for engineering, marketing, finance, and operations.
 You make the decisions. They do the work.
@@ -23,7 +23,7 @@ git repo: no database, no server, no DSL.
 
 ```bash
 npm install -g squads-cli
-mkdir my-workforce && cd my-workforce
+mkdir my-squads && cd my-squads
 git init                       # squads runs on git — it's the state and audit trail
 squads init                    # scaffolds .agents/ with starter squads
 squads run demo hello-world    # verify your setup end to end
@@ -40,7 +40,7 @@ What `squads run demo hello-world` looks like — real, unedited output:
 
 - Running agent: hello-world
 Hello from hello-world, squad demo — today is 2026-07-10, and this run
-confirms the my-workforce AI workforce is installed and ready. 🎉
+confirms the my-squads squads are installed and ready. 🎉
 
 State file written to `.agents/memory/demo/hello-world/state.md` and
 committed locally (`b694270`) — no remote is configured on this repo,

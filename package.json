@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.9.0",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
+  "description": "Boot AI teammates for the work you never get around to — squads that run finance, marketing, engineering and operations workflows on your own machine, across any AI provider.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"

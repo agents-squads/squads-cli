@@ -458,7 +458,7 @@ export function commitInitScaffold(cwd: string): void {
 
   const identity = gitIdentityArgs(cwd);
   execSync(
-    `git ${identity} commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
+    `git ${identity} commit -q -m "feat: init agent squads\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
     { cwd, stdio: 'pipe' }
   );
 }
@@ -471,7 +471,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 1. Welcome
   writeLine();
-  writeLine(chalk.bold('  Plant the seed for your AI workforce'));
+  writeLine(chalk.bold('  Plant the seed for your squads'));
   writeLine(chalk.dim('  https://agents-squads.com/docs/getting-started'));
   writeLine();
 
@@ -1004,7 +1004,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 6. Success message
   writeLine();
-  writeLine(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
+  writeLine(chalk.green.bold(`  ${businessName}'s squads are ready.`));
   writeLine();
   writeLine(chalk.dim('  Created:'));
 
