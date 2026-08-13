@@ -91,6 +91,26 @@ vi.mock('../../src/lib/conversation.js', async () => {
   };
 });
 
+// Convergence now requires artifact evidence (spec
+// convergence-by-artifact-2026-08-13): a "done" claim only converges when the
+// run actually produced commits. These tests exercise the ORCHESTRATION, not
+// the evidence rule, so the default world here is "the run produced work".
+// Tests that assert the evidence rule itself set the count to 0 explicitly.
+const mockRunCommitCount = vi.fn(() => 1);
+vi.mock('../../src/lib/worktree.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/worktree.js')>('../../src/lib/worktree.js');
+  return {
+    ...actual,
+    createRunWorktree: (repoDir: string) => ({
+      cwd: repoDir,
+      cleanup: () => {},
+      branch: 'squads/run-test',
+      baseSha: 'baseshatest',
+    }),
+    runCommitCount: (...args: unknown[]) => mockRunCommitCount(...(args as [])),
+  };
+});
+
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
@@ -125,6 +145,9 @@ function makeSquad(overrides: Partial<Squad> = {}): Squad {
 describe('runConversation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks wipes call data but NOT mockReturnValue, so restore the
+    // default world ("the run produced work") between tests.
+    mockRunCommitCount.mockReturnValue(1);
   });
 
   it('returns early with converged=true when no squads directory found', async () => {
@@ -152,12 +175,12 @@ describe('runConversation', () => {
     expect(result.reason).toContain('No lead agent');
   });
 
-  it('returns converged=true when lead signals completion immediately', async () => {
+  it('converges when the lead marks DONE and the run produced commits', async () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true); // agent file exists
+    mockRunCommitCount.mockReturnValue(3);
 
-    // Lead outputs a convergence phrase immediately
-    mockSpawn.mockImplementation(() => createMockChild('Session complete. All PRs merged.') as any);
+    mockSpawn.mockImplementation(() => createMockChild('## STATUS: DONE') as any);
 
     const squad = makeSquad({
       agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
@@ -166,6 +189,38 @@ describe('runConversation', () => {
 
     expect(result.converged).toBe(true);
     expect(result.turnCount).toBeGreaterThan(0);
+  });
+
+  it('does NOT converge on a DONE claim the run produced no commits for (cli#873)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockRunCommitCount.mockReturnValue(0); // nothing was actually produced
+
+    mockSpawn.mockImplementation(() => createMockChild('## STATUS: DONE') as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+    const result = await runConversation(squad, { verbose: false, maxTurns: 2 });
+
+    // The claim is unbacked, so the loop keeps going and stops on the hard
+    // turn ceiling instead of on the claim.
+    expect(result.transcript.turns.length).toBeGreaterThan(1);
+  });
+
+  it('never converges on prose alone, in any language', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockRunCommitCount.mockReturnValue(5); // even WITH commits, prose proposes nothing
+
+    mockSpawn.mockImplementation(() => createMockChild('Session complete. All PRs merged.') as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+    const result = await runConversation(squad, { verbose: false, maxTurns: 2 });
+
+    expect(result.transcript.turns.length).toBeGreaterThan(1);
   });
 
   it('stops at cost ceiling', async () => {
@@ -259,7 +314,7 @@ describe('runConversation', () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);
 
-    mockSpawn.mockImplementation(() => createMockChild('Session complete.') as any);
+    mockSpawn.mockImplementation(() => createMockChild('## STATUS: DONE') as any);
 
     const squad = makeSquad({
       agents: [

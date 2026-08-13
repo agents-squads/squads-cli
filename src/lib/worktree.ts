@@ -47,6 +47,36 @@ import { gitIdentityArgs } from './git.js';
 export interface RunWorktree {
   cwd: string;
   cleanup: () => void;
+  /** Run branch name. Absent when isolation was skipped or fell back. */
+  branch?: string;
+  /**
+   * SHA the run branch was cut from. Convergence evidence is measured against
+   * it: a commit in `baseSha..HEAD` is work this run actually produced
+   * (spec convergence-by-artifact-2026-08-13).
+   */
+  baseSha?: string;
+}
+
+/**
+ * Commits this run produced on its own branch — the cheapest artifact evidence
+ * that a "done" claim is backed by something (spec
+ * convergence-by-artifact-2026-08-13). Returns 0 when isolation was skipped or
+ * the count can't be taken; callers treat 0 as "no evidence", never as proof of
+ * absence, and fall through to the other evidence forms.
+ */
+export function runCommitCount(wt: RunWorktree): number {
+  if (!wt.branch || !wt.baseSha) return 0;
+  try {
+    const out = execSync(`git -C '${wt.cwd}' rev-list --count '${wt.baseSha}..HEAD'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10000,
+    }).trim();
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Monotonic counter to disambiguate two runs of the same squad in the same ms. */
@@ -259,5 +289,19 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
     }
   };
 
-  return { cwd: worktreePath, cleanup };
+  // Pin the base to a SHA once, at creation. `base` is a ref (often
+  // `origin/develop`) that can move mid-run; convergence evidence must be
+  // measured against where this run actually started, not against a moving
+  // target (spec convergence-by-artifact-2026-08-13).
+  let baseSha: string | undefined;
+  try {
+    baseSha = execSync(`git -C '${repoDir}' rev-parse '${base}'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || undefined;
+  } catch {
+    // No SHA — callers fall back to the other evidence forms (PR lookup).
+  }
+
+  return { cwd: worktreePath, cleanup, branch: branchName, baseSha };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import { createRunWorktree } from '../src/lib/worktree';
+import { createRunWorktree, runCommitCount } from '../src/lib/worktree';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -245,5 +245,62 @@ describe('worktree base freshness (#1014)', () => {
       rmSync(remote, { recursive: true, force: true });
       rmSync(clone, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runCommitCount — convergence evidence (spec convergence-by-artifact-2026-08-13)', () => {
+  let parent: string;
+  let repoDir: string;
+
+  beforeEach(() => {
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    delete process.env.SQUADS_NO_WORKTREE;
+    parent = mkdtempSync(join(tmpdir(), 'squads-evidence-test-'));
+    repoDir = join(parent, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    initRepo(repoDir);
+  });
+
+  afterEach(() => {
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  it('reports 0 for a fresh run that produced nothing', () => {
+    const wt = createRunWorktree(repoDir, 'evidence');
+    expect(wt.branch).toBeTruthy();
+    expect(wt.baseSha).toBeTruthy();
+    expect(runCommitCount(wt)).toBe(0);
+    wt.cleanup();
+  });
+
+  it('counts the commits the run actually produced', () => {
+    const wt = createRunWorktree(repoDir, 'evidence');
+    writeFileSync(join(wt.cwd, 'delivered.txt'), 'work\n');
+    execSync('git add -A', { cwd: wt.cwd, stdio: 'pipe' });
+    execSync("git -c user.email=t@e.com -c user.name=T commit -m 'deliver'", { cwd: wt.cwd, stdio: 'pipe' });
+    expect(runCommitCount(wt)).toBe(1);
+    wt.cleanup();
+  });
+
+  it('does not count uncommitted changes as evidence', () => {
+    const wt = createRunWorktree(repoDir, 'evidence');
+    writeFileSync(join(wt.cwd, 'scratch.txt'), 'not committed\n');
+    expect(runCommitCount(wt)).toBe(0);
+    wt.cleanup();
+  });
+
+  it('reports 0 when isolation was skipped (no branch/baseSha to measure)', () => {
+    process.env.SQUADS_NO_WORKTREE = '1';
+    const wt = createRunWorktree(repoDir, 'evidence');
+    expect(wt.branch).toBeUndefined();
+    expect(runCommitCount(wt)).toBe(0);
+    delete process.env.SQUADS_NO_WORKTREE;
+  });
+
+  it('reports 0 rather than throwing when the worktree is gone', () => {
+    const wt = createRunWorktree(repoDir, 'evidence');
+    rmSync(wt.cwd, { recursive: true, force: true });
+    expect(runCommitCount(wt)).toBe(0);
   });
 });
