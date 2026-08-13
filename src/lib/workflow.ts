@@ -31,6 +31,7 @@ import {
   serializeTranscript,
   addTurn,
   detectConvergence,
+  type ConvergenceResult,
   estimateTurnCost,
   parseHandoff,
   extractValidationContract,
@@ -55,7 +56,7 @@ import { loadProjectConfig } from './config.js';
 import { getBotGhEnv, buildBotGitCredentialEnv, isGhAuthFailure } from './github.js';
 import { parseIssueNumberFromTask, checkPrForIssue } from './squad-loop.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
-import { createRunWorktree } from './worktree.js';
+import { createRunWorktree, runCommitCount } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import {
   logObservability,
@@ -551,10 +552,49 @@ export async function runConversation(
   // one extra IO check; the bot's gh auth is fetched once, lazily, only when
   // the gate can actually fire.
   let prGateGhEnv: Record<string, string> | undefined;
-  const checkConvergence = async () => {
+  /**
+   * A `proposed` claim that no artifact backs keeps the conversation going and
+   * records WHY it wasn't accepted, so the transcript shows the claim was
+   * unbacked rather than silently ignored. Anything not `proposed` passes
+   * through untouched.
+   */
+  const unconfirmed = (r: ConvergenceResult, why: string): ConvergenceResult =>
+    r.state === 'proposed'
+      ? { converged: false, state: 'continue', reason: `${r.reason} — NOT confirmed (${why}). Continuing.` }
+      : r;
+
+  const checkConvergence = async (): Promise<ConvergenceResult> => {
     const base = detectConvergence(transcript, maxTurns, costCeiling);
-    if (base.converged) return base;
-    if (!scoped || issueNumberFromTask === null || !squad.repo) return base;
+
+    // Hard limits (turns/cost) and BLOCKED are terminal on their own — no
+    // artifact can change them.
+    if (base.state === 'converged' || base.state === 'blocked') return base;
+
+    // Prose may propose; only artifacts may converge (spec
+    // convergence-by-artifact-2026-08-13, authority derive-and-gate §Layer 0).
+    // A `proposed` claim with no artifact behind it is a stall, not a finish —
+    // that is cli#873, where the conversation converged on a claim and the
+    // lead's worker-tasks had never been executed.
+    const commits = runCommitCount(worktree);
+    if (base.state === 'proposed' && commits > 0) {
+      return {
+        converged: true,
+        state: 'converged',
+        reason: `${base.reason} — confirmed by ${commits} commit(s) on ${worktree.branch ?? 'the run branch'}`,
+      };
+    }
+
+    if (!scoped || issueNumberFromTask === null || !squad.repo) {
+      // Unscoped runs have no issue to look a PR up by, so commits are the only
+      // evidence available. An unconfirmed claim continues rather than stops.
+      return base.state === 'proposed'
+        ? {
+          converged: false,
+          state: 'continue',
+          reason: `${base.reason} — NOT confirmed: no commits on the run branch. Continuing.`,
+        }
+        : base;
+    }
     if (!prGateGhEnv) prGateGhEnv = await getBotGhEnv().catch(() => ({}));
     const pr = checkPrForIssue(squad.repo, issueNumberFromTask, prGateGhEnv);
     if (pr) {
@@ -581,19 +621,20 @@ export async function runConversation(
         // All checks must be in 'pass' state — any fail/pending/skipping/cancel blocks convergence
         const allPassed = buckets.length > 0 && buckets.every((b: string) => b === 'pass');
         if (!allPassed) {
-          return base; // CI not green — don't declare convergence
+          return unconfirmed(base, `PR #${pr.number} CI not green`);
         }
       } catch {
         // If we can't fetch CI status (gh error, timeout), fall back to not converging
         // — better to continue the cycle than to falsely declare success on red CI.
-        return base;
+        return unconfirmed(base, `PR #${pr.number} CI status unavailable`);
       }
       return {
         converged: true,
+        state: 'converged',
         reason: `PR #${pr.number} already addresses issue #${issueNumberFromTask} — stopping (${pr.title})`,
       };
     }
-    return base;
+    return unconfirmed(base, 'no commits on the run branch and no PR for the issue');
   };
 
   // Resolve squad's working directory

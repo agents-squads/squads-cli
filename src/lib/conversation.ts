@@ -285,55 +285,33 @@ export function addTurn(
 // Convergence Detection
 // =============================================================================
 
-/** Phrases that indicate work is done (matched case-insensitively via includes) */
-const CONVERGENCE_PHRASES = [
-  'pr created', 'pr merged',
-  'issue closed', 'issue resolved',
-  'all tasks complete', 'all items complete', 'all issues resolved',
-  'nothing left to do', 'nothing remaining',
-  'session complete',
-  'queue empty',
-  'no open issues', 'no pending tasks', 'no pending issues',
-];
+/**
+ * NO PHRASE LISTS. Convergence is decided by artifacts (branch, commits, PR +
+ * CI), never by matching agent prose — spec convergence-by-artifact-2026-08-13,
+ * authority derive-and-gate §Layer 0: an LLM judge is never the gate for a
+ * machine-checkable fact. "Did this run finish?" is machine-checkable.
+ *
+ * The lists that used to live here converged a conversation whenever any turn
+ * contained e.g. "tests pass" — including "I need to make sure tests pass
+ * before merging" (cli#873: converged with worker-tasks unexecuted, then
+ * cleanup destroyed the work). They were also English-only in a Spanish-first
+ * market, while role detection above is already bilingual. Do not reintroduce
+ * them, in any language: chasing languages with string lists has no end state.
+ */
 
-/** Phrases in a verifier turn that signal approval → converge */
-const VERIFIER_APPROVAL_PHRASES = [
-  'approved', 'lgtm', 'looks good',
-  'all checks pass', 'all tests pass', 'tests pass',
-  'passed', 'quality standards met',
-];
-
-/** Phrases in a verifier turn that signal rejection → continue cycle */
-const VERIFIER_REJECTION_PHRASES = [
-  'failed', 'rejected', 'needs fixes', 'needs changes',
-  'does not pass', 'did not pass', 'failing',
-];
-
-/** Phrases from a lead turn that signal the session is done — hard stop */
-const LEAD_COMPLETION_PHRASES = [
-  'session complete', 'session is complete',
-  'nothing to do', 'nothing more to do', 'nothing left to do',
-  'all work is done', 'all work complete', 'work is complete', 'work is done',
-  'all tasks complete', 'all tasks done',
-  'approved', 'approving',
-  'declaring convergence', 'signaling convergence', 'signal convergence',
-  'no further action', 'no further work', 'no action needed', 'no actions needed',
-  'wrapping up', 'closing out',
-  'conversation complete', 'cycle complete',
-];
-
-/** Phrases that indicate more work needed */
-const CONTINUATION_PHRASES = [
-  'needs review', 'needs feedback', 'needs input', 'need clarification',
-  'todo', 'fixme', 'blocked',
-  'waiting for', 'waiting on',
-  'will continue', 'will proceed', 'will work on',
-  'next step',
-  'in progress',
-];
+/**
+ * `proposed` is the important state: an agent *claimed* it is done. That claim
+ * is not authority to stop — the caller must confirm it against artifacts
+ * before converging (see checkConvergence in workflow.ts). `blocked` is
+ * terminal but is NOT success: the run halted awaiting a human, and it must
+ * not be recorded as `completed` (cli#1154).
+ */
+export type ConvergenceState = 'continue' | 'proposed' | 'converged' | 'blocked';
 
 export interface ConvergenceResult {
+  /** Terminal AND successful. `blocked` is terminal but never sets this true. */
   converged: boolean;
+  state: ConvergenceState;
   reason: string;
 }
 
@@ -398,71 +376,67 @@ export function detectConvergence(
   maxTurns: number,
   costCeiling: number,
 ): ConvergenceResult {
-  // Hard limits
+  // Hard limits — the only prose-free terminal conditions, and the reason an
+  // unrecognised transcript can safely keep going.
   if (transcript.turns.length >= maxTurns) {
-    return { converged: true, reason: `Max turns reached (${maxTurns})` };
+    return { converged: true, state: 'converged', reason: `Max turns reached (${maxTurns})` };
   }
   if (transcript.totalCost >= costCeiling) {
-    return { converged: true, reason: `Cost ceiling reached ($${transcript.totalCost.toFixed(2)}/$${costCeiling})` };
+    return { converged: true, state: 'converged', reason: `Cost ceiling reached ($${transcript.totalCost.toFixed(2)}/$${costCeiling})` };
   }
 
   if (transcript.turns.length === 0) {
-    return { converged: false, reason: 'No turns yet' };
+    return { converged: false, state: 'continue', reason: 'No turns yet' };
   }
 
   const lastTurn = transcript.turns[transcript.turns.length - 1];
   const content = lastTurn.content;
 
-  // ── Explicit markers (preferred) ──────────────────────────────────
+  // ── Explicit markers ──────────────────────────────────────────────
+  // A marker is a CLAIM, not authority to stop. It returns `proposed`; the
+  // caller confirms it against artifacts before converging. Markers are
+  // literal tokens, so this path is language-neutral by construction.
 
-  // Verifier verdict — strongest signal
+  // A worker's own handoff can contradict its DONE claim (#990) — undone work
+  // listed, or a nonzero exit code in its command log. Never propose on that.
+  const handoff = parseHandoff(content);
+  if (handoff.contradictsDone) {
+    return {
+      converged: false,
+      state: 'continue',
+      reason: `DONE claim contradicted by the agent's own handoff (undone: ${handoff.undone || 'n/a'}, exit codes: ${handoff.exitCodes.join(', ') || 'none'})`,
+    };
+  }
+
+  // Verifier verdict
   if (/## VERDICT:\s*APPROVED/i.test(content)) {
-    return { converged: true, reason: 'Verifier approved' };
+    return { converged: false, state: 'proposed', reason: 'Verifier approved' };
   }
   if (/## VERDICT:\s*REJECTED/i.test(content)) {
-    return { converged: false, reason: 'Verifier rejected — continuing cycle' };
+    return { converged: false, state: 'continue', reason: 'Verifier rejected — continuing cycle' };
   }
 
   // Lead status — only from lead turns
   if (lastTurn.role === 'lead') {
     if (/## STATUS:\s*DONE/i.test(content)) {
-      return { converged: true, reason: 'Lead signaled completion' };
+      return { converged: false, state: 'proposed', reason: 'Lead signaled completion' };
     }
     if (/## STATUS:\s*CONTINUE/i.test(content)) {
-      return { converged: false, reason: 'Lead assigned more work' };
+      return { converged: false, state: 'continue', reason: 'Lead assigned more work' };
     }
   }
 
-  // Blocked — any role
+  // Blocked — any role. Terminal, but NOT success: the run halted awaiting a
+  // human. Recording this as `completed` is cli#1154.
   if (/BLOCKED:/i.test(content)) {
-    return { converged: true, reason: 'Blocked — needs human action' };
+    return { converged: false, state: 'blocked', reason: 'Blocked — needs human action' };
   }
 
-  // ── Fallback: keyword detection ───────────────────────────────────
-  // For agents that don't follow the STATUS/VERDICT format
-
-  const lower = content.toLowerCase();
-
-  if (lastTurn.role === 'verifier') {
-    const rejected = VERIFIER_REJECTION_PHRASES.some(phrase => lower.includes(phrase));
-    if (rejected) return { converged: false, reason: 'Verifier rejected (keyword)' };
-    const approved = VERIFIER_APPROVAL_PHRASES.some(phrase => lower.includes(phrase));
-    if (approved) return { converged: true, reason: 'Verifier approved (keyword)' };
-  }
-
-  if (lastTurn.role === 'lead') {
-    const leadDone = LEAD_COMPLETION_PHRASES.some(phrase => lower.includes(phrase));
-    if (leadDone) return { converged: true, reason: 'Lead signaled completion (keyword)' };
-  }
-
-  // Continuation beats convergence
-  const hasContinuation = CONTINUATION_PHRASES.some(phrase => lower.includes(phrase));
-  if (hasContinuation) return { converged: false, reason: 'Continuation signal detected' };
-
-  const hasConvergence = CONVERGENCE_PHRASES.some(phrase => lower.includes(phrase));
-  if (hasConvergence) return { converged: true, reason: 'Convergence signal detected' };
-
-  return { converged: false, reason: 'No signals detected, continuing' };
+  // No marker: keep going. There is deliberately no prose fallback — see the
+  // note above the ConvergenceState type. Stopping is the destructive action
+  // (it triggers cleanup), so an unrecognised turn continues to the turn/cost
+  // ceiling, which are hard limits already enforced at the top.
+  return { converged: false, state: 'continue', reason: 'No completion marker, continuing' };
 }
 
 // =============================================================================
