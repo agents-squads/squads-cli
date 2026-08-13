@@ -27,7 +27,7 @@ describe('CLI', () => {
       const result = runCli('--help');
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('squads');
-      expect(result.stdout).toContain('Your AI workforce');
+      expect(result.stdout).toContain('Boot AI teammates for the work you never get around to');
     });
 
     it('lists available commands', () => {

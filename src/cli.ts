@@ -194,7 +194,7 @@ installCommandTelemetry(program);
 
 program
   .name('squads')
-  .description('Your AI workforce — business operating system for AI managers')
+  .description('Boot AI teammates for the work you never get around to — you stay the operator')
   .version(version)
   .addHelpText('after', `
 Resources:

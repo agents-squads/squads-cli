@@ -91,8 +91,8 @@ describe('E2E: squads init workflow', () => {
   it('reports success in output', () => {
     const result = runCli('init --yes --provider none --force', testDir);
     const out = stripAnsi(result.stdout);
-    // Accept either "Squads initialized" or "AI workforce is ready" success messages
-    expect(out).toMatch(/initialized|workforce is ready/i);
+    // Accept either "Squads initialized" or "squads are ready" success messages
+    expect(out).toMatch(/initialized|squads are ready/i);
   });
 
   it('creates .agents/squads directory', () => {
