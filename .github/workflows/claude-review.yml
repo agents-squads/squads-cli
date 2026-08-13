@@ -1,0 +1,99 @@
+name: claude-review
+
+# Automated PR review. Replaces Gemini Code Assist, which went dark: it never
+# reviewed bot-authored PRs (i.e. nearly all of ours) and as of 2026-08-13 no
+# longer responds even to a human `/gemini review`. Without this, every PR in
+# this repo merges with no automated review at all.
+#
+# Auth: prefers CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, uses the
+# existing Max subscription — no separate API billing), falls back to
+# ANTHROPIC_API_KEY. If neither is set the job does NOT fail the PR; it emits a
+# loud warning annotation instead, so a missing secret is visible rather than a
+# silently absent reviewer — the exact failure mode that let Gemini rot for
+# five weeks without anyone noticing.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  # Re-review on demand rather than on every push: agent lanes push many commits
+  # per PR, and a review per push is noise, not signal.
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    # For comment events, only act on PR comments that actually ask for a review.
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event.issue.pull_request != null &&
+       contains(github.event.comment.body, '/claude review'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check reviewer credentials
+        id: creds
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          APIKEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$OAUTH" ] || [ -n "$APIKEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No automated PR review::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set, so this PR was NOT reviewed. Add one in repo settings → Secrets. Generate the OAuth token with 'claude setup-token'."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.configured == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Review
+        if: steps.creds.outputs.configured == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Our PRs are authored by the GitHub App, and a reviewer that skips
+          # bot PRs reviews nothing. Named explicitly, never '*': this repo is
+          # PUBLIC, and '*' would let any external App invoke this action with a
+          # prompt it controls.
+          allowed_bots: "agents-squads[bot]"
+          track_progress: true
+          prompt: |
+            Review this pull request. Report only what you can point at in the
+            diff — no style preferences, no speculation, no praise.
+
+            Order findings by whether they can bite in production. For each:
+            the file and line, what breaks, and the concrete input or state that
+            triggers it. If you find nothing worth fixing, say so plainly and
+            stop; a short honest review beats a padded one.
+
+            Weight these especially:
+
+            - Correctness under failure: unhandled rejections, swallowed errors,
+              a catch that converts a failure into a success value, an await
+              that was forgotten.
+            - Anything that decides a run is finished. Completion must be backed
+              by an artifact (a commit, a PR, a check result), never by parsing
+              what an agent said about itself. Prose matching a hardcoded phrase
+              is a defect, and so is a hardcoded English phrase list in a
+              product whose users are Spanish-first.
+            - Secrets and identifiers: no key, token, tax ID, personal address
+              or real customer name in source, tests, fixtures or logs. This
+              repo is PUBLIC — flag anything internal that would leak by being
+              here at all.
+            - Shell and path handling in anything that spawns a process:
+              unquoted interpolation, user input reaching a command line.
+            - Tests that assert the implementation rather than the behaviour, or
+              that would still pass if the feature were removed.
+            - Dependencies: this project takes no new runtime dependencies
+              without explicit approval. Flag any addition.
+
+            Use inline comments on the lines involved. Put a two-line summary at
+            the top saying whether you would merge it and the single most
+            important thing to fix.
