@@ -9,6 +9,7 @@
 
 import { execSync } from 'child_process';
 import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
+import { loadProviderRegistry, anthropicCompatEnv } from './provider-registry.js';
 
 export interface CLIConfig {
   /** Provider identifier (matches provider field in SQUAD.md/agent.md) */
@@ -446,10 +447,54 @@ export function normalizeProviderName(provider: string): string {
 }
 
 /**
- * Get CLI config for a provider
+ * Synthesize a CLIConfig from a user registry entry (#1156, spec
+ * provider-registry-2026-08-13). Built-ins always win, so a registry file can
+ * never change the behaviour of a shipped provider — this only ADDS providers,
+ * which is what keeps the migration behaviour-preserving.
+ *
+ * Only the `claude` harness against an Anthropic-compatible endpoint is
+ * synthesized: that is the proven GLM/DeepSeek pattern and the case #1156
+ * exists for — a new Kimi-like provider becomes one YAML entry, zero
+ * TypeScript. `native` is declared in the schema but has no runtime yet, and
+ * returns undefined rather than silently falling back to a third-party binary;
+ * a silent fallback is precisely the dependency this work removes.
+ */
+function configFromRegistry(name: string): CLIConfig | undefined {
+  const entry = loadProviderRegistry().providers[name];
+  if (!entry || entry.harness !== 'claude' || !entry.base_url) return undefined;
+
+  const defaultModel = entry.models?.[0];
+  return {
+    provider: entry.name,
+    displayName: entry.display_name ?? `${entry.name} (via claude)`,
+    command: 'claude',
+    install: `npm i -g @anthropic-ai/claude-code, then add the credential at ~/.squads/secrets/${entry.key_ref ?? '<key_ref>'}`,
+    buildArgs: (_prompt, opts) => {
+      // Honour a model override only when it belongs to this provider: an
+      // agent re-laned here keeps its previous `model:` frontmatter, and a
+      // foreign model name is rejected by the endpoint (the #937 failure).
+      const requested = opts?.model?.replace(new RegExp(`^${entry.name}/`), '');
+      const model = requested && entry.models?.includes(requested) ? requested : defaultModel;
+      return [
+        '--print',
+        '--output-format', 'stream-json',
+        '--verbose',
+        ...(model ? ['--model', model] : []),
+      ];
+    },
+    stdinPrompt: true,
+    streamJson: true,
+    parseUsage: makeClaudeHarnessStreamUsage(entry.name.toUpperCase()),
+    env: () => anthropicCompatEnv(entry),
+  };
+}
+
+/**
+ * Get CLI config for a provider — built-in first, then the user registry.
  */
 export function getCLIConfig(provider: string): CLIConfig | undefined {
-  return LLM_CLIS[normalizeProviderName(provider)];
+  const name = normalizeProviderName(provider);
+  return LLM_CLIS[name] ?? configFromRegistry(name);
 }
 
 /**
