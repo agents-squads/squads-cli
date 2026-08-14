@@ -214,6 +214,87 @@ export function credentialState(entry: ProviderEntry): CredentialState {
   return { provider: entry.name, keyRef, secretPresent, missingEnv, ok };
 }
 
+export type ProbeState = 'ok' | 'missing' | 'invalid' | 'unreachable' | 'skipped';
+
+export interface ProbeResult {
+  state: ProbeState;
+  detail: string;
+  /**
+   * Whether this result should STOP a dispatch. Only definitive negatives do:
+   * a credential we can prove is absent or rejected. `unreachable` must not
+   * block — refusing to dispatch because our own network blipped would trade
+   * one failure mode for a worse one (#1155 asks to prevent burning a run on a
+   * dead key, not to add a new way to be unable to work).
+   */
+  blocking: boolean;
+}
+
+/**
+ * Cheap auth probe for a registry provider (#1155 step 2 — "derived, not
+ * declared": the registry declares a key exists, only this establishes that it
+ * works). One request with max_tokens 1, short timeout, native fetch — no new
+ * dependency.
+ *
+ * Runs only for Anthropic-compatible registry providers. Built-in providers
+ * keep their existing checks; this is additive.
+ */
+export async function probeProviderCredential(
+  entry: ProviderEntry,
+  timeoutMs = 5000,
+): Promise<ProbeResult> {
+  const cred = credentialState(entry);
+  if (!cred.ok) {
+    const what = cred.keyRef
+      ? `no secret at ~/.squads/secrets/${cred.keyRef}`
+      : `missing env: ${cred.missingEnv.join(', ') || 'none declared'}`;
+    return { state: 'missing', detail: what, blocking: true };
+  }
+  if (!entry.base_url) {
+    return { state: 'skipped', detail: 'no base_url to probe', blocking: false };
+  }
+
+  const token = (entry.key_ref && readProviderSecret(entry.key_ref))
+    || (entry.required_env ?? []).map(v => process.env[v]).find(Boolean);
+  if (!token) {
+    return { state: 'missing', detail: 'credential resolved empty', blocking: true };
+  }
+
+  const url = `${entry.base_url.replace(/\/+$/, '')}/v1/messages`;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': token,
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model: entry.models?.[0] ?? 'unknown',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { state: 'invalid', detail: `HTTP ${res.status} — credential rejected`, blocking: true };
+    }
+    if (res.ok) return { state: 'ok', detail: `HTTP ${res.status}`, blocking: false };
+    // 400/404 etc: the credential was accepted far enough to be told the model
+    // or route is wrong. That is a configuration problem, not an auth failure,
+    // and it must not be reported as a bad key.
+    return { state: 'unreachable', detail: `HTTP ${res.status} — endpoint/model config`, blocking: false };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const why = ac.signal.aborted ? `no response in ${timeoutMs}ms` : msg;
+    return { state: 'unreachable', detail: why, blocking: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Environment a registry provider needs, for an Anthropic-compatible endpoint
  * driven through the `claude` harness — the proven GLM/DeepSeek pattern.
