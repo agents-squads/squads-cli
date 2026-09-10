@@ -1776,6 +1776,20 @@ export async function executeWithProvider(
   // one forever 'running' (the exact bug the run-ledger kills).
   const executionId = options.executionId || generateExecutionId();
 
+  // Native-harness lanes (#1227): the engine writes the PersistedExecEvent v2
+  // stream itself, so it gets the canonical events file, the execution id to
+  // stamp every envelope with, and a per-run task store for convergence
+  // gating (#1218). The CLI runs NO writer for these lanes — two writers on
+  // one events file is how a ledger splits a run in two. Appended to the
+  // single argv source so the background wrapper inherits them too (#1101).
+  if (cliConfig.nativeEvents) {
+    args.push(
+      '--events', execEventsFile(dispatchRoot, executionId),
+      '--run-id', executionId,
+      '--tasks', join(dispatchRoot, '.agents', 'observability', 'tasks', executionId),
+    );
+  }
+
   // Exec events for provider lanes (#1159): stream-json lanes (claude-harness
   // foreign providers — glm, deepseek) normalize through the Claude adapter
   // live in foreground; detached lanes get run_start here and the rest at
@@ -2029,7 +2043,10 @@ export async function executeWithProvider(
         // Harness stamp (#1177) — reconcile picks the stream parser/adapter by
         // this, not by provider: claude-harness lanes and opencode lanes emit
         // different JSONL shapes; plain provider CLIs (aider) stamp nothing.
-        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : '',
+        // 'native' lanes (#1227): the engine wrote the events file itself, so
+        // reconcile must NOT parse the log as a stream — usage comes from the
+        // lane's parseUsage over the engine's --json result.
+        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : cliConfig.nativeEvents ? 'native' : '',
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);

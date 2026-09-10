@@ -223,6 +223,92 @@ providers:
   });
 });
 
+describe('native harness execution (#1227)', () => {
+  it('synthesizes a CLIConfig for harness: native on the openai-chat wire', async () => {
+    write(`
+providers:
+  acme:
+    harness: native
+    api: openai-chat
+    base_url: https://api.acme.test/v1
+    required_env: [TEST_PROVIDER_KEY]
+    models: [acme-fast, acme-pro]
+`);
+    process.env.SQUADS_PROVIDERS_FILE = file;
+    process.env.TEST_PROVIDER_KEY = 'sk-test';
+    const { getCLIConfig } = await import('../../src/lib/llm-clis.js');
+
+    const cfg = getCLIConfig('acme');
+    expect(cfg).toBeDefined();
+    expect(cfg!.nativeEvents).toBe(true);
+    expect(cfg!.streamJson).toBeUndefined();
+    expect(cfg!.buildArgs('do the thing', { allowedTools: [] })).toEqual([
+      '-p', 'do the thing',
+      '--provider', 'acme',
+      '--base-url', 'https://api.acme.test/v1',
+      '--model', 'acme-fast',
+      '--json', '--quiet',
+      '--allow', 'task_create(*)', '--allow', 'task_claim(*)', '--allow', 'task_complete(*)',
+      '--allow', 'task_block(*)', '--allow', 'task_list(*)',
+    ]);
+    expect(cfg!.env!().SQUADS_ENGINE_API_KEY).toBe('sk-test');
+  });
+
+  it('honours a model override only when it belongs to the provider (#937 leak guard)', async () => {
+    write(`
+providers:
+  acme:
+    harness: native
+    base_url: https://api.acme.test/v1
+    models: [acme-fast, acme-pro]
+`);
+    process.env.SQUADS_PROVIDERS_FILE = file;
+    const { getCLIConfig } = await import('../../src/lib/llm-clis.js');
+
+    const cfg = getCLIConfig('acme')!;
+    expect(cfg.buildArgs('p', { model: 'acme/acme-pro' })).toContain('acme-pro');
+    // A foreign model name from stale frontmatter falls back to the lane default.
+    expect(cfg.buildArgs('p', { model: 'claude-sonnet-4' })).toContain('acme-fast');
+  });
+
+  it('translates the lane tool allowlist into engine --allow rules', async () => {
+    const { nativeAllowRules } = await import('../../src/lib/llm-clis.js');
+    // Task tools are always present — the coordination channel must not be
+    // muted by the gate's fallback deny.
+    expect(nativeAllowRules(['Read', 'Bash'])).toContain('read(*)');
+    expect(nativeAllowRules(['Read', 'Bash'])).toContain('bash(*)');
+    expect(nativeAllowRules(['Read', 'Bash'])).not.toContain('write(*)');
+    expect(nativeAllowRules(['Read', 'Bash'])).toContain('task_create(*)');
+    // No allowlist: the standard surface, same effective grant as a
+    // claude-harness lane without --allowedTools.
+    expect(nativeAllowRules(undefined)).toContain('bash(*)');
+    expect(nativeAllowRules(undefined)).toContain('write(*)');
+  });
+
+  it('parses usage from the engine --json result, null on anything else', async () => {
+    const { parseNativeJsonUsage } = await import('../../src/lib/llm-clis.js');
+    const json = JSON.stringify({
+      ok: true, stopReason: 'completed',
+      usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0 },
+      costEst: 0.0004,
+    }, null, 2);
+    expect(parseNativeJsonUsage(`some prose\n${json}\n`)).toEqual({
+      input_tokens: 1200, output_tokens: 300, cost_usd: 0.0004,
+    });
+    expect(parseNativeJsonUsage('no json here')).toBeNull();
+    expect(parseNativeJsonUsage('\n{"not":"usage"}')).toBeNull();
+  });
+
+  it('commandExists accepts an absolute binary path (SQUADS_ENGINE_BIN)', async () => {
+    const { commandExists } = await import('../../src/lib/llm-clis.js');
+    const bin = join(dir, 'fake-engine');
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    expect(commandExists(bin)).toBe(true);
+    expect(commandExists(join(dir, 'missing-engine'))).toBe(false);
+    expect(commandExists('definitely-not-a-real-command-xyz')).toBe(false);
+  });
+});
+
 describe('registry caching', () => {
   it('parses once per path, and clearing the cache re-reads', () => {
     write(`
