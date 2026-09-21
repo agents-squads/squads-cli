@@ -8,8 +8,9 @@
  */
 
 import { execSync } from 'child_process';
+import { accessSync, constants as fsConstants } from 'node:fs';
 import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
-import { loadProviderRegistry, anthropicCompatEnv } from './provider-registry.js';
+import { loadProviderRegistry, anthropicCompatEnv, readProviderSecret, type ProviderEntry } from './provider-registry.js';
 
 export interface CLIConfig {
   /** Provider identifier (matches provider field in SQUAD.md/agent.md) */
@@ -57,6 +58,15 @@ export interface CLIConfig {
    * child env — needed when an inherited variable would shadow the injected one.
    */
   env?: () => Record<string, string | undefined>;
+
+  /**
+   * Native-harness lane (#1227): the engine writes its own PersistedExecEvent
+   * v2 stream. The runner hands it the canonical events file, the execution id
+   * and a per-run task store via argv, and must NOT also run its own event
+   * writer for the lane — two writers on one file is how a ledger splits a
+   * run in two.
+   */
+  nativeEvents?: boolean;
 }
 
 export interface RunOptions {
@@ -184,6 +194,12 @@ export function detectProviderFatalError(output: string): string | null {
  */
 export function commandExists(command: string): boolean {
   try {
+    // Absolute/relative paths bypass `which` — SQUADS_ENGINE_BIN points at a
+    // built binary, not a PATH entry.
+    if (command.includes('/')) {
+      accessSync(command, fsConstants.X_OK);
+      return true;
+    }
     execSync(`which ${command}`, { stdio: 'pipe' });
     return true;
   } catch {
@@ -455,13 +471,16 @@ export function normalizeProviderName(provider: string): string {
  * Only the `claude` harness against an Anthropic-compatible endpoint is
  * synthesized: that is the proven GLM/DeepSeek pattern and the case #1156
  * exists for — a new Kimi-like provider becomes one YAML entry, zero
- * TypeScript. `native` is declared in the schema but has no runtime yet, and
- * returns undefined rather than silently falling back to a third-party binary;
- * a silent fallback is precisely the dependency this work removes.
+ * TypeScript. `native` entries synthesize through `nativeConfigFromRegistry`
+ * (#1227); anything else returns undefined rather than silently falling back
+ * to a third-party binary — a silent fallback is precisely the dependency
+ * this work removes.
  */
 function configFromRegistry(name: string): CLIConfig | undefined {
   const entry = loadProviderRegistry().providers[name];
-  if (!entry || entry.harness !== 'claude' || !entry.base_url) return undefined;
+  if (!entry) return undefined;
+  if (entry.harness === 'native') return nativeConfigFromRegistry(entry);
+  if (entry.harness !== 'claude' || !entry.base_url) return undefined;
 
   const defaultModel = entry.models?.[0];
   return {
@@ -486,6 +505,97 @@ function configFromRegistry(name: string): CLIConfig | undefined {
     streamJson: true,
     parseUsage: makeClaudeHarnessStreamUsage(entry.name.toUpperCase()),
     env: () => anthropicCompatEnv(entry),
+  };
+}
+
+/** claude-harness tool name → native engine permission rule (#1227). */
+const NATIVE_TOOL_RULES: Record<string, string> = {
+  read: 'read(*)', write: 'write(*)', edit: 'edit(*)',
+  glob: 'glob(*)', grep: 'grep(*)', bash: 'bash(*)',
+};
+
+/**
+ * Translate a lane's compiled tool allowlist into engine `--allow` rules.
+ * Task tools are always granted — they are the run's own coordination
+ * channel (#1218), and the gate's fallback deny would otherwise mute it.
+ * A lane with no allowlist gets the standard surface including bash — the
+ * same effective grant a claude-harness lane has without --allowedTools.
+ */
+export function nativeAllowRules(allowedTools?: string[]): string[] {
+  const rules = ['task_create(*)', 'task_claim(*)', 'task_complete(*)', 'task_block(*)', 'task_list(*)'];
+  if (!allowedTools) return [...rules, ...Object.values(NATIVE_TOOL_RULES)];
+  for (const t of allowedTools) {
+    const rule = NATIVE_TOOL_RULES[t.trim().toLowerCase()];
+    if (rule && !rules.includes(rule)) rules.push(rule);
+  }
+  return rules;
+}
+
+/**
+ * Usage from the engine's `--json` stdout result — the native lane's
+ * equivalent of stream scraping. The result is the last top-level JSON
+ * object on the stream; anything unparseable is no usage, not a wrong usage.
+ */
+export function parseNativeJsonUsage(output: string): ProviderUsage | null {
+  const start = output.lastIndexOf('\n{');
+  if (start < 0) return null;
+  try {
+    const r = JSON.parse(output.slice(start + 1)) as {
+      usage?: { input?: number; output?: number };
+      costEst?: number;
+    };
+    if (!r.usage || typeof r.usage.input !== 'number') return null;
+    return {
+      input_tokens: r.usage.input,
+      output_tokens: r.usage.output ?? 0,
+      cost_usd: typeof r.costEst === 'number' ? r.costEst : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Auth for a native lane: the key_ref secret rides the child env, never argv. */
+function nativeEnv(entry: ProviderEntry): Record<string, string | undefined> {
+  const token = (entry.key_ref && readProviderSecret(entry.key_ref))
+    || (entry.required_env ?? []).map(v => process.env[v]).find(Boolean)
+    || undefined;
+  return { SQUADS_ENGINE_API_KEY: token };
+}
+
+/**
+ * Synthesize a CLIConfig for a `harness: native` registry entry (#1227).
+ *
+ * The engine speaks the openai-chat wire today; an entry declaring
+ * `api: anthropic-messages` gets NO runtime — undefined, loud, and no
+ * fallback, exactly as before this synthesis existed.
+ */
+function nativeConfigFromRegistry(entry: ProviderEntry): CLIConfig | undefined {
+  if (entry.api !== undefined && entry.api !== 'openai-chat') return undefined;
+
+  const defaultModel = entry.models?.[0];
+  return {
+    provider: entry.name,
+    displayName: entry.display_name ?? `${entry.name} (native)`,
+    command: process.env.SQUADS_ENGINE_BIN ?? 'squads-engine',
+    install: 'build squads-engine and link its bin (npm link in the engine repo), or point SQUADS_ENGINE_BIN at dist/cli/bin.js',
+    nativeEvents: true,
+    buildArgs: (prompt, opts) => {
+      // Honour a model override only when it belongs to this provider — same
+      // leak guard as the claude-harness lanes (#937).
+      const requested = opts?.model?.replace(new RegExp(`^${entry.name}/`), '');
+      const model = requested && entry.models?.includes(requested) ? requested : defaultModel;
+      return [
+        '-p', prompt,
+        '--provider', entry.name,
+        ...(entry.base_url ? ['--base-url', entry.base_url] : []),
+        ...(model ? ['--model', model] : []),
+        '--json', '--quiet',
+        ...nativeAllowRules(opts?.allowedTools).flatMap(r => ['--allow', r]),
+      ];
+    },
+    parseUsage: parseNativeJsonUsage,
+    env: () => nativeEnv(entry),
   };
 }
 

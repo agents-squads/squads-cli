@@ -206,8 +206,10 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   const rawLog = spool.logFile ? readLogTail(spool.logFile, STREAM_LOG_CAP_BYTES) : '';
   // Parser selection by HARNESS (#1177): opencode lanes emit a different JSONL
   // shape (`opencode run --format json`) with the same StreamResult contract.
+  // Only 'native' lanes (#1227) skip stream parsing — the engine wrote the
+  // events file itself; their log holds the --json result for parseUsage.
   const harness = spool.harness || '';
-  const stream = rawLog
+  const stream = rawLog && harness !== 'native'
     ? (harness === 'opencode' ? parseOpencodeJson(rawLog) : parseStreamJson(rawLog))
     : null;
   const hasStreamEvidence = !!stream && (
