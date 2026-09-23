@@ -537,10 +537,15 @@ export function nativeAllowRules(allowedTools?: string[]): string[] {
  * object on the stream; anything unparseable is no usage, not a wrong usage.
  */
 export function parseNativeJsonUsage(output: string): ProviderUsage | null {
-  const start = output.lastIndexOf('\n{');
-  if (start < 0) return null;
+  // The result is a top-level pretty-printed JSON object: either the whole
+  // output, or the last line that opens one (`\n{` — nested objects are
+  // indented, so only the top level matches).
+  const trimmed = output.trim();
+  const nl = trimmed.lastIndexOf('\n{');
+  const candidate = nl < 0 ? trimmed : trimmed.slice(nl + 1);
+  if (!candidate.startsWith('{')) return null;
   try {
-    const r = JSON.parse(output.slice(start + 1)) as {
+    const r = JSON.parse(candidate) as {
       usage?: { input?: number; output?: number };
       costEst?: number;
     };

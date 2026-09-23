@@ -295,6 +295,10 @@ providers:
     expect(parseNativeJsonUsage(`some prose\n${json}\n`)).toEqual({
       input_tokens: 1200, output_tokens: 300, cost_usd: 0.0004,
     });
+    // The JSON can BE the whole output — no leading newline to anchor on.
+    expect(parseNativeJsonUsage(json)).toEqual({
+      input_tokens: 1200, output_tokens: 300, cost_usd: 0.0004,
+    });
     expect(parseNativeJsonUsage('no json here')).toBeNull();
     expect(parseNativeJsonUsage('\n{"not":"usage"}')).toBeNull();
   });
