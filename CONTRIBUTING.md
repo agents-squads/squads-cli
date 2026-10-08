@@ -139,8 +139,7 @@ Closes #123
 * Add JSDoc comments for public APIs
 * Update CHANGELOG.md following [Keep a Changelog](https://keepachangelog.com/)
 * Create or update docs/ files for significant changes
-* Describe what the tool does, never what it promises. CI runs `node scripts/claims-guard.mjs --context public`, which fails on replacement framing ("AI workforce", "replaces your team") and unbacked claims ("10x more productive", "set and forget") <!-- claims-guard:allow examples of blocked phrases -->
-* If a flagged line is legitimate (quoting an anti-pattern, a measured number stated inline), add `claims-guard:allow <reason>` to that line
+* Describe what the tool does, never what it promises — no claim the code cannot demonstrate
 
 ## Release Process
 
