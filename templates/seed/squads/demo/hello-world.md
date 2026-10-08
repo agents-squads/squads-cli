@@ -13,7 +13,7 @@ max_retries: 1
 
 ## Role
 
-Confirm that your AI workforce is installed and ready to run.
+Confirm that your squads are installed and ready to run.
 
 ## Task
 

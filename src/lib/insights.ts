@@ -187,7 +187,7 @@ function generateInsights(
       insights.push({
         type: 'highlight',
         title: 'Strong ROI',
-        detail: `Your AI workforce delivered ${metrics.roiMultiplier.toFixed(1)}x return — $${metrics.totalCostUsd.toFixed(2)} spent, ~$${(metrics.estimatedHoursSaved * HOURLY_RATE).toFixed(0)} in estimated engineering time saved.`,
+        detail: `Your squads delivered ${metrics.roiMultiplier.toFixed(1)}x return — $${metrics.totalCostUsd.toFixed(2)} spent, ~$${(metrics.estimatedHoursSaved * HOURLY_RATE).toFixed(0)} in estimated engineering time saved.`,
         metric: 'roi',
         value: metrics.roiMultiplier,
       });
@@ -195,7 +195,7 @@ function generateInsights(
       insights.push({
         type: 'highlight',
         title: 'Positive ROI',
-        detail: `AI workforce is paying for itself at ${metrics.roiMultiplier.toFixed(1)}x. ${metrics.estimatedHoursSaved.toFixed(0)} engineering hours saved.`,
+        detail: `Your squads are paying for themselves at ${metrics.roiMultiplier.toFixed(1)}x. ${metrics.estimatedHoursSaved.toFixed(0)} engineering hours saved.`,
         metric: 'roi',
         value: metrics.roiMultiplier,
       });
@@ -311,14 +311,14 @@ export function generateExecutiveSummary(period: '7d' | '30d' = '7d'): string {
   const periodLabel = period === '7d' ? 'this week' : 'this month';
 
   if (summary.totalExecutions === 0) {
-    return `No AI workforce activity ${periodLabel}. Start the daemon to begin autonomous operations.`;
+    return `No squad activity ${periodLabel}. Start the daemon to begin autonomous operations.`;
   }
 
   const parts: string[] = [];
 
   // Activity
   parts.push(
-    `Your AI workforce ran ${summary.totalExecutions} time${summary.totalExecutions !== 1 ? 's' : ''} ${periodLabel}`,
+    `Your squads ran ${summary.totalExecutions} time${summary.totalExecutions !== 1 ? 's' : ''} ${periodLabel}`,
   );
 
   // Output

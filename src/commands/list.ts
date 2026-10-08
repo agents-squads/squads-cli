@@ -61,7 +61,7 @@ export async function listCommand(options: ListOptions): Promise<void> {
     writeLine(`  ${colors.yellow}No squads found in .agents/squads/${RESET}`);
     writeLine();
     writeLine(`  ${colors.dim}If you just ran \`squads init\`, make sure to commit your files:${RESET}`);
-    writeLine(`  ${colors.dim}  git add .agents && git commit -m "feat: init AI workforce"${RESET}`);
+    writeLine(`  ${colors.dim}  git add .agents && git commit -m "feat: init agent squads"${RESET}`);
     writeLine();
     writeLine(`  ${colors.dim}Then run your first agent:${RESET}`);
     writeLine(`  ${colors.dim}  squads run research/researcher${RESET}`);

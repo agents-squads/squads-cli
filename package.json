@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
   "version": "0.9.0",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team — finance, marketing, engineering, operations — for the cost of API calls.",
+  "description": "Run squads of AI agents from your terminal — defined in markdown, tracked in git.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"
@@ -32,8 +32,6 @@
     "gen:skill": "node scripts/gen-skill-reference.mjs"
   },
   "keywords": [
-    "ai-workforce",
-    "workforce",
     "autonomous-agents",
     "agent-framework",
     "ai-automation",

@@ -194,7 +194,7 @@ installCommandTelemetry(program);
 
 program
   .name('squads')
-  .description('Your AI workforce — business operating system for AI managers')
+  .description('Run squads of AI agents from your terminal — defined in markdown, tracked in git')
   .version(version)
   .addHelpText('after', `
 Resources:
