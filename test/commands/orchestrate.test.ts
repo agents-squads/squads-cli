@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 
 vi.mock('fs', () => ({
@@ -108,6 +108,11 @@ describe('registerOrchestrateCommand', () => {
     mockReaddirSync.mockReturnValue(['cli-lead.md', 'issue-solver.md', 'reviewer.md'] as never);
     mockSpawn.mockReturnValue(makeSpawnMock() as never);
     mockCommandExists.mockReturnValue(true); // tmux installed unless a test says otherwise
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined; // never leak an exit code into the next test
   });
 
   it('registers the orchestrate command', () => {
@@ -174,7 +179,6 @@ describe('registerOrchestrateCommand', () => {
 
   it('explains and exits non-zero when tmux is not installed (no spawn)', async () => {
     mockCommandExists.mockReturnValue(false);
-    const before = process.exitCode;
 
     const program = buildProgram();
     await program.parseAsync(['orchestrate', 'cli'], { from: 'user' });
@@ -184,8 +188,17 @@ describe('registerOrchestrateCommand', () => {
     expect(mockWriteLine).toHaveBeenCalledWith(expect.stringContaining('needs tmux'));
     expect(mockWriteLine).toHaveBeenCalledWith(expect.stringContaining('--foreground'));
     expect(process.exitCode).toBe(1);
+  });
 
-    process.exitCode = before;
+  it('still runs in the foreground without tmux (the remedy the message advertises)', async () => {
+    mockCommandExists.mockReturnValue(false);
+    mockSpawn.mockReturnValue({ on: vi.fn() } as never);
+
+    const program = buildProgram();
+    await program.parseAsync(['orchestrate', 'cli', '--foreground'], { from: 'user' });
+
+    expect(mockSpawn).toHaveBeenCalledWith('claude', expect.any(Array), expect.objectContaining({ stdio: 'inherit' }));
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('includes squad name in tmux session name', async () => {
