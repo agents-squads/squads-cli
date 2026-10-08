@@ -118,8 +118,9 @@ SLACK_BOT_TOKEN=xoxb-...
 SQUADS_SLACK_CHANNEL=C0123456789  # a channel ID, or a user ID for DMs
 ```
 
-`squads` loads the first `.env` it finds: the one in the current directory,
-then the user-level `~/.squads/.env` (handy for keys you share across projects).
+`squads` loads the `.env` in the current directory and then the user-level
+`~/.squads/.env` (handy for keys you share across projects). A key set in both
+takes the project value; a variable already exported in your shell wins over both.
 If a required key is missing, the provider's CLI will report the error —
 Squads doesn't mask or intercept auth failures. Add `.env` to your
 `.gitignore` to keep secrets out of version control.

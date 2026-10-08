@@ -29,7 +29,9 @@ process.stderr.on('error', (err: NodeJS.ErrnoException) => {
   throw err;
 });
 
-// Load .env (first found wins): the project's own, then the user-level ~/.squads/.env
+// Load the project's .env, then the user-level ~/.squads/.env for keys shared across
+// projects. Both are read; dotenv never overrides a key that is already set, so the
+// process environment wins over the project file, and the project file over the user file.
 const envPaths = [
   join(process.cwd(), '.env'),
   join(homedir(), '.squads', '.env'),
@@ -38,7 +40,6 @@ const envPaths = [
 for (const envPath of envPaths) {
   if (existsSync(envPath)) {
     config({ path: envPath, quiet: true });
-    break;
   }
 }
 
