@@ -683,9 +683,13 @@ async function runSquad(
     await Promise.all(launches);
 
     writeLine();
-    writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
-    writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
-    writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
+    if (options.background) {
+      writeLine(`  ${icons.success} All ${agentFiles.length} agents launched in the background`);
+      writeLine(`  ${colors.dim}Monitor: squads runs${RESET}`);
+    } else {
+      // Foreground is the default: runAgent awaited each agent, so they have already run.
+      writeLine(`  ${icons.success} All ${agentFiles.length} agents ran — see each agent's output above`);
+    }
     writeLine();
     return;
   }
