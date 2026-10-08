@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 
 vi.mock('fs', () => ({
@@ -30,6 +30,10 @@ vi.mock('../../src/lib/memory.js', () => ({
   findMemoryDir: vi.fn(),
 }));
 
+vi.mock('../../src/lib/llm-clis.js', () => ({
+  commandExists: vi.fn(),
+}));
+
 vi.mock('../../src/lib/terminal.js', () => ({
   writeLine: vi.fn(),
   colors: { dim: '', red: '', green: '', yellow: '', purple: '', cyan: '', white: '' },
@@ -51,6 +55,7 @@ import { resolveMcpConfigPath } from '../../src/lib/mcp-config.js';
 import { findSquadsDir, loadSquad } from '../../src/lib/squad-parser.js';
 import { findMemoryDir } from '../../src/lib/memory.js';
 import { writeLine } from '../../src/lib/terminal.js';
+import { commandExists } from '../../src/lib/llm-clis.js';
 import { registerOrchestrateCommand } from '../../src/commands/orchestrate.js';
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -64,6 +69,7 @@ const mockFindSquadsDir = vi.mocked(findSquadsDir);
 const mockLoadSquad = vi.mocked(loadSquad);
 const mockFindMemoryDir = vi.mocked(findMemoryDir);
 const mockWriteLine = vi.mocked(writeLine);
+const mockCommandExists = vi.mocked(commandExists);
 
 function makeSpawnMock() {
   return { on: vi.fn(), unref: vi.fn() };
@@ -101,6 +107,12 @@ describe('registerOrchestrateCommand', () => {
     // Squad directory has lead + workers
     mockReaddirSync.mockReturnValue(['cli-lead.md', 'issue-solver.md', 'reviewer.md'] as never);
     mockSpawn.mockReturnValue(makeSpawnMock() as never);
+    mockCommandExists.mockReturnValue(true); // tmux installed unless a test says otherwise
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined; // never leak an exit code into the next test
   });
 
   it('registers the orchestrate command', () => {
@@ -163,6 +175,30 @@ describe('registerOrchestrateCommand', () => {
       expect.objectContaining({ detached: true })
     );
     expect(mockWriteLine).toHaveBeenCalledWith(expect.stringContaining('background'));
+  });
+
+  it('explains and exits non-zero when tmux is not installed (no spawn)', async () => {
+    mockCommandExists.mockReturnValue(false);
+
+    const program = buildProgram();
+    await program.parseAsync(['orchestrate', 'cli'], { from: 'user' });
+
+    expect(mockCommandExists).toHaveBeenCalledWith('tmux');
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockWriteLine).toHaveBeenCalledWith(expect.stringContaining('needs tmux'));
+    expect(mockWriteLine).toHaveBeenCalledWith(expect.stringContaining('--foreground'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('still runs in the foreground without tmux (the remedy the message advertises)', async () => {
+    mockCommandExists.mockReturnValue(false);
+    mockSpawn.mockReturnValue({ on: vi.fn() } as never);
+
+    const program = buildProgram();
+    await program.parseAsync(['orchestrate', 'cli', '--foreground'], { from: 'user' });
+
+    expect(mockSpawn).toHaveBeenCalledWith('claude', expect.any(Array), expect.objectContaining({ stdio: 'inherit' }));
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('includes squad name in tmux session name', async () => {

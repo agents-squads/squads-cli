@@ -175,10 +175,16 @@ vi.mock('../../src/lib/run-context.js', () => ({
   gatherSquadContext: vi.fn(() => ''),
 }));
 
+vi.mock('../../src/lib/agent-runner.js', () => ({
+  runAgent: vi.fn(() => Promise.resolve()),
+}));
+
 // ── Imports (after mocks) ──────────────────────────────────────────────────
 import { runCommand, runSquadCommand, mergeAgentPositional } from '../../src/commands/run.js';
 import { findSquadsDir, loadSquad, listAgents, findSimilarSquads } from '../../src/lib/squad-parser.js';
 import { writeLine } from '../../src/lib/terminal.js';
+import { existsSync } from 'fs';
+import { runAgent } from '../../src/lib/agent-runner.js';
 import { isProviderCLIAvailable } from '../../src/lib/llm-clis.js';
 
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
@@ -744,5 +750,53 @@ describe('mergeAgentPositional', () => {
   it('accepts a redundant positional matching the slash agent', () => {
     expect(mergeAgentPositional('research/weekly-reporter', 'weekly-reporter', undefined))
       .toEqual({ target: 'research/weekly-reporter' });
+  });
+});
+
+describe('run --parallel closing message', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  const squad = { name: 'demo', dir: 'demo', agents: [{ name: 'a1' }, { name: 'a2' }], pipelines: [], status: 'active' };
+  const lines = () => vi.mocked(writeLine).mock.calls.map(c => String(c[0] ?? ''));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SQUADS_SKIP_CHECKS = '1';
+    exitSpy = makeExitSpy();
+    process.exitCode = undefined;
+    mockFindSquadsDir.mockReturnValue('/proj/.agents/squads');
+    mockLoadSquad.mockReturnValue(squad as never);
+    vi.mocked(existsSync).mockImplementation((p: unknown) => String(p).endsWith('.md'));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    delete process.env.SQUADS_SKIP_CHECKS;
+    process.exitCode = undefined;
+  });
+
+  it('foreground: reports the run as finished, without background hints', async () => {
+    await runCommand('demo', { parallel: true, execute: true, eval: false });
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(2);
+    expect(lines().some(l => l.includes('Parallel run finished —'))).toBe(true);
+    expect(lines().some(l => l.includes('Monitor: squads runs'))).toBe(false);
+  });
+
+  it('background: points at squads runs', async () => {
+    await runCommand('demo', { parallel: true, execute: true, background: true, eval: false });
+    expect(lines().some(l => l.includes('launched in the background'))).toBe(true);
+    expect(lines().some(l => l.includes('Monitor: squads runs'))).toBe(true);
+  });
+
+  it('background + watch is awaited, so it is not reported as background', async () => {
+    await runCommand('demo', { parallel: true, execute: true, background: true, watch: true, eval: false });
+    expect(lines().some(l => l.includes('launched in the background'))).toBe(false);
+    expect(lines().some(l => l.includes('Parallel run finished'))).toBe(true);
+  });
+
+  it('does not claim success when an agent did not run', async () => {
+    vi.mocked(runAgent).mockImplementationOnce(async () => { process.exitCode = 1; });
+    await runCommand('demo', { parallel: true, execute: true, eval: false });
+    expect(lines().some(l => l.includes('finished with errors'))).toBe(true);
+    expect(lines().some(l => l.includes('Parallel run finished —'))).toBe(false);
   });
 });

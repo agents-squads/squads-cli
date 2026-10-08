@@ -21,6 +21,7 @@ import {
   watchForEvents,
 } from '../lib/orchestration/lead-orchestrator.js';
 import { resolveMcpConfigPath } from '../lib/mcp-config.js';
+import { commandExists } from '../lib/llm-clis.js';
 import { findSquadsDir, loadSquad } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import {
@@ -227,7 +228,16 @@ This allows tracking multiple executions per day.`;
       writeLine(`\n${colors.cyan}Lead session ended (exit code: ${code})${colors.reset}`);
     });
   } else {
-    // Run lead in tmux (background)
+    // Run lead in tmux (background). tmux is not installed by default on most
+    // machines: say so and offer --foreground instead of crashing on spawn.
+    if (!commandExists('tmux')) {
+      writeLine(`\n${colors.red}Background lead mode needs tmux, which is not installed.${colors.reset}`);
+      writeLine(`  ${colors.dim}Install it (macOS: brew install tmux · Debian/Ubuntu: sudo apt install tmux)${colors.reset}`);
+      writeLine(`  ${colors.dim}or run in the foreground: squads orchestrate ${squadName} --foreground${colors.reset}`);
+      process.exitCode = 1;
+      return;
+    }
+
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
 
     const claudeCmd = `cd '${projectRoot}' && unset CLAUDECODE && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
