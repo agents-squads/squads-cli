@@ -11,7 +11,11 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir } from './squad-parser.js';
 
-const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
+// Read at call time, not import time: ESM evaluates this module before cli.ts
+// loads .env, so a module-level constant would miss a token that lives in .env.
+function slackToken(): string | undefined {
+  return process.env.SLACK_BOT_TOKEN;
+}
 
 // Approval tiers from SQUAD.md
 export type ApprovalTier = 'auto' | 'notify' | 'approve' | 'confirm';
@@ -48,9 +52,11 @@ interface SlackBlock {
 export async function slackApi<T = SlackApiResponse>(
   method: 'GET' | 'POST',
   endpoint: string,
-  body?: Record<string, unknown>
+  body?: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<T> {
-  if (!SLACK_BOT_TOKEN) {
+  const token = slackToken();
+  if (!token) {
     throw new Error('SLACK_BOT_TOKEN not set in environment');
   }
 
@@ -58,9 +64,10 @@ export async function slackApi<T = SlackApiResponse>(
   const options: RequestInit = {
     method,
     headers: {
-      Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   };
 
   if (body) {
@@ -81,7 +88,7 @@ export async function slackApi<T = SlackApiResponse>(
  * Check if Slack is configured
  */
 export function isSlackConfigured(): boolean {
-  return !!SLACK_BOT_TOKEN;
+  return !!slackToken();
 }
 
 /**
