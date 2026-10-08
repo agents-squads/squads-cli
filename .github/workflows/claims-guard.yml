@@ -1,0 +1,21 @@
+name: claims-guard
+
+# Blocks replacement framing and unbacked claims in public copy
+# (README, docs, package.json, --help strings, seed templates).
+# Rules and the `claims-guard:allow <reason>` marker: scripts/claims-guard.mjs
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  claims:
+    name: claims-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Scan public copy
+        run: node scripts/claims-guard.mjs --context public
