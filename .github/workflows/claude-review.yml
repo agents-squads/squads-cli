@@ -47,14 +47,14 @@ jobs:
             echo "::warning title=No automated PR review::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set, so this PR was NOT reviewed. Add one in repo settings → Secrets. Generate the OAuth token with 'claude setup-token'."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: steps.creds.outputs.configured == 'true'
         with:
           fetch-depth: 0
 
       - name: Review
         if: steps.creds.outputs.configured == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
