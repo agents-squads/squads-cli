@@ -2,7 +2,7 @@
 
 # Agents Squads
 
-**Boot AI teammates for the work you never get around to.**
+**Run squads of AI agents from your terminal — defined in markdown, tracked in git.**
 
 Autonomous AI agents for engineering, marketing, finance, and operations.
 You make the decisions. They do the work.
