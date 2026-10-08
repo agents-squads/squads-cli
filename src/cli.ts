@@ -29,11 +29,10 @@ process.stderr.on('error', (err: NodeJS.ErrnoException) => {
   throw err;
 });
 
-// Load .env from multiple locations (first found wins)
+// Load .env (first found wins): the project's own, then the user-level ~/.squads/.env
 const envPaths = [
   join(process.cwd(), '.env'),
-  join(process.cwd(), '..', 'hq', '.env'),
-  join(homedir(), 'agents-squads', 'hq', '.env'),
+  join(homedir(), '.squads', '.env'),
 ];
 
 for (const envPath of envPaths) {

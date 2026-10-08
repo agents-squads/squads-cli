@@ -17,6 +17,7 @@ import {
 } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';
+import { isSlackConfigured, slackApi } from './slack.js';
 import {
   colors,
   RESET,
@@ -561,27 +562,16 @@ export function buildReviewTask(pr: PRWithReviews): string {
 
 // ── Slack ────────────────────────────────────────────────────────────
 
+/**
+ * Post a daemon/escalation message to Slack. Best-effort and opt-in: does nothing
+ * unless both SLACK_BOT_TOKEN and SQUADS_SLACK_CHANNEL (a channel or user ID) are set.
+ */
 export async function slackNotify(message: string): Promise<void> {
+  const channel = process.env.SQUADS_SLACK_CHANNEL;
+  if (!channel || !isSlackConfigured()) return;
+
   try {
-    const envPath = join(homedir(), 'agents-squads', 'hq', '.env');
-    if (!existsSync(envPath)) return;
-
-    const env = readFileSync(envPath, 'utf-8');
-    const tokenMatch = env.match(/SLACK_BOT_TOKEN=(.+)/);
-    if (!tokenMatch) return;
-
-    const token = tokenMatch[1].trim();
-    const founderId = 'U0A6NQ3U0JG';
-
-    await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ channel: founderId, text: message }),
-      signal: AbortSignal.timeout(10000),
-    });
+    await slackApi('POST', 'chat.postMessage', { channel, text: message }, 10000);
   } catch {
     // Silent — Slack is best-effort
   }

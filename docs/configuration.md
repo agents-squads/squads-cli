@@ -112,9 +112,14 @@ ANTHROPIC_API_KEY=sk-ant-...    # Required for Claude Code (default provider)
 GEMINI_API_KEY=...               # Required for Gemini CLI
 OPENAI_API_KEY=sk-...            # Required for Codex
 GITHUB_TOKEN=ghp_...             # Recommended for gh CLI operations
+
+# Optional: daemon escalations and summaries to Slack (both required)
+SLACK_BOT_TOKEN=xoxb-...
+SQUADS_SLACK_CHANNEL=C0123456789  # a channel ID, or a user ID for DMs
 ```
 
-`squads run` loads `.env` automatically before dispatching any agent.
+`squads` loads the first `.env` it finds: the one in the current directory,
+then the user-level `~/.squads/.env` (handy for keys you share across projects).
 If a required key is missing, the provider's CLI will report the error —
 Squads doesn't mask or intercept auth failures. Add `.env` to your
 `.gitignore` to keep secrets out of version control.

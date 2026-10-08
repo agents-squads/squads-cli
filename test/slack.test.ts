@@ -44,6 +44,13 @@ describe('slack', () => {
       const { isSlackConfigured } = await import('../src/lib/slack');
       expect(isSlackConfigured()).toBe(false);
     });
+
+    it('sees a token set after import (cli.ts loads .env after ESM imports run)', async () => {
+      delete process.env.SLACK_BOT_TOKEN;
+      const { isSlackConfigured } = await import('../src/lib/slack');
+      process.env.SLACK_BOT_TOKEN = 'xoxb-loaded-later';
+      expect(isSlackConfigured()).toBe(true);
+    });
   });
 
   describe('slackApi', () => {
@@ -95,6 +102,18 @@ describe('slack', () => {
           body: JSON.stringify({ channel: 'C123', text: 'hello' }),
         })
       );
+    });
+
+    it('passes an abort signal only when a timeout is given', async () => {
+      process.env.SLACK_BOT_TOKEN = 'xoxb-test-token';
+      mockFetch.mockResolvedValue({ json: async () => ({ ok: true }) });
+
+      const { slackApi } = await import('../src/lib/slack');
+      await slackApi('POST', 'chat.postMessage', { channel: 'C1', text: 'a' });
+      await slackApi('POST', 'chat.postMessage', { channel: 'C1', text: 'b' }, 10000);
+
+      expect(mockFetch.mock.calls[0][1].signal).toBeUndefined();
+      expect(mockFetch.mock.calls[1][1].signal).toBeInstanceOf(AbortSignal);
     });
 
     it('throws on Slack API error response', async () => {
