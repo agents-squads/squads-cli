@@ -124,3 +124,17 @@ takes the project value; a variable already exported in your shell wins over bot
 If a required key is missing, the provider's CLI will report the error —
 Squads doesn't mask or intercept auth failures. Add `.env` to your
 `.gitignore` to keep secrets out of version control.
+
+## Agent memory commits
+
+Agents work in their own git worktree; the only thing they write into your checkout is
+their squad's memory (`.agents/memory/<squad>/`). Squads never commits or pushes it
+unless you opt in:
+
+```bash
+SQUADS_AUTO_COMMIT=1   # after a successful run, commit .agents/memory/<squad>/ only
+SQUADS_AUTO_PUSH=1     # also push that commit (requires SQUADS_AUTO_COMMIT=1)
+```
+
+Only the memory path is committed — your other changes, staged or not, are left alone.
+Without the opt-in, the run ends by telling you where the memory changed.
