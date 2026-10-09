@@ -4,9 +4,8 @@
   "title": "SQUAD.md frontmatter",
   "description": "Typed squad definition: four blocks (cost, behavior, context, org) instead of prose. How to work in a repo belongs in AGENTS.md; SQUAD.md points to it.",
   "type": "object",
-  "required": ["name"],
   "properties": {
-    "name": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1, "description": "Defaults to the `# Squad:` heading, then the directory name." },
     "mission": { "type": "string", "description": "One line: what this squad exists to produce." },
     "status": { "enum": ["active", "paused"] },
     "cost": {

@@ -83,8 +83,14 @@ describe('validateSquadFrontmatter', () => {
     expect(byPath.stack).toBe('not part of the schema');
   });
 
-  it('requires a name', () => {
-    expect(validateSquadFrontmatter({}).errors).toContainEqual({ path: 'name', message: 'is required' });
+  it('accepts a squad with no frontmatter at all (name comes from the heading or directory)', () => {
+    expect(validateSquadFrontmatter({})).toEqual({ errors: [], hints: [] });
+  });
+
+  it('treats prototype-named keys as ordinary unknown keys, and NaN as not a number', () => {
+    const { errors, hints } = validateSquadFrontmatter({ constructor: 1, cost: { budget: { daily_usd: NaN } } });
+    expect(hints).toContainEqual({ path: 'constructor', message: 'not part of the schema' });
+    expect(errors.map(e => e.path)).toContain('cost.budget.daily_usd');
   });
 });
 
@@ -130,6 +136,14 @@ describe('squads contract validate', () => {
     expect(out.join('\n')).toContain('org.owner: is required');
     expect(out.join('\n')).toContain('1/2 SQUAD.md files match the schema');
     expect(process.exitCode).toBe(1);
+  });
+
+  it("passes the squad `squads init` creates (no frontmatter)", async () => {
+    mkdirSync(join(dir, '.agents', 'squads', 'mine'), { recursive: true });
+    writeFileSync(join(dir, '.agents', 'squads', 'mine', 'SQUAD.md'), '# Squad: mine\n\nA first squad.\n');
+    await validate();
+    expect(out.join('\n')).toContain('1/1 SQUAD.md files match the schema');
+    expect(process.exitCode).toBe(0);
   });
 
   it('passes legacy squads, reporting hints only in --json', async () => {

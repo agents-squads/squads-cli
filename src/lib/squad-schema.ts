@@ -63,7 +63,7 @@ const LEGACY_IN_CONTEXT: Record<string, string> = {
 function typeOf(v: unknown): string {
   if (Array.isArray(v)) return 'array';
   if (v === null) return 'null';
-  if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'number';
+  if (typeof v === 'number') return Number.isNaN(v) ? 'NaN' : Number.isInteger(v) ? 'integer' : 'number';
   return typeof v;
 }
 
@@ -97,11 +97,11 @@ function check(value: unknown, schema: Schema, path: string, errors: SchemaIssue
   if (typeOf(value) === 'object') {
     const obj = value as Record<string, unknown>;
     for (const key of schema.required ?? []) {
-      if (!(key in obj)) errors.push({ path: path ? `${path}.${key}` : key, message: 'is required' });
+      if (!Object.hasOwn(obj, key)) errors.push({ path: path ? `${path}.${key}` : key, message: 'is required' });
     }
     for (const [key, v] of Object.entries(obj)) {
       const child = path ? `${path}.${key}` : key;
-      const prop = schema.properties?.[key];
+      const prop = schema.properties && Object.hasOwn(schema.properties, key) ? schema.properties[key] : undefined;
       if (prop) check(v, prop, child, errors);
       else if (schema.additionalProperties === false) errors.push({ path: child, message: 'is not part of this block' });
       else if (typeof schema.additionalProperties === 'object') check(v, schema.additionalProperties, child, errors);
@@ -123,7 +123,7 @@ export function validateSquadFrontmatter(frontmatter: Record<string, unknown>): 
     if (key === 'context' && typeOf(value) === 'object') {
       const ctx = { ...(value as Record<string, unknown>) };
       for (const [legacy, target] of Object.entries(LEGACY_IN_CONTEXT)) {
-        if (legacy in ctx) {
+        if (Object.hasOwn(ctx, legacy)) {
           hints.push({ path: `context.${legacy}`, message: `becomes ${target} in the four-block format` });
           delete ctx[legacy];
         }
@@ -132,9 +132,9 @@ export function validateSquadFrontmatter(frontmatter: Record<string, unknown>): 
     } else if (key === 'status' && value === 'frozen') {
       // Older squads say `frozen`; the runtime state is `paused`.
       hints.push({ path: 'status', message: 'legacy value "frozen" — use "paused"' });
-    } else if (key in known) {
+    } else if (Object.hasOwn(known, key)) {
       strict[key] = value;
-    } else if (key in LEGACY_TOP_LEVEL) {
+    } else if (Object.hasOwn(LEGACY_TOP_LEVEL, key)) {
       hints.push({ path: key, message: `becomes ${LEGACY_TOP_LEVEL[key]} in the four-block format` });
     } else {
       hints.push({ path: key, message: 'not part of the schema' });
