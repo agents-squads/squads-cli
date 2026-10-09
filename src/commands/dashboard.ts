@@ -524,8 +524,8 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
     timeout(fetchInsights('week').catch(() => null), 2000, null),
     // Session summary: lsof per AI process, cap at 1s to stay under 2s total
     timeout(getLiveSessionSummaryAsync(), 1000, { totalSessions: 0, bySquad: {}, squadCount: 0, byTool: {} } as SessionSummary),
-    // NPM download stats (network, 2s timeout)
-    timeout(fetchNpmStats('squads-cli'), 2000, null),
+    // NPM download stats — only for the package named in SQUADS_NPM_PACKAGE
+    timeout(fetchNpmStats(), 2000, null),
     // Quota/autonomy info (local network, 2s timeout)
     timeout(fetchQuotaInfo(), 2000, null),
     // Claude Code capacity (local file read, fast)
@@ -909,8 +909,7 @@ function renderInfrastructureCached(cache: DashboardCache): void {
 }
 
 function renderAcquisitionCached(cache: DashboardCache): void {
-  // Only show Acquisition for squads-cli project (internal metrics)
-  // Check if SQUADS_NPM_PACKAGE is set or if we're in the squads-cli repo
+  // Only show Acquisition when SQUADS_NPM_PACKAGE names the package to track
   const npmPackage = process.env.SQUADS_NPM_PACKAGE;
   if (!npmPackage) {
     // Not configured - don't show internal acquisition metrics to fresh users

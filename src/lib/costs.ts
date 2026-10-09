@@ -805,7 +805,9 @@ export interface NpmStats {
   weekOverWeek: number; // percentage change
 }
 
-export async function fetchNpmStats(packageName: string = process.env.SQUADS_NPM_PACKAGE || 'squads-cli'): Promise<NpmStats | null> {
+/** Download stats for `packageName` (default: SQUADS_NPM_PACKAGE); null when none is configured. */
+export async function fetchNpmStats(packageName: string = process.env.SQUADS_NPM_PACKAGE || ''): Promise<NpmStats | null> {
+  if (!packageName) return null;
   try {
     const [dayRes, weekRes, monthRes] = await Promise.all([
       fetchWithTimeout(`https://api.npmjs.org/downloads/point/last-day/${packageName}`, {}, 3000),
