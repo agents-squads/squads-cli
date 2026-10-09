@@ -46,6 +46,42 @@ export function gitIdentityArgs(repoRoot: string): string {
   return `-c user.name='${FALLBACK_GIT_USER_NAME}' -c user.email='${FALLBACK_GIT_USER_EMAIL}'`;
 }
 
+/**
+ * The branch work integrates into, by what the repo actually has — never an
+ * assumed name: `develop` when it exists (PRs to develop, main = releases),
+ * else the remote's default branch (`origin/HEAD`), else a `main`/`master`
+ * branch. Null when nothing qualifies (fresh local-only repo); callers then
+ * fall back to the checked-out branch. Callers interpolate the result into
+ * shell commands, so a remote default-branch name outside a plain charset
+ * (a cloned repo can name it anything) is refused rather than trusted.
+ */
+export function integrationBranch(repoDir: string): string | null {
+  const has = (ref: string): boolean => {
+    try {
+      execSync(`git rev-parse --verify --quiet ${ref}`, { cwd: repoDir, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (has('refs/remotes/origin/develop') || has('refs/heads/develop')) return 'develop';
+  try {
+    const head = execSync('git symbolic-ref --quiet --short refs/remotes/origin/HEAD', {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const name = head.startsWith('origin/') ? head.slice('origin/'.length) : '';
+    if (/^[\w][\w./-]*$/.test(name) && !name.includes('..')) return name;
+  } catch {
+    // origin/HEAD is only set by clone (or `git remote set-head`) — fall through
+  }
+  for (const b of ['main', 'master']) {
+    if (has(`refs/remotes/origin/${b}`) || has(`refs/heads/${b}`)) return b;
+  }
+  return null;
+}
+
 function printGitIdentityFallbackHintOnce(): void {
   if (hasPrintedIdentityFallbackHint) return;
   hasPrintedIdentityFallbackHint = true;
