@@ -83,15 +83,16 @@ export const BRIEF_MAX_CHARS = 200;
  * declares no explicit contract grants (#920). Shared by the foreground and
  * detached spawn paths so P1 closes the detached bypass with the SAME proven
  * surface foreground runs have exercised for months.
+ *
+ * Deliberately minimal: git/gh/npm/node plus basic shell + file tools. Other CLIs
+ * (gws, gcloud, wrangler, bq, stripe, docker, duckdb, curl, ...) are opt-in per
+ * agent via frontmatter `extra_tools` — see compileAllowedTools in agent-contract.ts.
  */
 export const DEFAULT_AGENT_TOOLS: string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
   'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
-  'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+  'Bash(node:*)', 'Bash(python3:*)',
   'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
-  'Bash(docker:*)', 'Bash(duckdb:*)',
-  'Bash(bq:*)', 'Bash(gcloud:*)',
-  'Bash(gws:*)', 'Bash(stripe:*)',
   'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
   'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
   'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
