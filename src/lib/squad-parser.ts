@@ -233,7 +233,7 @@ function walkUpForSquadsDir(startDir: string, maxLevels: number): string | null 
  * 2. If that fails and we are inside a git worktree or subdirectory, get the
  *    git toplevel via `git rev-parse --show-toplevel` and walk up from there.
  * 3. Also check the parent of the git toplevel so that sibling layouts like
- *    `agents-squads/hq/` are found when CWD is `agents-squads/.worktrees/xxx/`.
+ *    `workspace/hq/` are found when CWD is `workspace/.worktrees/xxx/`.
  *
  * @returns Path to squads directory or null if not found
  */

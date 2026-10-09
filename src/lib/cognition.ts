@@ -616,37 +616,6 @@ export async function runCognitionCycle(
 }
 
 /**
- * Seed initial beliefs if none exist.
- * Called once on first run to bootstrap the world model.
- */
-export function seedBeliefsIfEmpty(state: CognitionState): void {
-  if (state.beliefs.length > 0) return;
-
-  const seeds: Array<Omit<CognitionBelief, 'supporting_signals' | 'contradicting_signals' | 'temperature' | 'revision' | 'updated_at'>> = [
-    { belief_key: 'retention_critical', domain: 'product', statement: 'D1 retention (10%) is the primary blocker to product-market fit. Must reach 30% before monetizing.', confidence: 0.9 },
-    { belief_key: 'cli_is_os', domain: 'product', statement: 'The CLI is our operating system. Every improvement multiplies autonomous capability.', confidence: 0.85 },
-    { belief_key: 'zero_revenue', domain: 'revenue', statement: 'Revenue is $0. Consulting is the near-term path. Pro tier gated on retention.', confidence: 0.95 },
-    { belief_key: 'agent_autonomy_low', domain: 'operations', statement: 'Agents run but do not think autonomously. Scanners and leads never fire. Intelligence loop is broken.', confidence: 0.8 },
-    { belief_key: 'first_run_broken', domain: 'product', statement: 'First-run experience is broken. v0.7.0 crashes on squads run. Users cannot complete the core flow.', confidence: 0.9 },
-    { belief_key: 'global_developer_focus', domain: 'market', statement: 'Target market is global developers, not Chilean enterprises. Product-first, not consulting-first.', confidence: 0.75 },
-    { belief_key: 'test_user_simulation', domain: 'operations', statement: 'Simulating test users (fresh install → init → run → evaluate friction) is the most effective way to find and fix retention blockers.', confidence: 0.7 },
-    { belief_key: 'cognition_engine_needed', domain: 'operations', statement: 'Without a working cognition engine, the organization cannot learn or improve autonomously. This is the difference between a cron job and intelligence.', confidence: 0.85 },
-  ];
-
-  const now = new Date().toISOString();
-  for (const seed of seeds) {
-    state.beliefs.push({
-      ...seed,
-      supporting_signals: [],
-      contradicting_signals: [],
-      temperature: 'warm',
-      revision: 1,
-      updated_at: now,
-    });
-  }
-}
-
-/**
  * Get beliefs formatted as markdown for agent context injection.
  */
 export function getBeliefsContext(state: CognitionState): string {

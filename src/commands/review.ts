@@ -78,6 +78,14 @@ function parseGoalsDetailed(filePath: string): GoalInfo[] {
   return goals;
 }
 
+/**
+ * Does a blocker line need a human (vs. being agent-resolvable)? Generic
+ * keyword/label match only — no account handles or company-specific terms.
+ */
+export function needsHuman(text: string): boolean {
+  return /founder|owner|needs[-: ]?(human|founder|owner)|assigned to (the )?(founder|owner|human)|enable at|auth login/i.test(text);
+}
+
 function readLeadState(memoryDir: string, squad: string): {
   status: string;
   topAction: string;
@@ -138,9 +146,7 @@ function readLeadState(memoryDir: string, squad: string): {
       const link = extractLink(text);
       const entry = link ? `${text.slice(0, 65)}\n         ${colors.dim}${link}${RESET}` : text.slice(0, 80);
 
-      // Founder blockers: mention founder, kokevidaurre, needs:human, "enable", "login", "auth"
-      const isFounder = /founder|kokevidaurre|needs:human|needs founder|assigned to founder|enable at|auth login|bank cartola|CPA/i.test(text);
-      if (isFounder) {
+      if (needsHuman(text)) {
         founderBlockers.push(entry);
       } else {
         agentBlockers.push(entry);

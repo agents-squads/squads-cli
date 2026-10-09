@@ -11,11 +11,11 @@
 
 import { execSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { parsePersistedLine } from './event-render.js';
 import { activeDeferrals } from './inbox-decisions.js';
 
-export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts' | 'goal' | 'coherence' | 'oracle_alert' | 'strategy_proposal';
+export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts' | 'coherence' | 'strategy_proposal';
 
 export interface InboxItem {
   /** Stable handle for Child A's decisions: pr-12 | branch-<name> | run-<execId>. */
@@ -235,197 +235,12 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15, opts?: { run?
 }
 
 /**
- * Run a validation script whose non-zero exit code IS the signal — these
- * scripts exit non-zero precisely when they find problems, which is the case
- * the caller wants to parse. Returns captured stdout either way; empty string
- * only when the script produced no output (missing, crashed, timed out).
- */
-function runValidationScript(script: string, timeoutMs: number): string {
-  try {
-    return execSync(`bash ${script}`, {
-      encoding: 'utf8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    const stdout = (err as { stdout?: unknown }).stdout;
-    return typeof stdout === 'string' ? stdout : '';
-  }
-}
-
-/**
- * Parse a goals.md file and return a map of goal name to status.
- * Only considers a goal achieved when its status field explicitly says so
- * (e.g., `status: achieved`, `status: complete`) OR it's in the `## Achieved` section.
- * A merged PR ref is at most a signal, never the sole trigger (#1040).
- */
-function buildGoalStatusMap(memoryDir: string): Map<string, { status: string; section: string }> {
-  const goalMap = new Map<string, { status: string; section: string }>();
-  try {
-    // Get list of squad directories - can be in .agents/squads/ or directly in .agents/memory/
-    let squadDirs: string[] = [];
-
-    // First try: squads directory at .agents/squads/
-    let squadsDir = join(dirname(memoryDir), 'squads');
-    if (!existsSync(squadsDir)) {
-      // Fallback: .agents/squads/ relative to obsRoot
-      const obsRoot = dirname(memoryDir);
-      squadsDir = join(obsRoot, '.agents', 'squads');
-    }
-
-    if (existsSync(squadsDir)) {
-      squadDirs = readdirSync(squadsDir).filter(name => {
-        const fullPath = join(squadsDir, name);
-        return existsSync(fullPath) && statSync(fullPath).isDirectory();
-      });
-    }
-
-    // If no squad dirs found in .agents/squads/, check memory directory directly
-    if (squadDirs.length === 0 && existsSync(memoryDir)) {
-      squadDirs = readdirSync(memoryDir).filter(name => {
-        const goalsPath = join(memoryDir, name, 'goals.md');
-        const fullPath = join(memoryDir, name);
-        return existsSync(fullPath) && statSync(fullPath).isDirectory() && existsSync(goalsPath);
-      });
-    }
-
-    if (squadDirs.length === 0) return goalMap;
-
-    for (const squad of squadDirs) {
-      const goalsPath = join(memoryDir, squad, 'goals.md');
-      if (!existsSync(goalsPath)) continue;
-
-      const content = readFileSync(goalsPath, 'utf-8');
-      const lines = content.split('\n');
-      let currentSection: string = 'active';
-
-      for (const line of lines) {
-        if (line.startsWith('## Active')) currentSection = 'active';
-        else if (line.startsWith('## Achieved')) currentSection = 'achieved';
-        else if (line.startsWith('## Abandoned')) currentSection = 'abandoned';
-        else if (line.startsWith('## Proposed')) currentSection = 'proposed';
-
-        const nameMatch = line.match(/\*\*([^*]+)\*\*/);
-        if (!nameMatch) continue;
-
-        const goalName = nameMatch[1].trim();
-        const statusMatch = line.match(/status:\s*(\S+)/);
-        const status = statusMatch ? statusMatch[1].trim() : '';
-
-        // Goals in the Achieved section are considered achieved even without explicit status
-        const isAchieved = currentSection === 'achieved' ||
-          status === 'achieved' ||
-          status === 'complete' ||
-          status === 'completed';
-
-        goalMap.set(goalName, { status: isAchieved ? 'achieved' : status, section: currentSection });
-      }
-    }
-  } catch {
-    // Parsing failed — return empty map, fail open
-  }
-  return goalMap;
-}
-
-/**
- * Machine-detected goal lifecycle events (hq#478). Reads goals.md across
- * squads and surfaces: achieved (all PR refs merged), contradicted (refs not
- * found), stale (no activity). Detection is from validate-goals.sh; this
- * scanner creates inbox items from its structured output.
- *
- * FIXED (#1040): Only considers a goal achieved when its status field says so
- * (or it's in the Achieved section). A merged-PR ref is at most a signal,
- * never the sole trigger.
- */
-export function scanGoalEvents(obsRoot: string): InboxItem[] {
-  const memoryDir = join(obsRoot, '.agents', 'memory');
-  if (!existsSync(memoryDir)) return [];
-  const items: InboxItem[] = [];
-
-  // #1040: the status field is the source of truth for "achieved" — so this
-  // must run whenever goals.md exists, NOT only when a sibling .agents/squads
-  // dir happens to be present (that stale guard returned [] on any workspace
-  // laid out memory-first, which silently disabled the whole status check).
-  // Build the map from memory directly (buildGoalStatusMap already falls back
-  // to reading squad dirs out of memory).
-  const goalStatusMap = buildGoalStatusMap(memoryDir);
-
-  try {
-    // validate-goals.sh lives under the workspace root's scripts/, resolved
-    // from obsRoot rather than a .agents/squads relative dance.
-    const validateScript = join(obsRoot, 'scripts', 'validate-goals.sh');
-    if (!existsSync(validateScript)) return [];
-    const raw = runValidationScript(validateScript, 120_000);
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('✓')) continue;
-      const reviewMatch = trimmed.match(/⤴ REVIEW.*:\s+(.+)/);
-      if (reviewMatch) {
-        const goalName = reviewMatch[1].trim();
-        const goalState = goalStatusMap.get(goalName);
-
-        // #1040: Only surface as achieved if the goal's status field says so
-        // A merged PR ref alone is not sufficient
-        const isActuallyAchieved = goalState?.status === 'achieved' ||
-          goalState?.section === 'achieved';
-
-        if (isActuallyAchieved) {
-          items.push({
-            id: `goal-${goalName.slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
-            kind: 'goal',
-            ref: goalName,
-            title: `Goal achieved: ${goalName.slice(0, 80)}`,
-            ageDays: 0,
-            approveSemantics: 'confirm achieved status in goals.md',
-            detail: 'status field or section confirms achieved',
-          });
-        }
-        // If not actually achieved, skip — active goals with merged PR refs stay active
-        continue;
-      }
-      const contraMatch = trimmed.match(/✗ CONTRADICTED:\s+(.+)/);
-      if (contraMatch) {
-        items.push({
-          id: `goal-${contraMatch[1].slice(0, 40).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
-          kind: 'goal', ref: contraMatch[1], title: `Goal contradicted: ${contraMatch[1].slice(0, 80)}`,
-          ageDays: 7, approveSemantics: 'keep as active',
-          detail: 'refs not found or not merged — may need review or drop',
-        });
-      }
-    }
-  } catch {
-    // validate-goals.sh unavailable — no goal items this cycle
-  }
-  return items;
-}
-
-/**
- * Coherence violations (hq#479). Surfaces strategy↔runtime mismatches.
- * If coherence-check.sh exists, delegates to it; otherwise derives from
- * SQUAD.md status vs strategy.md active list.
+ * Coherence violations (hq#479). Surfaces strategy↔runtime mismatches by
+ * comparing SQUAD.md status with the `**Active:**` list in strategy.md.
+ * Derived purely from workspace files; no external scripts are executed.
  */
 export function scanCoherenceViolations(obsRoot: string): InboxItem[] {
-  const coherenceScript = join(obsRoot, 'scripts', 'coherence-check.sh');
-  if (!existsSync(coherenceScript)) {
-    return deriveCoherenceFromStatus(obsRoot);
-  }
-  try {
-    const raw = runValidationScript(coherenceScript, 30_000);
-    if (!raw) return deriveCoherenceFromStatus(obsRoot);
-    const items: InboxItem[] = [];
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('FAIL:')) continue;
-      const detail = trimmed.slice(5).trim();
-      items.push({
-        id: `coherence-${detail.slice(0, 30).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}`,
-        kind: 'coherence', ref: detail, title: detail.slice(0, 100),
-        ageDays: 0, approveSemantics: 'acknowledge (fix or accept drift)',
-        detail: 'declarative state ≠ operational state — surfaced by coherence check',
-      });
-    }
-    return items;
-  } catch {
-    return deriveCoherenceFromStatus(obsRoot);
-  }
+  return deriveCoherenceFromStatus(obsRoot);
 }
 
 function deriveCoherenceFromStatus(obsRoot: string): InboxItem[] {
@@ -459,38 +274,6 @@ function deriveCoherenceFromStatus(obsRoot: string): InboxItem[] {
       }
     }
   } catch { /* derivation failed */ }
-  return items;
-}
-
-/**
- * Oracle alerts — survival signals that crossed a threshold. GPS stale >3d,
- * lead silent >7d, coherence mismatch count >0. Reads from local state.
- */
-export function scanOracleAlerts(obsRoot: string): InboxItem[] {
-  const items: InboxItem[] = [];
-  const gpsDir = join(obsRoot, 'data', 'intelligence');
-  if (existsSync(gpsDir)) {
-    try {
-      const backups = readdirSync(gpsDir)
-        .filter((f) => f.startsWith('gps.duckdb.backup.'))
-        .sort().reverse();
-      if (backups.length > 0) {
-        const latestBackup = join(gpsDir, backups[0]);
-        const mtime = statSync(latestBackup).mtimeMs;
-        const daysStale = Math.floor((Date.now() - mtime) / 86400000);
-        if (daysStale > 3) {
-          items.push({
-            id: 'oracle-gps-stale',
-            kind: 'oracle_alert', ref: 'gps-freshness',
-            title: `GPS data is ${daysStale}d stale — intelligence cadence at risk`,
-            ageDays: daysStale,
-            approveSemantics: 'acknowledge (dispatch GPS enrichment)',
-            detail: `last ingestion: ${backups[0].replace('gps.duckdb.backup.', '')}`,
-          });
-        }
-      }
-    } catch { /* unavailable */ }
-  }
   return items;
 }
 
@@ -542,11 +325,9 @@ export function buildInbox(repoRoot: string, obsRoot: string, opts?: { includeDe
   const prs = scanOpenPrs(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const branches = scanStrandedBranches(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const runs = scanRunsWithArtifacts(obsRoot).sort((a, b) => b.ageDays - a.ageDays);
-  const goals = scanGoalEvents(obsRoot);
   const coherence = scanCoherenceViolations(obsRoot);
-  const oracleAlerts = scanOracleAlerts(obsRoot);
   const proposals = scanStrategyProposals(obsRoot);
-  const all = [...prs, ...branches, ...runs, ...goals, ...coherence, ...oracleAlerts, ...proposals];
+  const all = [...prs, ...branches, ...runs, ...coherence, ...proposals];
   if (opts?.includeDeferred) return all;
   const deferred = activeDeferrals(obsRoot);
   return deferred.size === 0 ? all : all.filter((i) => !deferred.has(i.id));

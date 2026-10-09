@@ -84,9 +84,15 @@ describe('validateContract — catches over-scoped / unenforceable contracts', (
     expect(viol.some((x) => x.field === 'resource_ceiling.max_runtime_s')).toBe(true);
     expect(viol.some((x) => x.field === 'resource_ceiling')).toBe(true);
   });
-  it('rejects an unknown credential', () => {
-    const c = derive('worker', { credential_scope: ['MY_SECRET_KEY'] });
-    expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(true);
+  it('rejects a credential name that is not env-var shaped', () => {
+    for (const bad of ['my secret', 'lower_case', '1_LEADING_DIGIT', 'HAS-DASH']) {
+      const c = derive('worker', { credential_scope: [bad] });
+      expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(true);
+    }
+  });
+  it('accepts any env-var-shaped credential name (no closed allowlist)', () => {
+    const c = derive('worker', { credential_scope: ['FOO_API_KEY', 'ACME_TOKEN', 'ANTHROPIC_API_KEY'] });
+    expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(false);
   });
   it('rejects autonomy=autonomous together with a gate (contradiction)', () => {
     const c = derive('lead', { autonomy: 'autonomous' });

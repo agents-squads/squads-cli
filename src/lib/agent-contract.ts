@@ -195,11 +195,8 @@ export interface ContractViolation {
   message: string;
 }
 
-const KNOWN_SECRETS = new Set([
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SLACK_BOT_TOKEN', 'GH_TOKEN', 'MERCADOPUBLICO_API_KEY',
-  'STRIPE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'DATABASE_URL',
-  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION',
-]);
+/** A credential name is any environment-variable-shaped identifier. */
+const ENV_VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /**
  * Validate a contract. Returns the (possibly empty) list of violations; the CI
@@ -267,7 +264,7 @@ export function validateContract(c: AgentContract): ContractViolation[] {
         fail('credential_scope', 'secret names must be strings');
         continue;
       }
-      if (!KNOWN_SECRETS.has(s)) fail('credential_scope', `unknown secret "${s}"`);
+      if (!ENV_VAR_NAME.test(s)) fail('credential_scope', `invalid secret name "${s}" (expected an env-var name like FOO_API_KEY)`);
     }
   }
 

@@ -39,7 +39,7 @@ only for fields with no native equivalent" = don't rebuild what Anthropic ships.
 - A `write`/`consequential` grant with no `write_scope` (unjailed write).
 - A `consequential` grant with `hitl_gate: none`.
 - No `resource_ceiling.max_runtime_s` (unbounded run) or no cost ceiling.
-- An unknown `credential_scope` secret; `autonomy: autonomous` together with a gate (contradiction).
+- A `credential_scope` entry that is not an env-var-shaped name (`^[A-Z][A-Z0-9_]*$`); `autonomy: autonomous` together with a gate (contradiction).
 
 ## Status
 P0 validates **all existing hq agents** (112 as of 2026-06-10; agent count grows over
