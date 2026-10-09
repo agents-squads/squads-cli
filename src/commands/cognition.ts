@@ -77,7 +77,7 @@ async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promi
   const { getApiUrl } = await import('../lib/env-config.js');
   const session = loadSession();
   if (!session?.accessToken || session.status !== 'active') {
-    writeLine(`  ${colors.red}Not logged in.${RESET} Run ${colors.cyan}squads login${RESET} first.`);
+    writeLine(`  ${colors.red}Not logged in.${RESET} Run ${colors.cyan}squads login${RESET} first (needs SQUADS_AUTH_URL).`);
     return null;
   }
   const apiUrl = getApiUrl();

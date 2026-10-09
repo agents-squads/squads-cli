@@ -145,7 +145,7 @@ export async function autonomyCommand(options: AutonomyOptions = {}): Promise<vo
     writeLine(`  ${icons.error} ${colors.red}Failed to fetch autonomy score${RESET}`);
     writeLine(`  ${colors.dim}${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
+    writeLine(`  ${colors.dim}Bridge unavailable. Check SQUADS_BRIDGE_URL.${RESET}`);
     writeLine();
   }
 }

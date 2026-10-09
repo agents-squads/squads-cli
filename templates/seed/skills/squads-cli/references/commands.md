@@ -32,7 +32,7 @@
 | `squads memory write <squad> <content>` | Add to squad memory |
 | `squads memory list` | List all memory entries |
 | `squads memory sync` | Sync memory from git: pull remote changes, process commits, optionally push to Postgres |
-| `squads memory search <query>` | Search stored conversations (requires authentication: squads login) |
+| `squads memory search <query>` | Search stored conversations (requires SQUADS_BRIDGE_URL) |
 | `squads memory extract` | Extract memories from recent conversations into Engram |
 | `squads logout` | Log out from Squads |
 | `squads whoami` | Show current logged in user |

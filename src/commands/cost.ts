@@ -88,7 +88,7 @@ export async function costCommand(options: CostOptions = {}): Promise<void> {
 
   if (!stats) {
     writeLine(`  ${colors.yellow}⚠ Bridge unavailable${RESET}`);
-    writeLine(`  ${colors.dim}Run \`squads login\` to connect to cloud services${RESET}`);
+    writeLine(`  ${colors.dim}Set SQUADS_BRIDGE_URL to a running bridge to see costs${RESET}`);
     writeLine();
     return;
   }

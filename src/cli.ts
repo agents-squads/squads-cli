@@ -314,7 +314,7 @@ program
   .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
   .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
-  .option('--cloud', 'Dispatch execution to cloud worker via API (requires squads login)')
+  .option('--cloud', 'Dispatch execution to cloud worker via API (requires SQUADS_API_URL and squads login)')
   .option('--task <directive>', 'Founder directive for conversation mode (replaces lead briefing)')
   .option('--max-turns <n>', 'Max conversation turns (default: 20)', '20')
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 25)', '25')
@@ -969,7 +969,7 @@ memory
 // search (new name) — also keep old 'search' subcommand
 memory
   .command('search <query>')
-  .description('Search stored conversations (requires authentication: squads login)')
+  .description('Search stored conversations (requires SQUADS_BRIDGE_URL)')
   .option('-l, --limit <limit>', 'Number of results', '10')
   .option('-r, --role <role>', 'Filter by role: user, assistant, thinking')
   .option('-i, --importance <importance>', 'Filter by importance: low, normal, high')
@@ -1371,7 +1371,7 @@ program.command('__git-credential-helper <action>', { hidden: true })
 
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──
 
-program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Infrastructure is managed via the cloud. Use: squads login'));
+program.command('stack', { hidden: true }).description('[removed]').action(removedCommand('stack', 'Run your own services and point the CLI at them: SQUADS_API_URL, SQUADS_BRIDGE_URL'));
 program.command('cron', { hidden: true }).description('[removed]').action(removedCommand('cron', 'Use platform scheduler: squads trigger list'));
 program.command('tonight', { hidden: true }).description('[removed]').action(removedCommand('tonight', 'Use platform scheduler for overnight runs: squads autonomous start'));
 program.command('live', { hidden: true }).description('[removed]').action(removedCommand('live', 'Use: squads dash'));
@@ -1399,8 +1399,8 @@ function handleError(error: unknown): void {
     console.error(chalk.red('\nConnection error:'), err.message);
     console.error(chalk.dim('\nCore commands (init, run, status, eval) work without cloud services.'));
     console.error(chalk.dim('If you need scheduling or telemetry:'));
-    console.error(chalk.dim('  1. Authenticate: squads login'));
-    console.error(chalk.dim('  2. Check services: squads health'));
+    console.error(chalk.dim('  1. Check services: squads health'));
+    console.error(chalk.dim('  2. Check SQUADS_API_URL / SQUADS_BRIDGE_URL point at running services'));
     console.error(chalk.dim('  3. Check your network connection'));
   } else if (err.message.includes('ENOENT')) {
     console.error(chalk.red('\nFile not found:'), err.message);

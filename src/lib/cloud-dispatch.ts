@@ -32,7 +32,7 @@ export async function runCloudDispatch(
   // Require auth session
   if (!isLoggedIn()) {
     writeLine(`  ${colors.red}${icons.error} Not logged in${RESET}`);
-    writeLine(`  ${colors.dim}Run \`squads login\` to authenticate before using --cloud${RESET}`);
+    writeLine(`  ${colors.dim}Run \`squads login\` (needs SQUADS_AUTH_URL) before using --cloud${RESET}`);
     process.exit(1);
   }
 

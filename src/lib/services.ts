@@ -33,8 +33,7 @@ function buildServices(): Record<string, ServiceInfo> {
       envVars: ['SQUADS_BRIDGE_URL'],
       setupGuide: [
         'Not required for basic usage (init, run, status, eval).',
-        'To enable telemetry, authenticate:',
-        '  squads login',
+        'To enable telemetry, set SQUADS_BRIDGE_URL to your bridge.',
       ],
     },
     postgres: {
@@ -45,8 +44,7 @@ function buildServices(): Record<string, ServiceInfo> {
       envVars: ['SQUADS_DATABASE_URL'],
       setupGuide: [
         'Not required for basic usage (init, run, status, eval).',
-        'Available with a Squads account:',
-        '  squads login',
+        'To enable it, set SQUADS_DATABASE_URL.',
       ],
     },
     mem0: {
@@ -60,8 +58,7 @@ function buildServices(): Record<string, ServiceInfo> {
       envVars: ['MEM0_API_URL'],
       setupGuide: [
         'Memory extraction requires the memory service.',
-        'Authenticate to enable:',
-        '  squads login',
+        'To enable it, set MEM0_API_URL.',
       ],
     },
     scheduler: {
@@ -69,10 +66,10 @@ function buildServices(): Record<string, ServiceInfo> {
       description: 'Trigger evaluation and agent execution',
       required: false,
       getHealthUrl: () => env.api_url ? `${env.api_url}/health` : '',
-      envVars: [],
+      envVars: ['SQUADS_API_URL'],
       setupGuide: [
-        'Scheduling requires authentication.',
-        '  squads login',
+        'Scheduling requires the API.',
+        'To enable it, set SQUADS_API_URL.',
       ],
     },
     langfuse: {
@@ -85,8 +82,7 @@ function buildServices(): Record<string, ServiceInfo> {
       },
       envVars: ['LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'],
       setupGuide: [
-        'Traces are available with a Squads account.',
-        '  squads login',
+        'To enable traces, set LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY.',
       ],
     },
     redis: {
@@ -96,8 +92,7 @@ function buildServices(): Record<string, ServiceInfo> {
       getHealthUrl: () => '',
       envVars: ['REDIS_URL'],
       setupGuide: [
-        'Caching is available with a Squads account.',
-        '  squads login',
+        'To enable caching, set REDIS_URL.',
       ],
     },
   };

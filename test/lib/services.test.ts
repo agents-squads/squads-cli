@@ -106,10 +106,20 @@ describe('showServiceSetupGuide', () => {
     expect(calls).toContain('not responding');
   });
 
-  it('outputs setup guide with squads login', () => {
+  it('setup guide names the variable to set, not a login that may not exist', () => {
     showServiceSetupGuide('bridge', 'not running');
     const calls = mockWriteLine.mock.calls.map(c => c[0] ?? '').join('\n');
-    expect(calls).toContain('squads login');
+    expect(calls).toContain('set SQUADS_BRIDGE_URL');
+    expect(calls).not.toContain('squads login');
+  });
+
+  it('no service guide sends users to squads login or a hosted account', () => {
+    for (const svc of ['bridge', 'postgres', 'mem0', 'scheduler', 'langfuse', 'redis'] as const) {
+      mockWriteLine.mockClear();
+      showServiceSetupGuide(svc, 'not running');
+      const calls = mockWriteLine.mock.calls.map(c => c[0] ?? '').join('\n');
+      expect(calls, svc).not.toMatch(/squads login|Squads account/);
+    }
   });
 
   it('outputs env var status for services with envVars', () => {
@@ -144,7 +154,7 @@ describe('showServiceSetupGuide', () => {
     showServiceSetupGuide('mem0', 'not running');
     const calls = mockWriteLine.mock.calls.map(c => c[0] ?? '').join('\n');
     expect(calls).toContain('Memory Service');
-    expect(calls).toContain('squads login');
+    expect(calls).toContain('set MEM0_API_URL');
   });
 
   it('references squads health in footer', () => {
