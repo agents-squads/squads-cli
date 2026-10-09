@@ -531,11 +531,13 @@ async function fetchDashboardData(baseDir: string | null, skipGitHub: boolean): 
 }
 
 
-// Find agents-squads base directory (project-scoped, not global)
-function findAgentsSquadsDir(): string | null {
-  // First try: parent of current project (for multi-repo setups)
+// Base directory for git stats (project-scoped, not global)
+export function findAgentsSquadsDir(): string | null {
+  // First try: parent of current project, when a squad's repo (SQUAD.md
+  // `repo:`) is cloned there — a multi-repo workspace
   const parentDir = join(process.cwd(), '..');
-  if (existsSync(join(parentDir, 'hq'))) {
+  const squadRepos = Object.values(squadRepoMap()).flat();
+  if (squadRepos.some(repo => existsSync(join(parentDir, repo, '.git')))) {
     return parentDir;
   }
 
