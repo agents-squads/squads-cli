@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 import { createSign } from 'crypto';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -15,11 +15,20 @@ interface GitHubAppConfig {
   app_id: number;
   installation_id: number;
   pem_path: string;
+  /** Optional override for the bot's git author name / `gh --author` login. */
+  bot_name?: string;
+  /** Optional override for the bot's git author email. */
+  bot_email?: string;
 }
 
-const APP_CONFIG_PATH = join(homedir(), '.squads', 'secrets', 'github-app.json');
-const BOT_NAME = 'agents-squads[bot]';
-const BOT_EMAIL = '266303152+agents-squads[bot]@users.noreply.github.com';
+/** Resolved lazily so $HOME overrides (tests, containers) are honoured. */
+function appConfigPath(): string {
+  return join(homedir(), '.squads', 'secrets', 'github-app.json');
+}
+
+function identityCachePath(): string {
+  return join(homedir(), '.squads', 'cache', 'github-app-identity.json');
+}
 
 // Co-author trailers marking machine authorship. ONE identity per provider —
 // these surface in commit views and contributor counts, so any variation
@@ -40,7 +49,7 @@ const AI_COAUTHORS: Record<string, string> = {
  */
 export function getCoAuthorTrailer(provider: string): string {
   const key = provider.toLowerCase().replace(/-.*$/, ''); // "claude-sonnet" → "claude"
-  return AI_COAUTHORS[key] || `Co-Authored-By: ${provider} <noreply@agents-squads.com>`;
+  return AI_COAUTHORS[key] || `Co-Authored-By: ${provider} <noreply@example.invalid>`;
 }
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
@@ -55,9 +64,10 @@ export function isGhAuthFailure(text: string): boolean {
 }
 
 function loadAppConfig(): GitHubAppConfig | null {
-  if (!existsSync(APP_CONFIG_PATH)) return null;
+  const path = appConfigPath();
+  if (!existsSync(path)) return null;
   try {
-    const config = JSON.parse(readFileSync(APP_CONFIG_PATH, 'utf-8'));
+    const config = JSON.parse(readFileSync(path, 'utf-8'));
     if (!config.app_id || !config.installation_id || !config.pem_path) return null;
     return config;
   } catch {
@@ -130,19 +140,115 @@ export async function getGitHubAppToken(opts?: { forceRefresh?: boolean }): Prom
   }
 }
 
+export interface BotIdentity {
+  /** Git author/committer name AND the GitHub login (`<slug>[bot]`). */
+  name: string;
+  email: string;
+}
+
+interface CachedIdentity { app_id: number; login: string; email: string }
+
+function readIdentityCache(appId: number): CachedIdentity | null {
+  try {
+    const path = identityCachePath();
+    if (!existsSync(path)) return null;
+    const c = JSON.parse(readFileSync(path, 'utf-8')) as CachedIdentity;
+    return c.app_id === appId && c.login && c.email ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The bot's GitHub login (`<slug>[bot]`), without network access. Resolution:
+ * `bot_name` in github-app.json, else the cache written by `getBotIdentity()`.
+ * Returns null when no GitHub App is configured or the login is not known yet —
+ * callers should then skip any author filter rather than guess.
+ */
+export function getBotLoginSync(): string | null {
+  const config = loadAppConfig();
+  if (!config) return null;
+  return config.bot_name || readIdentityCache(config.app_id)?.login || null;
+}
+
+/**
+ * `gh ... --author` argument (with leading space) selecting PRs/issues agents
+ * opened. With an App configured: its bot login, or no filter while the login
+ * is still unknown. Without one, agents act through the operator's own `gh`
+ * login, so `@me` — never another org's bot.
+ */
+export function botAuthorArg(): string {
+  if (!loadAppConfig()) return ' --author "@me"';
+  const login = getBotLoginSync();
+  return login ? ` --author "${login}"` : '';
+}
+
+/**
+ * The identity commits should carry when authored as the configured GitHub
+ * App. Resolution: `bot_name`/`bot_email` in github-app.json, else derived from
+ * the App itself — `GET /app` gives the slug, `GET /users/<slug>[bot]` the
+ * numeric id — and cached on disk. Null when no App is configured or it can't
+ * be resolved (the caller then leaves the user's own git identity alone).
+ */
+export async function getBotIdentity(): Promise<BotIdentity | null> {
+  const config = loadAppConfig();
+  if (!config) return null;
+  if (config.bot_name && config.bot_email) {
+    return { name: config.bot_name, email: config.bot_email };
+  }
+
+  let derived = readIdentityCache(config.app_id);
+  if (!derived) {
+    try {
+      const jwt = generateJWT(config.app_id, config.pem_path);
+      const headers = { Accept: 'application/vnd.github+json' };
+      const appRes = await fetch('https://api.github.com/app', {
+        headers: { ...headers, Authorization: `Bearer ${jwt}` },
+      });
+      if (!appRes.ok) return null;
+      const slug = ((await appRes.json()) as { slug?: string }).slug;
+      if (!slug) return null;
+      const login = `${slug}[bot]`;
+      let email = `${login}@users.noreply.github.com`;
+      const userRes = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, { headers });
+      if (userRes.ok) {
+        const id = ((await userRes.json()) as { id?: number }).id;
+        if (id) email = `${id}+${login}@users.noreply.github.com`;
+      }
+      derived = { app_id: config.app_id, login, email };
+      try {
+        mkdirSync(join(homedir(), '.squads', 'cache'), { recursive: true });
+        writeFileSync(identityCachePath(), JSON.stringify(derived));
+      } catch {
+        // cache is best-effort
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    name: config.bot_name || derived.login,
+    email: config.bot_email || derived.email,
+  };
+}
+
 /**
  * Git environment variables for bot-authored commits.
- * Falls back to empty object if app not configured (uses user's git config).
+ * Falls back to empty object if no app is configured or its identity can't be
+ * resolved (git then uses the user's own configured identity).
  */
 export async function getBotGitEnv(): Promise<Record<string, string>> {
   const token = await getGitHubAppToken();
   if (!token) return {};
+  const id = await getBotIdentity();
+  if (!id) return {};
 
   return {
-    GIT_AUTHOR_NAME: BOT_NAME,
-    GIT_AUTHOR_EMAIL: BOT_EMAIL,
-    GIT_COMMITTER_NAME: BOT_NAME,
-    GIT_COMMITTER_EMAIL: BOT_EMAIL,
+    GIT_AUTHOR_NAME: id.name,
+    GIT_AUTHOR_EMAIL: id.email,
+    GIT_COMMITTER_NAME: id.name,
+    GIT_COMMITTER_EMAIL: id.email,
   };
 }
 
@@ -153,6 +259,8 @@ export async function getBotGitEnv(): Promise<Record<string, string>> {
 export async function getBotGhEnv(opts?: { forceRefresh?: boolean }): Promise<Record<string, string>> {
   const token = await getGitHubAppToken(opts);
   if (!token) return {};
+  // Warm the identity cache so sync `--author` filters can resolve the login.
+  await getBotIdentity().catch(() => null);
   return { GH_TOKEN: token };
 }
 
