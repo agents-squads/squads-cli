@@ -150,8 +150,9 @@ function resolveBaseRef(repoDir: string): string {
  * agents should use plus a cleanup callback.
  *
  * The worktree is created at `<repoDir>/../.worktrees/<dir-prefix><squad>-<shortid>`
- * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off `develop` (if
- * it exists) or the repo's current branch. `branchPrefix` defaults to
+ * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off the repo's
+ * integration branch (see resolveBaseRef) — not the operator's checked-out
+ * branch, so unpushed work there is not visible to the run. `branchPrefix` defaults to
  * `squads/run-`; callers that need a distinct branch namespace (e.g. `squads
  * propose`'s `squads/proposal-` runs, #983) can override it — the inbox
  * scanner (`scanStrandedBranches`) matches on this prefix to classify items.

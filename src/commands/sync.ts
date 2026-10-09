@@ -290,8 +290,9 @@ function gitPullMemory(memoryDir: string): { success: boolean; output: string; b
       return { success: true, output: 'Already up to date', behind: 0, ahead };
     }
 
-    // Pull with rebase to get latest
-    const output = git('git pull --rebase');
+    // Pull with rebase to get latest. --autostash: agent memory is usually
+    // uncommitted here, and a dirty tree would otherwise refuse the rebase.
+    const output = git('git pull --rebase --autostash');
 
     return { success: true, output: output.trim(), behind, ahead };
   } catch (error) {

@@ -51,7 +51,9 @@ export function gitIdentityArgs(repoRoot: string): string {
  * assumed name: `develop` when it exists (PRs to develop, main = releases),
  * else the remote's default branch (`origin/HEAD`), else a `main`/`master`
  * branch. Null when nothing qualifies (fresh local-only repo); callers then
- * fall back to the checked-out branch.
+ * fall back to the checked-out branch. Callers interpolate the result into
+ * shell commands, so a remote default-branch name outside a plain charset
+ * (a cloned repo can name it anything) is refused rather than trusted.
  */
 export function integrationBranch(repoDir: string): string | null {
   const has = (ref: string): boolean => {
@@ -69,7 +71,8 @@ export function integrationBranch(repoDir: string): string | null {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-    if (head.startsWith('origin/') && head.length > 'origin/'.length) return head.slice('origin/'.length);
+    const name = head.startsWith('origin/') ? head.slice('origin/'.length) : '';
+    if (/^[\w][\w./-]*$/.test(name) && !name.includes('..')) return name;
   } catch {
     // origin/HEAD is only set by clone (or `git remote set-head`) — fall through
   }

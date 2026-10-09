@@ -3,9 +3,9 @@
  * (develop, else origin/HEAD, else main/master), and `memory sync --push`
  * commits only .agents/memory/ and pushes the branch the operator is on.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { integrationBranch } from '../src/lib/git.js';
@@ -19,6 +19,14 @@ function git(cmd: string, cwd: string): string {
 }
 
 let root: string;
+
+// Git hooks export GIT_DIR & co.; left set, every git call below would act on
+// the host repo instead of the temp repos (same guard as worktree.test.ts).
+beforeAll(() => {
+  delete process.env.GIT_DIR;
+  delete process.env.GIT_WORK_TREE;
+  delete process.env.GIT_INDEX_FILE;
+});
 
 /** A bare remote whose default branch is `trunk` (neither develop nor main), cloned. */
 function cloneWithTrunk(): string {
@@ -71,6 +79,16 @@ describe('integrationBranch', () => {
     const work = cloneWithTrunk();
     git('update-ref refs/remotes/origin/develop HEAD', work);
     expect(integrationBranch(work)).toBe('develop');
+  });
+
+  it('refuses a remote default-branch name that is not a plain ref (shell metacharacters)', () => {
+    const work = cloneWithTrunk();
+    git("symbolic-ref refs/remotes/origin/HEAD 'refs/remotes/origin/a;touch${IFS}pwned'", work);
+    expect(integrationBranch(work)).toBeNull(); // no develop/main/master either
+
+    const { cleanup } = createRunWorktree(work, 'product');
+    cleanup();
+    expect(existsSync(join(work, 'pwned'))).toBe(false);
   });
 
   it('falls back to master, then null, in a repo with no remote', () => {
@@ -126,6 +144,29 @@ describe('inbox PR scan', () => {
 });
 
 describe('memory sync --push (#1247)', () => {
+  it('pulls with uncommitted memory, then commits and pushes it', async () => {
+    const work = cloneWithTrunk();
+    // Upstream moves ahead while the agent's memory edit is still uncommitted.
+    const other = join(root, 'other');
+    git(`clone -q ${join(root, 'remote.git')} ${other}`, root);
+    git('config user.email t@t.t', other);
+    git('config user.name t', other);
+    writeFileSync(join(other, 'README.md'), '# upstream change\n');
+    git('commit -q -am upstream', other);
+    git('push -q origin trunk', other);
+    writeFileSync(join(work, '.agents', 'memory', 'cli', 'state.md'), 'v2\n');
+
+    const cwd = process.cwd();
+    process.chdir(work);
+    try {
+      await syncCommand({ push: true });
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(git('show origin/trunk:.agents/memory/cli/state.md', work)).toBe('v2');
+    expect(git('show origin/trunk:README.md', work)).toBe('# upstream change');
+  });
+
   it('commits only .agents/memory and pushes the current branch, not main', async () => {
     const work = cloneWithTrunk();
     git('checkout -q -b feature', work);
