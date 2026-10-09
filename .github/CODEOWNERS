@@ -1,13 +1,35 @@
-# Code Owners for squads-cli
-# These owners are required reviewers for PRs
+# Code owners — L2 paths only (merge levels: CONTRIBUTING.md#merge-levels).
+#
+# A PR that touches one of these paths needs a maintainer's review before it
+# merges. Everything else merges on the full gate plus review (L0/L1), so there
+# is deliberately no `*` default owner. Path rules are a first cut: a reviewer
+# can always raise a PR's level, never lower it.
 
-# Default owner for everything
-* @kokevidaurre
+# Permissions, secrets, identity, sandbox, telemetry
+/src/lib/auth.ts                @kokevidaurre
+/src/lib/github.ts              @kokevidaurre
+/src/lib/permissions.ts         @kokevidaurre
+/src/lib/sandbox-settings.ts    @kokevidaurre
+/src/lib/secret-scan.ts         @kokevidaurre
+/src/lib/worktree-guard.ts      @kokevidaurre
+/src/lib/agent-contract.ts      @kokevidaurre
+/src/lib/telemetry.ts           @kokevidaurre
 
-# Critical paths require explicit review
-/src/lib/db.ts @kokevidaurre
-/src/lib/security*.ts @kokevidaurre
-/.github/workflows/ @kokevidaurre
+# Defaults
+/src/lib/env-config.ts          @kokevidaurre
 
-# Agent-generated code can be reviewed by any maintainer
-# but still requires at least one approval
+# CI, releases, license, dependencies
+/.github/                       @kokevidaurre
+/LICENSE                        @kokevidaurre
+/package.json                   @kokevidaurre
+/package-lock.json              @kokevidaurre
+/CHANGELOG.md                   @kokevidaurre
+/RELEASING.md                   @kokevidaurre
+
+# Public copy and what `squads init` ships to users
+/README.md                      @kokevidaurre
+/docs/                          @kokevidaurre
+/templates/                     @kokevidaurre
+/CONTRIBUTING.md                @kokevidaurre
+/SECURITY.md                    @kokevidaurre
+/CODE_OF_CONDUCT.md             @kokevidaurre

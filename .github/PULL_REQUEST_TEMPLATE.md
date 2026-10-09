@@ -4,6 +4,14 @@
 
 <!-- Provide a clear and concise description of what this PR does -->
 
+## Level and check
+
+<!-- Merge level (CONTRIBUTING.md → Merge levels): L0 auto · L1 cross-model review · L2 maintainer review · L3 decided before the work. Reviewers may raise it, never lower it. -->
+**Level:**
+
+<!-- The deterministic check that proves this change: a test (ideally one that fails without the change), a command, a CI job. "none" makes it L2 at least. -->
+**Check:**
+
 ## Type of Change
 
 <!-- Mark the relevant option with an 'x' -->

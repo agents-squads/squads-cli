@@ -97,3 +97,11 @@ jobs:
             Use inline comments on the lines involved. Put a two-line summary at
             the top saying whether you would merge it and the single most
             important thing to fix.
+
+            End with one verdict line, using the merge levels in CONTRIBUTING.md:
+            `VERDICT: APPROVE — Level: L<n>` or
+            `VERDICT: CHANGES REQUESTED — Level: L<n>`.
+            Start from the Level the PR declares. Raise it, never lower it, when
+            the diff touches permissions, secrets, default behavior, deletions,
+            CI, license, public copy or releases, or when the declared Check
+            would still pass with the change reverted.

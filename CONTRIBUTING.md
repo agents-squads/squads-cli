@@ -29,12 +29,28 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ### Pull Requests
 
-* Fill in the pull request template
+* Fill in the pull request template, including **Level** and **Check** (see [Merge levels](#merge-levels))
 * Follow the TypeScript style guide used in the project
 * Include tests for new functionality
 * Update documentation as needed
 * End all files with a newline
 * Ensure the CI/CD pipeline passes
+
+### Merge levels
+
+Each PR declares a level. The level decides who has to approve it:
+
+| Level | When | Who approves |
+|---|---|---|
+| **L0** | A deterministic check settles it and the impact is low | Full gate + review, then auto-merge |
+| **L1** | Medium impact | A review by a different model than the author's, then auto-merge |
+| **L2** | Permissions, secrets, default behavior, deletions, CI, license, public copy, releases, or no declared check | A maintainer reviews the PR |
+| **L3** | Direction, taste, positioning | A maintainer decides before the work starts (open an issue first) |
+
+* **Check** is the deterministic proof of the change: a test, a command, or a CI job. Ideally it is a test that fails without the change. A PR with no check is at least L2.
+* `.github/CODEOWNERS` lists the L2 paths. A PR touching them needs code-owner review; other paths don't.
+* A reviewer ends with `VERDICT: APPROVE` or `VERDICT: CHANGES REQUESTED` and the level, for example `— Level: L1`. A reviewer may raise the level the author declared, never lower it.
+* The full gate is `npm run lint` (0 errors), `npm run typecheck`, `npm run build` and `npm test`.
 
 ## Development Setup
 
