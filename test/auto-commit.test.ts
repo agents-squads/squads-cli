@@ -31,7 +31,7 @@ function git(cmd: string, cwd: string): string {
   return execSync(`git ${cmd}`, {
     encoding: 'utf-8',
     cwd,
-    env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
   }).trim();
 }
 
@@ -122,7 +122,9 @@ describe('autoCommitAgentWork — opt-in, memory-only', () => {
 
   it('rejects squad names that could escape the pathspec', async () => {
     process.env.SQUADS_AUTO_COMMIT = '1';
-    const res = await autoCommitAgentWork('../demo', 'agent', 'exec-1234567890');
-    expect(res).toEqual({ committed: false });
+    for (const name of ['../demo', '..', '.', '.hidden']) {
+      expect(await autoCommitAgentWork(name, 'agent', 'exec-1234567890')).toEqual({ committed: false });
+    }
+    expect(git('diff --cached --name-only', root)).toBe('staged.ts');
   });
 });

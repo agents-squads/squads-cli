@@ -180,8 +180,9 @@ export async function autoCommitAgentWork(
   const { detectGitHubRepo } = await import('./github.js');
   const projectRoot = getProjectRoot();
 
-  // Squad names come from directory names; refuse anything that could escape a pathspec.
-  if (!/^[\w.-]+$/.test(squadName)) return { committed: false };
+  // Squad names come from directory names; refuse anything that could escape a pathspec
+  // (including `.` / `..`, which would widen the scope to all of .agents/).
+  if (!/^(?!\.)[\w.-]+$/.test(squadName)) return { committed: false };
   const scope = join('.agents', 'memory', squadName);
 
   try {
