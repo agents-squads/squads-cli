@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { colors as termColors, RESET as termReset, writeLine } from './terminal.js';
 
@@ -158,7 +158,6 @@ function triggerBackgroundRefresh(): void {
   try {
     // Use spawn with detached: true to run in background
     // This won't block the main process
-    const { spawn } = require('child_process') as typeof import('child_process');
     const child = spawn('npm', ['view', 'squads-cli', 'version'], {
       detached: true,
       stdio: ['ignore', 'pipe', 'ignore'],

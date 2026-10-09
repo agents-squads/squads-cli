@@ -30,7 +30,8 @@ vi.mock('child_process', async () => {
   return {
     ...actual,
     execSync: vi.fn(),
-    exec: vi.fn(),
+    // Like lsof finding nothing: answer the callback so awaiting callers settle.
+    exec: vi.fn((_cmd: string, _opts: unknown, cb?: (e: Error | null, out: string) => void) => cb?.(null, '')),
   };
 });
 

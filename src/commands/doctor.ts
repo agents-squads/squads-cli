@@ -212,17 +212,6 @@ function checkExecutionPath(): ExecutionCheckResult {
     };
   }
 
-  // Verify squads-cli provider module loads without errors
-  try {
-    execSync('node -e "require(\'./dist/lib/providers.js\')" 2>&1', {
-      encoding: 'utf-8',
-      timeout: 5000,
-      cwd: process.env.SQUADS_CLI_ROOT || process.cwd(),
-    });
-  } catch {
-    // Non-fatal: only warn if this fails (run path may still work)
-  }
-
   return { canExecute: true };
 }
 
