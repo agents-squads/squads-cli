@@ -12,6 +12,7 @@ import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { createInterface } from 'readline';
 import { exec, execSync } from 'child_process';
+import { squadRepoMap, squadsForRepo } from './squad-parser.js';
 
 export interface SessionState {
   sessionId: string;
@@ -80,20 +81,6 @@ const HISTORY_FILE = 'history.jsonl';
 
 // Active sessions subdirectory
 const ACTIVE_DIR = 'active';
-
-// Directory mapping for squad detection
-const SQUAD_DIR_MAP: Record<string, string> = {
-  'hq': 'company',
-  'agents-squads-web': 'website',
-  'company': 'company',
-  'product': 'product',
-  'engineering': 'engineering',
-  'research': 'research',
-  'intelligence': 'intelligence',
-  'customer': 'customer',
-  'finance': 'finance',
-  'marketing': 'marketing',
-};
 
 /**
  * Find the .agents directory (sessions live at .agents/sessions/)
@@ -169,12 +156,17 @@ function appendEvent(event: SessionEvent): void {
 /**
  * Detect which squad based on current working directory
  */
-export function detectSquad(cwd: string = process.cwd()): string | null {
-  // Pattern: .../agents-squads/{domain}/...
-  const match = cwd.match(/agents-squads\/([^/]+)/);
-  if (match) {
-    const dir = match[1];
-    return SQUAD_DIR_MAP[dir] || dir;
+export function detectSquad(
+  cwd: string = process.cwd(),
+  repoMap: Record<string, string[]> = squadRepoMap(),
+): string | null {
+  // The deepest path segment that is a squad's `repo:` (SQUAD.md). Bare squad
+  // names are not matched: a squad called `src` or `data` would claim any
+  // directory of that name.
+  const segments = cwd.split(/[\\/]/).filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const owner = squadsForRepo(segments[i], repoMap)[0];
+    if (owner) return owner;
   }
   return null;
 }

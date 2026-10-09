@@ -8,6 +8,7 @@ vi.mock('../../src/lib/squad-parser.js', () => ({
   findSquadsDir: vi.fn(),
   listSquads: vi.fn(),
   loadSquad: vi.fn(),
+  squadRepoMap: vi.fn(() => ({ website: ['acme-web'], product: ['acme-cli'] })),
 }));
 
 vi.mock('../../src/lib/terminal.js', () => ({
