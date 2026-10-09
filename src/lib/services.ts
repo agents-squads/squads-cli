@@ -179,7 +179,8 @@ export function showServiceSetupGuide(
     for (const envVar of service.envVars) {
       const value = process.env[envVar];
       const status = value ? `${colors.green}✓${RESET}` : `${colors.red}✗${RESET}`;
-      writeLine(`  ${status} ${colors.cyan}${envVar}${RESET}${value ? ` = ${colors.dim}${value}${RESET}` : ''}`);
+      // Never echo the value — these include secrets (API keys, database URLs with passwords).
+      writeLine(`  ${status} ${colors.cyan}${envVar}${RESET} ${colors.dim}${value ? 'set' : 'not set'}${RESET}`);
     }
   }
 
