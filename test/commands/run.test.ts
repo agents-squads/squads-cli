@@ -163,7 +163,6 @@ vi.mock('../../src/lib/squad-loop.js', () => ({
 vi.mock('../../src/lib/cognition.js', () => ({
   loadCognitionState: vi.fn(() => ({})),
   saveCognitionState: vi.fn(),
-  seedBeliefsIfEmpty: vi.fn(),
   runCognitionCycle: vi.fn(() => Promise.resolve()),
 }));
 
