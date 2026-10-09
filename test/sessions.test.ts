@@ -25,6 +25,12 @@ import {
 } from '../src/lib/sessions.js';
 
 // Mock execSync for consistent test behavior
+// Squads as their SQUAD.md `repo:` fields would declare them (no real project needed).
+vi.mock('../src/lib/squad-parser.js', async (orig) => ({
+  ...(await orig<typeof import('../src/lib/squad-parser.js')>()),
+  squadRepoMap: () => ({ company: ['acme-hq'], website: ['acme-web'], engineering: [], finance: [] }),
+}));
+
 vi.mock('child_process', async () => {
   const actual = await vi.importActual('child_process');
   return {
@@ -61,32 +67,28 @@ describe('sessions', () => {
   });
 
   describe('detectSquad', () => {
-    it('detects squad from hq directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/hq')).toBe('company');
+    it("maps a squad's repo directory (SQUAD.md repo:) to the squad", () => {
+      expect(detectSquad('/Users/test/code/acme-hq')).toBe('company');
+      expect(detectSquad('/Users/test/code/acme-web/src')).toBe('website');
     });
 
-    it('detects squad from website directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/agents-squads-web/src')).toBe('website');
+    it('does not claim a directory just because it shares a squad name', () => {
+      expect(detectSquad('/Users/test/code/engineering/src')).toBeNull();
+      expect(detectSquad('/x/proj/src', { src: [] })).toBeNull();
+      expect(detectSquad('/x/constructor', { a: ['b'] })).toBeNull();
     });
 
-    it('detects squad from product directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/product')).toBe('product');
+    it('prefers the deepest matching segment', () => {
+      expect(detectSquad('/Users/test/acme-hq/vendor/acme-web')).toBe('website');
     });
 
-    it('detects squad from engineering directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/engineering/src')).toBe('engineering');
+    it("never guesses from one company's layout", () => {
+      expect(detectSquad('/Users/test/agents-squads/hq')).toBeNull();
+      expect(detectSquad('/Users/test/agents-squads/squads-cli')).toBeNull();
     });
 
-    it('detects squad from customer directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/customer')).toBe('customer');
-    });
-
-    it('detects squad from finance directory', () => {
-      expect(detectSquad('/Users/test/agents-squads/finance')).toBe('finance');
-    });
-
-    it('uses directory name as squad for unknown repos', () => {
-      expect(detectSquad('/Users/test/agents-squads/squads-cli')).toBe('squads-cli');
+    it('uses an explicit map when given one', () => {
+      expect(detectSquad('/x/other-repo', { ops: ['other-repo'] })).toBe('ops');
     });
 
     it('returns null for non-squad directory', () => {
@@ -358,15 +360,15 @@ describe('sessions', () => {
 
     it('auto-detects squad from cwd when not specified', () => {
       const { tmpDir } = createTempAgentsDir();
-      // Create a cwd that matches agents-squads pattern
-      const fakeAgentsSquadsDir = path.join(tmpDir, 'agents-squads', 'engineering');
+      // A cwd inside a squad's repo (SQUAD.md repo:)
+      const fakeAgentsSquadsDir = path.join(tmpDir, 'code', 'acme-hq');
       fs.mkdirSync(path.join(fakeAgentsSquadsDir, '.agents', 'sessions', 'active'), { recursive: true });
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(fakeAgentsSquadsDir);
 
       const session = startSession();
       expect(session).not.toBeNull();
-      expect(session!.squad).toBe('engineering');
+      expect(session!.squad).toBe('company');
 
       cwdSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true });
@@ -671,14 +673,14 @@ describe('sessions', () => {
       // First call: ps
       mockExecSync.mockReturnValueOnce('  PID TTY      CMD\n1234 pts/0   claude');
       // Second call: lsof
-      mockExecSync.mockReturnValueOnce('/Users/test/agents-squads/hq');
+      mockExecSync.mockReturnValueOnce('/Users/test/code/acme-hq');
 
       const result = detectAIProcesses();
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({
         pid: 1234,
         tool: 'claude',
-        cwd: '/Users/test/agents-squads/hq',
+        cwd: '/Users/test/code/acme-hq',
         squad: 'company',
       });
     });

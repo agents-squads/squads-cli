@@ -1,6 +1,6 @@
 import { readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
-import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig } from '../lib/squad-parser.js';
+import { findSquadsDir, listSquads, loadSquad, Goal, hasLocalInfraConfig, squadRepoMap } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { fetchCostSummary, fetchInsights, Insights, fetchBridgeStats, BridgeStats, CostSummary, isMaxPlan, getPlanType, fetchNpmStats, NpmStats, fetchQuotaInfo, QuotaInfo, fetchClaudeCodeCapacity, ClaudeCodeCapacity, calculateROIMetrics, calculateSquadCostProjections, ROIMetrics, SquadCostProjection } from '../lib/costs.js';
 import { getMultiRepoGitStats, getActivitySparkline, getGitHubStatsOptimized, SquadGitHubStats, GitPerformanceStats, GitHubStats } from '../lib/git.js';
@@ -114,19 +114,8 @@ function collectSquadMetrics(
 ): SquadMetrics[] {
   const squadData: SquadMetrics[] = [];
 
-  // Map repos to squads for commit attribution
-  const repoSquadMap: Record<string, string[]> = {
-    website: ['agents-squads-web'],
-    product: ['squads-cli'],
-    engineering: ['hq', 'squads-cli'],
-    research: ['research'],
-    intelligence: ['intelligence'],
-    customer: ['customer'],
-    finance: ['finance'],
-    company: ['company', 'hq'],
-    marketing: ['marketing', 'agents-squads-web'],
-    cli: ['squads-cli'],
-  };
+  // Map repos to squads for commit attribution (SQUAD.md `repo:`)
+  const repoSquadMap = squadRepoMap();
 
   for (const name of squadNames) {
     const squad = loadSquad(name);

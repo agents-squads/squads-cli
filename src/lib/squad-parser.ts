@@ -603,6 +603,47 @@ export function loadSquad(squadName: string): Squad | null {
 }
 
 /**
+ * Squad → repo short names, from each SQUAD.md `repo:` field (`org/name` or
+ * `name`; the short name is what local clones and `gh` results are keyed on).
+ * Squads without a `repo:` map to []. Empty when there is no squads directory.
+ */
+export function squadRepoMap(squadsDir: string | null = findSquadsDir()): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  if (!squadsDir) return map;
+  for (const name of listSquads(squadsDir)) {
+    let repo: string | undefined;
+    try {
+      repo = parseSquadFile(join(squadsDir, name, 'SQUAD.md')).repo;
+    } catch {
+      // unreadable SQUAD.md — the squad still exists, just without a repo
+    }
+    const short = typeof repo === 'string' ? repo.trim().replace(/\.git$/, '').split('/').pop() : '';
+    map[name] = short ? [short] : [];
+  }
+  return map;
+}
+
+/**
+ * The squad named as a whole word in `text` (case-insensitive). Longest name
+ * first, and `-` counts as part of a name, so "web-api: fix" is `web-api`,
+ * not `web`. Null when none matches.
+ */
+export function squadNamedIn(text: string, squads: string[]): string | null {
+  const lower = text.toLowerCase();
+  const byLength = [...squads].sort((a, b) => b.length - a.length);
+  for (const squad of byLength) {
+    const word = squad.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(?<![\\w-])${word}(?![\\w-])`).test(lower)) return squad;
+  }
+  return null;
+}
+
+/** The squads whose `repo:` is `repo` (short name). */
+export function squadsForRepo(repo: string, map: Record<string, string[]>): string[] {
+  return Object.keys(map).filter(squad => map[squad].includes(repo));
+}
+
+/**
  * Load raw content of an agent definition file.
  * @param agentPath - Path to the agent markdown file
  * @returns Raw file content or empty string if file doesn't exist
