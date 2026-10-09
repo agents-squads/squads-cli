@@ -135,7 +135,6 @@ function getGitHubStats(days: number = 7): {
   return { prsOpened, prsMerged, issuesClosed };
 }
 
-
 // Parse metrics from goal description
 function parseMetrics(goal: Goal): string[] {
   const metrics: string[] = [];
