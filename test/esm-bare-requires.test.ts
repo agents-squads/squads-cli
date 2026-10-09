@@ -59,10 +59,15 @@ describe('process cwd enrichment', () => {
 });
 
 describe('update check', () => {
-  it('spawns the background version lookup when there is no cache', async () => {
+  it('spawns a detached lookup that writes the cache itself, with no pipe back', async () => {
     const { checkForUpdate } = await import('../src/lib/update.js');
     checkForUpdate();
-    expect(spawnMock).toHaveBeenCalledWith('npm', ['view', 'squads-cli', 'version'], expect.anything());
+    expect(spawnMock).toHaveBeenCalledWith(
+      process.execPath,
+      ['-e', expect.stringContaining('npm view squads-cli version'), join(dir, '.squads', 'update-check.json')],
+      // A piped stdout would keep the CLI alive until npm answers.
+      { detached: true, stdio: 'ignore' },
+    );
   });
 });
 

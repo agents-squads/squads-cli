@@ -156,28 +156,27 @@ export function checkForUpdate(): UpdateInfo {
  */
 function triggerBackgroundRefresh(): void {
   try {
-    // Use spawn with detached: true to run in background
-    // This won't block the main process
-    const child = spawn('npm', ['view', 'squads-cli', 'version'], {
+    // A detached node child looks the version up and writes the cache itself,
+    // with no pipe back to us: a piped stdout keeps this process alive until
+    // `npm view` returns (unref() doesn't release the pipe), and a short
+    // command would exit before reading the answer anyway.
+    const script = `
+const { execSync } = require('child_process');
+const { mkdirSync, writeFileSync } = require('fs');
+const { dirname } = require('path');
+const [, file] = process.argv;
+try {
+  const v = execSync('npm view squads-cli version', { encoding: 'utf-8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  if (/^\\d+\\.\\d+\\.\\d+/.test(v)) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ latestVersion: v, checkedAt: Date.now() }, null, 2));
+  }
+} catch {}
+`;
+    const child = spawn(process.execPath, ['-e', script, CACHE_FILE], {
       detached: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: true,
+      stdio: 'ignore',
     });
-
-    // Collect output
-    let output = '';
-    child.stdout?.on('data', (data: Buffer) => {
-      output += data.toString();
-    });
-
-    child.on('close', () => {
-      const version = output.trim();
-      if (version && /^\d+\.\d+\.\d+/.test(version)) {
-        writeCache(version);
-      }
-    });
-
-    // Unref to allow main process to exit
     child.unref();
   } catch {
     // Ignore errors - background refresh is best effort
