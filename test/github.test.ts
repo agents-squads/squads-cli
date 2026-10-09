@@ -73,7 +73,7 @@ describe('getCoAuthorTrailer', () => {
     const result = getCoAuthorTrailer('unknown-provider');
     expect(result).toContain('unknown-provider');
     expect(result).toContain('Co-Authored-By:');
-    expect(result).toContain('noreply@agents-squads.com');
+    expect(result).toContain('noreply@example.invalid');
   });
 
   it('handles uppercase provider names by lowercasing', () => {

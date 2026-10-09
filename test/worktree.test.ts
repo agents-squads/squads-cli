@@ -304,3 +304,49 @@ describe('runCommitCount — convergence evidence (spec convergence-by-artifact-
     expect(runCommitCount(wt)).toBe(0);
   });
 });
+
+describe('cleanup auto-save commit identity (#875)', () => {
+  let parent: string;
+  let repoDir: string;
+  const saved = { g: process.env.GIT_CONFIG_GLOBAL, s: process.env.GIT_CONFIG_NOSYSTEM };
+
+  beforeEach(() => {
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
+    delete process.env.SQUADS_NO_WORKTREE;
+    parent = mkdtempSync(join(tmpdir(), 'squads-wt-id-'));
+    repoDir = join(parent, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (saved.g === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved.g;
+    if (saved.s === undefined) delete process.env.GIT_CONFIG_NOSYSTEM; else process.env.GIT_CONFIG_NOSYSTEM = saved.s;
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  function savedCommitAuthor(configured: boolean): string {
+    execSync('git init -b main', { cwd: repoDir, stdio: 'pipe' });
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'x', GIT_AUTHOR_EMAIL: 'x@x', GIT_COMMITTER_NAME: 'x', GIT_COMMITTER_EMAIL: 'x@x' };
+    writeFileSync(join(repoDir, 'README.md'), '# t\n');
+    execSync('git add -A && git commit -m init', { cwd: repoDir, stdio: 'pipe', env });
+    if (configured) {
+      execSync('git config user.email me@example.test && git config user.name Me', { cwd: repoDir, stdio: 'pipe' });
+    }
+    const { cwd, cleanup } = createRunWorktree(repoDir, 'product');
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim();
+    writeFileSync(join(cwd, 'deliverable.md'), 'work\n');
+    cleanup();
+    return execSync(`git log -1 --format=%an\\ \\<%ae\\> ${branch}`, { cwd: repoDir, encoding: 'utf-8' }).trim();
+  }
+
+  it('uses the shared fallback identity when none is configured (not a company-specific one)', () => {
+    const author = savedCommitAuthor(false);
+    expect(author).not.toContain('agents-squads');
+    expect(author).toBe('squads <squads-agent@localhost>');
+  });
+
+  it("keeps the operator's own identity when one is configured", () => {
+    expect(savedCommitAuthor(true)).toBe('Me <me@example.test>');
+  });
+});

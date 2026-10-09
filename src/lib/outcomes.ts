@@ -10,6 +10,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { botAuthorArg } from './github.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -108,7 +109,7 @@ function findRecentBotPRs(
   ghEnv?: Record<string, string>,
 ): ArtifactRef[] {
   const raw = ghExec(
-    `gh pr list -R ${repo} --author "agents-squads[bot]" --state all --json number,createdAt --limit 10`,
+    `gh pr list -R ${repo}${botAuthorArg()} --state all --json number,createdAt --limit 10`,
     ghEnv,
   );
   if (!raw) return [];
@@ -133,7 +134,7 @@ function findRecentBotIssues(
   ghEnv?: Record<string, string>,
 ): ArtifactRef[] {
   const raw = ghExec(
-    `gh issue list -R ${repo} --author "agents-squads[bot]" --state all --json number,createdAt --limit 10`,
+    `gh issue list -R ${repo}${botAuthorArg()} --state all --json number,createdAt --limit 10`,
     ghEnv,
   );
   if (!raw) return [];
