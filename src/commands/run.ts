@@ -683,9 +683,19 @@ async function runSquad(
     await Promise.all(launches);
 
     writeLine();
-    writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
-    writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
-    writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
+    // Same predicate as runAgent: --watch wins over --background (the log is followed, so
+    // the run is awaited). runAgent can also return without running (missing CLI, gates,
+    // cooldown) — it sets process.exitCode then, so don't claim success.
+    const detached = options.background === true && !options.watch;
+    const failed = !!process.exitCode;
+    if (detached && !failed) {
+      writeLine(`  ${icons.success} ${agentFiles.length} agents launched in the background`);
+      writeLine(`  ${colors.dim}Monitor: squads runs${RESET}`);
+    } else if (failed) {
+      writeLine(`  ${icons.error} Parallel run finished with errors — see each agent's output above`);
+    } else {
+      writeLine(`  ${icons.success} Parallel run finished — see each agent's output above`);
+    }
     writeLine();
     return;
   }

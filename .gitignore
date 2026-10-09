@@ -8,6 +8,9 @@ dist/
 
 # Generated
 coverage/
+.agents/reports/
+.agents/observability/
+.agents/runtime/mcp/*.mcp.json
 
 # Local-only (not shared)
 scripts/

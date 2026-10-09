@@ -437,7 +437,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
           writeLine(`  ${colors.green}Run started${RESET} — ${squadName}/${agentName} (background)`);
           if (result) writeLine(`  ${colors.dim}${result}${RESET}`);
           writeLine();
-          writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+          writeLine(`  ${colors.dim}Monitor:${RESET} squads runs`);
           writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
         }
         break; // Success — exit retry loop

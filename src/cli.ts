@@ -304,7 +304,7 @@ program
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .option('-t, --timeout <minutes>', 'Per-agent execution timeout in minutes (default: 15)')
-  .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
+  .option('-p, --parallel', 'Run all agents in parallel (add -b to run them in the background)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
   .option('-b, --background', 'Run agent in background (detached process)')
   .option('-w, --watch', 'Run in background but tail the log for visibility')
@@ -341,7 +341,7 @@ Examples:
   $ squads run engineering code-review  Same as above (space notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run
-  $ squads run engineering --parallel   Run all agents in parallel (tmux)
+  $ squads run engineering --parallel   Run all agents in parallel
   $ squads run engineering --lead       Single orchestrator with Task tool
   $ squads run engineering -b           Run in background (detached)
   $ squads run engineering -w           Run in background but tail logs

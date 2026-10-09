@@ -45,7 +45,7 @@ squads propose                 # Draft one extra deliverable on a proposal branc
 |------|-----|-------------|
 | Squad conversation | `squads run engineering` | Orchestrator lead spawns workers, reviews output |
 | Direct agent | `squads run engineering/code-review` | Run one agent directly |
-| Parallel | `squads run engineering --parallel` | One tmux session per agent |
+| Parallel | `squads run engineering --parallel` | All agents at once (add `-b` to detach; check with `squads runs`) |
 | Lead mode | `squads run engineering --lead` | Single orchestrator using Task tool |
 | Background | `squads run engineering -b` | Detached process, check with `squads runs` |
 | Background+watch | `squads run engineering -w` | Background but tail log |
