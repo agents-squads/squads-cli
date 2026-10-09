@@ -149,7 +149,7 @@ squads autonomy                         # Autonomy score and confidence metrics
 squads runs                    # List live background agent runs
 squads kill [target]           # Stop a background run gracefully
 squads inbox [action] [id]     # Review queue — list, approve, reject, defer
-squads config use <env>        # Switch environment (local, staging, prod)
+squads config use <env>        # Switch to a named environment (built-in: local; set SQUADS_API_URL for a hosted API)
 squads config show             # Show current environment config and URLs
 squads update                  # Check for and install updates
 squads version                 # Show version information

@@ -2,10 +2,12 @@
  * Environment configuration — single source of truth for all service URLs.
  *
  * Usage:
- *   squads config use local       Switch to local environment
- *   squads config use staging     Switch to staging
- *   squads config use prod        Switch to production
+ *   squads config use <env>       Switch to a named environment
  *   squads config show            Show current config
+ *
+ * The only built-in environment is `local` (all URLs empty unless set via
+ * SQUADS_API_URL etc.). Point at a hosted API by setting SQUADS_API_URL, or
+ * define your own named environment in ~/.squads/config.json.
  *
  * Config stored at ~/.squads/config.json
  * Env vars override config values (for CI/CD and one-off overrides).
@@ -32,8 +34,6 @@ export interface EnvironmentConfig {
 export interface SquadsConfig {
   current: string;
   environments: Record<string, EnvironmentConfig>;
-  /** User email — captured opt-in during `squads init` for founder outreach */
-  email?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: SquadsConfig = {
   // Local-first product: a fresh install talks to nothing hosted until the
-  // user explicitly runs `squads config use prod` (#959).
+  // user sets SQUADS_API_URL (or defines their own environment) (#959).
   current: 'local',
   environments: {
     local: {
@@ -57,26 +57,37 @@ const DEFAULT_CONFIG: SquadsConfig = {
       redis_url: process.env.REDIS_URL || '',
       execution: 'local',
     },
-    staging: {
-      api_url: 'https://api-staging.agents-squads.com',
-      admin_api_url: 'https://api-staging.agents-squads.com',
-      console_url: 'https://console-staging.agents-squads.com',
-      bridge_url: '',
-      database_url: '',
-      redis_url: '',
-      execution: 'cloud',
-    },
-    prod: {
-      api_url: 'https://api.agents-squads.com',
-      admin_api_url: 'https://api.agents-squads.com',
-      console_url: 'https://console.agents-squads.com',
-      bridge_url: '',
-      database_url: '',
-      redis_url: '',
-      execution: 'cloud',
-    },
   },
 };
+
+/**
+ * Built-in presets that used to ship (pointing at one company's hosted
+ * instance, which no longer resolves). Rejected by `switchEnv` with a clear
+ * message, and stripped from older config files on load.
+ */
+const REMOVED_PRESETS: Record<string, string> = {
+  staging: 'https://api-staging.agents-squads.com',
+  prod: 'https://api.agents-squads.com',
+};
+
+function removedPresetMessage(name: string): string {
+  return (
+    `The "${name}" environment preset was removed (it pointed at hosts that no longer exist). ` +
+    `Set SQUADS_API_URL to your API, or define a custom environment in ~/.squads/config.json.`
+  );
+}
+
+/** Drop stale copies of the removed presets that older versions wrote to disk. */
+function stripRemovedPresets(
+  envs: Record<string, EnvironmentConfig>,
+): Record<string, EnvironmentConfig> {
+  const out: Record<string, EnvironmentConfig> = {};
+  for (const [name, env] of Object.entries(envs)) {
+    if (REMOVED_PRESETS[name] && env?.api_url === REMOVED_PRESETS[name]) continue;
+    out[name] = env;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Load / Save
@@ -91,15 +102,18 @@ export function loadConfig(): SquadsConfig {
   try {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const environments = {
+      ...DEFAULT_CONFIG.environments,
+      ...stripRemovedPresets((parsed.environments as Record<string, EnvironmentConfig>) || {}),
+    };
+    const current = (parsed.current as string) || 'local';
     return {
-      // Spread everything from disk first so unknown/extra fields (email,
-      // future additions) survive a load → save cycle.
+      // Spread everything from disk first so unknown/extra fields
+      // survive a load → save cycle.
       ...(parsed as unknown as SquadsConfig),
-      current: (parsed.current as string) || 'local',
-      environments: {
-        ...DEFAULT_CONFIG.environments,
-        ...(parsed.environments as Record<string, EnvironmentConfig> || {}),
-      },
+      // A stale pointer at a removed preset falls back to local.
+      current: REMOVED_PRESETS[current] && !environments[current] ? 'local' : current,
+      environments,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -145,6 +159,7 @@ export function getEnvName(): string {
 export function switchEnv(name: string): SquadsConfig {
   const config = loadConfig();
   if (!config.environments[name]) {
+    if (REMOVED_PRESETS[name]) throw new Error(removedPresetMessage(name));
     const valid = Object.keys(config.environments).join(', ');
     throw new Error(
       `Unknown environment "${name}". Valid environments: ${valid}`,
@@ -166,21 +181,4 @@ export function getBridgeUrl(): string {
 
 export function getConsoleUrl(): string {
   return getEnv().console_url;
-}
-
-/**
- * Persist the user's email address in ~/.squads/config.json.
- * Used for opt-in founder outreach captured during `squads init`.
- */
-export function saveEmail(email: string): void {
-  const config = loadConfig();
-  config.email = email;
-  saveConfig(config);
-}
-
-/**
- * Retrieve the stored user email, if any.
- */
-export function getEmail(): string | undefined {
-  return loadConfig().email;
 }

@@ -12,7 +12,6 @@ import { colors, RESET, writeLine } from '../lib/terminal.js';
 import {
   getEnvName,
   getEnv,
-  loadConfig,
   switchEnv,
 } from '../lib/env-config.js';
 
@@ -35,7 +34,6 @@ export async function configShowCommand(
   options: ConfigShowOptions = {},
 ): Promise<void> {
   const envName = getEnvName();
-  const rawConfig = loadConfig();
 
   // Detect override
   const isOverridden = !!process.env.SQUADS_ENV;
@@ -85,10 +83,6 @@ export async function configShowCommand(
     `  Execution:   ${env.execution || colors.dim + '(none)' + RESET}`,
   );
 
-  if (rawConfig.email) {
-    writeLine();
-    writeLine(`  ${colors.dim}Email: ${rawConfig.email}${RESET}`);
-  }
   writeLine();
 }
 
@@ -102,7 +96,14 @@ export async function configUseCommand(
   name: string,
   options: ConfigUseOptions = {},
 ): Promise<void> {
-  const config = switchEnv(name);
+  let config;
+  try {
+    config = switchEnv(name);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return;
+  }
   const env = config.environments[name];
 
   if (options.json) {

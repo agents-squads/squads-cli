@@ -89,7 +89,6 @@ ${chalk.bold('To deploy agents to the platform:')}
   2. ${chalk.cyan('squads deploy')}    — Push agents to the platform
 
 ${chalk.dim('Status:')} ${session ? `${session.email} (${session.status})` : 'Not logged in'}
-${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
 `);
     await track('cli.deploy.not_authenticated');
     return;

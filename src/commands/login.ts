@@ -32,7 +32,7 @@ async function isAuthEndpointAvailable(url: string): Promise<boolean> {
 
 export async function loginCommand(): Promise<void> {
   // The auth endpoint is not deployed yet. Hide the login surface rather than
-  // probing an empty URL and degrading to a "Coming Soon" waitlist (#1208).
+  // probing an empty URL and degrading to a dead-end placeholder (#1208).
   // Read at call time so tests/processes that set the env after import are honored.
   if (!isAuthConfigured()) {
     writeLine('Cloud login is not available in this build.');
@@ -56,20 +56,9 @@ export async function loginCommand(): Promise<void> {
   if (!isAvailable) {
     spinner.stop();
     spinner.clear();
-    writeLine(`
-${chalk.bold.cyan('Pro & Enterprise Login')} ${chalk.yellow('(Coming Soon)')}
-${chalk.dim('─'.repeat(40))}
-
-Authentication is coming soon for Pro & Enterprise teams.
-
-${chalk.bold('In the meantime:')}
-  ${chalk.dim('→')} Explore the CLI: ${chalk.cyan('squads status')}
-  ${chalk.dim('→')} Run agents: ${chalk.cyan('squads run <squad>')}
-  ${chalk.dim('→')} Join waitlist: ${chalk.cyan('https://agents-squads.com/waitlist')}
-
-${chalk.dim('Questions?')} ${chalk.cyan('hello@agents-squads.com')}
-`);
+    writeLine(chalk.red(`Auth endpoint unreachable: ${url || '(SQUADS_AUTH_URL is not set)'}`));
     await track('cli.login.unavailable');
+    process.exitCode = 1;
     return;
   }
 
@@ -115,8 +104,6 @@ ${chalk.green('✓ You are logged in.')}
 ${chalk.dim('Get started:')}
   → Explore squads: ${chalk.cyan('squads status')}
   → Dispatch to cloud: ${chalk.cyan('squads run <squad>/<agent> --cloud')}
-
-${chalk.dim('Questions? Email us at')} ${chalk.cyan('hello@agents-squads.com')}
 `);
 
   } catch (error) {

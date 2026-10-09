@@ -46,6 +46,20 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
 
+/** A config file on disk defining a user's own named environment. */
+function withCustomEnv(): void {
+  mockExistsSync.mockReturnValue(true);
+  mockReadFileSync.mockReturnValue(JSON.stringify({
+    current: 'local',
+    environments: {
+      acme: {
+        api_url: 'https://api.acme.example', admin_api_url: '', console_url: '',
+        bridge_url: '', database_url: '', redis_url: '', execution: 'cloud',
+      },
+    },
+  }));
+}
+
 describe('config commands', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
@@ -64,23 +78,42 @@ describe('config commands', () => {
   // switchEnv (used by config use)
   // ---------------------------------------------------------------------------
   describe('switchEnv()', () => {
-    it('switches to a known environment', () => {
-      mockExistsSync.mockReturnValue(false); // Use default config
-      const config = switchEnv('staging');
-      expect(config.current).toBe('staging');
-      expect(config.environments.staging.api_url).toBe(
-        'https://api-staging.agents-squads.com',
-      );
+    it('switches to a user-defined environment', () => {
+      withCustomEnv();
+      const config = switchEnv('acme');
+      expect(config.current).toBe('acme');
+      expect(config.environments.acme.api_url).toBe('https://api.acme.example');
     });
 
     it('persists the change via saveConfig', () => {
-      mockExistsSync.mockReturnValue(false);
-      switchEnv('prod');
-      const written = mockWriteFileSync.mock.calls.map(
-        (c) => JSON.parse(c[1] as string),
+      withCustomEnv();
+      switchEnv('acme');
+      expect(mockWriteFileSync).toHaveBeenCalled();
+      const lastWrite = JSON.parse(
+        mockWriteFileSync.mock.calls[mockWriteFileSync.mock.calls.length - 1][1] as string,
       );
-      const lastWrite = written[written.length - 1];
-      expect(lastWrite.current).toBe('prod');
+      expect(lastWrite.current).toBe('acme');
+    });
+
+    it('rejects the removed staging/prod presets with a SQUADS_API_URL hint', () => {
+      mockExistsSync.mockReturnValue(false);
+      for (const name of ['staging', 'prod']) {
+        expect(() => switchEnv(name)).toThrow(/removed[\s\S]*SQUADS_API_URL/);
+      }
+    });
+
+    it('drops stale copies of the removed presets from an old config file', () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        current: 'prod',
+        environments: {
+          prod: { api_url: 'https://api.agents-squads.com', execution: 'cloud' },
+          staging: { api_url: 'https://api-staging.agents-squads.com', execution: 'cloud' },
+        },
+      }));
+      const config = loadConfig();
+      expect(Object.keys(config.environments)).toEqual(['local']);
+      expect(config.current).toBe('local');
     });
 
     it('throws on unknown environment name', () => {
@@ -98,8 +131,8 @@ describe('config commands', () => {
       } catch (e: unknown) {
         const msg = (e as Error).message;
         expect(msg).toContain('local');
-        expect(msg).toContain('staging');
-        expect(msg).toContain('prod');
+        expect(msg).not.toContain('staging');
+        expect(msg).not.toContain('prod');
       }
     });
   });
@@ -115,18 +148,22 @@ describe('config commands', () => {
 
     it('outputs JSON with --json flag', async () => {
       mockExistsSync.mockReturnValue(false);
-      await configUseCommand('prod', { json: true });
+      withCustomEnv();
+      await configUseCommand('acme', { json: true });
       expect(logSpy).toHaveBeenCalledOnce();
       const output = JSON.parse(logSpy.mock.calls[0][0] as string);
-      expect(output.current).toBe('prod');
-      expect(output.api_url).toBe('https://api.agents-squads.com');
+      expect(output.current).toBe('acme');
+      expect(output.api_url).toBe('https://api.acme.example');
     });
 
-    it('throws on invalid env name', async () => {
+    it('reports an invalid env name and exits non-zero', async () => {
       mockExistsSync.mockReturnValue(false);
-      await expect(configUseCommand('invalid-env')).rejects.toThrow(
-        /Unknown environment/,
-      );
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(configUseCommand('invalid-env')).resolves.toBeUndefined();
+      expect(err).toHaveBeenCalledWith(expect.stringMatching(/Unknown environment/));
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
+      err.mockRestore();
     });
   });
 
@@ -141,17 +178,17 @@ describe('config commands', () => {
 
     it('notes SQUADS_ENV override when set', async () => {
       mockExistsSync.mockReturnValue(false);
-      process.env.SQUADS_ENV = 'staging';
+      process.env.SQUADS_ENV = 'acme';
       await expect(configShowCommand({})).resolves.toBeUndefined();
     });
 
     it('outputs JSON with --json flag', async () => {
       mockExistsSync.mockReturnValue(false);
-      process.env.SQUADS_ENV = 'prod';
+      process.env.SQUADS_ENV = 'acme';
       await configShowCommand({ json: true });
       expect(logSpy).toHaveBeenCalledOnce();
       const output = JSON.parse(logSpy.mock.calls[0][0] as string);
-      expect(output.current).toBe('prod');
+      expect(output.current).toBe('acme');
       expect(output.overridden).toBe(true);
       expect(output.resolved).toHaveProperty('api_url');
       expect(output.resolved).toHaveProperty('execution');

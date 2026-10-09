@@ -1220,14 +1220,14 @@ registerBriefCommand(program);
 // Config command group - environment configuration
 const configCmd = program
   .command('config')
-  .description('View and switch environment configuration (local, staging, prod)')
+  .description('View and switch environment configuration')
   .action(() => {
     configCmd.outputHelp();
   });
 
 configCmd
   .command('use <env>')
-  .description('Switch to a named environment (local, staging, prod)')
+  .description('Switch to a named environment (default: local; custom ones live in ~/.squads/config.json)')
   .option('-j, --json', 'Output as JSON')
   .action(async (env, options) => {
     const { configUseCommand } = await import('./commands/config.js');
