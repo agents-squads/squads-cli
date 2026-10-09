@@ -477,8 +477,10 @@ export function reconcileUnsettledRecords(
   // Reachability guard: ghExec collapses all failures to null, so verify the
   // repo responds before trusting per-branch 404s — otherwise an API/auth
   // outage reads as "every branch deleted" and misclassifies records as
-  // abandoned. One call per cycle buys a clean discriminator.
-  if (!ghExec(`gh api repos/${repo} --jq .full_name`, ghEnv)) {
+  // abandoned. One call per cycle buys a clean discriminator — and the repo's
+  // default branch, the fallback base when it has no develop.
+  const defaultBranch = ghExec(`gh api repos/${repo} --jq .default_branch`, ghEnv)?.trim();
+  if (!defaultBranch) {
     return { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
   }
 
@@ -502,15 +504,16 @@ export function reconcileUnsettledRecords(
     if (refRaw) {
       // Branch exists. Did its commits land in the base anyway (hand-merge,
       // squash without deleting)? Compare is the API merge-base: ahead_by 0
-      // means fully contained. Product repos branch from develop.
+      // means fully contained. Base = develop when the repo has one (404 → null
+      // otherwise), else its default branch.
       apiCalls++;
       const cmp = ghExec(
         `gh api repos/${repo}/compare/develop...${branchName} --jq .ahead_by`,
         ghEnv,
-      ) ?? ghExec(
-        `gh api repos/${repo}/compare/main...${branchName} --jq .ahead_by`,
+      ) ?? (defaultBranch === 'develop' ? null : ghExec(
+        `gh api repos/${repo}/compare/${defaultBranch}...${branchName} --jq .ahead_by`,
         ghEnv,
-      );
+      ));
 
       if (cmp !== null && cmp.trim() === '0') {
         record.outcomes.prsMerged = 1; // landed without a PR

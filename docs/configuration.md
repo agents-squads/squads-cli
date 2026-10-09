@@ -176,3 +176,7 @@ SQUADS_AUTO_PUSH=1     # also push that commit (requires SQUADS_AUTO_COMMIT=1)
 or not, are left alone (edits you made yourself inside that squad's memory folder are
 included). `SQUADS_AUTO_PUSH` pushes your current branch, so any other unpushed commits
 on it go too. Without the opt-in, the run ends by telling you where the memory changed.
+
+`squads memory sync --push` does the same for all of `.agents/memory/`: it commits only
+that folder and pushes your current branch. With both variables set, `squads memory sync`
+pushes without the flag. Its pull step rebases your current branch onto its upstream.

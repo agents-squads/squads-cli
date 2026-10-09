@@ -34,7 +34,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { colors, RESET, writeLine } from './terminal.js';
-import { gitIdentityArgs } from './git.js';
+import { gitIdentityArgs, integrationBranch } from './git.js';
 
 /**
  * Result of attempting to create a per-run worktree.
@@ -79,13 +79,22 @@ export function runCommitCount(wt: RunWorktree): number {
   }
 }
 
+function hasOrigin(repoDir: string): boolean {
+  try {
+    execSync('git remote get-url origin', { cwd: repoDir, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Monotonic counter to disambiguate two runs of the same squad in the same ms. */
 let runCounter = 0;
 
 /**
  * Resolve the base branch for the worktree: prefer the FRESH remote trunk
- * (`origin/develop` after a fetch), else local `develop`, else the repo's
- * current branch (HEAD).
+ * (`origin/<integration branch>` after a fetch — see integrationBranch()), else
+ * the local copy of it, else the repo's current branch (HEAD).
  *
  * #1014: a run worktree cut from a stale local develop (16 commits behind)
  * made a worker implement against an old tree — 40 minutes and real money
@@ -102,22 +111,25 @@ function resolveBaseRef(repoDir: string): string {
     }
   };
 
-  // Freshen the trunk ref when a remote exists. Bounded: one ref, 15s cap.
-  let fetched = false;
-  try {
-    execSync('git fetch --quiet origin develop', { cwd: repoDir, stdio: 'pipe', timeout: 15_000 });
-    fetched = true;
-  } catch {
-    // no remote / offline / no develop on origin — local refs are all we have
-  }
-
-  if (fetched && rev('refs/remotes/origin/develop')) return 'origin/develop';
-
-  if (rev('refs/heads/develop')) {
-    if (!fetched) {
-      writeLine(`  ${colors.yellow}worktree base = LOCAL develop (fetch failed — offline?); it may be stale${RESET}`);
+  const trunk = integrationBranch(repoDir);
+  if (trunk) {
+    // Freshen the trunk ref when a remote exists. Bounded: one ref, 15s cap.
+    let fetched = false;
+    try {
+      execSync(`git fetch --quiet origin '${trunk}'`, { cwd: repoDir, stdio: 'pipe', timeout: 15_000 });
+      fetched = true;
+    } catch {
+      // no remote / offline / trunk not on origin — local refs are all we have
     }
-    return 'develop';
+
+    if (fetched && rev(`refs/remotes/origin/${trunk}`)) return `origin/${trunk}`;
+
+    if (rev(`refs/heads/${trunk}`)) {
+      if (!fetched && hasOrigin(repoDir)) {
+        writeLine(`  ${colors.yellow}worktree base = LOCAL ${trunk} (fetch failed — offline?); it may be stale${RESET}`);
+      }
+      return trunk;
+    }
   }
 
   try {
