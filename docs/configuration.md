@@ -99,6 +99,43 @@ you actually need.
 git workflow, memory protocol, output standards. You rarely need to change
 this, but you can customize it for your team's conventions.
 
+## Agent tools
+
+Agents are granted a minimal toolchain by default: `git`, `gh`, `npm`, `node`
+(plus `npx`, `python3`, `bash`/`sh` for helper scripts, basic file and shell
+utilities, and the `squads` CLI). Nothing else on your machine is callable
+until you opt in.
+
+Opt in per agent with `extra_tools` in the agent file's frontmatter. Each entry
+is a bare command name and is added to the defaults (you do not restate them):
+
+```yaml
+---
+role: worker
+extra_tools: [gws, wrangler]
+---
+```
+
+This grants `Bash(gws:*)` and `Bash(wrangler:*)` to that agent only. Suggested
+tools, never granted unless you list them:
+
+| Tool | CLI for |
+|------|---------|
+| `gws` | Google Workspace |
+| `gcloud` | Google Cloud |
+| `wrangler` | Cloudflare |
+| `bq` | BigQuery |
+| `stripe` | Stripe |
+| `docker` | Docker |
+| `duckdb` | DuckDB |
+| `curl` | HTTP requests |
+
+Any other CLI works the same way. Entries must be plain command names;
+anything with spaces, parentheses, colons, globs or shell characters is
+ignored. For full control, declare `tool_grants` instead (see
+[agent-contract.md](agent-contract.md)); `extra_tools` is appended to that list
+too.
+
 ## Secrets
 
 Agents need API keys to execute. Squads reads secrets from a `.env` file

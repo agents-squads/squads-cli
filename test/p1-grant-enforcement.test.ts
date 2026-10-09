@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { compileAllowedTools } from '../src/lib/agent-contract.js';
+import { compileAllowedTools, extraToolsToAllowed, SUGGESTED_TOOLS } from '../src/lib/agent-contract.js';
 import { buildDetachedShellScript, buildAgentEnv, DEFAULT_AGENT_TOOLS } from '../src/lib/execution-engine.js';
 import { ExecEventWriter, execEventsFile, type PersistedExecEvent } from '../src/lib/exec-events.js';
 import { readFileSync } from 'fs';
@@ -193,5 +193,54 @@ describe('sandbox default-on (#780)', () => {
       settingsFile: '/proj/.git/squads-sandbox-settings.json',
     });
     expect(script).toContain(`--settings '/proj/.git/squads-sandbox-settings.json'`);
+  });
+});
+
+describe('minimal default tool grants + opt-in extra_tools', () => {
+  const bashCmds = (tools: string[]) =>
+    tools.filter((t) => t.startsWith('Bash(')).map((t) => t.slice(5, -3));
+
+  it('default surface grants only git/gh/npm/node of the CLIs — no company toolchain', () => {
+    const cmds = bashCmds(DEFAULT_AGENT_TOOLS);
+    for (const c of ['git', 'gh', 'npm', 'node']) expect(cmds).toContain(c);
+    for (const c of SUGGESTED_TOOLS) expect(cmds).not.toContain(c);
+  });
+
+  it('suggested tools list is exactly the documented set', () => {
+    expect([...SUGGESTED_TOOLS]).toEqual(
+      ['gws', 'gcloud', 'wrangler', 'bq', 'stripe', 'docker', 'duckdb', 'curl'],
+    );
+  });
+
+  it('frontmatter extra_tools adds a suggested tool on top of the default', () => {
+    const p = writeAgentFile('role: worker\nextra_tools:\n  - gws\n  - wrangler');
+    const compiled = compileAllowedTools(p, DEFAULT_AGENT_TOOLS);
+    expect(compiled.source).toBe('default');
+    expect(compiled.tools).toEqual([...DEFAULT_AGENT_TOOLS, 'Bash(gws:*)', 'Bash(wrangler:*)']);
+  });
+
+  it('extra_tools also extends explicit tool_grants', () => {
+    const p = writeAgentFile([
+      'tool_grants:', '  - tool: Read', '    sensitivity: read',
+      'extra_tools: [bq]',
+    ].join('\n'));
+    expect(compileAllowedTools(p, DEFAULT_AGENT_TOOLS)).toEqual({
+      tools: ['Read', 'Bash(bq:*)'], source: 'contract',
+    });
+  });
+
+  it('malformed / hostile extra_tools entries are dropped, never interpolated', () => {
+    expect(extraToolsToAllowed([
+      'gws; reboot', 'Bash(*)', 'gcloud:*', '$(whoami)', 'a b', '../bin/x', '*', '',
+      42, null, { tool: 'x' }, 'docker\n', '-rf',
+    ])).toEqual(['Bash(docker:*)']);
+    expect(extraToolsToAllowed('gws')).toEqual([]);
+    expect(extraToolsToAllowed(undefined)).toEqual([]);
+    expect(extraToolsToAllowed(['gws', 'gws'])).toEqual(['Bash(gws:*)']);
+  });
+
+  it('a non-list extra_tools in frontmatter leaves the default surface untouched', () => {
+    const p = writeAgentFile('role: worker\nextra_tools: "gws"');
+    expect(compileAllowedTools(p, DEFAULT_AGENT_TOOLS).tools).toBe(DEFAULT_AGENT_TOOLS);
   });
 });

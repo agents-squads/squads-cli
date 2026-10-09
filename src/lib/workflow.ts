@@ -274,13 +274,13 @@ procedures: [followed | deviated: reason]
 
   // Role-based tool sets (#701): scanners read-only, workers full, verifiers read+build.
   // readBase = inspection only (no git/gh, no writes).
-  const readBase = ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  const readBase = ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'WebFetch', 'WebSearch'];
   // Lead git/gh: inspect repos/PRs, file delegation issues, and MERGE ready worker
   // PRs (orchestration — CI-gated via --auto, per the review prompt). NOT commit/push/
   // pr-create — the lead lands workers' reviewed code but never authors/ships its own.
   const leadGitGh = ['Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git fetch:*)', 'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)', 'Bash(gh issue view:*)', 'Bash(gh issue list:*)', 'Bash(gh issue create:*)'];
   const readTools = [...readBase, 'Bash(git:*)', 'Bash(gh:*)'];
-  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(bash:*)', 'Bash(sh:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
+  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(bash:*)', 'Bash(sh:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
   const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
 
   const toolsByRole: Record<string, string[]> = {
