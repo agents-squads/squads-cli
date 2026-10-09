@@ -17,6 +17,7 @@ vi.mock('../src/lib/github.js', () => ({
   getCoAuthorTrailer: vi.fn(() => 'Co-Authored-By: Test <test@test>'),
   detectGitHubRepo: vi.fn(() => null),
   isGhAuthFailure: vi.fn(() => false),
+  buildBotGitCredentialEnv: vi.fn(() => ({})),
 }));
 
 vi.mock('../src/lib/run-utils.js', async (importOriginal) => ({
@@ -26,6 +27,7 @@ vi.mock('../src/lib/run-utils.js', async (importOriginal) => ({
 
 import { autoCommitAgentWork } from '../src/lib/execution-engine.js';
 import { getProjectRoot } from '../src/lib/run-utils.js';
+import { getBotPushUrl, detectGitHubRepo } from '../src/lib/github.js';
 
 function git(cmd: string, cwd: string): string {
   return execSync(`git ${cmd}`, {
@@ -98,6 +100,15 @@ describe('autoCommitAgentWork — opt-in, memory-only', () => {
     expect(res.committed).toBe(true);
     expect(res.pushed).toBe(true);
     expect(git('rev-parse main', remote)).toBe(git('rev-parse HEAD', root));
+  });
+
+  it('never builds a token-bearing push URL (argv is visible in ps)', async () => {
+    process.env.SQUADS_AUTO_COMMIT = '1';
+    process.env.SQUADS_AUTO_PUSH = '1';
+    vi.mocked(detectGitHubRepo).mockReturnValueOnce('org/repo');
+    const res = await autoCommitAgentWork('demo', 'agent', 'exec-1234567890');
+    expect(res.pushed).toBe(true); // no GitHub App configured -> pushed to origin as-is
+    expect(vi.mocked(getBotPushUrl)).not.toHaveBeenCalled();
   });
 
   it('does nothing when the squad memory did not change, even if the operator has changes', async () => {
