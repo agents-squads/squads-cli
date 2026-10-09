@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { withLock } from './lock.js';
 
@@ -143,7 +143,6 @@ function expandQuery(query: string): string[] {
 
 function getFileAge(filePath: string): number {
   try {
-    const { statSync } = require('fs');
     const stats = statSync(filePath);
     const ageMs = Date.now() - stats.mtimeMs;
     const ageDays = ageMs / (1000 * 60 * 60 * 24);

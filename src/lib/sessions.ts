@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlink
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { createInterface } from 'readline';
-import { execSync } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { squadRepoMap, squadsForRepo } from './squad-parser.js';
 
 export interface SessionState {
@@ -234,7 +234,6 @@ export function detectAIProcessesFast(): AIProcess[] {
 async function getProcessCwd(pid: number): Promise<string> {
   return new Promise((resolve) => {
     try {
-      const { exec } = require('child_process');
       exec(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
         encoding: 'utf-8',
         timeout: 3000,
