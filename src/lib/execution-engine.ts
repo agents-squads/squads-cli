@@ -47,7 +47,7 @@ import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
-import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv, isGhAuthFailure } from './github.js';
+import { getBotGitEnv, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
 import {
@@ -254,11 +254,8 @@ export async function autoCommitAgentWork(
       };
     }
 
-    // Push to origin using bot token. Retries once after re-minting the
-    // installation token on an auth failure (#1133): the bot token has a
-    // ~1h TTL, and this push runs after the agent's full turn, so a long
-    // turn can outlive it. `spawnSync` never throws on a failed push (only
-    // on a spawn-level error) — the status/stderr must be checked explicitly.
+    // Push (opt-in above). `spawnSync` never throws on a failed push (only on a
+    // spawn-level error) — the status/stderr must be checked explicitly.
     let pushed = false;
     try {
       const { spawnSync } = await import('child_process');
@@ -266,17 +263,18 @@ export async function autoCommitAgentWork(
       // Validate repo format (org/name) to prevent injection
       const validRepo = repo && /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : undefined;
 
-      const pushOnce = async (forceRefresh: boolean) => {
-        const pushUrl = validRepo ? await getBotPushUrl(validRepo, { forceRefresh }) : null;
-        return spawnSync('git', ['push', pushUrl ?? 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
-      };
-
-      let result = await pushOnce(false);
-      let stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
-      if (result.status !== 0 && validRepo && isGhAuthFailure(stderr)) {
-        result = await pushOnce(true);
-        stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
-      }
+      // Authenticate through the env-scoped credential helper (buildBotGitCredentialEnv),
+      // never a token in the push URL: argv is visible to every local user via `ps`. The
+      // helper mints a live installation token on each request, so a long agent turn can't
+      // outlive it (#1133). Without a GitHub App it is empty and git pushes to origin as-is.
+      const credEnv = buildBotGitCredentialEnv();
+      const target = validRepo && Object.keys(credEnv).length > 0 ? `https://github.com/${validRepo}.git` : 'origin';
+      const result = spawnSync('git', ['push', target, 'HEAD'], {
+        ...execOpts,
+        env: { ...execOpts.env, ...credEnv },
+        stdio: 'pipe',
+      });
+      const stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
       if (result.status !== 0) {
         writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${stderr}${RESET}`);
       } else {
