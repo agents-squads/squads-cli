@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/agents-squads/squads-cli/blob/main/schemas/squad.schema.json",
+  "title": "SQUAD.md frontmatter",
+  "description": "Typed squad definition: four blocks (cost, behavior, context, org) instead of prose. How to work in a repo belongs in AGENTS.md; SQUAD.md points to it.",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "description": "Defaults to the `# Squad:` heading, then the directory name." },
+    "mission": { "type": "string", "description": "One line: what this squad exists to produce." },
+    "status": { "enum": ["active", "paused"] },
+    "cost": {
+      "type": "object",
+      "description": "What the squad may spend and on which models.",
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "daily_usd": { "type": "number", "minimum": 0 },
+            "weekly_usd": { "type": "number", "minimum": 0 },
+            "per_run_usd": { "type": "number", "minimum": 0 }
+          }
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": { "type": "string" },
+            "expensive": { "type": "string" },
+            "cheap": { "type": "string" }
+          }
+        },
+        "lanes": {
+          "type": "array",
+          "description": "Provider lanes in order of preference (e.g. the cheapest that can do the work first).",
+          "items": { "type": "string" },
+          "minItems": 1
+        }
+      }
+    },
+    "behavior": {
+      "type": "object",
+      "description": "What the squad's agents may do, and what needs a human first.",
+      "additionalProperties": false,
+      "properties": {
+        "permissions": { "type": "object", "additionalProperties": { "type": "boolean" } },
+        "extra_tools": { "type": "array", "items": { "type": "string" } },
+        "approval": {
+          "type": "array",
+          "description": "Actions that need a human decision before they run (e.g. merge, publish, deploy, spend).",
+          "items": { "type": "string" }
+        },
+        "cooldown_s": { "type": "number", "minimum": 0 }
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "What to load into a run, and what to leave out.",
+      "additionalProperties": false,
+      "properties": {
+        "agents_md": { "type": "string", "description": "Path to the AGENTS.md that says how to work in the repo." },
+        "mcp": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "load": { "type": "array", "items": { "type": "string" } } }
+        },
+        "exclude": { "type": "array", "description": "Paths or globs never loaded.", "items": { "type": "string" } }
+      }
+    },
+    "org": {
+      "type": "object",
+      "description": "Who the squad is, who answers for it, what it owns and what it is held to.",
+      "additionalProperties": false,
+      "required": ["owner"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1, "description": "The human accountable for this squad." },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "domain": { "type": "string" },
+        "repos": { "type": "array", "description": "org/name of each repo the squad owns.", "items": { "type": "string" } },
+        "paths": { "type": "array", "description": "Paths or globs the squad owns inside those repos.", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "goals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["goal", "check"],
+            "properties": {
+              "goal": { "type": "string", "minLength": 1 },
+              "check": { "type": "string", "minLength": 1, "description": "How the goal is verified: a command, a query, a CI job." }
+            }
+          }
+        }
+      }
+    }
+  }
+}
