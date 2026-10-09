@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { promisify } from 'util';
 import { colors, RESET, writeLine } from './terminal.js';
-import { squadRepoMap, squadsForRepo } from './squad-parser.js';
+import { squadNamedIn, squadRepoMap, squadsForRepo } from './squad-parser.js';
 
 const execAsync = promisify(exec);
 
@@ -252,7 +252,8 @@ function localRepoSources(basePath: string, repoMap: Record<string, string[]>): 
 /**
  * The squad a PR/issue belongs to: a `squad:<name>` label, a label equal to a
  * squad name, the squad name as a word in the title, else the squad whose
- * `repo:` is this repo. '' when nothing matches (counted in totals only).
+ * `repo:` is this repo. '' when nothing matches or the label names an unknown
+ * squad (counted in totals only).
  */
 function detectSquad(
   item: { title: string; labels: { name: string }[] },
@@ -260,16 +261,14 @@ function detectSquad(
   repoMap: Record<string, string[]>,
 ): string {
   const squads = Object.keys(repoMap);
+  const byName = (name: string): string | undefined => squads.find(sq => sq.toLowerCase() === name);
   for (const label of item.labels || []) {
     const l = label.name.toLowerCase();
-    if (l.startsWith('squad:')) return l.slice('squad:'.length);
-    const named = squads.find(sq => sq.toLowerCase() === l);
+    if (l.startsWith('squad:')) return byName(l.slice('squad:'.length)) ?? '';
+    const named = byName(l);
     if (named) return named;
   }
-  const title = item.title.toLowerCase();
-  const inTitle = squads.find(sq => new RegExp(`\\b${sq.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(title));
-  if (inTitle) return inTitle;
-  return squadsForRepo(repo, repoMap)[0] ?? '';
+  return squadNamedIn(item.title, squads) ?? squadsForRepo(repo, repoMap)[0] ?? '';
 }
 
 export interface GitHubStats {

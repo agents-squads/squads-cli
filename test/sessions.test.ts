@@ -72,13 +72,14 @@ describe('sessions', () => {
       expect(detectSquad('/Users/test/code/acme-web/src')).toBe('website');
     });
 
-    it('maps a directory named after a squad to that squad', () => {
-      expect(detectSquad('/Users/test/code/engineering/src')).toBe('engineering');
-      expect(detectSquad('/Users/test/code/finance')).toBe('finance');
+    it('does not claim a directory just because it shares a squad name', () => {
+      expect(detectSquad('/Users/test/code/engineering/src')).toBeNull();
+      expect(detectSquad('/x/proj/src', { src: [] })).toBeNull();
+      expect(detectSquad('/x/constructor', { a: ['b'] })).toBeNull();
     });
 
     it('prefers the deepest matching segment', () => {
-      expect(detectSquad('/Users/test/finance/acme-web')).toBe('website');
+      expect(detectSquad('/Users/test/acme-hq/vendor/acme-web')).toBe('website');
     });
 
     it("never guesses from one company's layout", () => {
@@ -359,15 +360,15 @@ describe('sessions', () => {
 
     it('auto-detects squad from cwd when not specified', () => {
       const { tmpDir } = createTempAgentsDir();
-      // A cwd inside a directory named after a squad
-      const fakeAgentsSquadsDir = path.join(tmpDir, 'code', 'engineering');
+      // A cwd inside a squad's repo (SQUAD.md repo:)
+      const fakeAgentsSquadsDir = path.join(tmpDir, 'code', 'acme-hq');
       fs.mkdirSync(path.join(fakeAgentsSquadsDir, '.agents', 'sessions', 'active'), { recursive: true });
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(fakeAgentsSquadsDir);
 
       const session = startSession();
       expect(session).not.toBeNull();
-      expect(session!.squad).toBe('engineering');
+      expect(session!.squad).toBe('company');
 
       cwdSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true });

@@ -623,6 +623,21 @@ export function squadRepoMap(squadsDir: string | null = findSquadsDir()): Record
   return map;
 }
 
+/**
+ * The squad named as a whole word in `text` (case-insensitive). Longest name
+ * first, and `-` counts as part of a name, so "web-api: fix" is `web-api`,
+ * not `web`. Null when none matches.
+ */
+export function squadNamedIn(text: string, squads: string[]): string | null {
+  const lower = text.toLowerCase();
+  const byLength = [...squads].sort((a, b) => b.length - a.length);
+  for (const squad of byLength) {
+    const word = squad.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(?<![\\w-])${word}(?![\\w-])`).test(lower)) return squad;
+  }
+  return null;
+}
+
 /** The squads whose `repo:` is `repo` (short name). */
 export function squadsForRepo(repo: string, map: Record<string, string[]>): string[] {
   return Object.keys(map).filter(squad => map[squad].includes(repo));

@@ -7,7 +7,7 @@ import { execSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { squadRepoMap, squadsForRepo } from '../src/lib/squad-parser.js';
+import { squadNamedIn, squadRepoMap, squadsForRepo } from '../src/lib/squad-parser.js';
 import { getMultiRepoGitStats } from '../src/lib/git.js';
 
 beforeAll(() => {
@@ -54,6 +54,20 @@ describe('squadRepoMap', () => {
 
   it('is empty without a squads directory', () => {
     expect(squadRepoMap(null)).toEqual({});
+  });
+});
+
+describe('squadNamedIn', () => {
+  const squads = ['web', 'web-api', 'Ops'];
+
+  it('prefers the longest name, treating - as part of it', () => {
+    expect(squadNamedIn('web-api: fix login', squads)).toBe('web-api');
+    expect(squadNamedIn('fix(web): header', squads)).toBe('web');
+  });
+
+  it('matches whole words, case-insensitively, returning the real squad key', () => {
+    expect(squadNamedIn('OPS: rotate keys', squads)).toBe('Ops');
+    expect(squadNamedIn('stops the webhook', squads)).toBeNull();
   });
 });
 

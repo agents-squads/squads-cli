@@ -160,12 +160,13 @@ export function detectSquad(
   cwd: string = process.cwd(),
   repoMap: Record<string, string[]> = squadRepoMap(),
 ): string | null {
-  // A path segment naming a squad's `repo:` (SQUAD.md), else the squad itself.
+  // The deepest path segment that is a squad's `repo:` (SQUAD.md). Bare squad
+  // names are not matched: a squad called `src` or `data` would claim any
+  // directory of that name.
   const segments = cwd.split(/[\\/]/).filter(Boolean);
   for (let i = segments.length - 1; i >= 0; i--) {
     const owner = squadsForRepo(segments[i], repoMap)[0];
     if (owner) return owner;
-    if (segments[i] in repoMap) return segments[i];
   }
   return null;
 }

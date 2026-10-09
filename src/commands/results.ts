@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { findSquadsDir, listSquads, loadSquad, Goal, squadRepoMap } from '../lib/squad-parser.js';
+import { findSquadsDir, listSquads, loadSquad, Goal, squadNamedIn, squadRepoMap } from '../lib/squad-parser.js';
 import {
   colors,
   bold,
@@ -35,7 +35,7 @@ function getGitStats(days: number = 7): Map<string, { commits: number; files: st
 
   // A squad's commits mention its name or touch its repo (SQUAD.md `repo:`)
   const squadKeywords: Record<string, string[]> = Object.fromEntries(
-    Object.entries(squadRepoMap()).map(([squad, repos]) => [squad, [squad, ...repos]]),
+    Object.entries(squadRepoMap()).map(([squad, repos]) => [squad, [squad, ...repos].map(k => k.toLowerCase())]),
   );
 
   try {
@@ -91,6 +91,7 @@ function getGitHubStats(days: number = 7): {
   const prsOpened = new Map<string, number>();
   const prsMerged = new Map<string, number>();
   const issuesClosed = new Map<string, number>();
+  const squads = Object.keys(squadRepoMap());
 
   try {
     // Get PRs opened
@@ -105,7 +106,7 @@ function getGitHubStats(days: number = 7): {
       const created = new Date(pr.createdAt);
       if (created < since) continue;
 
-      const squad = detectSquadFromTitle(pr.title);
+      const squad = squadNamedIn(pr.title, squads) ?? 'other';
       prsOpened.set(squad, (prsOpened.get(squad) || 0) + 1);
 
       if (pr.mergedAt) {
@@ -124,7 +125,7 @@ function getGitHubStats(days: number = 7): {
       const closed = new Date(issue.closedAt);
       if (closed < since) continue;
 
-      const squad = detectSquadFromTitle(issue.title);
+      const squad = squadNamedIn(issue.title, squads) ?? 'other';
       issuesClosed.set(squad, (issuesClosed.get(squad) || 0) + 1);
     }
   } catch {
@@ -134,14 +135,6 @@ function getGitHubStats(days: number = 7): {
   return { prsOpened, prsMerged, issuesClosed };
 }
 
-function detectSquadFromTitle(title: string): string {
-  const lower = title.toLowerCase();
-  for (const squad of Object.keys(squadRepoMap())) {
-    const word = squad.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`\\b${word}\\b`).test(lower)) return squad;
-  }
-  return 'other';
-}
 
 // Parse metrics from goal description
 function parseMetrics(goal: Goal): string[] {
