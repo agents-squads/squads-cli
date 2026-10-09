@@ -21,10 +21,16 @@ import {
 import { writeLine } from '../lib/terminal.js';
 import matter from 'gray-matter';
 import { loadSession } from '../lib/auth.js';
+import { getApiUrl, requireApiUrl } from '../lib/env-config.js';
 import { track } from '../lib/telemetry.js';
 
-// Platform API URL
-const PLATFORM_API_URL = process.env.SQUADS_PLATFORM_URL || process.env.SQUADS_API_URL || process.env.SQUADS_SCHEDULER_URL || '';
+/**
+ * Platform API URL, read at call time (env set after import is honoured).
+ * SQUADS_PLATFORM_URL / SQUADS_SCHEDULER_URL are older names kept working.
+ */
+function platformApiUrl(): string {
+  return process.env.SQUADS_PLATFORM_URL || getApiUrl() || process.env.SQUADS_SCHEDULER_URL || '';
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -164,11 +170,13 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
       return;
     }
 
-    // Push to platform
+    // Push to platform. Nothing to sync needs no API (pushToplatform short-circuits).
+    const apiUrl = manifest.triggers.length === 0 ? '' : requireApiUrl('squads deploy', platformApiUrl());
+    if (apiUrl === null) return;
     writeLine('');
     const pushSpinner = ora('Pushing to platform...').start();
 
-    const result = await pushToplatform(manifest, session.accessToken || '');
+    const result = await pushToplatform(apiUrl, manifest, session.accessToken || '');
 
     if (result.errors.length > 0) {
       pushSpinner.warn(`Deployed with ${result.errors.length} error(s)`);
@@ -216,6 +224,8 @@ ${chalk.bold('Next steps:')}
 }
 
 export async function deployStatusCommand(): Promise<void> {
+  const apiUrl = requireApiUrl('squads deploy status', platformApiUrl());
+  if (!apiUrl) return;
   const session = loadSession();
   if (!session?.accessToken) {
     writeLine(chalk.yellow('Not logged in. Run: squads login'));
@@ -225,7 +235,7 @@ export async function deployStatusCommand(): Promise<void> {
   const spinner = ora('Fetching deployment status...').start();
 
   try {
-    const response = await fetch(`${PLATFORM_API_URL}/triggers`, {
+    const response = await fetch(`${apiUrl}/triggers`, {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
@@ -268,7 +278,7 @@ export async function deployStatusCommand(): Promise<void> {
     }
 
     // Show execution stats
-    const execResponse = await fetch(`${PLATFORM_API_URL}/stats`, {
+    const execResponse = await fetch(`${apiUrl}/stats`, {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
@@ -303,6 +313,8 @@ export async function deployStatusCommand(): Promise<void> {
 }
 
 export async function deployPullCommand(options: { verbose?: boolean }): Promise<void> {
+  const apiUrl = requireApiUrl('squads deploy pull', platformApiUrl());
+  if (!apiUrl) return;
   const session = loadSession();
   if (!session?.accessToken) {
     writeLine(chalk.yellow('Not logged in. Run: squads login'));
@@ -313,7 +325,7 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
 
   try {
     // Pull recent executions
-    const response = await fetch(`${PLATFORM_API_URL}/executions?limit=20`, {
+    const response = await fetch(`${apiUrl}/executions?limit=20`, {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
@@ -365,7 +377,7 @@ export async function deployPullCommand(options: { verbose?: boolean }): Promise
     }
 
     // Pull learnings (collective memory from cloud runs)
-    const learningsResponse = await fetch(`${PLATFORM_API_URL}/learnings/relevant?limit=5`, {
+    const learningsResponse = await fetch(`${apiUrl}/learnings/relevant?limit=5`, {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
       },
@@ -485,12 +497,12 @@ function buildManifest(squadsDir: string, filterSquad?: string): DeployManifest 
   };
 }
 
-async function pushToplatform(manifest: DeployManifest, token: string): Promise<DeployResult> {
+async function pushToplatform(apiUrl: string, manifest: DeployManifest, token: string): Promise<DeployResult> {
   if (manifest.triggers.length === 0) {
     return { triggersCreated: 0, triggersSynced: [], errors: [] };
   }
 
-  const response = await fetch(`${PLATFORM_API_URL}/triggers/sync`, {
+  const response = await fetch(`${apiUrl}/triggers/sync`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -49,8 +49,11 @@ function makeProgram() {
 
 describe('registerApprovalCommand', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
+  const savedApiUrl = process.env.SQUADS_API_URL;
 
   beforeEach(() => {
+    // The commands need an API URL (read at call time); don't depend on ~/.squads.
+    process.env.SQUADS_API_URL = 'http://api.test';
     vi.clearAllMocks();
     fetchMock = vi.fn();
     global.fetch = fetchMock;
@@ -60,6 +63,8 @@ describe('registerApprovalCommand', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (savedApiUrl === undefined) delete process.env.SQUADS_API_URL;
+    else process.env.SQUADS_API_URL = savedApiUrl;
   });
 
   it('registers the approval command', () => {

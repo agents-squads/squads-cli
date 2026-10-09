@@ -159,6 +159,29 @@ export function getApiUrl(): string {
   return getEnv().api_url;
 }
 
+/**
+ * The API URL for a command that can do nothing without one — read at call
+ * time. When unset: names the variable to set, sets a failing exit code and
+ * returns null so the caller stops before any request.
+ */
+export function requireApiUrl(command: string, url: string = getApiUrl()): string | null {
+  if (url) return url;
+  console.error(`${command} needs an API: set SQUADS_API_URL to its base URL.`);
+  process.exitCode = 1;
+  return null;
+}
+
+/** Wrap a command action so it runs only when an API is configured (see requireApiUrl). */
+export function withApi<A extends unknown[]>(
+  command: string,
+  fn: (...args: A) => Promise<void>,
+): (...args: A) => Promise<void> {
+  return async (...args: A) => {
+    if (!requireApiUrl(command)) return;
+    await fn(...args);
+  };
+}
+
 // Bridge = the HTTP gateway fronting Postgres; clients speak HTTP, never touch the DB directly.
 export function getBridgeUrl(): string {
   return getEnv().bridge_url;
