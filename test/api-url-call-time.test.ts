@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -93,6 +93,23 @@ describe('squads deploy', () => {
     process.env.SQUADS_API_URL = 'https://api.example.test';
     await deployStatusCommand();
     expect(String(fetchMock.mock.calls[0][0])).toMatch(/^https:\/\/api\.example\.test\/triggers/);
+  });
+
+  it('deploy with no triggers to sync needs no API', async () => {
+    const project = join(home, 'project');
+    mkdirSync(join(project, '.agents', 'squads', 'demo'), { recursive: true });
+    writeFileSync(join(project, '.agents', 'squads', 'demo', 'SQUAD.md'), '# Squad: demo\n\nA demo squad.\n');
+    const { deployCommand } = await import('../src/commands/deploy.js');
+    const cwd = process.cwd();
+    process.chdir(project);
+    try {
+      await deployCommand({});
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(errors.join('\n')).not.toContain('SQUADS_API_URL');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('status and pull stop with the variable name when no API is configured', async () => {

@@ -170,9 +170,9 @@ ${chalk.dim('Need access?')} ${chalk.cyan('hello@agents-squads.com')}
       return;
     }
 
-    // Push to platform
-    const apiUrl = requireApiUrl('squads deploy', platformApiUrl());
-    if (!apiUrl) return;
+    // Push to platform. Nothing to sync needs no API (pushToplatform short-circuits).
+    const apiUrl = manifest.triggers.length === 0 ? '' : requireApiUrl('squads deploy', platformApiUrl());
+    if (apiUrl === null) return;
     writeLine('');
     const pushSpinner = ora('Pushing to platform...').start();
 
