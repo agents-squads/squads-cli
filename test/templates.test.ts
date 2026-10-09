@@ -135,7 +135,7 @@ describe('local utilities', () => {
       expect(result).toContain('○ API');
       expect(result).toContain('○ Traces');
       expect(result).toContain('unavailable');
-      expect(result).toContain('squads login');
+      expect(result).toContain('SQUADS_API_URL');
     });
 
     it('formats running services correctly', () => {

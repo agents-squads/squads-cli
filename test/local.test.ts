@@ -30,12 +30,13 @@ describe('local', () => {
       expect(vars).toHaveProperty('REDIS_URL');
     });
 
-    it('returns squads login guidance instead of hardcoded URLs', () => {
+    it('returns placeholders instead of hardcoded URLs or login guidance', () => {
       const vars = getLocalEnvVars();
 
-      expect(vars.LANGFUSE_HOST).toContain('squads login');
-      expect(vars.SQUADS_DATABASE_URL).toContain('squads login');
-      expect(vars.REDIS_URL).toContain('squads login');
+      for (const v of Object.values(vars)) {
+        expect(v).toMatch(/^\(your .+\)$/);
+        expect(v).not.toContain('squads login');
+      }
     });
   });
 
@@ -68,7 +69,8 @@ describe('local', () => {
       const output = formatLocalStatus(status);
       expect(output).toContain('○');
       expect(output).toContain('unavailable');
-      expect(output).toContain('squads login');
+      expect(output).toContain('SQUADS_API_URL');
+      expect(output).not.toContain('squads login');
     });
   });
 

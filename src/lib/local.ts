@@ -83,11 +83,11 @@ export async function isLangfuseLocal(): Promise<boolean> {
  */
 export function getLocalEnvVars(): Record<string, string> {
   return {
-    LANGFUSE_HOST: '(configure via squads login)',
-    LANGFUSE_PUBLIC_KEY: '(configure via squads login)',
-    LANGFUSE_SECRET_KEY: '(configure via squads login)',
-    SQUADS_DATABASE_URL: '(configure via squads login)',
-    REDIS_URL: '(configure via squads login)',
+    LANGFUSE_HOST: '(your Langfuse URL)',
+    LANGFUSE_PUBLIC_KEY: '(your Langfuse public key)',
+    LANGFUSE_SECRET_KEY: '(your Langfuse secret key)',
+    SQUADS_DATABASE_URL: '(your Postgres URL)',
+    REDIS_URL: '(your Redis URL)',
   };
 }
 
@@ -109,7 +109,7 @@ export function formatLocalStatus(status: LocalStackStatus): string {
   lines.push('');
 
   if (!status.running) {
-    lines.push('Run `squads login` to connect to cloud services.');
+    lines.push('Set the service URLs (SQUADS_API_URL, SQUADS_BRIDGE_URL, ...) to connect services.');
   }
 
   return lines.join('\n');

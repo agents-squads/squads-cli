@@ -51,7 +51,7 @@ function getServiceChecks(): ServiceCheck[] {
       name: 'API',
       url: `${env.api_url}/health`,
       optional: true,
-      fix: 'squads login',
+      fix: 'start the API, or check SQUADS_API_URL',
     });
   }
 
@@ -60,7 +60,7 @@ function getServiceChecks(): ServiceCheck[] {
       name: 'Bridge',
       url: `${env.bridge_url}/health`,
       optional: true,
-      fix: 'squads login',
+      fix: 'start the bridge, or check SQUADS_BRIDGE_URL',
     });
   }
 
@@ -69,7 +69,7 @@ function getServiceChecks(): ServiceCheck[] {
       name: 'Traces',
       url: `${process.env.LANGFUSE_HOST}/api/public/health`,
       optional: true,
-      fix: 'squads login',
+      fix: 'start Langfuse, or check LANGFUSE_HOST',
     });
   }
 
@@ -200,7 +200,7 @@ export async function healthCommand(_options: HealthOptions = {}): Promise<void>
 
   if (SERVICES.length === 0) {
     writeLine(`  ${colors.yellow}${icons.warning} No services configured${RESET}`);
-    writeLine(`  ${colors.dim}Run ${RESET}${colors.cyan}squads login${RESET}${colors.dim} to connect to cloud services${RESET}`);
+    writeLine(`  ${colors.dim}Set ${RESET}${colors.cyan}SQUADS_API_URL${RESET}${colors.dim} (and optionally SQUADS_BRIDGE_URL, LANGFUSE_HOST) to connect services${RESET}`);
     writeLine();
     writeLine(`  ${colors.cyan}${icons.progress}${RESET} Running in local mode ${colors.dim}(no cloud services required)${RESET}`);
     writeLine(`    Core commands work without cloud services: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
@@ -285,7 +285,7 @@ export async function healthCommand(_options: HealthOptions = {}): Promise<void>
     writeLine();
   } else if (optionalDown.length > 0) {
     writeLine(`  ${colors.green}${icons.success} Core ready${RESET} ${colors.dim}(no required services are down)${RESET}`);
-    writeLine(`  ${colors.dim}○ ${optionalDown.length} optional service(s) offline — run ${RESET}${colors.cyan}squads login${RESET}${colors.dim} to connect${RESET}`);
+    writeLine(`  ${colors.dim}○ ${optionalDown.length} optional service(s) offline — see the Fix line for each${RESET}`);
     writeLine();
   } else {
     writeLine(`  ${colors.green}${icons.success} All services healthy${RESET}`);
@@ -299,11 +299,11 @@ export async function healthCommand(_options: HealthOptions = {}): Promise<void>
     writeLine(`    Core commands work without cloud services: ${colors.cyan}init${RESET}, ${colors.cyan}run${RESET}, ${colors.cyan}status${RESET}, ${colors.cyan}eval${RESET}`);
     writeLine(`    Memory uses local ${colors.dim}.agents/memory/${RESET} files.`);
     writeLine();
-    writeLine(`    ${colors.dim}To enable scheduling and telemetry:${RESET} squads login`);
+    writeLine(`    ${colors.dim}To enable scheduling and telemetry:${RESET} set SQUADS_API_URL / SQUADS_BRIDGE_URL`);
     writeLine();
   } else if (!apiUp) {
     writeLine(`  ${colors.yellow}${icons.warning} API not reachable - triggers won't auto-fire${RESET}`);
-    writeLine(`    ${colors.dim}Check connection:${RESET} squads login`);
+    writeLine(`    ${colors.dim}Check that the API is running at${RESET} SQUADS_API_URL`);
     writeLine();
   }
 }

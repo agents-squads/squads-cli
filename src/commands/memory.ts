@@ -322,7 +322,7 @@ export async function memorySearchCommand(
     const bridgeUrl = getBridgeUrl();
     if (!bridgeUrl) {
       writeLine(`  ${colors.yellow}API service unavailable${RESET}`);
-      writeLine(`  ${colors.dim}Conversation search requires authentication. Run \`squads login\` to connect.${RESET}`);
+      writeLine(`  ${colors.dim}Conversation search needs the bridge: set SQUADS_BRIDGE_URL.${RESET}`);
       writeLine(`  ${colors.dim}For local memory search, use: squads memory query "${query}"${RESET}`);
       writeLine();
       return;
@@ -334,7 +334,7 @@ export async function memorySearchCommand(
 
     if (!response.ok) {
       if (response.status === 503) {
-        writeLine(`  ${colors.yellow}API service unavailable. Run \`squads login\` to connect.${RESET}`);
+        writeLine(`  ${colors.yellow}Bridge unavailable (503). Check SQUADS_BRIDGE_URL.${RESET}`);
         writeLine(`  ${colors.dim}For local memory search, use: squads memory query "${query}"${RESET}`);
         writeLine();
         return;
@@ -350,7 +350,7 @@ export async function memorySearchCommand(
       writeLine(`  ${colors.yellow}No conversations found for "${query}"${RESET}`);
       writeLine();
       writeLine(`  ${colors.dim}Conversations are captured via hooks. Make sure:${RESET}`);
-      writeLine(`  ${colors.dim}  1. You are authenticated (squads login)${RESET}`);
+      writeLine(`  ${colors.dim}  1. SQUADS_BRIDGE_URL points at the bridge that receives them${RESET}`);
       writeLine(`  ${colors.dim}  2. Telemetry hooks are configured in Claude settings${RESET}`);
       writeLine();
       return;
@@ -463,7 +463,7 @@ export async function memoryExtractCommand(
 
     const bridgeUrl = getBridgeUrl();
     if (!bridgeUrl) {
-      writeLine(`  ${colors.yellow}API service unavailable. Run \`squads login\` to connect.${RESET}`);
+      writeLine(`  ${colors.yellow}Bridge not configured. Set SQUADS_BRIDGE_URL.${RESET}`);
       writeLine();
       return;
     }
@@ -539,7 +539,7 @@ export async function memoryExtractCommand(
       try {
         const mem0Url = getMem0Url();
         if (!mem0Url) {
-          writeLine(`  ${colors.yellow}Memory service not configured. Run \`squads login\` to connect.${RESET}`);
+          writeLine(`  ${colors.yellow}Memory service not configured. Set MEM0_API_URL.${RESET}`);
           writeLine();
           return;
         }

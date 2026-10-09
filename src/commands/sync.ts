@@ -420,7 +420,7 @@ async function syncDimensionsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
+    writeLine(`  ${colors.dim}Bridge unavailable. Check SQUADS_BRIDGE_URL.${RESET}`);
     writeLine();
   }
 }
@@ -783,7 +783,7 @@ async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
   } catch (error) {
     writeLine(`  ${icons.error} ${colors.red}Sync failed: ${error}${RESET}`);
     writeLine();
-    writeLine(`  ${colors.dim}API unavailable. Run \`squads login\` to connect.${RESET}`);
+    writeLine(`  ${colors.dim}Bridge unavailable. Check SQUADS_BRIDGE_URL.${RESET}`);
   }
 
   writeLine();
@@ -969,7 +969,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
       const pgAvailable = await isPostgresAvailable();
       if (!pgAvailable) {
         writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-        writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
+        writeLine(`  ${colors.dim}Postgres sync is not available in this build.${RESET}`);
       } else {
         try {
           const result: SyncResult = await syncAllCycleData();
@@ -1069,7 +1069,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     const pgAvailable = await isPostgresAvailable();
     if (!pgAvailable) {
       writeLine(`  ${icons.error} ${colors.red}Postgres not available${RESET}`);
-      writeLine(`  ${colors.dim}Database not configured. Run \`squads login\` to connect.${RESET}`);
+      writeLine(`  ${colors.dim}Postgres sync is not available in this build.${RESET}`);
       writeLine();
     } else {
       try {
