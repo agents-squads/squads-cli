@@ -158,29 +158,48 @@ export interface ExecuteWithClaudeOptions {
 // ── Auto-commit ──────────────────────────────────────────────────────
 
 /**
- * Auto-commit agent work after execution completes.
- * Commits as the Agents Squads bot (if configured), pushes with bot token.
- * Falls back to user's git identity if bot not configured.
+ * Commit — and optionally push — the memory an agent wrote into the operator's checkout.
+ *
+ * The agent's code changes live in its own worktree (the agent commits them, or
+ * harvestProviderWork preserves them on the agent branch). The only thing it may write
+ * into the operator's checkout is its squad's memory, so that is the only path staged
+ * here — never `git add -A`, which swept the operator's own uncommitted work into a
+ * bot commit and pushed it.
+ *
+ * Opt-in: nothing is committed unless SQUADS_AUTO_COMMIT=1, and nothing is pushed unless
+ * SQUADS_AUTO_PUSH=1 as well. Otherwise the memory stays uncommitted and the returned
+ * message tells the user where.
  */
 export async function autoCommitAgentWork(
   squadName: string,
   agentName: string,
   executionId: string,
   provider?: string,
-): Promise<{ committed: boolean; message?: string; error?: string }> {
-  const { execSync } = await import('child_process');
+): Promise<{ committed: boolean; pushed?: boolean; message?: string; error?: string }> {
+  const { execSync, execFileSync } = await import('child_process');
   const { detectGitHubRepo } = await import('./github.js');
   const projectRoot = getProjectRoot();
 
+  // Squad names come from directory names; refuse anything that could escape a pathspec
+  // (including `.` / `..`, which would widen the scope to all of .agents/).
+  if (!/^(?!\.)[\w.-]+$/.test(squadName)) return { committed: false };
+  const scope = join('.agents', 'memory', squadName);
+
   try {
-    // Check for uncommitted changes
-    const status = execSync('git status --porcelain', {
+    const status = execFileSync('git', ['status', '--porcelain', '--', scope], {
       encoding: 'utf-8',
       cwd: projectRoot,
     }).trim();
 
     if (!status) {
       return { committed: false };
+    }
+
+    if (process.env.SQUADS_AUTO_COMMIT !== '1') {
+      return {
+        committed: false,
+        message: `Agent memory changed in ${scope} — left uncommitted (set SQUADS_AUTO_COMMIT=1 to commit it automatically)`,
+      };
     }
 
     // Get bot identity for commits
@@ -190,19 +209,19 @@ export async function autoCommitAgentWork(
       env: { ...process.env, ...botEnv },
     };
 
-    // Stage all changes (agent work should be committed)
-    execSync('git add -A', execOpts);
+    // Stage only this squad's memory — the operator's other changes are not ours to commit.
+    execFileSync('git', ['add', '-A', '--', scope], execOpts);
 
     // PII/secret guard — never let an agent's auto-commit leak a credential or
     // PII into a (possibly public) repo. Scan only the staged ADDITIONS; if any
     // finding, unstage and refuse to commit (safe failure: work stays local,
     // surfaced as an error rather than pushed).
-    const stagedDiff = execSync('git diff --cached', {
+    const stagedDiff = execFileSync('git', ['diff', '--cached', '--', scope], {
       encoding: 'utf-8', cwd: projectRoot, maxBuffer: 32 * 1024 * 1024,
     });
     const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
     if (findings.length > 0) {
-      try { execSync('git reset', execOpts); } catch { /* refuse to commit regardless */ }
+      try { execFileSync('git', ['reset', '-q', '--', scope], execOpts); } catch { /* refuse to commit regardless */ }
       return {
         committed: false,
         error: `blocked: ${findings.length} secret/PII finding(s) in staged changes — ${summarizeFindings(findings)}`,
@@ -214,16 +233,25 @@ export async function autoCommitAgentWork(
     const shortExecId = executionId.slice(0, 12);
     const coAuthor = getCoAuthorTrailer(provider || 'claude');
     const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
-    writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
+    writeFileSync(msgFile, `memory(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit using --file to avoid shell interpolation. Repo-scoped fallback
-    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/
-    // GIT_COMMITTER_* env vars from botEnv (if set) still take precedence.
+    // Commit using --file to avoid shell interpolation, and with the memory pathspec so
+    // anything the operator had staged stays staged and uncommitted. Repo-scoped fallback
+    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/GIT_COMMITTER_*
+    // env vars from botEnv (if set) still take precedence. `scope` is validated above.
     const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git ${identity} commit --file "${msgFile}"`, execOpts);
+      execSync(`git ${identity} commit --file "${msgFile}" -- "${scope}"`, execOpts);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
+    }
+
+    if (process.env.SQUADS_AUTO_PUSH !== '1') {
+      return {
+        committed: true,
+        pushed: false,
+        message: `Committed agent memory in ${scope} (not pushed — set SQUADS_AUTO_PUSH=1 to push it)`,
+      };
     }
 
     // Push to origin using bot token. Retries once after re-minting the
@@ -231,6 +259,7 @@ export async function autoCommitAgentWork(
     // ~1h TTL, and this push runs after the agent's full turn, so a long
     // turn can outlive it. `spawnSync` never throws on a failed push (only
     // on a spawn-level error) — the status/stderr must be checked explicitly.
+    let pushed = false;
     try {
       const { spawnSync } = await import('child_process');
       const repo = detectGitHubRepo(projectRoot);
@@ -250,12 +279,18 @@ export async function autoCommitAgentWork(
       }
       if (result.status !== 0) {
         writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${stderr}${RESET}`);
+      } else {
+        pushed = true;
       }
     } catch (e) {
       writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${e instanceof Error ? e.message : String(e)}${RESET}`);
     }
 
-    return { committed: true, message: `Committed changes from ${agentName}` };
+    return {
+      committed: true,
+      pushed,
+      message: pushed ? `Committed and pushed agent memory in ${scope}` : `Committed agent memory in ${scope}`,
+    };
   } catch (error) {
     return { committed: false, error: String(error) };
   }
@@ -1021,9 +1056,11 @@ export function executeForeground(config: {
         });
 
         const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId, config.provider);
-        if (commitResult.committed) {
+        if (commitResult.error) {
+          writeLine(`  ${colors.dim}warn: agent memory not committed — ${commitResult.error}${RESET}`);
+        } else if (commitResult.message) {
           writeLine();
-          writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
+          writeLine(`  ${commitResult.committed ? colors.green : colors.dim}${commitResult.message}${RESET}`);
         }
 
         cleanupWorktree(workDir, config.projectRoot);
