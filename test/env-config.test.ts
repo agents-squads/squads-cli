@@ -30,6 +30,7 @@ import {
   getApiUrl,
   getBridgeUrl,
   getConsoleUrl,
+  switchEnv,
 } from '../src/lib/env-config.js';
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -59,8 +60,8 @@ describe('env-config', () => {
       const config = loadConfig();
       expect(config.current).toBe('local'); // local-first default (#959)
       expect(config.environments).toHaveProperty('local');
-      expect(config.environments).toHaveProperty('staging');
-      expect(config.environments).toHaveProperty('prod');
+      // Only the local preset ships; no hosted presets.
+      expect(Object.keys(config.environments)).toEqual(['local']);
       // Should have saved the default config
       expect(mockWriteFileSync).toHaveBeenCalled();
     });
@@ -93,7 +94,44 @@ describe('env-config', () => {
       const config = loadConfig();
       // Should still have default environments from DEFAULT_CONFIG
       expect(config.environments).toHaveProperty('local');
-      expect(config.environments).toHaveProperty('prod');
+      expect(config.environments).not.toHaveProperty('prod');
+    });
+
+    it('strips stale staging/prod presets written by older versions', () => {
+      mockExistsSync.mockReturnValue(true);
+      const stale = (url: string) => ({
+        api_url: url, admin_api_url: url, console_url: '', bridge_url: '',
+        database_url: '', redis_url: '', execution: 'cloud',
+      });
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        current: 'prod',
+        environments: {
+          staging: stale('https://api-staging.agents-squads.com'),
+          prod: stale('https://api.agents-squads.com'),
+          mine: stale('https://api.example.com'),
+        },
+      }));
+      const config = loadConfig();
+      expect(config.environments).not.toHaveProperty('staging');
+      expect(config.environments).not.toHaveProperty('prod');
+      expect(config.environments).toHaveProperty('mine');
+      expect(config.current).toBe('local');
+    });
+
+    it('switchEnv rejects removed presets with a SQUADS_API_URL hint', () => {
+      mockExistsSync.mockReturnValue(false);
+      expect(() => switchEnv('staging')).toThrow(/preset was removed.*SQUADS_API_URL/);
+      expect(() => switchEnv('prod')).toThrow(/preset was removed.*SQUADS_API_URL/);
+      expect(() => switchEnv('nope')).toThrow(/Unknown environment/);
+    });
+
+    it('switchEnv still accepts a user-defined environment named staging', () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        current: 'local',
+        environments: { staging: { api_url: 'https://staging.example.com', admin_api_url: '', console_url: '', bridge_url: '', database_url: '', redis_url: '', execution: 'cloud' } },
+      }));
+      expect(switchEnv('staging').current).toBe('staging');
     });
 
     it('falls back to default config when JSON is invalid', () => {
@@ -148,40 +186,10 @@ describe('env-config', () => {
       mockExistsSync.mockReturnValueOnce(true);  // loadConfig: file check
       mockReadFileSync.mockImplementation(() => savedContent);
 
-      const original = { current: 'staging', environments: {} };
+      const original = { current: 'mine', environments: {} };
       saveConfig(original);
       const loaded = loadConfig();
-      expect(loaded.current).toBe('staging');
-    });
-
-    it('preserves email field through load→save cycle (#1184)', () => {
-      // Simulate a config with email on disk
-      const onDisk = {
-        current: 'staging',
-        environments: {
-          staging: {
-            api_url: 'https://staging.example.com',
-            admin_api_url: '',
-            console_url: '',
-            bridge_url: '',
-            database_url: '',
-            redis_url: '',
-            execution: 'cloud',
-          },
-        },
-        email: 'user@example.com',
-      };
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify(onDisk));
-
-      // loadConfig should preserve email
-      const config = loadConfig();
-      expect(config.email).toBe('user@example.com');
-
-      // saveConfig should write it back
-      saveConfig(config);
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written.email).toBe('user@example.com');
+      expect(loaded.current).toBe('mine');
     });
 
     it('preserves unknown extra fields through load→save cycle (#1184)', () => {
@@ -236,11 +244,11 @@ describe('env-config', () => {
       expect(env.redis_url).toBe('redis://custom-redis:6380');
     });
 
-    it('SQUADS_ENV=prod selects prod environment (non-localhost URLs)', () => {
+    it('SQUADS_ENV=prod (removed preset) falls back to local with empty URLs', () => {
       process.env.SQUADS_ENV = 'prod';
       const env = getEnv();
-      expect(env.api_url).not.toContain('localhost');
-      expect(env.execution).toBe('cloud');
+      expect(env.api_url).toBe('');
+      expect(env.execution).toBe('local');
     });
 
     it('local environment defaults to empty URLs and local execution', () => {

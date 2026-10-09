@@ -25,7 +25,7 @@ export async function runCloudDispatch(
 
   if (!apiUrl) {
     writeLine(`  ${colors.red}${icons.error} API URL not configured${RESET}`);
-    writeLine(`  ${colors.dim}Run: squads config use staging  (or set SQUADS_API_URL)${RESET}`);
+    writeLine(`  ${colors.dim}Set SQUADS_API_URL to your API endpoint${RESET}`);
     process.exit(1);
   }
 

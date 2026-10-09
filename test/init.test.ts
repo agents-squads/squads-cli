@@ -14,7 +14,6 @@ vi.mock('chalk', () => {
 });
 vi.mock('../src/lib/terminal.js', () => ({ writeLine: vi.fn(), colors: {}, bold: '', RESET: '' }));
 vi.mock('../src/lib/telemetry.js', () => ({ track: vi.fn().mockResolvedValue(undefined), Events: { CLI_INIT: 'cli.init', CLI_EMAIL_CAPTURED: 'e' } }));
-vi.mock('../src/lib/env-config.js', () => ({ saveEmail: vi.fn() }));
 
 const mockGitStatus = vi.fn();
 const mockRepoName = vi.fn();

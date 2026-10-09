@@ -19,7 +19,6 @@ import { execSync } from 'child_process';
 import { createInterface } from 'readline';
 import { checkGitStatus, getRepoName, gitIdentityArgs } from '../lib/git.js';
 import { track, Events } from '../lib/telemetry.js';
-import { saveEmail } from '../lib/env-config.js';
 import { existsSync, readFileSync } from 'fs';
 import {
   loadTemplate,
@@ -1049,23 +1048,6 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine(`  ${chalk.dim('never file contents, paths, or personal data) help us fix what breaks first.')}`);
   writeLine(`  ${chalk.dim('Opt out any time: DO_NOT_TRACK=1 or SQUADS_TELEMETRY_DISABLED=1')}`);
   writeLine();
-
-  // 7. Opt-in email capture for founder outreach
-  // Gracefully wrapped — never blocks init if prompt fails
-  try {
-    if (isInteractive()) {
-      const emailInput = await prompt('Email (optional, for updates):', '');
-      if (emailInput && emailInput.includes('@')) {
-        // Saved locally only (#959) — nothing derived from the email is
-        // sent to telemetry; the README's "no telemetry surprises" applies.
-        saveEmail(emailInput);
-        writeLine(chalk.dim('  Email saved. We will reach out with updates.'));
-        writeLine();
-      }
-    }
-  } catch {
-    // Non-fatal — email capture failure must never break init
-  }
   }
 
 /**
