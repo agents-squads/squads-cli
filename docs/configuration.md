@@ -162,6 +162,30 @@ If a required key is missing, the provider's CLI will report the error —
 Squads doesn't mask or intercept auth failures. Add `.env` to your
 `.gitignore` to keep secrets out of version control.
 
+## GitHub App (optional)
+
+By default Squads uses your own `gh` login and git identity. To have agents open
+PRs and commit as a GitHub App instead, create
+`~/.squads/secrets/github-app.json`:
+
+```json
+{
+  "app_id": 123456,
+  "installation_id": 7890123,
+  "pem_path": "~/.squads/secrets/my-app.pem",
+  "bot_name": "my-app[bot]",
+  "bot_email": "111111+my-app[bot]@users.noreply.github.com"
+}
+```
+
+`app_id`, `installation_id` and `pem_path` (the App's private key) are required.
+`bot_name` and `bot_email` are optional: when omitted, Squads derives them from
+the App (`GET /app` gives the slug; the identity is `<slug>[bot]` and
+`<id>+<slug>[bot]@users.noreply.github.com`) and caches the result in
+`~/.squads/cache/github-app-identity.json`. `bot_name` doubles as the login used
+for `gh ... --author` filters. With no App configured, commits keep your own
+git identity and those filters use `@me`.
+
 ## Agent memory commits
 
 Agents work in their own git worktree and keep their memory in `.agents/memory/<squad>/`

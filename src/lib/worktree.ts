@@ -232,7 +232,7 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
           // git user; --no-verify skips hooks during cleanup.
           execSync(`git -C '${worktreePath}' add -A`, { stdio: 'pipe' });
           execSync(
-            `git -C '${worktreePath}' -c user.name='squads-run[bot]' -c user.email='squads-run@agents-squads.local' commit --no-verify -m 'squads run: auto-save uncommitted deliverables on cleanup (#875)'`,
+            `git -C '${worktreePath}' ${gitIdentityArgs(worktreePath)} commit --no-verify -m 'squads run: auto-save uncommitted deliverables on cleanup (#875)'`,
             { stdio: 'pipe' }
           );
           writeLine(

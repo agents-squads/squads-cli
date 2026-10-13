@@ -18,6 +18,7 @@ import {
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';
 import { isSlackConfigured, slackApi } from './slack.js';
+import { botAuthorArg, getBotLoginSync } from './github.js';
 import {
   colors,
   RESET,
@@ -484,9 +485,10 @@ export function getPRsWithReviewFeedback(
   repo: string,
   ghEnv: Record<string, string> = {},
 ): PRWithReviews[] {
+  const botLogin = getBotLoginSync();
   try {
     const prsRaw = execSync(
-      `gh pr list -R ${repo} --state open --author "agents-squads[bot]" --json number,title,headRefName --limit 10`,
+      `gh pr list -R ${repo} --state open${botAuthorArg()} --json number,title,headRefName --limit 10`,
       { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
     );
     const prs = JSON.parse(prsRaw) as Array<{ number: number; title: string; headRefName: string }>;
@@ -511,7 +513,7 @@ export function getPRsWithReviewFeedback(
           if (!line.trim()) continue;
           try {
             const comment = JSON.parse(line) as ReviewComment;
-            if (comment.author === 'agents-squads[bot]') continue;
+            if (botLogin && comment.author === botLogin) continue;
             comments.push(comment);
           } catch {
             continue;
