@@ -607,7 +607,7 @@ describe('reconcileUnsettledRecords', () => {
     const seen: string[] = [];
     mockExecSync.mockImplementation(((cmd: string) => {
       seen.push(cmd);
-      if (cmd.includes('--jq .full_name')) return 'owner/repo';
+      if (cmd.includes('--jq .default_branch')) return 'main';
       if (cmd.includes('git/refs/heads/')) return `refs/heads/${DASH_BRANCH}`;
       if (cmd.includes('/compare/')) return '3';
       throw new Error(`unexpected command: ${cmd}`);
@@ -622,7 +622,7 @@ describe('reconcileUnsettledRecords', () => {
   it('marks merged when compare shows ahead_by 0 (landed without PR)', () => {
     setupStore([makeGitRecord(recent())]);
     mockApi({
-      '--jq .full_name': 'owner/repo',
+      '--jq .default_branch': 'main',
       'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
       '/compare/': '0',
     });
@@ -633,10 +633,25 @@ describe('reconcileUnsettledRecords', () => {
     expect(saved[0].outcomes.prsMerged).toBe(1);
   });
 
+  it("compares against the repo's default branch when it has no develop (not a hardcoded main)", () => {
+    setupStore([makeGitRecord(recent())]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      if (cmd.includes('--jq .default_branch')) return 'trunk';
+      if (cmd.includes('git/refs/heads/')) return `refs/heads/${DASH_BRANCH}`;
+      if (cmd.includes('/compare/trunk...')) return '0';
+      throw new Error('Not Found'); // no develop on this repo
+    }) as never);
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.merged).toBe(1);
+    expect(seen.some(c => c.includes('/compare/main...'))).toBe(false);
+  });
+
   it('leaves a recent in-flight branch unsettled', () => {
     setupStore([makeGitRecord(recent())]);
     mockApi({
-      '--jq .full_name': 'owner/repo',
+      '--jq .default_branch': 'main',
       'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
       '/compare/': '3',
     });
@@ -648,7 +663,7 @@ describe('reconcileUnsettledRecords', () => {
   it('marks a stale (>30d) unlanded branch abandoned', () => {
     setupStore([makeGitRecord(daysAgo(31))]);
     mockApi({
-      '--jq .full_name': 'owner/repo',
+      '--jq .default_branch': 'main',
       'git/refs/heads/': `refs/heads/${DASH_BRANCH}`,
       '/compare/': '3',
     });
@@ -660,7 +675,7 @@ describe('reconcileUnsettledRecords', () => {
   it('marks a missing branch abandoned after the 7d grace period', () => {
     setupStore([makeGitRecord(daysAgo(8))]);
     mockApi({
-      '--jq .full_name': 'owner/repo',
+      '--jq .default_branch': 'main',
       'git/refs/heads/': new Error('Not Found'),
     });
     const result = reconcileUnsettledRecords('owner/repo');
@@ -671,7 +686,7 @@ describe('reconcileUnsettledRecords', () => {
   it('leaves a recently-missing branch unsettled (fetch-lag grace)', () => {
     setupStore([makeGitRecord(recent())]);
     mockApi({
-      '--jq .full_name': 'owner/repo',
+      '--jq .default_branch': 'main',
       'git/refs/heads/': new Error('Not Found'),
     });
     const result = reconcileUnsettledRecords('owner/repo');
@@ -699,7 +714,7 @@ describe('reconcileUnsettledRecords', () => {
       artifacts: { prsCreated: [], issuesCreated: [], commits: 0 },
       outcomes: makeOutcomes(),
     })]);
-    mockApi({ '--jq .full_name': 'owner/repo' });
+    mockApi({ '--jq .default_branch': 'main' });
     const result = reconcileUnsettledRecords('owner/repo');
     expect(result.settled).toBe(0);
     expect(savedRecords()[0].settled).toBe(false);

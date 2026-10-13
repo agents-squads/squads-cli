@@ -14,6 +14,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { parsePersistedLine } from './event-render.js';
 import { activeDeferrals } from './inbox-decisions.js';
+import { integrationBranch } from './git.js';
 
 export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts' | 'coherence' | 'strategy_proposal';
 
@@ -91,10 +92,12 @@ function hasUnlandedCommits(branch: string, base: string, repoRoot: string): boo
   }
 }
 
-/** Open PRs to develop in the repo at `repoRoot` (needs gh; empty on failure). */
+/** Open PRs to the integration branch of the repo at `repoRoot` (needs gh; empty on failure). */
 export function scanOpenPrs(repoRoot: string): InboxItem[] {
+  const base = integrationBranch(repoRoot);
   try {
-    const raw = sh(`gh pr list --base develop --state open --json number,title,createdAt,url,author --limit 30`, repoRoot);
+    const baseFlag = base ? `--base '${base.replace(/'/g, '')}' ` : '';
+    const raw = sh(`gh pr list ${baseFlag}--state open --json number,title,createdAt,url,author --limit 30`, repoRoot);
     const prs = JSON.parse(raw) as Array<{ number: number; title: string; createdAt: string; url: string; author?: { login?: string; is_bot?: boolean } }>;
     return prs.map((pr) => ({
       id: `pr-${pr.number}`,
@@ -102,7 +105,7 @@ export function scanOpenPrs(repoRoot: string): InboxItem[] {
       ref: pr.url,
       title: pr.title,
       ageDays: ageDaysFrom(Date.parse(pr.createdAt)),
-      approveSemantics: 'merge to develop (CI-gated squash)',
+      approveSemantics: `merge to ${base ?? 'the default branch'} (CI-gated squash)`,
       detail: pr.author?.login ? `by ${pr.author.login}` : undefined,
     }));
   } catch {

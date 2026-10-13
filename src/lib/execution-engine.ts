@@ -65,7 +65,7 @@ import {
   isProviderCLIAvailable,
   commandExists,
 } from './llm-clis.js';
-import { gitIdentityArgs } from './git.js';
+import { gitIdentityArgs, integrationBranch } from './git.js';
 import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -1649,17 +1649,21 @@ export async function executeWithClaude(
  */
 /**
  * The base a provider-lane worktree branches from (#1083): the repo's
- * integration branch (origin/develop, else origin/main), never the operator's
+ * integration branch on origin (see integrationBranch()), never the operator's
  * checked-out HEAD. Best-effort fetch keeps the base fresh; offline falls back
  * to the stale local ref (still better than operator HEAD), then HEAD when no
  * remote refs exist at all (fresh local-only repos).
  */
 export function resolveIntegrationBase(projectRoot: string): string {
-  for (const ref of ['origin/develop', 'origin/main']) {
+  const trunk = integrationBranch(projectRoot);
+  // A trunk that exists only locally can't be a remote base — try the usual names next.
+  const candidates = [...new Set([trunk, 'main', 'master'].filter((b): b is string => !!b))];
+  for (const branch of candidates) {
+    const ref = `origin/${branch}`;
     try {
       execSync(`git rev-parse --verify --quiet '${ref}'`, { cwd: projectRoot, stdio: 'pipe' });
       try {
-        execSync(`git fetch origin '${ref.split('/')[1]}' --quiet`, { cwd: projectRoot, stdio: 'pipe', timeout: 10_000 });
+        execSync(`git fetch origin '${branch}' --quiet`, { cwd: projectRoot, stdio: 'pipe', timeout: 10_000 });
       } catch { /* offline — stale ref beats operator HEAD */ }
       return ref;
     } catch { /* ref absent — try next */ }
