@@ -93,6 +93,37 @@ describe('bot identity derived from the GitHub App', () => {
     expect(getBotLoginSync()).toBeNull();
   });
 
+  it('ignores a corrupt identity cache and derives again', async () => {
+    writeAppConfig();
+    mkdirSync(join(home, '.squads', 'cache'), { recursive: true });
+    writeFileSync(join(home, '.squads', 'cache', 'github-app-identity.json'), '{not json');
+    const { getBotLoginSync, getBotIdentity } = await import('../src/lib/github.js');
+    expect(getBotLoginSync()).toBeNull();
+    expect(await getBotIdentity()).toEqual({ name: 'acme-robot[bot]', email: '999+acme-robot[bot]@users.noreply.github.com' });
+  });
+
+  it('resolves no identity without an App, an App without a slug, or a failing network', async () => {
+    const mod = await import('../src/lib/github.js');
+    expect(await mod.getBotIdentity()).toBeNull();
+
+    writeAppConfig();
+    fetchMock.mockImplementation(async (url: string) => (String(url).endsWith('/app') ? json({}) : json({ id: 1 })));
+    expect(await (await import('../src/lib/github.js')).getBotIdentity()).toBeNull();
+
+    fetchMock.mockImplementation(async () => {
+      throw new Error('offline');
+    });
+    expect(await (await import('../src/lib/github.js')).getBotIdentity()).toBeNull();
+  });
+
+  it('getBotGhEnv warms the identity cache so sync --author filters resolve', async () => {
+    writeAppConfig();
+    const { getBotGhEnv, getBotLoginSync } = await import('../src/lib/github.js');
+    expect(getBotLoginSync()).toBeNull();
+    expect(await getBotGhEnv()).toEqual({ GH_TOKEN: 'tok' });
+    expect(getBotLoginSync()).toBe('acme-robot[bot]');
+  });
+
   it('sets no author env when the identity cannot be resolved', async () => {
     writeAppConfig();
     fetchMock.mockImplementation(async (url: string) =>
@@ -101,6 +132,33 @@ describe('bot identity derived from the GitHub App', () => {
         : ({ ok: false } as unknown as Response));
     const { getBotGitEnv } = await import('../src/lib/github.js');
     expect(await getBotGitEnv()).toEqual({});
+  });
+});
+
+describe('review feedback skips our own bot', () => {
+  it("drops the configured bot's comments and keeps everyone else's", async () => {
+    writeAppConfig({ bot_name: 'mine[bot]', bot_email: 'me@example.test' });
+    const cmds: string[] = [];
+    vi.doMock('child_process', async (orig) => ({
+      ...(await orig<typeof import('child_process')>()),
+      execSync: vi.fn((cmd: string) => {
+        cmds.push(cmd);
+        if (cmd.startsWith('gh pr list')) return JSON.stringify([{ number: 5, title: 't', headRefName: 'b' }]);
+        if (cmd.includes('/pulls/5/comments')) {
+          return [
+            JSON.stringify({ author: 'mine[bot]', body: 'own note', createdAt: 'x' }),
+            JSON.stringify({ author: 'reviewer', body: 'fix this', path: 'a.ts', createdAt: 'x' }),
+          ].join('\n');
+        }
+        return `${JSON.stringify({ author: 'mine[bot]', body: 'status', createdAt: 'x' })}\nnot json\n`;
+      }),
+    }));
+    const { getPRsWithReviewFeedback } = await import('../src/lib/squad-loop.js');
+    const prs = getPRsWithReviewFeedback('owner/repo');
+    vi.doUnmock('child_process');
+    expect(cmds[0]).toContain('--author "mine[bot]"');
+    expect(prs).toHaveLength(1);
+    expect(prs[0]!.comments.map(c => c.author)).toEqual(['reviewer']);
   });
 });
 
