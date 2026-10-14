@@ -4,6 +4,9 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
+# Reads the PR title/body from the event payload only; no API calls.
+permissions: {}
+
 jobs:
   check:
     runs-on: ubuntu-latest
