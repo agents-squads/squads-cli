@@ -648,6 +648,20 @@ describe('reconcileUnsettledRecords', () => {
     expect(seen.some(c => c.includes('/compare/main...'))).toBe(false);
   });
 
+  it('never puts a default-branch name that is not a plain ref into a command', () => {
+    setupStore([makeGitRecord(recent())]);
+    const seen: string[] = [];
+    mockExecSync.mockImplementation(((cmd: string) => {
+      seen.push(cmd);
+      if (cmd.includes('--jq .default_branch')) return "it's main";
+      if (cmd.includes('git/refs/heads/')) return `refs/heads/${DASH_BRANCH}`;
+      throw new Error('Not Found'); // no develop on this repo
+    }) as never);
+    const result = reconcileUnsettledRecords('owner/repo');
+    expect(result.merged).toBe(0);
+    expect(seen.some(c => c.includes("it's main"))).toBe(false);
+  });
+
   it('leaves a recent in-flight branch unsettled', () => {
     setupStore([makeGitRecord(recent())]);
     mockApi({

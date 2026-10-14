@@ -94,7 +94,7 @@ let runCounter = 0;
 /**
  * Resolve the base branch for the worktree: prefer the FRESH remote trunk
  * (`origin/<integration branch>` after a fetch — see integrationBranch()), else
- * the local copy of it, else the repo's current branch (HEAD).
+ * the local copy of it, else the current commit (HEAD).
  *
  * #1014: a run worktree cut from a stale local develop (16 commits behind)
  * made a worker implement against an old tree — 40 minutes and real money
@@ -132,17 +132,10 @@ function resolveBaseRef(repoDir: string): string {
     }
   }
 
-  try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: repoDir,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    // Detached HEAD reports "HEAD" — usable as a base ref directly.
-    return branch || 'HEAD';
-  } catch {
-    return 'HEAD';
-  }
+  // No trunk: base on the current commit. `HEAD`, never the checked-out
+  // branch's name — callers put the base into shell commands, and a branch
+  // name can hold characters that are not safe there.
+  return 'HEAD';
 }
 
 /**
@@ -191,6 +184,20 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
   const worktreePath = join(worktreesRoot, `${dirPrefix}${slug}-${shortId}`);
 
   const base = resolveBaseRef(repoDir);
+
+  // Pin the base to a SHA once, at creation. `base` is a ref (often
+  // `origin/develop`, or `HEAD`) that can move mid-run; convergence evidence
+  // and the cleanup below must be measured against where this run actually
+  // started, not against a moving target (spec convergence-by-artifact-2026-08-13).
+  let baseSha: string | undefined;
+  try {
+    baseSha = execSync(`git -C '${repoDir}' rev-parse '${base}'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || undefined;
+  } catch {
+    // No SHA — callers fall back to the other evidence forms (PR lookup).
+  }
 
   try {
     mkdirSync(worktreesRoot, { recursive: true });
@@ -287,10 +294,13 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
       // it; a branch with real commits ahead of `base` (including the
       // auto-save commit above) is left for the inbox to surface.
       try {
-        const ahead = execSync(`git -C '${repoDir}' rev-list --count '${base}..${branchName}'`, {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
+        // Without the pinned start there is nothing safe to compare against.
+        const ahead = baseSha
+          ? execSync(`git -C '${repoDir}' rev-list --count '${baseSha}..${branchName}'`, {
+              encoding: 'utf-8',
+              stdio: ['pipe', 'pipe', 'pipe'],
+            }).trim()
+          : null;
         if (ahead === '0') {
           execSync(`git -C '${repoDir}' branch -D '${branchName}'`, { stdio: 'pipe' });
         }
@@ -301,20 +311,6 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
       // Non-critical — `git worktree prune` will reclaim it later.
     }
   };
-
-  // Pin the base to a SHA once, at creation. `base` is a ref (often
-  // `origin/develop`) that can move mid-run; convergence evidence must be
-  // measured against where this run actually started, not against a moving
-  // target (spec convergence-by-artifact-2026-08-13).
-  let baseSha: string | undefined;
-  try {
-    baseSha = execSync(`git -C '${repoDir}' rev-parse '${base}'`, {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim() || undefined;
-  } catch {
-    // No SHA — callers fall back to the other evidence forms (PR lookup).
-  }
 
   return { cwd: worktreePath, cleanup, branch: branchName, baseSha };
 }

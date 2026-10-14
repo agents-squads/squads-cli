@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { promisify } from 'util';
 import { colors, RESET, writeLine } from './terminal.js';
+import { isPlainRefName } from './ref-name.js';
 import { squadNamedIn, squadRepoMap, squadsForRepo } from './squad-parser.js';
 
 const execAsync = promisify(exec);
@@ -73,7 +74,7 @@ export function integrationBranch(repoDir: string): string | null {
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     const name = head.startsWith('origin/') ? head.slice('origin/'.length) : '';
-    if (/^[\w][\w./-]*$/.test(name) && !name.includes('..')) return name;
+    if (isPlainRefName(name)) return name;
   } catch {
     // origin/HEAD is only set by clone (or `git remote set-head`) — fall through
   }
