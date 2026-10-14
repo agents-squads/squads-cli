@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { integrationBranch } from '../src/lib/git.js';
+import { isPlainRefName } from '../src/lib/ref-name.js';
 import { resolveIntegrationBase } from '../src/lib/execution-engine.js';
 import { createRunWorktree } from '../src/lib/worktree.js';
 import { syncCommand } from '../src/commands/sync.js';
@@ -116,6 +117,37 @@ describe('run bases follow the repo trunk, not a hard-coded name', () => {
     try {
       expect(cwd).not.toBe(work);
       expect(git('rev-parse HEAD', cwd)).toBe(git('rev-parse origin/trunk', work));
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('isPlainRefName', () => {
+  it('accepts ordinary branch names', () => {
+    for (const n of ['main', 'develop', 'release/1.2', 'feature/a-b_c', 'v2.0']) expect(isPlainRefName(n)).toBe(true);
+  });
+
+  it('refuses names that are not safe in a command', () => {
+    for (const n of ["it's", 'a b', '$x', 'a;b', 'a`b', '-x', '.x', '/x', 'a..b', '', 'añ']) expect(isPlainRefName(n)).toBe(false);
+  });
+});
+
+describe('run base when the repo has no trunk', () => {
+  it("bases on HEAD, not the checked-out branch's name, whatever that name is", () => {
+    const dir = join(root, 'notrunk');
+    mkdirSync(dir);
+    git("init -q -b \"it's-mine\"", dir);
+    git('config user.email t@t.t', dir);
+    git('config user.name t', dir);
+    writeFileSync(join(dir, 'a.md'), 'a\n');
+    git('add -A', dir);
+    git('commit -q -m base', dir);
+
+    const { cwd, cleanup } = createRunWorktree(dir, 'product');
+    try {
+      expect(cwd).not.toBe(dir);
+      expect(git('rev-parse HEAD', cwd)).toBe(git('rev-parse HEAD', dir));
     } finally {
       cleanup();
     }

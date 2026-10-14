@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { botAuthorArg } from './github.js';
+import { isPlainRefName } from './ref-name.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -511,7 +512,7 @@ export function reconcileUnsettledRecords(
       const cmp = ghExec(
         `gh api repos/${repo}/compare/develop...${branchName} --jq .ahead_by`,
         ghEnv,
-      ) ?? (defaultBranch === 'develop' ? null : ghExec(
+      ) ?? (defaultBranch === 'develop' || !isPlainRefName(defaultBranch) ? null : ghExec(
         `gh api repos/${repo}/compare/${defaultBranch}...${branchName} --jq .ahead_by`,
         ghEnv,
       ));
