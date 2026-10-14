@@ -3,7 +3,7 @@
  * (develop, else origin/HEAD, else main/master), and `memory sync --push`
  * commits only .agents/memory/ and pushes the branch the operator is on.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { execSync } from 'child_process';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -118,6 +118,25 @@ describe('run bases follow the repo trunk, not a hard-coded name', () => {
       expect(git('rev-parse HEAD', cwd)).toBe(git('rev-parse origin/trunk', work));
     } finally {
       cleanup();
+    }
+  });
+});
+
+describe('offline run base', () => {
+  it('falls back to the local trunk and says it may be stale when origin is unreachable', () => {
+    const work = cloneWithTrunk();
+    git(`remote set-url origin ${join(root, 'gone.git')}`, work);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const { cwd, cleanup } = createRunWorktree(work, 'product');
+      try {
+        expect(git('rev-parse HEAD', cwd)).toBe(git('rev-parse trunk', work));
+      } finally {
+        cleanup();
+      }
+      expect(out.mock.calls.map(c => String(c[0])).join('')).toContain('worktree base = LOCAL trunk');
+    } finally {
+      out.mockRestore();
     }
   });
 });
