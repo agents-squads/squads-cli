@@ -368,6 +368,28 @@ program.command('list').description('List squads (alias for: squads status)').ac
   return statusCommand();
 });
 
+// Domains command — per-domain (squad) business scorecard (#1280): goals set,
+// delivered (git-derived merged PRs + closed issues), and what's in flight.
+program
+  .command('domains')
+  .description('Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight')
+  .option('--days <n>', 'Delivery window in days (default 7)', '7')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Delivery is git-derived from GitHub for each domain's repos — one batched
+search, never one call per repo. Unreachable GitHub degrades to the last good
+result from .agents/observability/cache/domains.json, marked stale.
+
+Examples:
+  $ squads domains                    Scorecard for every domain
+  $ squads domains --days 30          Wider delivery window
+  $ squads domains --json             Machine-readable (console, digests)
+`)
+  .action(async (options) => {
+    const { domainsCommand } = await import('./commands/domains.js');
+    return domainsCommand(options);
+  });
+
 // Pause command - suspend a squad (enforced by runner + org planner + cron)
 program
   .command('pause <squad>')
