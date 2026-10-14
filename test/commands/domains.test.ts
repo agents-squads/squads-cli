@@ -11,11 +11,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  PAGE,
   buildDomains,
   domainsCachePath,
   repoSlug,
   repoShort,
-  searchQuery,
   type GhRunner,
 } from '../../src/lib/domains.js';
 import {
@@ -55,13 +55,40 @@ interface FakeGh {
 }
 
 /** Fake `gh`: throws when `fail`, else returns per-kind canned NDJSON. */
-function fakeGh(cfg: { prLines?: string[]; issueLines?: string[]; fail?: boolean } = {}): FakeGh {
+function fakeGh(cfg: { prLines?: string[]; issueLines?: string[]; fail?: boolean; missing?: string[] } = {}): FakeGh {
   const calls: string[][] = [];
+  const parse = (lines: string[] = []) => lines.map((l) => JSON.parse(l) as { n: number; t: string; u: string; at: string });
   const run: GhRunner = (args) => {
     calls.push(args);
     if (cfg.fail) throw new Error('gh: command not found');
-    const isPr = args.some((a) => a.includes('is:pr'));
-    return (isPr ? cfg.prLines ?? [] : cfg.issueLines ?? []).join('\n');
+    // Like `gh api graphql`: an alias per repo, null when it can't be resolved
+    // (then exit 1 with the data still on stdout).
+    const vars = new Map<string, string>();
+    for (let i = 0; i < args.length - 1; i++) {
+      if (args[i] === '-f') {
+        const [k, ...v] = args[i + 1].split('=');
+        vars.set(k, v.join('='));
+      }
+    }
+    const prs = parse(cfg.prLines);
+    const issues = parse(cfg.issueLines);
+    const data: Record<string, unknown> = {};
+    let anyMissing = false;
+    for (let i = 0; vars.has(`o${i}`); i++) {
+      const slug = `${vars.get(`o${i}`)}/${vars.get(`n${i}`)}`;
+      if ((cfg.missing ?? []).includes(slug)) {
+        anyMissing = true;
+        data[`r${i}`] = null;
+        continue;
+      }
+      data[`r${i}`] = {
+        pullRequests: { nodes: prs.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, mergedAt: x.at })) },
+        issues: { nodes: issues.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, closedAt: x.at })) },
+      };
+    }
+    const out = JSON.stringify({ data });
+    if (anyMissing) throw Object.assign(new Error('Could not resolve to a Repository'), { stdout: out });
+    return out;
   };
   return { run, calls };
 }
@@ -95,12 +122,6 @@ describe('repo identity helpers', () => {
     expect(repoSlug('bare-name')).toBeNull();
   });
 
-  it('searchQuery ORs every repo into one query per kind', () => {
-    expect(searchQuery('pr', ['a/x', 'b/y'], '2026-07-07'))
-      .toBe('repo:a/x repo:b/y is:pr is:merged merged:>=2026-07-07');
-    expect(searchQuery('issue', ['a/x'], '2026-07-07'))
-      .toBe('repo:a/x is:issue is:closed closed:>=2026-07-07');
-  });
 });
 
 describe('buildDomains', () => {
@@ -197,9 +218,13 @@ describe('buildDomains', () => {
     const many = Array.from({ length: 50 }, (_, i) => line(i + 1, `t${i}`, 'acme/a', '2026-07-12T00:00:00Z'));
     const first = fakeGh({ prLines: many, issueLines: many });
     buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: first.run, runs: [], inbox: [] });
-    expect(first.calls).toHaveLength(2);
-    // the PR call carries every repo in one query
-    expect(first.calls[0].join(' ')).toContain('repo:acme/a repo:acme/b repo:acme/c repo:acme/d');
+    // ONE GraphQL call carries every repo
+    expect(first.calls).toHaveLength(1);
+    expect(first.calls[0][1]).toBe('graphql');
+    for (const slug of ['acme/a', 'acme/b', 'acme/c', 'acme/d']) {
+      const [o, n] = slug.split('/');
+      expect(first.calls[0].join(' ')).toMatch(new RegExp(`-f o\\d+=${o} -f n\\d+=${n}\\b`));
+    }
 
     // one repo, no items — still exactly two calls
     const solo = mkdtempSync(join(tmpdir(), 'squads-domains-solo-'));
@@ -208,7 +233,7 @@ describe('buildDomains', () => {
     writeFileSync(join(soloSquads, 'x', 'SQUAD.md'), '---\nrepo: acme/x\n---\n# Squad: x\n');
     const second = fakeGh();
     buildDomains({ projectRoot: solo, squadsDir: soloSquads, days: 7, now: NOW, gh: second.run, runs: [], inbox: [] });
-    expect(second.calls).toHaveLength(2);
+    expect(second.calls).toHaveLength(1);
     rmSync(solo, { recursive: true, force: true });
   });
 
@@ -217,8 +242,9 @@ describe('buildDomains', () => {
     const { run: gh, calls } = fakeGh();
     const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh, runs: [], inbox: [] });
     expect(calls).toHaveLength(0);
-    // no repos to search is not an error — an honest empty result
-    expect(report.domains[0].delivered).toMatchObject({ prsMerged: 0, issuesClosed: 0, items: [] });
+    // no repo means nothing measurable: visibly absent, not a zero that reads as "did nothing"
+    expect(report.domains[0].delivered).toBeNull();
+    expect(report.domains[0].deliveredError).toBe('no GitHub repo declared');
   });
 
   it('emits a versioned report sorted by last activity (newest first)', () => {
@@ -295,5 +321,66 @@ describe('human rendering', () => {
     expect(text).toContain('DOMAIN');
     expect(text).toContain('shared: console');
     expect(text).toContain('GitHub was unreachable');
+  });
+});
+
+describe('buildDomains — honest when GitHub cannot see a repo', () => {
+  it('a repo GitHub cannot resolve is unknown (null + reason), never 0; partial misses are listed', () => {
+    squad('ghost', { repo: 'acme/ghost' });
+    squad('mixed', { repo: 'acme/real', alsoOwns: ['acme/gone'] });
+    const gh = fakeGh({ missing: ['acme/ghost', 'acme/gone'], prLines: [line(7, 'shipped', 'acme/real', '2026-07-12T00:00:00Z')] });
+    const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: gh.run, runs: [], inbox: [] });
+    const ghost = report.domains.find((d) => d.domain === 'ghost')!;
+    expect(ghost.delivered).toBeNull();
+    expect(ghost.deliveredError).toContain('acme/ghost');
+    const mixed = report.domains.find((d) => d.domain === 'mixed')!;
+    expect(mixed.delivered).toMatchObject({ prsMerged: 1, unreachable: ['acme/gone'] });
+  });
+
+  it('a squad with no repo has nothing to measure: null with a reason, not zeros', () => {
+    squad('ops');
+    const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh().run, runs: [], inbox: [] });
+    expect(report.domains[0]).toMatchObject({ delivered: null, deliveredError: 'no GitHub repo declared' });
+  });
+
+  it('one call for any number of repos; owners and names only as variables, never in the query', () => {
+    for (let i = 0; i < 25; i++) squad(`s${i}`, { repo: `acme/r${i}` });
+    const gh = fakeGh();
+    buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: gh.run, runs: [], inbox: [] });
+    expect(gh.calls).toHaveLength(1);
+    const query = gh.calls[0].find((a) => a.startsWith('query='))!;
+    expect(query).not.toContain('acme');
+  });
+
+  it('a full page inside the window is flagged truncated (a lower bound), outside it is not', () => {
+    squad('busy', { repo: 'acme/busy' });
+    const inWindow = Array.from({ length: PAGE }, (_, i) => line(i + 1, `t${i}`, 'acme/busy', '2026-07-13T00:00:00Z'));
+    const busy = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: inWindow }).run, runs: [], inbox: [] });
+    expect(busy.domains[0].delivered).toMatchObject({ prsMerged: PAGE, truncated: true });
+    const old = [...inWindow.slice(0, 3), ...Array.from({ length: PAGE - 3 }, (_, i) => line(500 + i, 'old', 'acme/busy', '2026-06-01T00:00:00Z'))];
+    const calm = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: old }).run, runs: [], inbox: [] });
+    expect(calm.domains[0].delivered).toMatchObject({ prsMerged: 3 });
+    expect(calm.domains[0].delivered!.truncated).toBeUndefined();
+  });
+});
+
+describe('buildDomains — goals come from goals.md when the squad has one', () => {
+  it('counts active, achieved and overdue from the memory goals file', () => {
+    squad('cli', { repo: 'acme/cli' });
+    const mem = join(base, '.agents', 'memory', 'cli');
+    mkdirSync(mem, { recursive: true });
+    writeFileSync(join(mem, 'goals.md'), [
+      '## Active',
+      '1. **Late one** — x | deadline: 2026-06-26 | status: not-started',
+      '2. **Range late** — x | deadline: spec by 2026-06-19, first slice 2026-07-03 | status: in-progress',
+      '3. **Future** — x | deadline: 2026-08-01 | status: in-progress',
+      '4. **Ongoing** — x | deadline: ongoing | status: in-progress',
+      '## Achieved',
+      '1. **Shipped** — achieved: yes | date: 2026-05-11',
+      '## Abandoned',
+      '1. **Dropped** — reason: no | status: abandoned',
+    ].join('\n'));
+    const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh().run, runs: [], inbox: [] });
+    expect(report.domains[0].goals).toEqual({ active: 4, done: 1, overdue: 2 });
   });
 });

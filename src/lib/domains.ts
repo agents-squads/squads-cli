@@ -33,6 +33,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseGoalDescription } from './goal-parser.js';
+import { goalCounts, parseGoalsMd } from './goals-md.js';
 import { listDetachedRuns, type DetachedRun } from './runs-inventory.js';
 import { buildInbox, type InboxItem } from './inbox.js';
 
@@ -55,6 +56,10 @@ export interface Delivered {
   items: DeliveredItem[];
   /** True when these figures came from cache because GitHub was unreachable. */
   stale?: boolean;
+  /** Repos of this squad GitHub couldn't resolve — not counted, not zero. */
+  unreachable?: string[];
+  /** Some repo filled a page inside the window: the counts are a lower bound. */
+  truncated?: boolean;
 }
 
 export interface DomainGoals {
@@ -164,90 +169,99 @@ export function defaultGhRunner(args: string[]): string {
     const err = e as { stderr?: Buffer | string; message?: string };
     const stderr = err.stderr ? String(err.stderr) : '';
     const first = stderr.split('\n').map((l) => l.trim()).find(Boolean) ?? err.message ?? 'gh failed';
-    throw new Error(first);
+    const stdout = (e as { stdout?: Buffer | string }).stdout;
+    throw Object.assign(new Error(first), { stdout: stdout ? String(stdout) : '' });
   }
 }
 
-/** Per-page jq projection: number, title, repo slug, closed timestamp. */
-const JQ_ITEMS =
-  '.items[] | {n:.number, t:.title, u:(.repository_url|sub(".*/repos/";"")), at:(.closed_at // .updated_at)}';
 
 export interface RepoDelivery {
   prsMerged: number;
   issuesClosed: number;
   items: DeliveredItem[];
+  /** A page filled inside the window: the counts are a lower bound. */
+  truncated?: boolean;
 }
 
-function isoDate(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
 
-export function searchQuery(kind: 'pr' | 'issue', slugs: string[], since: string): string {
-  const repos = slugs.map((s) => `repo:${s}`).join(' ');
-  return kind === 'pr'
-    ? `${repos} is:pr is:merged merged:>=${since}`
-    : `${repos} is:issue is:closed closed:>=${since}`;
-}
 
-interface RawItem { n: number; t: string; u: string; at: string }
 
-function parseItems(out: string): RawItem[] {
-  const rows: RawItem[] = [];
-  for (const line of out.split('\n')) {
-    const s = line.trim();
-    if (!s) continue;
-    try {
-      const o = JSON.parse(s) as Partial<RawItem>;
-      if (o && typeof o.n === 'number' && typeof o.u === 'string') {
-        rows.push({ n: o.n, t: typeof o.t === 'string' ? o.t : '', u: o.u, at: typeof o.at === 'string' ? o.at : '' });
-      }
-    } catch {
-      // a malformed line must not sink the whole report
-    }
-  }
-  return rows;
+
+/** Nodes read per repo and kind; a full page inside the window is flagged `truncated`. */
+export const PAGE = 100;
+
+export interface DeliveryFetch {
+  byRepo: Record<string, RepoDelivery>;
+  /** Slugs GitHub couldn't resolve for this token — unknown, never 0. */
+  unreachable: string[];
 }
 
 /**
- * Merged PRs + closed issues over `days`, grouped by repo slug. Exactly TWO
- * `gh` invocations regardless of how many repos or items there are — the
- * search API ORs `repo:` qualifiers.
+ * Merged PRs + closed issues over `days` for every repo in ONE GraphQL call:
+ * an alias per repo, owners and names passed as variables (never spliced into
+ * the query). GraphQL instead of the search API because search silently
+ * skips `repo:`s it can't index — private repos the token can read included —
+ * and misbehaves on long `repo:` lists; here a missing repo is an explicit
+ * null. gh exits 1 on a partial NOT_FOUND but still prints the data: read it.
  */
-export function fetchDeliveryByRepo(
-  slugs: string[],
-  days: number,
-  run: GhRunner,
-  now: Date,
-): Record<string, RepoDelivery> {
+export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now: Date): DeliveryFetch {
   const byRepo: Record<string, RepoDelivery> = {};
-  for (const s of slugs) byRepo[s] = { prsMerged: 0, issuesClosed: 0, items: [] };
-  if (slugs.length === 0) return byRepo;
+  const unreachable: string[] = [];
+  if (slugs.length === 0) return { byRepo, unreachable };
+  const sinceMs = now.getTime() - days * DAY_MS;
+  const since = new Date(sinceMs).toISOString();
+  const decl = ['$since:DateTime!'];
+  const sel: string[] = [];
+  const args = ['api', 'graphql', '-f', `since=${since}`];
+  slugs.forEach((slug, i) => {
+    const [owner, name] = slug.split('/');
+    decl.push(`$o${i}:String!`, `$n${i}:String!`);
+    sel.push(
+      `r${i}: repository(owner:$o${i},name:$n${i}){` +
+        `pullRequests(states:MERGED,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title mergedAt}}` +
+        `issues(states:CLOSED,first:${PAGE},filterBy:{since:$since},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title closedAt}}}`,
+    );
+    args.push('-f', `o${i}=${owner}`, '-f', `n${i}=${name}`);
+  });
+  args.splice(2, 0, '-f', `query=query(${decl.join(',')}){${sel.join(' ')}}`);
 
-  const since = isoDate(new Date(now.getTime() - days * DAY_MS));
-  const call = (kind: 'pr' | 'issue'): string =>
-    run([
-      'api', 'search/issues', '--method', 'GET',
-      '-f', `q=${searchQuery(kind, slugs, since)}`,
-      '-f', 'per_page=100',
-      '--paginate',
-      '--jq', JQ_ITEMS,
-    ]);
+  let out: string;
+  try {
+    out = run(args);
+  } catch (e) {
+    out = (e as { stdout?: string }).stdout ?? '';
+    if (!out) throw e;
+  }
+  type Node = { number: number; title: string; mergedAt?: string; closedAt?: string };
+  type Repo = { pullRequests?: { nodes?: Node[] }; issues?: { nodes?: Node[] } } | null;
+  const data = (JSON.parse(out) as { data?: Record<string, Repo> }).data ?? {};
 
-  // PRs first, then issues: two calls, fixed order.
-  for (const raw of parseItems(call('pr'))) {
-    const d = byRepo[raw.u];
-    if (!d) continue;
-    d.prsMerged++;
-    d.items.push({ ref: `#${raw.n}`, title: raw.t, at: raw.at });
-  }
-  for (const raw of parseItems(call('issue'))) {
-    const d = byRepo[raw.u];
-    if (!d) continue;
-    d.issuesClosed++;
-    d.items.push({ ref: `#${raw.n}`, title: raw.t, at: raw.at });
-  }
-  return byRepo;
+  slugs.forEach((slug, i) => {
+    const repo = data[`r${i}`];
+    if (!repo) {
+      unreachable.push(slug);
+      return;
+    }
+    const d: RepoDelivery = { prsMerged: 0, issuesClosed: 0, items: [] };
+    const prs = repo.pullRequests?.nodes ?? [];
+    const issues = repo.issues?.nodes ?? [];
+    for (const n of prs) {
+      if (!n.mergedAt || Date.parse(n.mergedAt) < sinceMs) continue;
+      d.prsMerged++;
+      d.items.push({ ref: `#${n.number}`, title: n.title, at: n.mergedAt });
+    }
+    for (const n of issues) {
+      if (!n.closedAt || Date.parse(n.closedAt) < sinceMs) continue;
+      d.issuesClosed++;
+      d.items.push({ ref: `#${n.number}`, title: n.title, at: n.closedAt });
+    }
+    // A full page whose oldest node is still inside the window may hide more.
+    const full = (nodes: Node[], at: (n: Node) => string | undefined) =>
+      nodes.length === PAGE && Date.parse(at(nodes[nodes.length - 1]!) ?? '') >= sinceMs;
+    if (full(prs, (n) => n.mergedAt) || full(issues, (n) => n.closedAt)) d.truncated = true;
+    byRepo[slug] = d;
+  });
+  return { byRepo, unreachable };
 }
 
 // ── Last-good cache ──────────────────────────────────────────────────
@@ -367,8 +381,11 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
   let stale = false;
   let deliveryError = 'GitHub unavailable';
   const run = opts.gh ?? defaultGhRunner;
+  let unreachableAll: string[] | null = null;
   try {
-    deliveryByRepo = fetchDeliveryByRepo(allSlugs, opts.days, run, now);
+    const fetched = fetchDelivery(allSlugs, opts.days, run, now);
+    deliveryByRepo = fetched.byRepo;
+    unreachableAll = fetched.unreachable;
     if (allSlugs.length > 0) {
       writeCache(projectRoot, { fetchedAt: now.toISOString(), repos: deliveryByRepo });
     }
@@ -393,25 +410,42 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
     const shorts = reposBySquad.get(name) ?? [];
     const slugs = slugsBySquad.get(name) ?? [];
 
-    // goals
-    const done = squad.goals.filter((g) => g.completed).length;
-    const active = squad.goals.length - done;
-    const overdue = squad.goals.filter((g) => {
-      if (g.completed) return false;
-      const deadline = parseGoalDescription(g.description).deadline;
-      return !!deadline && deadline.getTime() < todayStart;
-    }).length;
+    // goals — the squad's goals.md (what `squads goals` shows); SQUAD.md
+    // checkboxes only when there is none.
+    const goalsMd = join(projectRoot, '.agents', 'memory', name, 'goals.md');
+    let active: number;
+    let done: number;
+    let overdue: number;
+    if (existsSync(goalsMd)) {
+      ({ active, done, overdue } = goalCounts(parseGoalsMd(goalsMd), todayStart));
+    } else {
+      done = squad.goals.filter((g) => g.completed).length;
+      active = squad.goals.length - done;
+      overdue = squad.goals.filter((g) => {
+        if (g.completed) return false;
+        const deadline = parseGoalDescription(g.description).deadline;
+        return !!deadline && deadline.getTime() < todayStart;
+      }).length;
+    }
 
     // delivered
     let delivered: Delivered | null = null;
+    let rowError: string | undefined;
     const items: DeliveredItem[] = [];
-    if (deliveryByRepo) {
+    const unreachable = unreachableAll ? slugs.filter((s) => unreachableAll!.includes(s)) : [];
+    if (slugs.length === 0) {
+      rowError = 'no GitHub repo declared';
+    } else if (unreachableAll && unreachable.length === slugs.length) {
+      rowError = `repo not found or not visible to this token: ${unreachable.join(', ')}`;
+    } else if (deliveryByRepo) {
       let prsMerged = 0;
       let issuesClosed = 0;
+      let truncated = false;
       for (const slug of slugs) {
         const d = deliveryByRepo[slug];
         if (!d) continue;
         prsMerged += d.prsMerged;
+        truncated ||= d.truncated === true;
         issuesClosed += d.issuesClosed;
         items.push(...d.items);
       }
@@ -421,6 +455,8 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
         issuesClosed,
         items: items.slice(0, 5),
         ...(stale ? { stale: true } : {}),
+        ...(unreachable.length ? { unreachable } : {}),
+        ...(truncated ? { truncated: true } : {}),
       };
     }
 
@@ -445,7 +481,7 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
       sharedWith: sharedBySquad.get(name) ?? [],
       goals: { active, done, overdue },
       delivered,
-      ...(delivered === null ? { deliveredError: deliveryError } : {}),
+      ...(delivered === null ? { deliveredError: rowError ?? deliveryError } : {}),
       now: {
         running: squadRuns.filter((r) => r.alive).length,
         needsYou: squadInbox.length,
