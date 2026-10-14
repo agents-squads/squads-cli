@@ -265,7 +265,7 @@ function extractRefs(cell: string, planRepo: string): { refs: string[]; text: st
   let work = expandLinks(cell);
   const refs: string[] = [];
   work = work.replace(FULL_REF_RE, (_m, owner: string, number: string) => {
-    refs.push(`${owner}#${number}`);
+    refs.push(`${owner}#${Number(number)}`);
     return ' ';
   });
   const owner = planRepo.split('/')[0];
@@ -279,7 +279,10 @@ function extractRefs(cell: string, planRepo: string): { refs: string[]; text: st
   });
   // Separators left behind once refs are lifted out: `a · b`, `a ← b`, `a, b`.
   const text = stripMarkup(work).replace(/^[\s,;:|\-–—/·•←→+&]+|[\s,;:|\-–—/·•←→+&]+$/g, '');
-  return { refs: dedupe(refs), text: PLACEHOLDERS.has(text.toLowerCase()) ? null : text };
+  // Parenthetical annotation next to a ref — `cli#1 (merged)`, `hq#515 (red-team)` —
+  // describes the ref; it is not a person blocking the row.
+  const annotation = refs.length > 0 && /^\([^()]*\)$/.test(text);
+  return { refs: dedupe(refs), text: PLACEHOLDERS.has(text.toLowerCase()) || annotation ? null : text };
 }
 
 function dedupe(values: string[]): string[] {
@@ -472,8 +475,8 @@ export function planIssueArgs(plan: PlanRef): string[] {
 
 /** `gh api repos/{o}/{r}/issues/{n}/sub_issues` — open/closed per sub-issue. */
 export function subIssuesArgs(plan: PlanRef): string[] {
-  // per_page=100 keeps this a single request for any realistic plan.
-  return ['api', `repos/${plan.owner}/${plan.repo}/issues/${plan.number}/sub_issues?per_page=100`];
+  // Every page, as one JSON array of pages (gh ≥ 2.48).
+  return ['api', `repos/${plan.owner}/${plan.repo}/issues/${plan.number}/sub_issues?per_page=100`, '--paginate', '--slurp'];
 }
 
 interface PlanIssuePayload {
@@ -496,7 +499,10 @@ export async function fetchPlanRoadmap(
 
   const issue = JSON.parse(issueRaw) as PlanIssuePayload;
   const parsedSubs: unknown = JSON.parse(subRaw);
-  const subIssues: SubIssue[] = Array.isArray(parsedSubs) ? (parsedSubs as SubIssue[]) : [];
+  // --slurp: an array of pages; a plain array is accepted too. Anything else is
+  // an error, never "no sub-issues" (that would cache every row as not done).
+  if (!Array.isArray(parsedSubs)) throw new Error('unexpected sub-issues response from GitHub');
+  const subIssues: SubIssue[] = (parsedSubs as unknown[]).flatMap((p) => (Array.isArray(p) ? p : [p])) as SubIssue[];
 
   return buildRoadmap({
     plan,

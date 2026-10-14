@@ -36,6 +36,7 @@ import {
   readPlanCache,
   resolvePlanRef,
   subIssuesArgs,
+  fetchPlanRoadmap,
   writePlanCache,
   type GhRunner,
   type SubIssue,
@@ -118,7 +119,7 @@ function stdoutJson(): Record<string, unknown> {
 /** A `gh` runner returning `body` for the issue and `subIssues` for its graph. */
 function fakeGh(body: string, subIssues: SubIssue[] = SUB_ISSUES): GhRunner {
   return async (args: string[]) => {
-    if (args[1]?.includes('/sub_issues')) return JSON.stringify(subIssues);
+    if (args[1]?.includes('/sub_issues')) return JSON.stringify([subIssues]); // --slurp: pages
     return JSON.stringify({ body, html_url: PLAN_URL });
   };
 }
@@ -272,11 +273,20 @@ describe('roadmap states', () => {
     const row = roadmapFrom(body, SUB_ISSUES).rows[0]!;
     expect(row.issues).toEqual(['agents-squads/squads-api#287', 'agents-squads/squads-cli#1272']);
     expect(row.blockers).toEqual(['agents-squads/squads-api#288', 'agents-squads/hq#515']);
-    expect(row.humanBlocker).toBe('(red-team)');
+    expect(row.humanBlocker).toBeNull(); // a note on the ref, not a person
     const sep = roadmapFrom('## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n| 13 | Home | squads-engine#8 | squads-cli#1279 · squads-cli#1280 |\n', SUB_ISSUES).rows[0]!;
     expect(sep.humanBlocker).toBeNull();
     const mixed = roadmapFrom('## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n| 5 | Slack | hq#550 | squads-cli#1276 · founder Slack app setup |\n', SUB_ISSUES).rows[0]!;
     expect(mixed.humanBlocker).toBe('founder Slack app setup');
+  });
+
+  it('a parenthetical note next to a ref is not a human blocker; zero-padded refs normalize', () => {
+    const body = '## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n' +
+      '| 2 | A | squads-cli#1279 | squads-cli#1275 (merged) |\n' +
+      '| 3 | B | agents-squads/squads-cli#01280 | — |\n';
+    const rows = roadmapFrom(body, SUB_ISSUES).rows;
+    expect(rows[0]!.humanBlocker).toBeNull();
+    expect(rows[1]!.issues).toEqual(['agents-squads/squads-cli#1280']);
   });
 
   it('accepts a qualified heading — `## Order (founder 10-14)` — but not `## Ordering`', () => {
@@ -578,6 +588,8 @@ describe('gh access', () => {
     expect(subIssuesArgs(PLAN)).toEqual([
       'api',
       'repos/agents-squads/squads-cli/issues/1279/sub_issues?per_page=100',
+      '--paginate',
+      '--slurp',
     ]);
   });
 
@@ -696,5 +708,19 @@ describe('plan cache', () => {
     expect(planCachePath(join(cacheDir, 'project'))).toBe(
       join(cacheDir, 'project', '.agents', 'observability', 'cache', 'plan.json'),
     );
+  });
+});
+
+describe('squads plan — sub-issue pages', () => {
+  it('flattens every page and refuses a non-array response', async () => {
+    // #200 is closed and only on page 2: its row is done only if page 2 is read.
+    const page1 = SUB_ISSUES;
+    const page2 = subs([200, 'closed']);
+    const body = '## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n| 1 | Late page | #200 | — |\n';
+    const pages = async (args: string[]) => (args[1]!.includes('/sub_issues') ? JSON.stringify([page1, page2]) : JSON.stringify({ body, html_url: 'u' }));
+    const r = await fetchPlanRoadmap(PLAN, pages);
+    expect(r.rows.map(x => x.state)).toEqual(['done']);
+    const bad = async (args: string[]) => (args[1]!.includes('/sub_issues') ? '{"message":"Not Found"}' : JSON.stringify({ body: '' }));
+    await expect(fetchPlanRoadmap(PLAN, bad)).rejects.toThrow(/sub-issues/);
   });
 });
