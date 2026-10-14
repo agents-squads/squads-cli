@@ -55,12 +55,13 @@ interface FakeGh {
 }
 
 /** Fake `gh`: throws when `fail`, else returns per-kind canned NDJSON. */
-function fakeGh(cfg: { prLines?: string[]; issueLines?: string[]; fail?: boolean; missing?: string[] } = {}): FakeGh {
+function fakeGh(cfg: { prLines?: string[]; issueLines?: string[]; fail?: boolean; missing?: string[]; more?: boolean; errorStdout?: string } = {}): FakeGh {
   const calls: string[][] = [];
   const parse = (lines: string[] = []) => lines.map((l) => JSON.parse(l) as { n: number; t: string; u: string; at: string });
   const run: GhRunner = (args) => {
     calls.push(args);
     if (cfg.fail) throw new Error('gh: command not found');
+    if (cfg.errorStdout) throw Object.assign(new Error('gh: exit 1'), { stdout: cfg.errorStdout });
     // Like `gh api graphql`: an alias per repo, null when it can't be resolved
     // (then exit 1 with the data still on stdout).
     const vars = new Map<string, string>();
@@ -73,20 +74,23 @@ function fakeGh(cfg: { prLines?: string[]; issueLines?: string[]; fail?: boolean
     const prs = parse(cfg.prLines);
     const issues = parse(cfg.issueLines);
     const data: Record<string, unknown> = {};
+    const errors: unknown[] = [];
     let anyMissing = false;
     for (let i = 0; vars.has(`o${i}`); i++) {
       const slug = `${vars.get(`o${i}`)}/${vars.get(`n${i}`)}`;
       if ((cfg.missing ?? []).includes(slug)) {
         anyMissing = true;
         data[`r${i}`] = null;
+        errors.push({ type: 'NOT_FOUND', path: [`r${i}`], message: `Could not resolve to a Repository with the name '${slug}'.` });
         continue;
       }
+      const pageInfo = { hasNextPage: cfg.more === true };
       data[`r${i}`] = {
-        pullRequests: { nodes: prs.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, mergedAt: x.at })) },
-        issues: { nodes: issues.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, closedAt: x.at })) },
+        pullRequests: { pageInfo, nodes: prs.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, updatedAt: x.at, mergedAt: x.at })) },
+        issues: { pageInfo, nodes: issues.filter((x) => x.u === slug).map((x) => ({ number: x.n, title: x.t, updatedAt: x.at, closedAt: x.at })) },
       };
     }
-    const out = JSON.stringify({ data });
+    const out = JSON.stringify(errors.length ? { data, errors } : { data });
     if (anyMissing) throw Object.assign(new Error('Could not resolve to a Repository'), { stdout: out });
     return out;
   };
@@ -187,6 +191,7 @@ describe('buildDomains', () => {
     squad('cli', { repo: 'acme/squads-cli' });
     const cache = {
       fetchedAt: '2026-07-13T00:00:00.000Z',
+      days: 7,
       repos: { 'acme/squads-cli': { prsMerged: 4, issuesClosed: 2, items: [{ ref: '#7', title: 'cached', at: '2026-07-12T00:00:00Z' }] } },
     };
     mkdirSync(join(base, '.agents', 'observability', 'cache'), { recursive: true });
@@ -352,15 +357,41 @@ describe('buildDomains — honest when GitHub cannot see a repo', () => {
     expect(query).not.toContain('acme');
   });
 
-  it('a full page inside the window is flagged truncated (a lower bound), outside it is not', () => {
+  it('more pages whose last node was updated inside the window: truncated (a lower bound)', () => {
     squad('busy', { repo: 'acme/busy' });
     const inWindow = Array.from({ length: PAGE }, (_, i) => line(i + 1, `t${i}`, 'acme/busy', '2026-07-13T00:00:00Z'));
-    const busy = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: inWindow }).run, runs: [], inbox: [] });
+    const busy = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: inWindow, more: true }).run, runs: [], inbox: [] });
     expect(busy.domains[0].delivered).toMatchObject({ prsMerged: PAGE, truncated: true });
-    const old = [...inWindow.slice(0, 3), ...Array.from({ length: PAGE - 3 }, (_, i) => line(500 + i, 'old', 'acme/busy', '2026-06-01T00:00:00Z'))];
-    const calm = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: old }).run, runs: [], inbox: [] });
+    // more pages, but the page already reached updates older than the window: complete
+    const old = [...inWindow.slice(0, 3), line(999, 'old', 'acme/busy', '2026-06-01T00:00:00Z')];
+    const calm = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ prLines: old, more: true }).run, runs: [], inbox: [] });
     expect(calm.domains[0].delivered).toMatchObject({ prsMerged: 3 });
     expect(calm.domains[0].delivered!.truncated).toBeUndefined();
+  });
+
+  it('a failed fetch (bad credentials, rate limit) is never "repo not found": stale cache, cache kept', () => {
+    squad('cli', { repo: 'acme/cli' });
+    const good = fakeGh({ prLines: [line(1, 'a', 'acme/cli', '2026-07-13T00:00:00Z')] });
+    buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: good.run, runs: [], inbox: [] });
+    for (const errorStdout of ['{"message":"Bad credentials"}', '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}']) {
+      const r = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ errorStdout }).run, runs: [], inbox: [] });
+      expect(r.stale).toBe(true);
+      expect(r.domains[0].delivered).toMatchObject({ prsMerged: 1, stale: true });
+    }
+    // a cache for another window is not served
+    const other = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 90, now: NOW, gh: fakeGh({ fail: true }).run, runs: [], inbox: [] });
+    expect(other.domains[0].delivered).toBeNull();
+  });
+
+  it('slugs: validated, case-insensitive, quotes stripped', () => {
+    expect(repoSlug('"acme/web"')).toBe('acme/web');
+    expect(repoSlug('../x')).toBeNull();
+    expect(repoSlug('-x/y')).toBeNull();
+    expect(repoSlug('a/..')).toBeNull();
+    squad('dup', { repo: 'Acme/Cli', alsoOwns: ['acme/cli'] });
+    const gh = fakeGh();
+    buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: gh.run, runs: [], inbox: [] });
+    expect(gh.calls[0]!.filter((a) => /^n\d+=/.test(a))).toEqual(['n0=cli']);
   });
 });
 
@@ -372,7 +403,9 @@ describe('buildDomains — goals come from goals.md when the squad has one', () 
     writeFileSync(join(mem, 'goals.md'), [
       '## Active',
       '1. **Late one** — x | deadline: 2026-06-26 | status: not-started',
-      '2. **Range late** — x | deadline: spec by 2026-06-19, first slice 2026-07-03 | status: in-progress',
+      '2. **Range, final date passed** — x | deadline: spec by 2026-06-19, first slice 2026-07-03 | status: in-progress',
+      '5. **Range, final date ahead** — x | deadline: spec by 2026-06-19, ship 2026-08-01 | status: in-progress',
+      '6. **Invalid date** — x | deadline: 2026-13-45 | status: in-progress',
       '3. **Future** — x | deadline: 2026-08-01 | status: in-progress',
       '4. **Ongoing** — x | deadline: ongoing | status: in-progress',
       '## Achieved',
@@ -381,6 +414,6 @@ describe('buildDomains — goals come from goals.md when the squad has one', () 
       '1. **Dropped** — reason: no | status: abandoned',
     ].join('\n'));
     const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh().run, runs: [], inbox: [] });
-    expect(report.domains[0].goals).toEqual({ active: 4, done: 1, overdue: 2 });
+    expect(report.domains[0].goals).toEqual({ active: 6, done: 1, overdue: 2 });
   });
 });

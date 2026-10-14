@@ -14,13 +14,22 @@ export interface GoalInfo {
   deadline?: Date;
 }
 
-const DEADLINE_RE = /deadline:\s*[^|]*?(\d{4})-(\d{2})-(\d{2})/;
+const DEADLINE_FIELD_RE = /deadline:\s*([^|]*)/;
+const DATE_RE = /(\d{4})-(\d{2})-(\d{2})/g;
 
+/** The LAST valid date in the `deadline:` field — `spec by 06-19, first slice
+ *  07-03` is late only once its final date has passed. */
 function deadlineOf(line: string): Date | undefined {
-  const m = line.match(DEADLINE_RE);
-  if (!m) return undefined;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isNaN(d.getTime()) ? undefined : d;
+  const field = line.match(DEADLINE_FIELD_RE)?.[1];
+  if (!field) return undefined;
+  let last: Date | undefined;
+  for (const m of field.matchAll(DATE_RE)) {
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    const date = new Date(y, mo - 1, d);
+    // reject rollovers like 2026-13-45
+    if (date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d) last = date;
+  }
+  return last;
 }
 
 export function parseGoalsMd(filePath: string): GoalInfo[] {

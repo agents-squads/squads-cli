@@ -113,12 +113,14 @@ export function repoShort(repo: string): string {
  * given. Accepts `org/name`, `https://github.com/org/name[.git]`,
  * `git@github.com:org/name.git`.
  */
+/** GitHub's owner/name alphabet; no `..`, no leading `-` or `.`. */
+const SLUG_RE = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
+
 export function repoSlug(repo: string): string | null {
-  const v = repo.trim().replace(/\.git$/, '');
-  const url = v.match(/github\.com[:/]([^/\s]+\/[^/\s]+)$/i);
-  if (url) return url[1];
-  if (/^[^/\s]+\/[^/\s]+$/.test(v)) return v;
-  return null;
+  const v = repo.trim().replace(/^["']|["']$/g, '').replace(/\.git$/, '');
+  const url = v.match(/github\.com[:/]([^/\s]+\/[^/\s]+)\/?$/i);
+  const slug = url ? url[1] : v;
+  return SLUG_RE.test(slug) && !slug.includes('..') ? slug : null;
 }
 
 /**
@@ -130,7 +132,8 @@ export function resolveRepoSlug(repo: string, projectRoot: string): string | nul
   const direct = repoSlug(repo);
   if (direct) return direct;
   const name = repoShort(repo);
-  if (!name) return null;
+  // A bare name becomes a sibling path: only a plain repo name may.
+  if (!name || !/^[A-Za-z0-9][\w.-]*$/.test(name) || name.includes('..')) return null;
   for (const root of [projectRoot, join(projectRoot, '..')]) {
     const candidate = join(root, name);
     if (!existsSync(join(candidate, '.git'))) continue;
@@ -218,27 +221,49 @@ export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now:
     decl.push(`$o${i}:String!`, `$n${i}:String!`);
     sel.push(
       `r${i}: repository(owner:$o${i},name:$n${i}){` +
-        `pullRequests(states:MERGED,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title mergedAt}}` +
-        `issues(states:CLOSED,first:${PAGE},filterBy:{since:$since},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title closedAt}}}`,
+        `pullRequests(states:MERGED,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage} nodes{number title updatedAt mergedAt}}` +
+        `issues(states:CLOSED,first:${PAGE},filterBy:{since:$since},orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage} nodes{number title updatedAt closedAt}}}`,
     );
     args.push('-f', `o${i}=${owner}`, '-f', `n${i}=${name}`);
   });
   args.splice(2, 0, '-f', `query=query(${decl.join(',')}){${sel.join(' ')}}`);
 
   let out: string;
+  let failure: unknown;
   try {
     out = run(args);
   } catch (e) {
+    failure = e;
     out = (e as { stdout?: string }).stdout ?? '';
     if (!out) throw e;
   }
-  type Node = { number: number; title: string; mergedAt?: string; closedAt?: string };
-  type Repo = { pullRequests?: { nodes?: Node[] }; issues?: { nodes?: Node[] } } | null;
-  const data = (JSON.parse(out) as { data?: Record<string, Repo> }).data ?? {};
+  type Node = { number: number; title: string; updatedAt?: string; mergedAt?: string; closedAt?: string };
+  type Conn = { nodes?: Node[]; pageInfo?: { hasNextPage?: boolean } };
+  type Repo = { pullRequests?: Conn; issues?: Conn } | null;
+  type GqlError = { type?: string; path?: unknown[]; message?: string };
+  let doc: { data?: Record<string, Repo> | null; errors?: GqlError[] };
+  try {
+    doc = JSON.parse(out);
+  } catch {
+    throw failure instanceof Error ? failure : new Error('unparseable GitHub response');
+  }
+  // Only a NOT_FOUND on a repo alias means "this repo is not there for this
+  // token". Anything else — bad credentials, rate limits, a missing `data` —
+  // is a failed fetch, so the caller falls back to the last-good cache instead
+  // of reporting every repo as missing.
+  const errors = doc.errors ?? [];
+  const isNotFound = (er: GqlError) => er.type === 'NOT_FOUND' && typeof er.path?.[0] === 'string';
+  const notFound = new Set(errors.filter(isNotFound).map((er) => er.path![0] as string));
+  const other = errors.find((er) => !isNotFound(er));
+  if (!doc.data || other) {
+    throw new Error((other?.message ?? (failure instanceof Error ? failure.message : 'GitHub returned no data')).split('\n')[0]);
+  }
+  const data = doc.data;
 
   slugs.forEach((slug, i) => {
     const repo = data[`r${i}`];
     if (!repo) {
+      if (!notFound.has(`r${i}`)) throw new Error(`GitHub returned no data for ${slug}`);
       unreachable.push(slug);
       return;
     }
@@ -248,17 +273,22 @@ export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now:
     for (const n of prs) {
       if (!n.mergedAt || Date.parse(n.mergedAt) < sinceMs) continue;
       d.prsMerged++;
-      d.items.push({ ref: `#${n.number}`, title: n.title, at: n.mergedAt });
+      d.items.push({ ref: `${slug}#${n.number}`, title: n.title, at: n.mergedAt });
     }
     for (const n of issues) {
       if (!n.closedAt || Date.parse(n.closedAt) < sinceMs) continue;
       d.issuesClosed++;
-      d.items.push({ ref: `#${n.number}`, title: n.title, at: n.closedAt });
+      d.items.push({ ref: `${slug}#${n.number}`, title: n.title, at: n.closedAt });
     }
-    // A full page whose oldest node is still inside the window may hide more.
-    const full = (nodes: Node[], at: (n: Node) => string | undefined) =>
-      nodes.length === PAGE && Date.parse(at(nodes[nodes.length - 1]!) ?? '') >= sinceMs;
-    if (full(prs, (n) => n.mergedAt) || full(issues, (n) => n.closedAt)) d.truncated = true;
+    // Pages are ordered by updatedAt, and a merge/close always updates: more
+    // pages whose last node was still updated inside the window may hide
+    // in-window items — the counts are a lower bound.
+    const more = (c?: Conn) => {
+      const nodes = c?.nodes ?? [];
+      const last = nodes[nodes.length - 1];
+      return c?.pageInfo?.hasNextPage === true && !!last && (!last.updatedAt || Date.parse(last.updatedAt) >= sinceMs);
+    };
+    if (more(repo.pullRequests) || more(repo.issues)) d.truncated = true;
     byRepo[slug] = d;
   });
   return { byRepo, unreachable };
@@ -268,6 +298,8 @@ export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now:
 
 export interface DomainsCache {
   fetchedAt: string;
+  /** The window the counts cover — a cache for another window is not used. */
+  days: number;
   repos: Record<string, RepoDelivery>;
 }
 
@@ -275,12 +307,12 @@ export function domainsCachePath(projectRoot: string): string {
   return join(projectRoot, '.agents', 'observability', 'cache', 'domains.json');
 }
 
-function readCache(projectRoot: string): DomainsCache | null {
+function readCache(projectRoot: string, days: number): DomainsCache | null {
   const path = domainsCachePath(projectRoot);
   if (!existsSync(path)) return null;
   try {
     const c = JSON.parse(readFileSync(path, 'utf8')) as DomainsCache;
-    return c && typeof c.fetchedAt === 'string' && c.repos ? c : null;
+    return c && typeof c.fetchedAt === 'string' && c.repos && c.days === days ? c : null;
   } catch {
     return null;
   }
@@ -358,7 +390,8 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
     for (const r of declared) {
       const short = repoShort(r);
       if (short && !shorts.includes(short)) shorts.push(short);
-      const slug = resolveRepoSlug(r, projectRoot);
+      // GitHub slugs are case-insensitive: one repo, one count.
+      const slug = resolveRepoSlug(r, projectRoot)?.toLowerCase();
       if (slug && !slugs.includes(slug)) slugs.push(slug);
     }
     reposBySquad.set(name, shorts);
@@ -387,11 +420,15 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
     deliveryByRepo = fetched.byRepo;
     unreachableAll = fetched.unreachable;
     if (allSlugs.length > 0) {
-      writeCache(projectRoot, { fetchedAt: now.toISOString(), repos: deliveryByRepo });
+      // Merge per repo: a repo missing from this answer keeps its last-good entry.
+      const prev = readCache(projectRoot, opts.days);
+      if (Object.keys(deliveryByRepo).length > 0) {
+        writeCache(projectRoot, { fetchedAt: now.toISOString(), days: opts.days, repos: { ...(prev?.repos ?? {}), ...deliveryByRepo } });
+      }
     }
   } catch (e) {
     deliveryError = (e instanceof Error ? e.message : String(e)).split('\n')[0].trim().slice(0, 200) || 'GitHub unavailable';
-    const cached = readCache(projectRoot);
+    const cached = readCache(projectRoot, opts.days);
     if (cached) {
       deliveryByRepo = cached.repos;
       stale = true;
@@ -416,8 +453,9 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
     let active: number;
     let done: number;
     let overdue: number;
-    if (existsSync(goalsMd)) {
-      ({ active, done, overdue } = goalCounts(parseGoalsMd(goalsMd), todayStart));
+    const fromMd = existsSync(goalsMd) ? parseGoalsMd(goalsMd) : [];
+    if (fromMd.length > 0) {
+      ({ active, done, overdue } = goalCounts(fromMd, todayStart));
     } else {
       done = squad.goals.filter((g) => g.completed).length;
       active = squad.goals.length - done;
