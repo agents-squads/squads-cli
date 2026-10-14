@@ -27,6 +27,8 @@ export interface ProjectConfig {
   company_name: string;
   compose_file: string | null;
   telemetry: boolean;
+  /** Plan-of-record tracking issue `owner/repo#n` read by `squads plan`. */
+  plan_issue: string | null;
 }
 
 // ── Defaults ────────────────────────────────────────────────────────
@@ -40,6 +42,7 @@ const DEFAULTS: ProjectConfig = {
   company_name: '',
   compose_file: null,
   telemetry: true,
+  plan_issue: null,
 };
 
 // ── Cache ───────────────────────────────────────────────────────────
@@ -73,7 +76,9 @@ function parseSimpleYaml(content: string): Record<string, string> {
         value = value.slice(1, closeIdx);
       }
     } else {
-      const commentIdx = value.indexOf('#');
+      // A `#` starts a comment only when preceded by whitespace (YAML) — values
+      // legitimately contain `#`, e.g. `plan_issue: owner/repo#12`.
+      const commentIdx = value.search(/(^|\s)#/);
       if (commentIdx >= 0) {
         value = value.slice(0, commentIdx).trim();
       }
@@ -169,6 +174,8 @@ export function loadProjectConfig(): ProjectConfig {
       process.env.SQUADS_TELEMETRY ?? fileValues.telemetry,
       DEFAULTS.telemetry,
     ),
+    plan_issue:
+      process.env.SQUADS_PLAN_ISSUE?.trim() || fileValues.plan_issue?.trim() || DEFAULTS.plan_issue,
   };
 
   return cachedConfig;

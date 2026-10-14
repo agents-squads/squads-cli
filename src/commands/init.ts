@@ -851,6 +851,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
         '# Telemetry',
         'telemetry: true',
         '',
+        '# Plan of record — the tracking issue `squads plan` reads as the roadmap',
+        '# Its body needs an "## Order" table (one row per deliverable).',
+        '# plan_issue: owner/repo#123',
+        '',
       ].join('\n');
       await fs.writeFile(configYmlPath, configContent);
     }
