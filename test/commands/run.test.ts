@@ -124,6 +124,8 @@ vi.mock('../../src/lib/providers.js', () => ({
 vi.mock('../../src/lib/auth.js', () => ({
   loadSession: vi.fn(() => null),
   isLoggedIn: vi.fn(() => false),
+  // Defer to the real env var so tests can toggle the auth-config preflight (#1208).
+  isAuthConfigured: vi.fn(() => !!process.env.SQUADS_AUTH_URL),
 }));
 
 vi.mock('../../src/lib/env-config.js', () => ({
@@ -139,7 +141,6 @@ vi.mock('../../src/lib/workflow.js', () => ({
 vi.mock('../../src/lib/api-client.js', () => ({
   reportExecutionStart: vi.fn(() => Promise.resolve()),
   reportConversationResult: vi.fn(() => Promise.resolve()),
-  pushCognitionSignal: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../src/lib/github.js', () => ({
@@ -156,14 +157,12 @@ vi.mock('../../src/lib/squad-loop.js', () => ({
   scoreSquads: vi.fn(() => []),
   checkCooldown: vi.fn(() => false),
   classifyRunOutcome: vi.fn(() => 'completed'),
-  pushMemorySignals: vi.fn(() => Promise.resolve()),
   slackNotify: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../src/lib/cognition.js', () => ({
   loadCognitionState: vi.fn(() => ({})),
   saveCognitionState: vi.fn(),
-  seedBeliefsIfEmpty: vi.fn(),
   runCognitionCycle: vi.fn(() => Promise.resolve()),
 }));
 
@@ -175,10 +174,16 @@ vi.mock('../../src/lib/run-context.js', () => ({
   gatherSquadContext: vi.fn(() => ''),
 }));
 
+vi.mock('../../src/lib/agent-runner.js', () => ({
+  runAgent: vi.fn(() => Promise.resolve()),
+}));
+
 // ── Imports (after mocks) ──────────────────────────────────────────────────
 import { runCommand, runSquadCommand, mergeAgentPositional } from '../../src/commands/run.js';
 import { findSquadsDir, loadSquad, listAgents, findSimilarSquads } from '../../src/lib/squad-parser.js';
 import { writeLine } from '../../src/lib/terminal.js';
+import { existsSync } from 'fs';
+import { runAgent } from '../../src/lib/agent-runner.js';
 import { isProviderCLIAvailable } from '../../src/lib/llm-clis.js';
 
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
@@ -240,6 +245,34 @@ describe('runCommand', () => {
   });
 
   describe('--cloud flag', () => {
+    let originalAuthUrl: string | undefined;
+
+    beforeEach(() => {
+      originalAuthUrl = process.env.SQUADS_AUTH_URL;
+      // These tests exercise logic past the auth-config preflight, so pretend
+      // the auth endpoint is configured (#1208). The unconfigured case has its
+      // own test below.
+      process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
+    });
+
+    afterEach(() => {
+      if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+      else process.env.SQUADS_AUTH_URL = originalAuthUrl;
+    });
+
+    it('fails at preflight when auth is not configured (#1208)', async () => {
+      delete process.env.SQUADS_AUTH_URL;
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+
+      // Even with an agent specified, --cloud must fail before any run setup.
+      await expect(runCommand('demo/researcher', { cloud: true })).rejects.toThrow('process.exit');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(mockWriteLine).toHaveBeenCalledWith(
+        expect.stringContaining('Cloud dispatch requires login, which is not available in this build.')
+      );
+    });
+
     it('exits with code 1 when --cloud used without agent name', async () => {
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
 
@@ -455,6 +488,58 @@ describe('runCommand', () => {
     });
   });
 
+  describe('empty squad (no role table) (#872)', () => {
+    function makeEmptySquad() {
+      return {
+        name: 'empty-squad',
+        dir: 'empty-squad',
+        mission: 'No agents defined',
+        agents: [] as Array<Record<string, string>>,
+        pipelines: [],
+        triggers: { scheduled: [], event: [], manual: [] },
+        routines: [],
+        dependencies: [],
+        outputPath: '',
+        goals: [],
+        frontmatter: {},
+      };
+    }
+
+    it('warns and sets exitCode 1 when squad has no participants', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makeEmptySquad() as ReturnType<typeof mockLoadSquad>);
+
+      const savedExitCode = process.exitCode;
+      process.exitCode = 0;
+
+      try {
+        await runCommand('empty-squad', { dryRun: true });
+
+        expect(mockWriteLine).toHaveBeenCalledWith(
+          expect.stringContaining('0 participants')
+        );
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = savedExitCode;
+      }
+    });
+
+    it('does not set exitCode 1 when --agent is specified on empty squad', async () => {
+      mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
+      mockLoadSquad.mockReturnValue(makeEmptySquad() as ReturnType<typeof mockLoadSquad>);
+
+      const savedExitCode = process.exitCode;
+      process.exitCode = 0;
+
+      try {
+        // Guard only fires in default mode, not when -a specifies an agent
+        await runCommand('empty-squad', { dryRun: true, agent: 'some-agent' });
+      } finally {
+        process.exitCode = savedExitCode;
+      }
+    });
+  });
+
   describe('preflight check', () => {
     // The preflight only runs for a target that EXISTS (#912): a nonexistent
     // squad now reports "not found" BEFORE any executor CLI check, so these
@@ -532,6 +617,19 @@ describe('runCommand', () => {
   });
 
   describe('slash syntax parsing', () => {
+    let originalAuthUrl: string | undefined;
+
+    beforeEach(() => {
+      originalAuthUrl = process.env.SQUADS_AUTH_URL;
+      // The cloud test below must pass the auth-config preflight (#1208).
+      process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
+    });
+
+    afterEach(() => {
+      if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+      else process.env.SQUADS_AUTH_URL = originalAuthUrl;
+    });
+
     it('splits target on slash to extract squad and agent', async () => {
       mockFindSquadsDir.mockReturnValue('/project/.agents/squads');
       mockLoadSquad.mockReturnValue(null);
@@ -567,16 +665,22 @@ describe('runCommand', () => {
 // ── Tests: runSquadCommand ─────────────────────────────────────────────────
 describe('runSquadCommand', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
+  let originalAuthUrl: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.SQUADS_SKIP_CHECKS = '1';
+    // The cloud test below must pass the auth-config preflight (#1208).
+    originalAuthUrl = process.env.SQUADS_AUTH_URL;
+    process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
     exitSpy = makeExitSpy();
   });
 
   afterEach(() => {
     exitSpy.mockRestore();
     delete process.env.SQUADS_SKIP_CHECKS;
+    if (originalAuthUrl === undefined) delete process.env.SQUADS_AUTH_URL;
+    else process.env.SQUADS_AUTH_URL = originalAuthUrl;
   });
 
   it('delegates to runCommand and exits when no squads dir', async () => {
@@ -645,5 +749,53 @@ describe('mergeAgentPositional', () => {
   it('accepts a redundant positional matching the slash agent', () => {
     expect(mergeAgentPositional('research/weekly-reporter', 'weekly-reporter', undefined))
       .toEqual({ target: 'research/weekly-reporter' });
+  });
+});
+
+describe('run --parallel closing message', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  const squad = { name: 'demo', dir: 'demo', agents: [{ name: 'a1' }, { name: 'a2' }], pipelines: [], status: 'active' };
+  const lines = () => vi.mocked(writeLine).mock.calls.map(c => String(c[0] ?? ''));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SQUADS_SKIP_CHECKS = '1';
+    exitSpy = makeExitSpy();
+    process.exitCode = undefined;
+    mockFindSquadsDir.mockReturnValue('/proj/.agents/squads');
+    mockLoadSquad.mockReturnValue(squad as never);
+    vi.mocked(existsSync).mockImplementation((p: unknown) => String(p).endsWith('.md'));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    delete process.env.SQUADS_SKIP_CHECKS;
+    process.exitCode = undefined;
+  });
+
+  it('foreground: reports the run as finished, without background hints', async () => {
+    await runCommand('demo', { parallel: true, execute: true, eval: false });
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(2);
+    expect(lines().some(l => l.includes('Parallel run finished —'))).toBe(true);
+    expect(lines().some(l => l.includes('Monitor: squads runs'))).toBe(false);
+  });
+
+  it('background: points at squads runs', async () => {
+    await runCommand('demo', { parallel: true, execute: true, background: true, eval: false });
+    expect(lines().some(l => l.includes('launched in the background'))).toBe(true);
+    expect(lines().some(l => l.includes('Monitor: squads runs'))).toBe(true);
+  });
+
+  it('background + watch is awaited, so it is not reported as background', async () => {
+    await runCommand('demo', { parallel: true, execute: true, background: true, watch: true, eval: false });
+    expect(lines().some(l => l.includes('launched in the background'))).toBe(false);
+    expect(lines().some(l => l.includes('Parallel run finished'))).toBe(true);
+  });
+
+  it('does not claim success when an agent did not run', async () => {
+    vi.mocked(runAgent).mockImplementationOnce(async () => { process.exitCode = 1; });
+    await runCommand('demo', { parallel: true, execute: true, eval: false });
+    expect(lines().some(l => l.includes('finished with errors'))).toBe(true);
+    expect(lines().some(l => l.includes('Parallel run finished —'))).toBe(false);
   });
 });

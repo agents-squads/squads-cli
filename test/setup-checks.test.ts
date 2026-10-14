@@ -64,7 +64,7 @@ describe('setup-checks', () => {
 
   describe('PROVIDERS registry', () => {
     it('contains all expected providers', () => {
-      const expected = ['claude', 'gemini', 'openai', 'ollama', 'cursor', 'aider', 'none'];
+      const expected = ['claude', 'gemini', 'openai', 'ollama', 'cursor', 'aider', 'opencode', 'none'];
       expect(Object.keys(PROVIDERS)).toEqual(expect.arrayContaining(expected));
       expect(Object.keys(PROVIDERS)).toHaveLength(expected.length);
     });

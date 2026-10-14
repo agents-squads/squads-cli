@@ -113,7 +113,12 @@ export async function feedbackAddCommand(
   options: { learning?: string[] }
 ): Promise<void> {
   await track(Events.CLI_FEEDBACK_ADD, { squad: squadName, rating: parseInt(rating) });
-  const feedbackPath = getFeedbackPath(squadName);
+
+  // Resolve canonical squad name from directory
+  const squad = loadSquad(squadName);
+  const canonicalName = squad?.dir || squadName;
+
+  const feedbackPath = getFeedbackPath(canonicalName);
   if (!feedbackPath) {
     writeLine(`  ${colors.red}Could not find memory directory${RESET}`);
     return;
@@ -126,7 +131,7 @@ export async function feedbackAddCommand(
   }
 
   // Get last execution for context
-  const lastExec = getLastExecution(squadName);
+  const lastExec = getLastExecution(canonicalName);
 
   // Ensure directory exists
   const dir = dirname(feedbackPath);
@@ -148,11 +153,10 @@ export async function feedbackAddCommand(
     }
 
     // Also add learnings to the learnings file
-    const squad = loadSquad(squadName);
-    const agentName = squad?.agents[0]?.name || `${squadName}-lead`;
+    const agentName = squad?.agents[0]?.name || `${canonicalName}-lead`;
 
     for (const learning of options.learning) {
-      await appendToMemory(squadName, agentName, 'learnings', `From feedback (${date}): ${learning}`);
+      await appendToMemory(canonicalName, agentName, 'learnings', `From feedback (${date}): ${learning}`);
     }
   }
 
@@ -161,7 +165,7 @@ export async function feedbackAddCommand(
   if (existsSync(feedbackPath)) {
     existing = readFileSync(feedbackPath, 'utf-8');
   } else {
-    existing = `# ${squadName} - Feedback Log\n\n> Execution feedback and learnings\n`;
+    existing = `# ${canonicalName} - Feedback Log\n\n> Execution feedback and learnings\n`;
   }
 
   writeFileSync(feedbackPath, existing + entry);
@@ -170,7 +174,7 @@ export async function feedbackAddCommand(
   const stars = `${colors.yellow}${'★'.repeat(ratingNum)}${'☆'.repeat(5 - ratingNum)}${RESET}`;
 
   writeLine();
-  writeLine(`  ${icons.success} Feedback recorded for ${colors.cyan}${squadName}${RESET}`);
+  writeLine(`  ${icons.success} Feedback recorded for ${colors.cyan}${canonicalName}${RESET}`);
   writeLine(`  Rating: ${stars}`);
   writeLine(`  ${feedback}`);
   if (options.learning && options.learning.length > 0) {
@@ -184,9 +188,14 @@ export async function feedbackShowCommand(
   options: { limit?: string }
 ): Promise<void> {
   await track(Events.CLI_FEEDBACK_SHOW, { squad: squadName });
-  const feedbackPath = getFeedbackPath(squadName);
+
+  // Resolve canonical squad name from directory
+  const squad = loadSquad(squadName);
+  const canonicalName = squad?.dir || squadName;
+
+  const feedbackPath = getFeedbackPath(canonicalName);
   if (!feedbackPath || !existsSync(feedbackPath)) {
-    writeLine(`  ${colors.yellow}No feedback recorded for ${squadName}${RESET}`);
+    writeLine(`  ${colors.yellow}No feedback recorded for ${canonicalName}${RESET}`);
     return;
   }
 
@@ -197,7 +206,7 @@ export async function feedbackShowCommand(
   const recent = entries.slice(-limit).reverse();
 
   writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}feedback${RESET} ${colors.cyan}${squadName}${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}feedback${RESET} ${colors.cyan}${canonicalName}${RESET}`);
   writeLine();
 
   if (recent.length === 0) {
@@ -257,6 +266,7 @@ export async function feedbackStatsCommand(): Promise<void> {
   writeLine(`  ${colors.purple}${box.teeRight}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.teeLeft}${RESET}`);
 
   for (const squad of squads) {
+    // squad is already the canonical dir name (directory listing)
     const feedbackPath = getFeedbackPath(squad);
     if (!feedbackPath || !existsSync(feedbackPath)) {
       continue;

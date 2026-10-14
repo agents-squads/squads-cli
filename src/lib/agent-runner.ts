@@ -38,7 +38,15 @@ import {
   executeWithProvider,
   resolveTargetRepoRoot,
   verifyExecution,
+  DEFAULT_AGENT_TOOLS,
 } from './execution-engine.js';
+import { compileAllowedTools } from './agent-contract.js';
+import {
+  snapshotAgentMemory,
+  computeMemoryDelta,
+  formatMemoryDeltaLine,
+  agentMemoryPath,
+} from './memory-delta.js';
 import {
   type ContextRole,
   type ContextStats,
@@ -300,15 +308,15 @@ Your full context follows — read it top-to-bottom:
 ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
 
   // Resolve provider with full chain:
-  // 1. Agent config (from agent file frontmatter/header)
-  // 2. CLI option (--provider flag)
+  // 1. CLI option (--provider flag) — explicit override wins
+  // 2. Agent config (from agent file frontmatter/header)
   // 3. Squad default (from SQUAD.md providers.default)
   // 4. Fallback to 'anthropic'
   const agentProvider = parseAgentProvider(agentPath);
   const squad = loadSquad(squadName);
   const squadDefaultProvider = squad?.providers?.default;
 
-  const provider = normalizeProviderName(agentProvider || options.provider || squadDefaultProvider || 'anthropic');
+  const provider = normalizeProviderName(options.provider || agentProvider || squadDefaultProvider || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
   if (options.verbose && (agentProvider || squadDefaultProvider)) {
@@ -323,6 +331,10 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
   const cliAvailable = isAnthropic
     ? await checkClaudeCliAvailable()
     : isProviderCLIAvailable(provider);
+
+  // #693: snapshot agent memory before execution so we can report a growth
+  // delta ("+N patterns learned") once the run completes.
+  const memoryBefore = snapshotAgentMemory(squadName, agentName);
 
   if (options.execute && cliAvailable) {
     const cliConfig = getCLIConfig(provider);
@@ -363,6 +375,7 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             squadName,
             agentName,
             model: options.model,
+            task: options.task,
             contextStats,
           });
         } else {
@@ -371,8 +384,9 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             foreground: !isBackground,
             // Route to the squad's bound repo (SQUAD.md repo: → sibling dir).
             // Without this the executor worktrees + harvests onto whatever
-            // repo the dispatch ran from (#844).
-            cwd: resolveTargetRepoRoot(getProjectRoot(), squad),
+            // repo the dispatch ran from (#844). Task refs may reroute to an
+            // also_owns repo (#1092).
+            cwd: resolveTargetRepoRoot(getProjectRoot(), squad, options.task),
             squadName,
             agentName,
             model: options.model || frontmatter.model,
@@ -380,6 +394,11 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
             trigger: options.trigger || 'manual',
             startMs,
             timeoutMinutes: options.timeout || defaultTimeoutForRole(contextRole),
+            // Same permission surface as the anthropic executor (#920): contract
+            // grants when declared, tuned default otherwise. Claude-harness lanes
+            // (glm) pass it through --allowedTools; other CLIs ignore it (#1073).
+            allowedTools: compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools,
+            task: options.task,
           });
         }
 
@@ -407,12 +426,18 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
         if (isForeground || isWatch) {
           spinner.succeed(`Agent ${agentName} completed (${cliName})`);
           writeLine(`  ${colors.green}Run completed${RESET} — ${squadName}/${agentName} (${formatRunDuration(Date.now() - startMs)})`);
+          // #693: show how much the agent's memory grew this run.
+          const memoryAfter = snapshotAgentMemory(squadName, agentName);
+          if (memoryAfter.exists) {
+            const delta = computeMemoryDelta(memoryBefore, memoryAfter);
+            writeLine(`  ${colors.dim}${formatMemoryDeltaLine(delta, agentMemoryPath(squadName, agentName))}${RESET}`);
+          }
         } else {
           spinner.succeed(`Agent ${agentName} launched in background (${cliName})`);
           writeLine(`  ${colors.green}Run started${RESET} — ${squadName}/${agentName} (background)`);
           if (result) writeLine(`  ${colors.dim}${result}${RESET}`);
           writeLine();
-          writeLine(`  ${colors.dim}Monitor:${RESET} squads workers`);
+          writeLine(`  ${colors.dim}Monitor:${RESET} squads runs`);
           writeLine(`  ${colors.dim}Memory:${RESET}  squads memory show ${squadName}`);
         }
         break; // Success — exit retry loop

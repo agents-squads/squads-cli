@@ -3,9 +3,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../../src/lib/memory.js', () => ({
   findMemoryDir: vi.fn(),
   searchMemory: vi.fn(),
-  getSquadState: vi.fn(),
+  getSquadMemory: vi.fn(),
   appendToMemory: vi.fn(),
   listMemoryEntries: vi.fn(),
+}));
+
+vi.mock('../../src/lib/squad-parser.js', () => ({
+  loadSquad: vi.fn(),
 }));
 
 vi.mock('../../src/lib/terminal.js', () => ({
@@ -66,13 +70,15 @@ import {
   memorySearchCommand,
   memoryExtractCommand,
 } from '../../src/commands/memory.js';
-import { findMemoryDir, searchMemory, getSquadState, appendToMemory, listMemoryEntries } from '../../src/lib/memory.js';
+import { findMemoryDir, searchMemory, getSquadMemory, appendToMemory, listMemoryEntries } from '../../src/lib/memory.js';
+import { loadSquad } from '../../src/lib/squad-parser.js';
 
 const mockFindMemoryDir = vi.mocked(findMemoryDir);
 const mockSearchMemory = vi.mocked(searchMemory);
-const mockGetSquadState = vi.mocked(getSquadState);
+const mockGetSquadMemory = vi.mocked(getSquadMemory);
 const mockAppendToMemory = vi.mocked(appendToMemory);
 const mockListMemoryEntries = vi.mocked(listMemoryEntries);
+const mockLoadSquad = vi.mocked(loadSquad);
 
 describe('memoryQueryCommand', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -166,9 +172,9 @@ describe('memoryShowCommand', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it('exits with 1 when no squad state found', async () => {
+  it('exits with 1 when no squad memory found', async () => {
     mockFindMemoryDir.mockReturnValue('/path/to/memory');
-    mockGetSquadState.mockReturnValue([]);
+    mockGetSquadMemory.mockReturnValue([]);
     mockListMemoryEntries.mockReturnValue([]);
     await expect(memoryShowCommand('cli', {})).rejects.toThrow('process.exit');
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -176,7 +182,7 @@ describe('memoryShowCommand', () => {
 
   it('resolves and displays squad states', async () => {
     mockFindMemoryDir.mockReturnValue('/path/to/memory');
-    mockGetSquadState.mockReturnValue([
+    mockGetSquadMemory.mockReturnValue([
       { agent: 'issue-solver', type: 'state', content: 'line1\nline2\nline3', squad: 'cli' },
     ]);
     await expect(memoryShowCommand('cli', {})).resolves.toBeUndefined();
@@ -185,10 +191,21 @@ describe('memoryShowCommand', () => {
   it('truncates long content beyond 12 lines', async () => {
     mockFindMemoryDir.mockReturnValue('/path/to/memory');
     const longContent = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n');
-    mockGetSquadState.mockReturnValue([
+    mockGetSquadMemory.mockReturnValue([
       { agent: 'issue-solver', type: 'state', content: longContent, squad: 'cli' },
     ]);
     await expect(memoryShowCommand('cli', {})).resolves.toBeUndefined();
+  });
+
+  it('renders learnings alongside state so a recent write is visible (#914)', async () => {
+    mockFindMemoryDir.mockReturnValue('/path/to/memory');
+    mockGetSquadMemory.mockReturnValue([
+      { agent: 'lead', type: 'state', content: 'Status: active', squad: 'research' },
+      { agent: 'lead', type: 'learnings', content: '## 2026-07-10: insight\n\nFound: MCP adoption at 15%', squad: 'research' },
+    ]);
+    await expect(memoryShowCommand('research', {})).resolves.toBeUndefined();
+    // Both entries were fetched via the combined-memory read path, not state-only.
+    expect(mockGetSquadMemory).toHaveBeenCalledWith('research');
   });
 });
 
@@ -206,7 +223,8 @@ describe('memoryUpdateCommand', () => {
     exitSpy.mockRestore();
   });
 
-  it('resolves on successful update', async () => {
+  it('falls back to `${squad}-lead` when no roster can be loaded', async () => {
+    mockLoadSquad.mockReturnValue(null);
     mockAppendToMemory.mockResolvedValue(undefined);
     await expect(memoryUpdateCommand('cli', 'test content', {})).resolves.toBeUndefined();
     expect(mockAppendToMemory).toHaveBeenCalledWith('cli', 'cli-lead', 'learnings', 'test content');
@@ -219,12 +237,71 @@ describe('memoryUpdateCommand', () => {
   });
 
   it('uses provided type option', async () => {
+    mockLoadSquad.mockReturnValue(null);
     mockAppendToMemory.mockResolvedValue(undefined);
     await expect(memoryUpdateCommand('cli', 'content', { type: 'state' })).resolves.toBeUndefined();
     expect(mockAppendToMemory).toHaveBeenCalledWith('cli', 'cli-lead', 'state', 'content');
   });
 
+  it('writes to the roster agent id "lead" when the squad roster has one (#914)', async () => {
+    mockLoadSquad.mockReturnValue({
+      name: 'research',
+      dir: 'research',
+      mission: '',
+      agents: [{ name: 'lead', role: 'Research lead', trigger: 'manual' }],
+      pipelines: [],
+      triggers: { scheduled: [], event: [], manual: [] },
+      routines: [],
+      dependencies: [],
+      outputPath: '',
+      goals: [],
+    });
+    mockAppendToMemory.mockResolvedValue(undefined);
+    await expect(memoryUpdateCommand('research', 'Found: MCP adoption at 15%', {})).resolves.toBeUndefined();
+    expect(mockAppendToMemory).toHaveBeenCalledWith('research', 'lead', 'learnings', 'Found: MCP adoption at 15%');
+  });
+
+  it('writes to a `-lead`-suffixed roster agent id when there is no exact "lead"', async () => {
+    mockLoadSquad.mockReturnValue({
+      name: 'growth',
+      dir: 'growth',
+      mission: '',
+      agents: [
+        { name: 'growth-lead', role: 'Growth lead', trigger: 'manual' },
+        { name: 'funnel-analyst', role: 'Analyst', trigger: 'manual' },
+      ],
+      pipelines: [],
+      triggers: { scheduled: [], event: [], manual: [] },
+      routines: [],
+      dependencies: [],
+      outputPath: '',
+      goals: [],
+    });
+    mockAppendToMemory.mockResolvedValue(undefined);
+    await expect(memoryUpdateCommand('growth', 'content', {})).resolves.toBeUndefined();
+    expect(mockAppendToMemory).toHaveBeenCalledWith('growth', 'growth-lead', 'learnings', 'content');
+  });
+
+  it('explicit --agent always wins over roster resolution', async () => {
+    mockLoadSquad.mockReturnValue({
+      name: 'research',
+      dir: 'research',
+      mission: '',
+      agents: [{ name: 'lead', role: 'Research lead', trigger: 'manual' }],
+      pipelines: [],
+      triggers: { scheduled: [], event: [], manual: [] },
+      routines: [],
+      dependencies: [],
+      outputPath: '',
+      goals: [],
+    });
+    mockAppendToMemory.mockResolvedValue(undefined);
+    await expect(memoryUpdateCommand('research', 'content', { agent: 'custom-agent' })).resolves.toBeUndefined();
+    expect(mockAppendToMemory).toHaveBeenCalledWith('research', 'custom-agent', 'learnings', 'content');
+  });
+
   it('exits with 1 when appendToMemory throws', async () => {
+    mockLoadSquad.mockReturnValue(null);
     mockAppendToMemory.mockRejectedValue(new Error('Write failed'));
     await expect(memoryUpdateCommand('cli', 'content', {})).rejects.toThrow('process.exit');
     expect(exitSpy).toHaveBeenCalledWith(1);

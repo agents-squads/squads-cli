@@ -14,8 +14,9 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { parsePersistedLine } from './event-render.js';
 import { activeDeferrals } from './inbox-decisions.js';
+import { integrationBranch } from './git.js';
 
-export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts';
+export type InboxKind = 'pr' | 'run_branch' | 'run_artifacts' | 'coherence' | 'strategy_proposal';
 
 export interface InboxItem {
   /** Stable handle for Child A's decisions: pr-12 | branch-<name> | run-<execId>. */
@@ -91,10 +92,12 @@ function hasUnlandedCommits(branch: string, base: string, repoRoot: string): boo
   }
 }
 
-/** Open PRs to develop in the repo at `repoRoot` (needs gh; empty on failure). */
+/** Open PRs to the integration branch of the repo at `repoRoot` (needs gh; empty on failure). */
 export function scanOpenPrs(repoRoot: string): InboxItem[] {
+  const base = integrationBranch(repoRoot);
   try {
-    const raw = sh(`gh pr list --base develop --state open --json number,title,createdAt,url,author --limit 30`, repoRoot);
+    const baseFlag = base ? `--base '${base.replace(/'/g, '')}' ` : '';
+    const raw = sh(`gh pr list ${baseFlag}--state open --json number,title,createdAt,url,author --limit 30`, repoRoot);
     const prs = JSON.parse(raw) as Array<{ number: number; title: string; createdAt: string; url: string; author?: { login?: string; is_bot?: boolean } }>;
     return prs.map((pr) => ({
       id: `pr-${pr.number}`,
@@ -102,7 +105,7 @@ export function scanOpenPrs(repoRoot: string): InboxItem[] {
       ref: pr.url,
       title: pr.title,
       ageDays: ageDaysFrom(Date.parse(pr.createdAt)),
-      approveSemantics: 'merge to develop (CI-gated squash)',
+      approveSemantics: `merge to ${base ?? 'the default branch'} (CI-gated squash)`,
       detail: pr.author?.login ? `by ${pr.author.login}` : undefined,
     }));
   } catch {
@@ -235,6 +238,83 @@ export function scanRunsWithArtifacts(obsRoot: string, limit = 15, opts?: { run?
 }
 
 /**
+ * Coherence violations (hq#479). Surfaces strategy↔runtime mismatches by
+ * comparing SQUAD.md status with the `**Active:**` list in strategy.md.
+ * Derived purely from workspace files; no external scripts are executed.
+ */
+export function scanCoherenceViolations(obsRoot: string): InboxItem[] {
+  return deriveCoherenceFromStatus(obsRoot);
+}
+
+function deriveCoherenceFromStatus(obsRoot: string): InboxItem[] {
+  const items: InboxItem[] = [];
+  try {
+    const strategyFile = join(obsRoot, '.agents', 'memory', 'company', 'strategy.md');
+    const squadsDir = join(obsRoot, '.agents', 'squads');
+    if (!existsSync(strategyFile) || !existsSync(squadsDir)) return items;
+    const strategyText = readFileSync(strategyFile, 'utf8');
+    const activeMatch = strategyText.match(/\*\*Active:\*\*\s*(.+)/);
+    if (!activeMatch) return items;
+    const strategyActive = activeMatch[1].split(',').map((s: string) => s.trim());
+    const squads = readdirSync(squadsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    for (const squad of squads) {
+      const squadFile = join(squadsDir, squad, 'SQUAD.md');
+      if (!existsSync(squadFile)) continue;
+      const squadText = readFileSync(squadFile, 'utf8');
+      const statusMatch = squadText.match(/^status:\s*(.+)/m);
+      const runtimePaused = statusMatch && statusMatch[1].trim() === 'paused';
+      const strategyActive_ = strategyActive.includes(squad);
+      if (runtimePaused && strategyActive_) {
+        items.push({
+          id: `coherence-squad-${squad}`,
+          kind: 'coherence', ref: squad,
+          title: `${squad}: paused at runtime but strategy.md says Active`,
+          ageDays: 0, approveSemantics: 'update strategy.md or squads resume',
+          detail: `SQUAD.md status=paused, strategy.md lists as Active`,
+        });
+      }
+    }
+  } catch { /* derivation failed */ }
+  return items;
+}
+
+/**
+ * Strategy proposals — machine-suggested direction from founder-alignment.md.
+ * Draft items the founder can promote to goals or dismiss.
+ */
+export function scanStrategyProposals(obsRoot: string): InboxItem[] {
+  const items: InboxItem[] = [];
+  const memoryDir = join(obsRoot, '.agents', 'memory');
+  if (!existsSync(memoryDir)) return items;
+  try {
+    for (const entry of readdirSync(memoryDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const alignmentFile = join(memoryDir, entry.name, 'founder-alignment.md');
+      if (!existsSync(alignmentFile)) continue;
+      const text = readFileSync(alignmentFile, 'utf8').replace(/\r\n/g, '\n');
+      const cycleMatch = text.match(/\*\*Suggested cycle output\*\*\n((?:\s*- .+\n?)+)/);
+      if (!cycleMatch) continue;
+      const suggestions = cycleMatch[1].split('\n').filter((l) => l.trim().startsWith('-'));
+      for (const sug of suggestions.slice(0, 2)) {
+        const title = sug.replace(/^-\s*/, '').trim();
+        if (title.length < 10) continue;
+        const idSuffix = title.slice(0, 20).replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        items.push({
+          id: `proposal-${entry.name}-${idSuffix}`,
+          kind: 'strategy_proposal', ref: `founder-alignment:${entry.name}`,
+          title: `[${entry.name}] ${title.slice(0, 90)}`,
+          ageDays: 0, approveSemantics: 'promote to goals.md for this squad',
+          detail: 'from auto-generated founder-alignment — ready for review',
+        });
+      }
+    }
+  } catch { /* no proposals */ }
+  return items;
+}
+
+/**
  * The queue, newest-risk-first: open PRs (oldest = most overdue, first),
  * then stranded branches (the silent-loss class), then artifact runs.
  * Scanners are independent; one failing never empties the others.
@@ -248,7 +328,9 @@ export function buildInbox(repoRoot: string, obsRoot: string, opts?: { includeDe
   const prs = scanOpenPrs(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const branches = scanStrandedBranches(repoRoot).sort((a, b) => b.ageDays - a.ageDays);
   const runs = scanRunsWithArtifacts(obsRoot).sort((a, b) => b.ageDays - a.ageDays);
-  const all = [...prs, ...branches, ...runs];
+  const coherence = scanCoherenceViolations(obsRoot);
+  const proposals = scanStrategyProposals(obsRoot);
+  const all = [...prs, ...branches, ...runs, ...coherence, ...proposals];
   if (opts?.includeDeferred) return all;
   const deferred = activeDeferrals(obsRoot);
   return deferred.size === 0 ? all : all.filter((i) => !deferred.has(i.id));

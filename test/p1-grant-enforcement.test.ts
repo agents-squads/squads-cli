@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { compileAllowedTools } from '../src/lib/agent-contract.js';
+import { compileAllowedTools, extraToolsToAllowed, SUGGESTED_TOOLS } from '../src/lib/agent-contract.js';
 import { buildDetachedShellScript, buildAgentEnv, DEFAULT_AGENT_TOOLS } from '../src/lib/execution-engine.js';
 import { ExecEventWriter, execEventsFile, type PersistedExecEvent } from '../src/lib/exec-events.js';
 import { readFileSync } from 'fs';
@@ -94,9 +94,31 @@ describe('root_run_id chain (#920)', () => {
     expect(env.SQUADS_PARENT_RUN_ID).toBe('exec_child_2');
   });
 
+  it('#1181: dispatch from inside a Claude Code session roots at sess_<session id>', () => {
+    const inherited = { PATH: '/bin', CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb-cccc' };
+    const env = buildAgentEnv(inherited, ctx('exec_lane_3'));
+    expect(env.SQUADS_ROOT_RUN_ID).toBe('sess_aaaa-bbbb-cccc');
+    expect(env.SQUADS_PARENT_RUN_ID).toBe('exec_lane_3');
+  });
+
+  it('#1181: explicit SQUADS_ROOT_RUN_ID keeps precedence over the session id', () => {
+    const inherited = {
+      PATH: '/bin',
+      SQUADS_ROOT_RUN_ID: 'exec_root_1',
+      CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb-cccc',
+    };
+    const env = buildAgentEnv(inherited, ctx('exec_child_2'));
+    expect(env.SQUADS_ROOT_RUN_ID).toBe('exec_root_1');
+  });
+
   it('nested runs stamp root on persisted events; top-level runs do not', () => {
     const old = process.env.SQUADS_ROOT_RUN_ID;
+    const oldSess = process.env.CLAUDE_CODE_SESSION_ID;
     try {
+      // #1181: the writer now also derives from the ambient Claude session —
+      // clear it so this test exercises the pure #920 inheritance path (it IS
+      // set when this suite runs inside a Claude Code session).
+      delete process.env.CLAUDE_CODE_SESSION_ID;
       process.env.SQUADS_ROOT_RUN_ID = 'exec_root_1';
       mkdirSync(join(dir, '.agents'), { recursive: true });
       const file = execEventsFile(dir, 'exec_child_2');
@@ -117,6 +139,29 @@ describe('root_run_id chain (#920)', () => {
     } finally {
       if (old === undefined) delete process.env.SQUADS_ROOT_RUN_ID;
       else process.env.SQUADS_ROOT_RUN_ID = old;
+      if (oldSess === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = oldSess;
+    }
+  });
+
+  it('#1181: the WRITER derives root from the ambient Claude session — the dispatching process stamps, not just children', () => {
+    const old = process.env.SQUADS_ROOT_RUN_ID;
+    const oldSess = process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      delete process.env.SQUADS_ROOT_RUN_ID;
+      process.env.CLAUDE_CODE_SESSION_ID = 'dddd-eeee-ffff';
+      mkdirSync(join(dir, '.agents'), { recursive: true });
+      const file = execEventsFile(dir, 'exec_lane_9');
+      const w = new ExecEventWriter(file, 'exec_lane_9');
+      w.emit({ type: 'run_start', squad: 's', mode: 'background', model: '', role: '', startedAt: 'x' });
+      w.close();
+      const line = JSON.parse(readFileSync(file, 'utf8').trim()) as PersistedExecEvent;
+      expect(line.root).toBe('sess_dddd-eeee-ffff');
+    } finally {
+      if (old === undefined) delete process.env.SQUADS_ROOT_RUN_ID;
+      else process.env.SQUADS_ROOT_RUN_ID = old;
+      if (oldSess === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = oldSess;
     }
   });
 });
@@ -148,5 +193,54 @@ describe('sandbox default-on (#780)', () => {
       settingsFile: '/proj/.git/squads-sandbox-settings.json',
     });
     expect(script).toContain(`--settings '/proj/.git/squads-sandbox-settings.json'`);
+  });
+});
+
+describe('minimal default tool grants + opt-in extra_tools', () => {
+  const bashCmds = (tools: string[]) =>
+    tools.filter((t) => t.startsWith('Bash(')).map((t) => t.slice(5, -3));
+
+  it('default surface grants only git/gh/npm/node of the CLIs — no company toolchain', () => {
+    const cmds = bashCmds(DEFAULT_AGENT_TOOLS);
+    for (const c of ['git', 'gh', 'npm', 'node']) expect(cmds).toContain(c);
+    for (const c of SUGGESTED_TOOLS) expect(cmds).not.toContain(c);
+  });
+
+  it('suggested tools list is exactly the documented set', () => {
+    expect([...SUGGESTED_TOOLS]).toEqual(
+      ['gws', 'gcloud', 'wrangler', 'bq', 'stripe', 'docker', 'duckdb', 'curl'],
+    );
+  });
+
+  it('frontmatter extra_tools adds a suggested tool on top of the default', () => {
+    const p = writeAgentFile('role: worker\nextra_tools:\n  - gws\n  - wrangler');
+    const compiled = compileAllowedTools(p, DEFAULT_AGENT_TOOLS);
+    expect(compiled.source).toBe('default');
+    expect(compiled.tools).toEqual([...DEFAULT_AGENT_TOOLS, 'Bash(gws:*)', 'Bash(wrangler:*)']);
+  });
+
+  it('extra_tools also extends explicit tool_grants', () => {
+    const p = writeAgentFile([
+      'tool_grants:', '  - tool: Read', '    sensitivity: read',
+      'extra_tools: [bq]',
+    ].join('\n'));
+    expect(compileAllowedTools(p, DEFAULT_AGENT_TOOLS)).toEqual({
+      tools: ['Read', 'Bash(bq:*)'], source: 'contract',
+    });
+  });
+
+  it('malformed / hostile extra_tools entries are dropped, never interpolated', () => {
+    expect(extraToolsToAllowed([
+      'gws; reboot', 'Bash(*)', 'gcloud:*', '$(whoami)', 'a b', '../bin/x', '*', '',
+      42, null, { tool: 'x' }, 'docker\n', '-rf',
+    ])).toEqual(['Bash(docker:*)']);
+    expect(extraToolsToAllowed('gws')).toEqual([]);
+    expect(extraToolsToAllowed(undefined)).toEqual([]);
+    expect(extraToolsToAllowed(['gws', 'gws'])).toEqual(['Bash(gws:*)']);
+  });
+
+  it('a non-list extra_tools in frontmatter leaves the default surface untouched', () => {
+    const p = writeAgentFile('role: worker\nextra_tools: "gws"');
+    expect(compileAllowedTools(p, DEFAULT_AGENT_TOOLS).tools).toBe(DEFAULT_AGENT_TOOLS);
   });
 });

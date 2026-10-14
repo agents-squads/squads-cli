@@ -1,5 +1,5 @@
 /**
- * squads stats — AI workforce intelligence.
+ * squads stats — squad intelligence.
  *
  * Two modes:
  *   squads stats           → executive summary + scorecard table + insights
@@ -72,7 +72,7 @@ export async function statsCommand(options: {
   const periodLabel = period === '7d' ? 'Last 7 days' : 'Last 30 days';
 
   writeLine();
-  writeLine(`  ${bold}AI Workforce Intelligence${RESET} ${colors.dim}(${periodLabel})${RESET}`);
+  writeLine(`  ${bold}Squad Intelligence${RESET} ${colors.dim}(${periodLabel})${RESET}`);
   writeLine();
 
   // ── Executive summary ──────────────────────────────────────────────

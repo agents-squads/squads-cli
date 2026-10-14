@@ -71,7 +71,7 @@ export interface AgentContract {
 
 // ── Tool-grant vocabulary (what the Claude Code allowlist can enforce) ───────
 const TOOL_NAME =
-  /^(Read|Write|Edit|MultiEdit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
+  /^(Read|Write|Edit|Grep|Glob|Bash|Agent|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit)$/;
 const BASH_SCOPED = /^Bash\([A-Za-z0-9_./ -]+(:\*)?\)$/; // Bash(git:*) | Bash(git status:*) — literal space only (not \s, which allows \n/\r/\t)
 const MCP_TOOL = /^mcp__[a-z0-9_]+__([a-z0-9_]+|\*)$/;
 
@@ -123,6 +123,12 @@ export interface ContractFrontmatter {
   workspace_id?: string;
   // explicit governance overrides (config-as-code)
   tool_grants?: ToolGrant[];
+  /**
+   * Additive opt-in CLIs on top of the minimal default surface, e.g.
+   * `extra_tools: [gws, wrangler]` → `Bash(gws:*)`, `Bash(wrangler:*)`.
+   * Bare command names only; see `extraToolsToAllowed`.
+   */
+  extra_tools?: string[];
   autonomy?: Autonomy;
   hitl_gate?: HitlGate;
   write_scope?: string[];
@@ -189,11 +195,8 @@ export interface ContractViolation {
   message: string;
 }
 
-const KNOWN_SECRETS = new Set([
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SLACK_BOT_TOKEN', 'GH_TOKEN', 'MERCADOPUBLICO_API_KEY',
-  'STRIPE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'DATABASE_URL',
-  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION',
-]);
+/** A credential name is any environment-variable-shaped identifier. */
+const ENV_VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /**
  * Validate a contract. Returns the (possibly empty) list of violations; the CI
@@ -261,7 +264,7 @@ export function validateContract(c: AgentContract): ContractViolation[] {
         fail('credential_scope', 'secret names must be strings');
         continue;
       }
-      if (!KNOWN_SECRETS.has(s)) fail('credential_scope', `unknown secret "${s}"`);
+      if (!ENV_VAR_NAME.test(s)) fail('credential_scope', `invalid secret name "${s}" (expected an env-var name like FOO_API_KEY)`);
     }
   }
 
@@ -293,6 +296,39 @@ export function contractFromAgentFile(
   return deriveContract({ agent: agentName, squad, role, frontmatter: fm, agentFile, squadFile });
 }
 
+// ── Opt-in CLI grants (frontmatter `extra_tools`) ────────────────────────────
+
+/**
+ * CLIs we suggest but never grant by default. Offered in docs; a user enables
+ * one by naming it in an agent's `extra_tools`. Any other bare command name is
+ * accepted too — this list is documentation, not a restriction.
+ */
+export const SUGGESTED_TOOLS: readonly string[] = [
+  'gws', 'gcloud', 'wrangler', 'bq', 'stripe', 'docker', 'duckdb', 'curl',
+];
+
+/** A bare executable name: no spaces, parens, colons, globs or shell metacharacters. */
+const BARE_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Turn `extra_tools` entries into `Bash(<cmd>:*)` allow patterns. Anything that
+ * is not a plain command name (non-strings, `Bash(...)` tokens, paths, `;`, `$()`,
+ * spaces, globs) is dropped — the value is never interpolated into a pattern
+ * unless it matches BARE_COMMAND, so it cannot widen or inject into the allowlist.
+ */
+export function extraToolsToAllowed(extra: unknown): string[] {
+  if (!Array.isArray(extra)) return [];
+  const out: string[] = [];
+  for (const e of extra) {
+    if (typeof e !== 'string') continue;
+    const name = e.trim();
+    if (!BARE_COMMAND.test(name)) continue;
+    const pattern = `Bash(${name}:*)`;
+    if (!out.includes(pattern)) out.push(pattern);
+  }
+  return out;
+}
+
 // ── P1: grant compilation (contract → Claude Code allowlist) ─────────────────
 
 /**
@@ -306,6 +342,10 @@ export function contractFromAgentFile(
  *   swapping them silently for the tuned runtime lists (#790/#793 lead
  *   governance) would change every run's surface in one commit.
  *
+ * Frontmatter `extra_tools` (opt-in CLIs, e.g. `[gws, bq]`) are appended to
+ * whichever list applies, so users extend the minimal default without having to
+ * restate it.
+ *
  * Unenforceable declared tokens are dropped here at spawn; the P0 CI validator
  * is where they FAIL loudly.
  */
@@ -313,16 +353,21 @@ export function compileAllowedTools(
   agentFile: string,
   fallback: string[],
 ): { tools: string[]; source: 'contract' | 'default' } {
+  let base = fallback;
+  let source: 'contract' | 'default' = 'default';
+  let extra: string[] = [];
   if (agentFile && existsSync(agentFile)) {
     try {
       const fm = (matter(readFileSync(agentFile, 'utf-8')).data ?? {}) as ContractFrontmatter;
+      extra = extraToolsToAllowed(fm.extra_tools);
       if (Array.isArray(fm.tool_grants) && fm.tool_grants.length > 0) {
         const tools = fm.tool_grants
           .map((g) => g?.tool)
           .filter((t): t is string => typeof t === 'string' && isEnforceableTool(t));
-        if (tools.length > 0) return { tools, source: 'contract' };
+        if (tools.length > 0) { base = tools; source = 'contract'; }
       }
     } catch { /* unreadable frontmatter → default surface */ }
   }
-  return { tools: fallback, source: 'default' };
+  if (extra.length === 0) return { tools: base, source };
+  return { tools: [...base, ...extra.filter((t) => !base.includes(t))], source };
 }

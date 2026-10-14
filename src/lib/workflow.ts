@@ -31,6 +31,7 @@ import {
   serializeTranscript,
   addTurn,
   detectConvergence,
+  type ConvergenceResult,
   estimateTurnCost,
   parseHandoff,
   extractValidationContract,
@@ -52,18 +53,20 @@ import {
 import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
-import { getBotGhEnv } from './github.js';
+import { getBotGhEnv, buildBotGitCredentialEnv, isGhAuthFailure } from './github.js';
 import { parseIssueNumberFromTask, checkPrForIssue } from './squad-loop.js';
 import { generateExecutionId, getClaudeModelAlias } from './run-utils.js';
-import { createRunWorktree } from './worktree.js';
+import { createRunWorktree, runCommitCount } from './worktree.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import {
   logObservability,
+  logRunStarted,
   snapshotGoals,
   diffGoals,
   deriveCostFromTokens,
   type ObservabilityRecord,
 } from './observability.js';
+import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 import {
   StreamJsonAccumulator,
   emptyUsage,
@@ -74,6 +77,7 @@ import {
   type RunOutcomes,
 } from './stream-json.js';
 import {
+  ExecEventFlusher,
   ExecEventWriter,
   createClaudeStreamJsonAdapter,
   execEventsFile,
@@ -263,17 +267,20 @@ procedures: [followed | deviated: reason]
 
   // Effort level per role (#702): scanners low, workers high, verifiers medium
   const effortByRole: Record<string, string> = { lead: 'high', scanner: 'low', worker: 'high', verifier: 'medium' };
-  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, { ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low' });
+  const agentEnv = buildAgentEnv(cleanEnv as Record<string, string>, execContext, {
+    ghToken: botGhToken, effort: effortByRole[role] as 'high' | 'medium' | 'low',
+    gitCredentialEnv: buildBotGitCredentialEnv(),
+  });
 
   // Role-based tool sets (#701): scanners read-only, workers full, verifiers read+build.
   // readBase = inspection only (no git/gh, no writes).
-  const readBase = ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'Bash(curl:*)', 'WebFetch', 'WebSearch'];
+  const readBase = ['Read', 'Glob', 'Grep', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(date:*)', 'WebFetch', 'WebSearch'];
   // Lead git/gh: inspect repos/PRs, file delegation issues, and MERGE ready worker
   // PRs (orchestration — CI-gated via --auto, per the review prompt). NOT commit/push/
   // pr-create — the lead lands workers' reviewed code but never authors/ships its own.
   const leadGitGh = ['Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)', 'Bash(git branch:*)', 'Bash(git fetch:*)', 'Bash(gh pr view:*)', 'Bash(gh pr list:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)', 'Bash(gh issue view:*)', 'Bash(gh issue list:*)', 'Bash(gh issue create:*)'];
   const readTools = [...readBase, 'Bash(git:*)', 'Bash(gh:*)'];
-  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(bash:*)', 'Bash(sh:*)', 'Bash(docker:*)', 'Bash(duckdb:*)', 'Bash(bq:*)', 'Bash(gcloud:*)', 'Bash(gws:*)', 'Bash(stripe:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
+  const writeTools = ['Write', 'Edit', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(python3:*)', 'Bash(bash:*)', 'Bash(sh:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(squads:*)', 'Agent'];
   const buildTools = ['Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)'];
 
   const toolsByRole: Record<string, string[]> = {
@@ -545,19 +552,89 @@ export async function runConversation(
   // one extra IO check; the bot's gh auth is fetched once, lazily, only when
   // the gate can actually fire.
   let prGateGhEnv: Record<string, string> | undefined;
-  const checkConvergence = async () => {
+  /**
+   * A `proposed` claim that no artifact backs keeps the conversation going and
+   * records WHY it wasn't accepted, so the transcript shows the claim was
+   * unbacked rather than silently ignored. Anything not `proposed` passes
+   * through untouched.
+   */
+  const unconfirmed = (r: ConvergenceResult, why: string): ConvergenceResult =>
+    r.state === 'proposed'
+      ? { converged: false, state: 'continue', reason: `${r.reason} — NOT confirmed (${why}). Continuing.` }
+      : r;
+
+  const checkConvergence = async (): Promise<ConvergenceResult> => {
     const base = detectConvergence(transcript, maxTurns, costCeiling);
-    if (base.converged) return base;
-    if (!scoped || issueNumberFromTask === null || !squad.repo) return base;
+
+    // Hard limits (turns/cost) and BLOCKED are terminal on their own — no
+    // artifact can change them.
+    if (base.state === 'converged' || base.state === 'blocked') return base;
+
+    // Prose may propose; only artifacts may converge (spec
+    // convergence-by-artifact-2026-08-13, authority derive-and-gate §Layer 0).
+    // A `proposed` claim with no artifact behind it is a stall, not a finish —
+    // that is cli#873, where the conversation converged on a claim and the
+    // lead's worker-tasks had never been executed.
+    const commits = runCommitCount(worktree);
+    if (base.state === 'proposed' && commits > 0) {
+      return {
+        converged: true,
+        state: 'converged',
+        reason: `${base.reason} — confirmed by ${commits} commit(s) on ${worktree.branch ?? 'the run branch'}`,
+      };
+    }
+
+    if (!scoped || issueNumberFromTask === null || !squad.repo) {
+      // Unscoped runs have no issue to look a PR up by, so commits are the only
+      // evidence available. An unconfirmed claim continues rather than stops.
+      return base.state === 'proposed'
+        ? {
+          converged: false,
+          state: 'continue',
+          reason: `${base.reason} — NOT confirmed: no commits on the run branch. Continuing.`,
+        }
+        : base;
+    }
     if (!prGateGhEnv) prGateGhEnv = await getBotGhEnv().catch(() => ({}));
     const pr = checkPrForIssue(squad.repo, issueNumberFromTask, prGateGhEnv);
     if (pr) {
+      // CI gate (#1012): verify PR's CI is green before declaring success.
+      // Red CI must NOT report success — the work isn't done until checks pass.
+      try {
+        const { execSync } = await import('child_process');
+        const runChecks = (env: Record<string, string>) => execSync(
+          `gh pr checks ${pr.number} --repo ${squad.repo} --json bucket --jq '.[].bucket'`,
+          { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } },
+        );
+        let checksRaw: string;
+        try {
+          checksRaw = runChecks(prGateGhEnv);
+        } catch (e) {
+          // Re-mint and retry once on an expired/invalid bot token (#1133) —
+          // anything else falls through to the outer catch (don't converge).
+          const msg = e instanceof Error ? `${e.message}\n${(e as { stderr?: string }).stderr ?? ''}` : String(e);
+          if (!isGhAuthFailure(msg)) throw e;
+          prGateGhEnv = await getBotGhEnv({ forceRefresh: true }).catch(() => ({}));
+          checksRaw = runChecks(prGateGhEnv);
+        }
+        const buckets = checksRaw.trim().split('\n').map((b: string) => b.replace(/"/g, ''));
+        // All checks must be in 'pass' state — any fail/pending/skipping/cancel blocks convergence
+        const allPassed = buckets.length > 0 && buckets.every((b: string) => b === 'pass');
+        if (!allPassed) {
+          return unconfirmed(base, `PR #${pr.number} CI not green`);
+        }
+      } catch {
+        // If we can't fetch CI status (gh error, timeout), fall back to not converging
+        // — better to continue the cycle than to falsely declare success on red CI.
+        return unconfirmed(base, `PR #${pr.number} CI status unavailable`);
+      }
       return {
         converged: true,
+        state: 'converged',
         reason: `PR #${pr.number} already addresses issue #${issueNumberFromTask} — stopping (${pr.title})`,
       };
     }
-    return base;
+    return unconfirmed(base, 'no commits on the run branch and no PR for the issue');
   };
 
   // Resolve squad's working directory
@@ -599,6 +676,26 @@ export async function runConversation(
   const executionId = generateExecutionId();
   const goalsBefore = snapshotGoals(squad.name);
 
+  // Run-ledger start event for the cycle. pid is this CLI process — a
+  // foreground squad run lives and dies with it, so liveness is exact.
+  // The obsRecord at cycle end writes the terminal row for the same id.
+  logRunStarted({
+    id: executionId,
+    squad: squad.name,
+    agent: lead.name,
+    provider: 'anthropic',
+    model: options.model || modelForRole('lead'),
+    trigger: 'scheduled',
+    pid: process.pid,
+    task: options.task,
+  });
+  void reportExecutionStart(squad.name, lead.name, executionId, {
+    trigger: 'scheduled',
+    model: options.model || modelForRole('lead'),
+    brief: options.task?.slice(0, 500),
+    pid: process.pid,
+  });
+
   // Accumulate REAL cost/usage across every agent spawn in this conversation
   // (plan + workers + review + verify) — captured from stream-json result events.
   let cycleUsage: StreamUsage = emptyUsage();
@@ -613,6 +710,7 @@ export async function runConversation(
   const events = new ExecEventWriter(
     execEventsFile(findProjectRoot() || process.cwd(), executionId),
     executionId,
+    { source: 'squads-cli', flusher: new ExecEventFlusher(executionId) },
   );
   const finishEvents = (ok: boolean) => {
     events.emit({
@@ -1117,6 +1215,14 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
     goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
   };
   logObservability(obsRecord);
+  // Live terminal report — Postgres converges NOW, not at the next 5-minute
+  // batch ingest (which still runs and enriches the same row by id).
+  void reportExecutionComplete(executionId, 'completed', {
+    durationMs: cycleDurationMs,
+    squad: squad.name,
+    agent: lead.name,
+    model: obsRecord.model,
+  });
 
   finishEvents(true);
   return {

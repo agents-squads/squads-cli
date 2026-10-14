@@ -140,6 +140,60 @@ export function getExecutionLogPath(squadName: string, agentName: string): strin
   return join(memoryDir, squadName, agentName, 'executions.md');
 }
 
+/**
+ * Detect and resolve zombie "running" entries in an agent's execution log.
+ *
+ * When a process is killed, crashes, or times out without going through the
+ * normal updateExecutionStatus path, the execution entry remains stuck as
+ * "running" forever. This function rewrites those zombie entries to "failed"
+ * with a tombstone note, cleaning up stale context before new runs.
+ *
+ * Called automatically by logExecution() before writing a new entry.
+ * Returns the number of zombie entries that were resolved.
+ */
+export function tombstoneZombieRuns(squadName: string, agentName: string): number {
+  const logPath = getExecutionLogPath(squadName, agentName);
+  if (!logPath || !existsSync(logPath)) return 0;
+
+  const content = readFileSync(logPath, 'utf-8');
+
+  // Quick check — no running entries means nothing to do
+  if (!content.includes('Status: running')) return 0;
+
+  const now = new Date().toISOString();
+  const separator = '\n---\n';
+  const entries = content.split(separator);
+  let zombieCount = 0;
+
+  const tombstoned = entries.map(entry => {
+    if (!entry.includes('Status: running')) return entry;
+
+    zombieCount++;
+
+    // Replace status
+    let updated = entry.replace(/Status: running/, 'Status: failed');
+
+    // Add tombstone fields if not already present
+    if (!updated.includes('- Completed:')) {
+      updated += `\n- Completed: ${now}`;
+    }
+    if (!updated.includes('- Duration:')) {
+      updated += '\n- Duration: unknown';
+    }
+    if (!updated.includes('- Error:')) {
+      updated += '\n- Error: zombie entry (process was killed/crashed/timed out)';
+    }
+
+    return updated;
+  });
+
+  if (zombieCount > 0) {
+    writeFileSync(logPath, tombstoned.join(separator));
+  }
+
+  return zombieCount;
+}
+
 export function logExecution(record: ExecutionRecord): void {
   const logPath = getExecutionLogPath(record.squadName, record.agentName);
   if (!logPath) return;
@@ -148,6 +202,9 @@ export function logExecution(record: ExecutionRecord): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
+
+  // Tombstone any prior zombie "running" entries before writing a new one (#889)
+  tombstoneZombieRuns(record.squadName, record.agentName);
 
   let content = '';
   if (existsSync(logPath)) {

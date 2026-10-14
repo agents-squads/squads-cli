@@ -11,9 +11,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { writeLine } from "../lib/terminal.js";
-import { getApiUrl } from "../lib/env-config.js";
-
-const API_URL = getApiUrl();
+import { getApiUrl, withApi } from "../lib/env-config.js";
 
 type ApprovalType = "issue" | "pr" | "content" | "run" | "brief";
 
@@ -107,7 +105,7 @@ async function sendApproval(
   };
 
   try {
-    const response = await fetch(`${API_URL}/approvals`, {
+    const response = await fetch(`${getApiUrl()}/approvals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(approval),
@@ -149,7 +147,7 @@ async function listApprovals(options: {
 
   try {
     const response = await fetch(
-      `${API_URL}/approvals?${params.toString()}`
+      `${getApiUrl()}/approvals?${params.toString()}`
     );
     if (!response.ok) throw new Error(await response.text());
 
@@ -203,7 +201,7 @@ async function checkApproval(
   async function check(): Promise<Approval | null> {
     try {
       const response = await fetch(
-        `${API_URL}/approvals/${approvalId}`
+        `${getApiUrl()}/approvals/${approvalId}`
       );
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(await response.text());
@@ -311,7 +309,7 @@ Examples:
   $ echo '{"title":"Run overnight"}' | squads approval send run --json -
 `
     )
-    .action(sendApproval);
+    .action(withApi('squads approval', sendApproval));
 
   approval
     .command("list")
@@ -319,14 +317,14 @@ Examples:
     .option("--pending", "Only show pending approvals", true)
     .option("-s, --squad <squad>", "Filter by squad")
     .option("-j, --json", "Output as JSON")
-    .action(listApprovals);
+    .action(withApi('squads approval', listApprovals));
 
   approval
     .command("check <id>")
     .description("Check approval status")
     .option("-w, --wait", "Wait for decision (polls every 5s)")
     .option("-t, --timeout <minutes>", "Wait timeout in minutes", "60")
-    .action(checkApproval);
+    .action(withApi('squads approval', checkApproval));
 
   approval
     .command("cancel <id>")

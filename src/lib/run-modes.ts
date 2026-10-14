@@ -289,7 +289,7 @@ export async function runLeadMode(
       writeLine(`  ${colors.dim}  2. Spawn Task agents for parallel execution${RESET}`);
       writeLine(`  ${colors.dim}  3. Coordinate and report results${RESET}`);
       writeLine();
-      writeLine(`  ${colors.dim}Monitor: squads workers${RESET}`);
+      writeLine(`  ${colors.dim}Monitor: squads runs${RESET}`);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

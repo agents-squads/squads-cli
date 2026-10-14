@@ -1,6 +1,6 @@
 ---
 name: squads-cli
-description: Squads CLI — operate your AI workforce through the loop; intent in, reviewed work out. TRIGGER when running squads, dispatching agents, triaging the inbox, reading/writing memory, recording feedback, or checking status/usage.
+description: Squads CLI — operate your squads through the loop; intent in, reviewed work out. TRIGGER when running squads, dispatching agents, triaging the inbox, reading/writing memory, recording feedback, or checking status/usage.
 context: fork
 ---
 

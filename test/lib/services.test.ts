@@ -118,6 +118,21 @@ describe('showServiceSetupGuide', () => {
     expect(calls).toContain('SQUADS_BRIDGE_URL');
   });
 
+  it('never prints environment variable values (they include secrets)', () => {
+    const secret = 'postgres://user:hunter2-very-secret@db.internal:5432/app';
+    const prev = process.env.SQUADS_BRIDGE_URL;
+    process.env.SQUADS_BRIDGE_URL = secret;
+    try {
+      showServiceSetupGuide('bridge', 'not running');
+      const calls = mockWriteLine.mock.calls.map(c => c[0] ?? '').join('\n');
+      expect(calls).toContain('SQUADS_BRIDGE_URL');
+      expect(calls).toContain('set');
+      expect(calls).not.toContain('hunter2-very-secret');
+    } finally {
+      if (prev === undefined) delete process.env.SQUADS_BRIDGE_URL; else process.env.SQUADS_BRIDGE_URL = prev;
+    }
+  });
+
   it('works for all known services without throwing', () => {
     const services = ['bridge', 'postgres', 'mem0', 'scheduler', 'langfuse', 'redis'] as const;
     for (const svc of services) {

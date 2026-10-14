@@ -26,11 +26,7 @@ vi.mock('../src/lib/memory.js', () => ({
 }));
 
 vi.mock('../src/lib/outcomes.js', () => ({
-  getOutcomeScoreModifier: vi.fn(() => 0),
-}));
-
-vi.mock('../src/lib/api-client.js', () => ({
-  ingestMemorySignal: vi.fn(),
+  getOutcomeScoreModifier: vi.fn(() => ({ modifier: 0, reason: '' })),
 }));
 
 vi.mock('../src/lib/terminal.js', () => ({

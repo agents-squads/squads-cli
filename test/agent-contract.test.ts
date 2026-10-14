@@ -20,11 +20,10 @@ describe('deriveContract — maps existing frontmatter + role defaults', () => {
     expect(c.role).toBe('scanner');
     expect(c.tool_grants.every((t) => t.sensitivity === 'read')).toBe(true);
     expect(c.write_scope).toEqual([]); // no write grants → no write scope
-    // Founder-context layers (9, 10) are visible to ALL roles incl. scanner — live
-    // strategic state is always relevant (see ROLE_SECTIONS in run-context.ts).
+    // L0–L6 taxonomy (#1049): scanner gets [0=SYSTEM, 1=Company, 2=Goals, 3=Agent, 4=State].
     // Layer 2 (priorities) was eliminated per the single-strategy-file change (cli#876);
-    // goals (3) is the ordering source now.
-    expect(c.scoped_context.layers).toEqual([1, 3, 4, 5, 9, 10]);
+    // goals remain the ordering source. Digest layers (9, 10) retired (#1188).
+    expect(c.scoped_context.layers).toEqual([0, 1, 2, 3, 4]);
     expect(c.default).toBe('deny');
     expect(c.workspace_id).toBe('local');
   });
@@ -85,9 +84,15 @@ describe('validateContract — catches over-scoped / unenforceable contracts', (
     expect(viol.some((x) => x.field === 'resource_ceiling.max_runtime_s')).toBe(true);
     expect(viol.some((x) => x.field === 'resource_ceiling')).toBe(true);
   });
-  it('rejects an unknown credential', () => {
-    const c = derive('worker', { credential_scope: ['MY_SECRET_KEY'] });
-    expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(true);
+  it('rejects a credential name that is not env-var shaped', () => {
+    for (const bad of ['my secret', 'lower_case', '1_LEADING_DIGIT', 'HAS-DASH']) {
+      const c = derive('worker', { credential_scope: [bad] });
+      expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(true);
+    }
+  });
+  it('accepts any env-var-shaped credential name (no closed allowlist)', () => {
+    const c = derive('worker', { credential_scope: ['FOO_API_KEY', 'ACME_TOKEN', 'ANTHROPIC_API_KEY'] });
+    expect(validateContract(c).some((x) => x.field === 'credential_scope')).toBe(false);
   });
   it('rejects autonomy=autonomous together with a gate (contradiction)', () => {
     const c = derive('lead', { autonomy: 'autonomous' });

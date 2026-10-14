@@ -34,7 +34,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { colors, RESET, writeLine } from './terminal.js';
-import { gitIdentityArgs } from './git.js';
+import { gitIdentityArgs, integrationBranch } from './git.js';
 
 /**
  * Result of attempting to create a per-run worktree.
@@ -47,6 +47,45 @@ import { gitIdentityArgs } from './git.js';
 export interface RunWorktree {
   cwd: string;
   cleanup: () => void;
+  /** Run branch name. Absent when isolation was skipped or fell back. */
+  branch?: string;
+  /**
+   * SHA the run branch was cut from. Convergence evidence is measured against
+   * it: a commit in `baseSha..HEAD` is work this run actually produced
+   * (spec convergence-by-artifact-2026-08-13).
+   */
+  baseSha?: string;
+}
+
+/**
+ * Commits this run produced on its own branch — the cheapest artifact evidence
+ * that a "done" claim is backed by something (spec
+ * convergence-by-artifact-2026-08-13). Returns 0 when isolation was skipped or
+ * the count can't be taken; callers treat 0 as "no evidence", never as proof of
+ * absence, and fall through to the other evidence forms.
+ */
+export function runCommitCount(wt: RunWorktree): number {
+  if (!wt.branch || !wt.baseSha) return 0;
+  try {
+    const out = execSync(`git -C '${wt.cwd}' rev-list --count '${wt.baseSha}..HEAD'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10000,
+    }).trim();
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function hasOrigin(repoDir: string): boolean {
+  try {
+    execSync('git remote get-url origin', { cwd: repoDir, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Monotonic counter to disambiguate two runs of the same squad in the same ms. */
@@ -54,8 +93,8 @@ let runCounter = 0;
 
 /**
  * Resolve the base branch for the worktree: prefer the FRESH remote trunk
- * (`origin/develop` after a fetch), else local `develop`, else the repo's
- * current branch (HEAD).
+ * (`origin/<integration branch>` after a fetch — see integrationBranch()), else
+ * the local copy of it, else the current commit (HEAD).
  *
  * #1014: a run worktree cut from a stale local develop (16 commits behind)
  * made a worker implement against an old tree — 40 minutes and real money
@@ -72,35 +111,31 @@ function resolveBaseRef(repoDir: string): string {
     }
   };
 
-  // Freshen the trunk ref when a remote exists. Bounded: one ref, 15s cap.
-  let fetched = false;
-  try {
-    execSync('git fetch --quiet origin develop', { cwd: repoDir, stdio: 'pipe', timeout: 15_000 });
-    fetched = true;
-  } catch {
-    // no remote / offline / no develop on origin — local refs are all we have
-  }
-
-  if (fetched && rev('refs/remotes/origin/develop')) return 'origin/develop';
-
-  if (rev('refs/heads/develop')) {
-    if (!fetched) {
-      writeLine(`  ${colors.yellow}worktree base = LOCAL develop (fetch failed — offline?); it may be stale${RESET}`);
+  const trunk = integrationBranch(repoDir);
+  if (trunk) {
+    // Freshen the trunk ref when a remote exists. Bounded: one ref, 15s cap.
+    let fetched = false;
+    try {
+      execSync(`git fetch --quiet origin '${trunk}'`, { cwd: repoDir, stdio: 'pipe', timeout: 15_000 });
+      fetched = true;
+    } catch {
+      // no remote / offline / trunk not on origin — local refs are all we have
     }
-    return 'develop';
+
+    if (fetched && rev(`refs/remotes/origin/${trunk}`)) return `origin/${trunk}`;
+
+    if (rev(`refs/heads/${trunk}`)) {
+      if (!fetched && hasOrigin(repoDir)) {
+        writeLine(`  ${colors.yellow}worktree base = LOCAL ${trunk} (fetch failed — offline?); it may be stale${RESET}`);
+      }
+      return trunk;
+    }
   }
 
-  try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: repoDir,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    // Detached HEAD reports "HEAD" — usable as a base ref directly.
-    return branch || 'HEAD';
-  } catch {
-    return 'HEAD';
-  }
+  // No trunk: base on the current commit. `HEAD`, never the checked-out
+  // branch's name — callers put the base into shell commands, and a branch
+  // name can hold characters that are not safe there.
+  return 'HEAD';
 }
 
 /**
@@ -108,8 +143,9 @@ function resolveBaseRef(repoDir: string): string {
  * agents should use plus a cleanup callback.
  *
  * The worktree is created at `<repoDir>/../.worktrees/<dir-prefix><squad>-<shortid>`
- * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off `develop` (if
- * it exists) or the repo's current branch. `branchPrefix` defaults to
+ * on a fresh branch `<branchPrefix><squad>-<shortid>`, based off the repo's
+ * integration branch (see resolveBaseRef) — not the operator's checked-out
+ * branch, so unpushed work there is not visible to the run. `branchPrefix` defaults to
  * `squads/run-`; callers that need a distinct branch namespace (e.g. `squads
  * propose`'s `squads/proposal-` runs, #983) can override it — the inbox
  * scanner (`scanStrandedBranches`) matches on this prefix to classify items.
@@ -148,6 +184,20 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
   const worktreePath = join(worktreesRoot, `${dirPrefix}${slug}-${shortId}`);
 
   const base = resolveBaseRef(repoDir);
+
+  // Pin the base to a SHA once, at creation. `base` is a ref (often
+  // `origin/develop`, or `HEAD`) that can move mid-run; convergence evidence
+  // and the cleanup below must be measured against where this run actually
+  // started, not against a moving target (spec convergence-by-artifact-2026-08-13).
+  let baseSha: string | undefined;
+  try {
+    baseSha = execSync(`git -C '${repoDir}' rev-parse '${base}'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || undefined;
+  } catch {
+    // No SHA — callers fall back to the other evidence forms (PR lookup).
+  }
 
   try {
     mkdirSync(worktreesRoot, { recursive: true });
@@ -202,7 +252,7 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
           // git user; --no-verify skips hooks during cleanup.
           execSync(`git -C '${worktreePath}' add -A`, { stdio: 'pipe' });
           execSync(
-            `git -C '${worktreePath}' -c user.name='squads-run[bot]' -c user.email='squads-run@agents-squads.local' commit --no-verify -m 'squads run: auto-save uncommitted deliverables on cleanup (#875)'`,
+            `git -C '${worktreePath}' ${gitIdentityArgs(worktreePath)} commit --no-verify -m 'squads run: auto-save uncommitted deliverables on cleanup (#875)'`,
             { stdio: 'pipe' }
           );
           writeLine(
@@ -244,10 +294,13 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
       // it; a branch with real commits ahead of `base` (including the
       // auto-save commit above) is left for the inbox to surface.
       try {
-        const ahead = execSync(`git -C '${repoDir}' rev-list --count '${base}..${branchName}'`, {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
+        // Without the pinned start there is nothing safe to compare against.
+        const ahead = baseSha
+          ? execSync(`git -C '${repoDir}' rev-list --count '${baseSha}..${branchName}'`, {
+              encoding: 'utf-8',
+              stdio: ['pipe', 'pipe', 'pipe'],
+            }).trim()
+          : null;
         if (ahead === '0') {
           execSync(`git -C '${repoDir}' branch -D '${branchName}'`, { stdio: 'pipe' });
         }
@@ -259,5 +312,5 @@ export function createRunWorktree(repoDir: string, squadName: string, branchPref
     }
   };
 
-  return { cwd: worktreePath, cleanup };
+  return { cwd: worktreePath, cleanup, branch: branchName, baseSha };
 }

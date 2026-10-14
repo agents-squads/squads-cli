@@ -3,6 +3,8 @@ import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { promisify } from 'util';
 import { colors, RESET, writeLine } from './terminal.js';
+import { isPlainRefName } from './ref-name.js';
+import { squadNamedIn, squadRepoMap, squadsForRepo } from './squad-parser.js';
 
 const execAsync = promisify(exec);
 
@@ -44,6 +46,42 @@ export function gitIdentityArgs(repoRoot: string): string {
 
   printGitIdentityFallbackHintOnce();
   return `-c user.name='${FALLBACK_GIT_USER_NAME}' -c user.email='${FALLBACK_GIT_USER_EMAIL}'`;
+}
+
+/**
+ * The branch work integrates into, by what the repo actually has — never an
+ * assumed name: `develop` when it exists (PRs to develop, main = releases),
+ * else the remote's default branch (`origin/HEAD`), else a `main`/`master`
+ * branch. Null when nothing qualifies (fresh local-only repo); callers then
+ * fall back to the checked-out branch. Callers interpolate the result into
+ * shell commands, so a remote default-branch name outside a plain charset
+ * (a cloned repo can name it anything) is refused rather than trusted.
+ */
+export function integrationBranch(repoDir: string): string | null {
+  const has = (ref: string): boolean => {
+    try {
+      execSync(`git rev-parse --verify --quiet ${ref}`, { cwd: repoDir, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (has('refs/remotes/origin/develop') || has('refs/heads/develop')) return 'develop';
+  try {
+    const head = execSync('git symbolic-ref --quiet --short refs/remotes/origin/HEAD', {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const name = head.startsWith('origin/') ? head.slice('origin/'.length) : '';
+    if (isPlainRefName(name)) return name;
+  } catch {
+    // origin/HEAD is only set by clone (or `git remote set-head`) — fall through
+  }
+  for (const b of ['main', 'master']) {
+    if (has(`refs/remotes/origin/${b}`) || has(`refs/heads/${b}`)) return b;
+  }
+  return null;
 }
 
 function printGitIdentityFallbackHintOnce(): void {
@@ -231,33 +269,44 @@ export interface CommitInfo {
   repo: string;
 }
 
-const SQUAD_REPOS = ['hq', 'agents-squads-web', 'squads-cli', 'company', 'product', 'engineering', 'research', 'intelligence', 'customer', 'finance', 'marketing'];
+/**
+ * Git repos to read stats from: a clone under `basePath` of each squad's
+ * `repo:` (SQUAD.md), plus `basePath` itself when it is a repo — never a fixed
+ * list of one company's repos.
+ */
+function localRepoSources(basePath: string, repoMap: Record<string, string[]>): Array<{ name: string; path: string }> {
+  const sources: Array<{ name: string; path: string }> = [];
+  for (const repo of new Set(Object.values(repoMap).flat())) {
+    const repoPath = join(basePath, repo);
+    if (existsSync(join(repoPath, '.git'))) sources.push({ name: repo, path: repoPath });
+  }
+  if (existsSync(join(basePath, '.git')) && !sources.some(s => s.path === basePath)) {
+    sources.push({ name: basename(basePath), path: basePath });
+  }
+  return sources;
+}
 
-// Squad to repo mapping for GitHub stats
-const SQUAD_REPO_MAP: Record<string, string[]> = {
-  website: ['agents-squads-web'],
-  product: ['squads-cli'],
-  engineering: ['hq', 'squads-cli'],
-  research: ['research'],
-  intelligence: ['intelligence'],
-  customer: ['customer'],
-  finance: ['finance'],
-  company: ['company', 'hq'],
-  marketing: ['marketing', 'agents-squads-web'],
-};
-
-// Label patterns that map to squads
-const SQUAD_LABELS: Record<string, string[]> = {
-  website: ['website', 'web', 'frontend', 'ui'],
-  product: ['product', 'cli', 'feature'],
-  engineering: ['engineering', 'infra', 'backend', 'bug'],
-  research: ['research', 'analysis'],
-  intelligence: ['intel', 'monitoring'],
-  customer: ['customer', 'sales', 'lead'],
-  finance: ['finance', 'cost', 'billing'],
-  company: ['company', 'strategy'],
-  marketing: ['marketing', 'content', 'seo'],
-};
+/**
+ * The squad a PR/issue belongs to: a `squad:<name>` label, a label equal to a
+ * squad name, the squad name as a word in the title, else the squad whose
+ * `repo:` is this repo. '' when nothing matches or the label names an unknown
+ * squad (counted in totals only).
+ */
+function detectSquad(
+  item: { title: string; labels: { name: string }[] },
+  repo: string,
+  repoMap: Record<string, string[]>,
+): string {
+  const squads = Object.keys(repoMap);
+  const byName = (name: string): string | undefined => squads.find(sq => sq.toLowerCase() === name);
+  for (const label of item.labels || []) {
+    const l = label.name.toLowerCase();
+    if (l.startsWith('squad:')) return byName(l.slice('squad:'.length)) ?? '';
+    const named = byName(l);
+    if (named) return named;
+  }
+  return squadNamedIn(item.title, squads) ?? squadsForRepo(repo, repoMap)[0] ?? '';
+}
 
 export interface GitHubStats {
   prsOpened: number;
@@ -287,7 +336,8 @@ export async function getGitHubStats(basePath: string, days: number = 30): Promi
   };
 
   // Initialize squad stats
-  for (const squad of Object.keys(SQUAD_REPO_MAP)) {
+  const repoMap = squadRepoMap();
+  for (const squad of Object.keys(repoMap)) {
     stats.bySquad.set(squad, {
       prsOpened: 0,
       prsMerged: 0,
@@ -299,13 +349,9 @@ export async function getGitHubStats(basePath: string, days: number = 30): Promi
     });
   }
 
-  const repos = ['hq', 'agents-squads-web'];
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-  for (const repo of repos) {
-    const repoPath = join(basePath, repo);
-    if (!existsSync(repoPath)) continue;
-
+  for (const { name: repo, path: repoPath } of localRepoSources(basePath, repoMap)) {
     try {
       // Get PRs
       const prsOutput = execSync(
@@ -322,7 +368,7 @@ export async function getGitHubStats(basePath: string, days: number = 30): Promi
         if (pr.mergedAt) stats.prsMerged++;
 
         // Detect squad from labels or title
-        const squad = detectSquadFromPR(pr, repo);
+        const squad = detectSquad(pr, repo, repoMap);
         const squadStats = stats.bySquad.get(squad);
         if (squadStats) {
           squadStats.prsOpened++;
@@ -345,7 +391,7 @@ export async function getGitHubStats(basePath: string, days: number = 30): Promi
       const issues = JSON.parse(issuesOutput || '[]');
 
       for (const issue of issues) {
-        const squad = detectSquadFromIssue(issue, repo);
+        const squad = detectSquad(issue, repo, repoMap);
         const squadStats = stats.bySquad.get(squad);
 
         if (issue.state === 'CLOSED') {
@@ -378,13 +424,11 @@ export async function getGitHubStats(basePath: string, days: number = 30): Promi
   // Add commit counts per squad
   const gitStats = await getMultiRepoGitStats(basePath, days);
   for (const [repo, commits] of gitStats.commitsByRepo) {
-    // Map repo to squad
-    for (const [squad, repos] of Object.entries(SQUAD_REPO_MAP)) {
-      if (repos.includes(repo)) {
-        const squadStats = stats.bySquad.get(squad);
-        if (squadStats) {
-          squadStats.commits += commits;
-        }
+    // Map repo to the squads whose `repo:` it is
+    for (const squad of squadsForRepo(repo, repoMap)) {
+      const squadStats = stats.bySquad.get(squad);
+      if (squadStats) {
+        squadStats.commits += commits;
       }
     }
   }
@@ -406,7 +450,8 @@ export function getGitHubStatsOptimized(basePath: string, days: number = 30): Gi
   };
 
   // Initialize squad stats
-  for (const squad of Object.keys(SQUAD_REPO_MAP)) {
+  const repoMap = squadRepoMap();
+  for (const squad of Object.keys(repoMap)) {
     stats.bySquad.set(squad, {
       prsOpened: 0,
       prsMerged: 0,
@@ -418,16 +463,12 @@ export function getGitHubStatsOptimized(basePath: string, days: number = 30): Gi
     });
   }
 
-  const repos = ['hq', 'agents-squads-web'];
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
   // Fetch all data in parallel using a single combined command
   const results: { repo: string; prs: unknown[]; issues: unknown[] }[] = [];
 
-  for (const repo of repos) {
-    const repoPath = join(basePath, repo);
-    if (!existsSync(repoPath)) continue;
-
+  for (const { name: repo, path: repoPath } of localRepoSources(basePath, repoMap)) {
     try {
       // Use a single shell command to get both PRs and issues
       // This reduces the number of gh CLI invocations from 4 to 2
@@ -476,7 +517,7 @@ export function getGitHubStatsOptimized(basePath: string, days: number = 30): Gi
       stats.prsOpened++;
       if (pr.mergedAt) stats.prsMerged++;
 
-      const squad = detectSquadFromPR(pr, repo);
+      const squad = detectSquad(pr, repo, repoMap);
       const squadStats = stats.bySquad.get(squad);
       if (squadStats) {
         squadStats.prsOpened++;
@@ -493,7 +534,7 @@ export function getGitHubStatsOptimized(basePath: string, days: number = 30): Gi
 
     // Process Issues
     for (const issue of issues as { state: string; closedAt?: string; title: string; number: number; labels: { name: string }[] }[]) {
-      const squad = detectSquadFromIssue(issue, repo);
+      const squad = detectSquad(issue, repo, repoMap);
       const squadStats = stats.bySquad.get(squad);
 
       if (issue.state === 'CLOSED') {
@@ -524,62 +565,6 @@ export function getGitHubStatsOptimized(basePath: string, days: number = 30): Gi
   return stats;
 }
 
-function detectSquadFromPR(pr: { title: string; labels: { name: string }[] }, repo: string): string {
-  // Check labels first
-  for (const label of pr.labels || []) {
-    const labelLower = label.name.toLowerCase();
-    for (const [squad, patterns] of Object.entries(SQUAD_LABELS)) {
-      if (patterns.some(p => labelLower.includes(p))) {
-        return squad;
-      }
-    }
-  }
-
-  // Check title
-  const titleLower = pr.title.toLowerCase();
-  for (const [squad, patterns] of Object.entries(SQUAD_LABELS)) {
-    if (patterns.some(p => titleLower.includes(p))) {
-      return squad;
-    }
-  }
-
-  // Default based on repo
-  if (repo === 'agents-squads-web') return 'website';
-  if (repo === 'squads-cli') return 'product';
-  return 'engineering';
-}
-
-function detectSquadFromIssue(issue: { title: string; labels: { name: string }[] }, repo: string): string {
-  // Check labels first
-  for (const label of issue.labels || []) {
-    const labelLower = label.name.toLowerCase();
-
-    // Direct squad label match
-    if (labelLower.startsWith('squad:')) {
-      return labelLower.replace('squad:', '');
-    }
-
-    for (const [squad, patterns] of Object.entries(SQUAD_LABELS)) {
-      if (patterns.some(p => labelLower.includes(p))) {
-        return squad;
-      }
-    }
-  }
-
-  // Check title
-  const titleLower = issue.title.toLowerCase();
-  for (const [squad, patterns] of Object.entries(SQUAD_LABELS)) {
-    if (patterns.some(p => titleLower.includes(p))) {
-      return squad;
-    }
-  }
-
-  // Default based on repo
-  if (repo === 'agents-squads-web') return 'website';
-  if (repo === 'squads-cli') return 'product';
-  return 'engineering';
-}
-
 export async function getMultiRepoGitStats(basePath: string, days: number = 30): Promise<GitPerformanceStats> {
   const stats: GitPerformanceStats = {
     totalCommits: 0,
@@ -596,21 +581,8 @@ export async function getMultiRepoGitStats(basePath: string, days: number = 30):
   // Collect all commits with full info for sorting
   const allCommits: CommitInfo[] = [];
 
-  // Build list of valid repo sources
-  const repoSources: Array<{ name: string; path: string }> = [];
-
-  // Check SQUAD_REPOS subdirectories
-  for (const repo of SQUAD_REPOS) {
-    const repoPath = join(basePath, repo);
-    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
-      repoSources.push({ name: repo, path: repoPath });
-    }
-  }
-
-  // Also check basePath itself (for single-project users where cwd IS the project)
-  if (existsSync(join(basePath, '.git')) && !repoSources.some(s => s.path === basePath)) {
-    repoSources.push({ name: basename(basePath), path: basePath });
-  }
+  // Squads' repos cloned under basePath, plus basePath itself
+  const repoSources = localRepoSources(basePath, squadRepoMap());
 
   // Fetch git logs from all repos in parallel
   const repoResults = await Promise.all(
@@ -712,6 +684,10 @@ export interface OpenPR {
   number: number;
   title: string;
   base: string;
+  /** ISO date the PR was opened — a bare title says nothing about staleness. */
+  createdAt: string | null;
+  /** Rollup of CI check runs: pass | fail | pending; null = no checks. */
+  ci: 'pass' | 'fail' | 'pending' | null;
 }
 
 export interface OperationalStatus {
@@ -756,7 +732,7 @@ export async function fetchOperationalStatus(repos: string[]): Promise<Operation
           { encoding: 'utf-8', timeout: 8000 }
         ),
         execAsync(
-          `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName --jq '.[] | [.number, .baseRefName, .title] | @tsv' 2>/dev/null`,
+          `gh pr list --repo "${fullRepo}" --state open --json number,title,baseRefName,createdAt,statusCheckRollup 2>/dev/null`,
           { encoding: 'utf-8', timeout: 8000 }
         ),
       ]);
@@ -780,15 +756,33 @@ export async function fetchOperationalStatus(repos: string[]): Promise<Operation
       }
 
       if (prResult.status === 'fulfilled') {
-        for (const line of prResult.value.stdout.trim().split('\n').filter(l => l.trim())) {
-          const [num, base, ...titleParts] = line.split('\t');
-          openPRs.push({
-            repo: repoShort,
-            number: parseInt(num) || 0,
-            title: titleParts.join('\t'),
-            base,
-          });
-        }
+        try {
+          const prs = JSON.parse(prResult.value.stdout.trim() || '[]') as Array<{
+            number: number;
+            title: string;
+            baseRefName: string;
+            createdAt: string;
+            statusCheckRollup: Array<{ conclusion?: string | null; status?: string | null }> | null;
+          }>;
+          for (const pr of prs) {
+            const checks = pr.statusCheckRollup ?? [];
+            const ci: OpenPR['ci'] = checks.length === 0
+              ? null
+              : checks.some(c => c.conclusion === 'FAILURE' || c.conclusion === 'TIMED_OUT')
+                ? 'fail'
+                : checks.every(c => c.conclusion === 'SUCCESS' || c.conclusion === 'SKIPPED' || c.conclusion === 'NEUTRAL')
+                  ? 'pass'
+                  : 'pending';
+            openPRs.push({
+              repo: repoShort,
+              number: pr.number,
+              title: pr.title,
+              base: pr.baseRefName,
+              createdAt: pr.createdAt ?? null,
+              ci,
+            });
+          }
+        } catch { /* malformed gh output — leave this repo's PRs empty */ }
       }
 
       return { milestones, openPRs };
@@ -813,18 +807,8 @@ export async function getActivitySparkline(basePath: string, days: number = 7): 
     activity.push(0);
   }
 
-  // Build list of valid repo sources
-  const sparklineRepos: Array<string> = [];
-  for (const repo of SQUAD_REPOS) {
-    const repoPath = join(basePath, repo);
-    if (existsSync(repoPath) && existsSync(join(repoPath, '.git'))) {
-      sparklineRepos.push(repoPath);
-    }
-  }
-  // Also check basePath itself (for single-project users where cwd IS the project)
-  if (existsSync(join(basePath, '.git')) && !sparklineRepos.includes(basePath)) {
-    sparklineRepos.push(basePath);
-  }
+  // Squads' repos cloned under basePath, plus basePath itself
+  const sparklineRepos = localRepoSources(basePath, squadRepoMap()).map(s => s.path);
 
   // Fetch git logs from all repos in parallel
   const results = await Promise.all(

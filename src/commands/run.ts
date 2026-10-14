@@ -27,10 +27,11 @@ import {
   writeLine,
 } from '../lib/terminal.js';
 import { runCloudDispatch } from '../lib/cloud-dispatch.js';
+import { isAuthConfigured } from '../lib/auth.js';
 import { runConversation, saveTranscript, type ConversationOptions } from '../lib/workflow.js';
 import { isQuotaMessage } from '../lib/conversation.js';
 import { probeQuota, waitForQuota } from '../lib/quota-probe.js';
-import { reportExecutionStart, reportConversationResult, pushCognitionSignal } from '../lib/api-client.js';
+import { reportExecutionStart, reportConversationResult } from '../lib/api-client.js';
 import { runAgent } from '../lib/agent-runner.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { statSync } from 'fs';
@@ -60,14 +61,14 @@ function checkPrerequisites(): void {
 
 // ── Schedule hint (#695) ─────────────────────────────────────────────
 
-function showScheduleHint(squadName: string): void {
+function showScheduleHint(squadDir: string): void {
   const hintDir = join(homedir(), '.squads-cli');
   const hintFile = join(hintDir, 'schedule-hint-shown');
 
   if (existsSync(hintFile)) return;
 
   writeLine(`  ${colors.dim}Tip: Run this daily for best results. Set up a schedule:${RESET}`);
-  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadName}${RESET}`);
+  writeLine(`  ${colors.dim}  crontab -e → 0 9 * * * cd $(pwd) && npx squads run ${squadDir}${RESET}`);
   writeLine();
 
   try {
@@ -143,23 +144,12 @@ export async function runCommand(
 
   // MODE 0: Org cycle — run all squads as a coordinated system
   if (target === '--org' || options.org) {
-    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan, refreshFounderContext } = await import('../lib/org-cycle.js');
+    const { scanOrg, planOrgCycle, displayOrgScan, displayPlan } = await import('../lib/org-cycle.js');
 
     writeLine();
     const focusLabel = options.focus ? ` ${bold}[${options.focus}]${RESET}` : '';
     writeLine(`  ${gradient('squads')} ${colors.dim}org cycle${RESET}${focusLabel}`);
     writeLine();
-
-    // Step 0: REFRESH founder context — distill recent sessions + git activity
-    // into per-squad alignment files so agents run aligned with the founder's
-    // current pipeline, not generic squad goals.
-    if (!options.dryRun) {
-      const ctxResult = refreshFounderContext({ force: options.force });
-      if (ctxResult === 'failed') {
-        writeLine(`  ${colors.red}Aborting org cycle. Fix the digest script and retry.${RESET}\n`);
-        return;
-      }
-    }
 
     // Step 1: SCAN
     const scan = scanOrg();
@@ -294,16 +284,16 @@ export async function runCommand(
         saveTranscript(result.transcript);
 
         const status = result.converged ? 'converged' : 'completed';
-        writeLine(`  ${result.converged ? icons.success : icons.warning} ${squadName}: ${result.reason} ${colors.dim}(${result.turnCount}t, ~$${result.totalCost.toFixed(2)})${RESET}`);
+        writeLine(`  ${result.converged ? icons.success : icons.warning} ${squad.dir}: ${result.reason} ${colors.dim}(${result.turnCount}t, ~$${result.totalCost.toFixed(2)})${RESET}`);
         return {
-          squad: squadName, agent: s.lead, status,
+          squad: squad.dir, agent: s.lead, status,
           durationMs: Date.now() - runStart,
           turnCount: result.turnCount, totalCost: result.totalCost, converged: result.converged,
         };
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        writeLine(`  ${colors.red}${squadName} failed: ${errMsg.slice(0, 80)}${RESET}`);
-        return { squad: squadName, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart };
+        writeLine(`  ${colors.red}${squad.dir} failed: ${errMsg.slice(0, 80)}${RESET}`);
+        return { squad: squad.dir, agent: s.lead, status: 'failed', durationMs: Date.now() - runStart };
       }
     }
 
@@ -471,8 +461,9 @@ export async function runCommand(
       writeLine(`  ${bold}Available squads:${RESET}`);
       for (const name of squads) {
         const squad = loadSquad(name);
+        const dir = squad?.dir || name;
         const mission = squad?.mission ? ` ${colors.dim}— ${squad.mission}${RESET}` : '';
-        writeLine(`    ${colors.cyan}${name.padEnd(14)}${RESET}${mission}`);
+        writeLine(`    ${colors.cyan}${dir.padEnd(14)}${RESET}${mission}`);
       }
       writeLine();
       writeLine(`  ${colors.dim}Usage: squads run <squad>${RESET}`);
@@ -497,6 +488,13 @@ export async function runCommand(
 
   // Cloud dispatch: skip local execution entirely
   if (options.cloud) {
+    // Cloud dispatch depends on `squads login`, which is unavailable until the
+    // auth endpoint is deployed. Fail fast at preflight before any run setup so
+    // `--cloud` never appears to start a run it can never complete (#1208).
+    if (!isAuthConfigured()) {
+      writeLine(`  ${colors.red}${icons.error} Cloud dispatch requires login, which is not available in this build.${RESET}`);
+      process.exit(1);
+    }
     const agentName = options.agent || agentFromSlash;
     if (!agentName) {
       writeLine(`  ${colors.red}${icons.error} --cloud requires a specific agent${RESET}`);
@@ -532,15 +530,15 @@ export async function runCommand(
     const since = squad.paused_since ? ` (paused ${new Date(squad.paused_since).toLocaleDateString()})` : '';
     const reason = squad.paused_reason ? `: ${squad.paused_reason}` : '';
     writeLine();
-    writeLine(`  ${colors.yellow}⏸  Squad "${squadName}" is paused${since}${reason}.${RESET}`);
-    writeLine(`  ${colors.dim}To run anyway: squads run ${squadName} --force${RESET}`);
-    writeLine(`  ${colors.dim}To resume:     squads resume ${squadName}${RESET}`);
+    writeLine(`  ${colors.yellow}⏸  Squad "${squad.dir}" is paused${since}${reason}.${RESET}`);
+    writeLine(`  ${colors.dim}To run anyway: squads run ${squad.dir} --force${RESET}`);
+    writeLine(`  ${colors.dim}To resume:     squads resume ${squad.dir}${RESET}`);
     writeLine();
     process.exit(1);
   }
 
   if (squad && squad.status === 'paused' && options.force) {
-    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squadName}" (--force override).${RESET}`);
+    writeLine(`  ${colors.yellow}⏸  Warning: running paused squad "${squad.dir}" (--force override).${RESET}`);
   }
 
   // Pre-flight executor check: verify CLI and auth before attempting execution
@@ -554,13 +552,6 @@ export async function runCommand(
     }
   }
 
-  // Refresh founder context for single-squad runs (same as --org, so agents
-  // always see aligned strategic context regardless of how they're invoked).
-  if (squad && !options.dryRun) {
-    const { refreshFounderContext: refreshCtx } = await import('../lib/org-cycle.js');
-    refreshCtx({ force: options.force });
-  }
-
   if (squad) {
     await track(Events.CLI_RUN, { type: 'squad' });
     await flushEvents(); // Ensure telemetry is sent before potential exit
@@ -568,10 +559,10 @@ export async function runCommand(
     let hadError = false;
     try {
       await runSquad(squad, squadsDir, options);
-      // Post-run COO evaluation (default on, --no-eval to skip)
-      await runPostEvaluation([squad.name], options);
+      // Post-run COO evaluation – use canonical dir name
+      await runPostEvaluation([squad.dir], options);
       // Show scheduling hint on first few runs (#695)
-      showScheduleHint(squad.name);
+      showScheduleHint(squad.dir);
     } catch (err) {
       hadError = true;
       throw err;
@@ -637,7 +628,7 @@ async function runSquad(
   const startTime = new Date().toISOString();
 
   writeLine();
-  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET} ${colors.cyan}${squad.name}${RESET}`);
+  writeLine(`  ${gradient('squads')} ${colors.dim}run${RESET} ${colors.cyan}${squad.dir}${RESET}`);
   writeLine();
   if (squad.mission) {
     writeLine(`  ${colors.dim}${squad.mission}${RESET}`);
@@ -676,7 +667,7 @@ async function runSquad(
       }
       writeLine();
       writeLine(`  ${colors.dim}Launch all agents in parallel:${RESET}`);
-      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --parallel`);
+      writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --parallel`);
       writeLine();
       return;
     }
@@ -692,9 +683,19 @@ async function runSquad(
     await Promise.all(launches);
 
     writeLine();
-    writeLine(`  ${icons.success} All ${agentFiles.length} agents launched`);
-    writeLine(`  ${colors.dim}Monitor: tmux ls | grep squads-${squad.name}${RESET}`);
-    writeLine(`  ${colors.dim}Attach:  tmux attach -t <session>${RESET}`);
+    // Same predicate as runAgent: --watch wins over --background (the log is followed, so
+    // the run is awaited). runAgent can also return without running (missing CLI, gates,
+    // cooldown) — it sets process.exitCode then, so don't claim success.
+    const detached = options.background === true && !options.watch;
+    const failed = !!process.exitCode;
+    if (detached && !failed) {
+      writeLine(`  ${icons.success} ${agentFiles.length} agents launched in the background`);
+      writeLine(`  ${colors.dim}Monitor: squads runs${RESET}`);
+    } else if (failed) {
+      writeLine(`  ${icons.error} Parallel run finished with errors — see each agent's output above`);
+    } else {
+      writeLine(`  ${icons.success} Parallel run finished — see each agent's output above`);
+    }
     writeLine();
     return;
   }
@@ -728,6 +729,18 @@ async function runSquad(
         return;
       }
     } else {
+      // Guard: squad has no participants defined in role table (#872)
+      if (squad.agents.length === 0) {
+        writeLine(`  ${icons.warning} ${colors.yellow}Squad "${squad.dir}" has 0 participants — add agents to the role table in SQUAD.md${RESET}`);
+        writeLine(`  ${colors.dim}Example role table:${RESET}`);
+        writeLine(`  ${colors.dim}  | Agent  | Role          | Trigger |${RESET}`);
+        writeLine(`  ${colors.dim}  |--------|---------------|---------|${RESET}`);
+        writeLine(`  ${colors.dim}  | lead   | Orchestrator  | manual  |${RESET}`);
+        writeLine();
+        process.exitCode = 1;
+        return;
+      }
+
       // Determine provider for mode selection
       const squadProvider = normalizeProviderName(options.provider || squad?.providers?.default || 'anthropic');
 
@@ -740,9 +753,9 @@ async function runSquad(
           writeLine(`  ${icons.error} ${colors.red}--task needs an executor that can hold a task — ${squadProvider} runs sequential mode (no tool use).${RESET}`);
           writeLine();
           writeLine(`  ${colors.dim}Run the task through a single agent (task directive supported):${RESET}`);
-          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}/<agent>${RESET} --task "..." --provider=${squadProvider}`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}/<agent>${RESET} --task "..." --provider=${squadProvider}`);
           writeLine(`  ${colors.dim}Or use a tool-use provider for the squad conversation:${RESET}`);
-          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "..."`);
+          writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --task "..."`);
           writeLine();
           process.exitCode = 1;
           return;
@@ -783,23 +796,6 @@ async function runSquad(
           });
         }
 
-        // Push conversation signal to cognition engine (fire-and-forget)
-        pushCognitionSignal({
-          source: 'execution',
-          signal_type: result.converged ? 'conversation_converged' : 'conversation_stopped',
-          value: result.totalCost,
-          unit: 'usd',
-          data: {
-            turn_count: result.turnCount,
-            converged: result.converged,
-            reason: result.reason,
-            agents_involved: [...new Set(result.transcript.turns.map(t => t.agent))],
-          },
-          entity_type: 'squad',
-          entity_id: squad.name,
-          confidence: 0.9,
-        });
-
         writeLine();
         writeLine(`  ${result.converged ? icons.success : icons.warning} ${result.converged ? 'Converged' : 'Stopped'}: ${result.reason}`);
         writeLine(`  ${colors.dim}Turns: ${result.turnCount} | Cost: ~$${result.totalCost.toFixed(2)}${RESET}`);
@@ -820,18 +816,18 @@ async function runSquad(
         }
         writeLine();
         writeLine(`  ${colors.dim}Run:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} --task "review and merge open PRs"`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} --task "review and merge open PRs"`);
         writeLine();
         writeLine(`  ${colors.dim}Run single agent:${RESET}`);
-        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.name}${RESET} -a ${colors.cyan}<agent>${RESET}`);
+        writeLine(`  ${colors.dim}$${RESET} squads run ${colors.cyan}${squad.dir}${RESET} -a ${colors.cyan}<agent>${RESET}`);
       }
     }
   }
 
   writeLine();
   writeLine(`  ${colors.dim}After execution, record outcome:${RESET}`);
-  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.name}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
+  writeLine(`  ${colors.dim}$${RESET} squads feedback add ${colors.cyan}${squad.dir}${RESET} ${colors.cyan}<1-5>${RESET} ${colors.cyan}"<feedback>"${RESET}`);
   writeLine();
 }
 

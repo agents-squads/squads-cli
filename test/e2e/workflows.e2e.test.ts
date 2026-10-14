@@ -91,8 +91,8 @@ describe('E2E: squads init workflow', () => {
   it('reports success in output', () => {
     const result = runCli('init --yes --provider none --force', testDir);
     const out = stripAnsi(result.stdout);
-    // Accept either "Squads initialized" or "AI workforce is ready" success messages
-    expect(out).toMatch(/initialized|workforce is ready/i);
+    // Accept either "Squads initialized" or "squads are ready" success messages
+    expect(out).toMatch(/initialized|squads are ready/i);
   });
 
   it('creates .agents/squads directory', () => {
@@ -173,7 +173,10 @@ describe('E2E: squads status workflow', () => {
   it('shows squad count', () => {
     const result = runCli('status', testDir);
     const out = stripAnsi(result.stdout);
-    expect(out).toMatch(/\d+\/\d+\s+squads/);
+    // cli#1142 headline carries the org size ("… │ X squads …") whether or
+    // not anything is running — the old "N/N squads" ratio was fiction (the
+    // numerator was never a real activity measure).
+    expect(out).toMatch(/\d+\s+squads/);
   });
 
   it('lists initialized squads in table', () => {

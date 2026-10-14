@@ -7,12 +7,17 @@ import { spawn, spawnSync } from 'node:child_process';
 // Inventory only needs two things from the engine; mocking them keeps these
 // tests free of git fixtures (harvest itself is covered by harvest.test.ts).
 vi.mock('../src/lib/execution-engine.js', () => ({
-  resolveTargetRepoRoot: vi.fn((projectRoot: string) => projectRoot),
+  resolveOwnedRepoRoots: vi.fn((projectRoot: string) => [projectRoot]),
   harvestProviderWork: vi.fn(async () => ({ outcome: 'merged' })),
 }));
 
+vi.mock('../src/lib/api-client.js', () => ({
+  reportExecutionComplete: vi.fn().mockResolvedValue(true),
+}));
+
 import { listDetachedRuns, cleanStaleRuns, killDetachedRun } from '../src/lib/runs-inventory.js';
-import { harvestProviderWork } from '../src/lib/execution-engine.js';
+import { harvestProviderWork, resolveOwnedRepoRoots } from '../src/lib/execution-engine.js';
+import { reportExecutionComplete } from '../src/lib/api-client.js';
 
 let root: string;
 
@@ -22,11 +27,11 @@ function deadPid(): number {
   return r.pid!;
 }
 
-function writePidFile(squad: string, agent: string, ts: number, pid: number): string {
+function writePidFile(squad: string, agent: string, ts: number, pid: number, executionId?: string): string {
   const dir = join(root, '.agents', 'logs', squad);
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${agent}-${ts}.pid`);
-  writeFileSync(p, String(pid));
+  writeFileSync(p, executionId ? `${pid}\n${executionId}\n` : String(pid));
   return p;
 }
 
@@ -35,6 +40,7 @@ beforeEach(() => {
   mkdirSync(join(root, '.agents', 'squads'), { recursive: true });
   mkdirSync(join(root, '.agents', 'observability'), { recursive: true });
   vi.spyOn(process, 'cwd').mockReturnValue(root);
+  vi.mocked(reportExecutionComplete).mockClear();
 });
 
 afterEach(() => {
@@ -60,6 +66,45 @@ describe('listDetachedRuns', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'not-a-run.pid'), 'garbage');
     expect(listDetachedRuns(root)).toEqual([]);
+  });
+
+  it('reads the execution id from the pid file second line when present (#1131)', () => {
+    writePidFile('research', 'housekeeper', 1700000000010, deadPid(), 'exec_abc123');
+    const [run] = listDetachedRuns(root);
+    expect(run.executionId).toBe('exec_abc123');
+  });
+
+  it('leaves executionId undefined for legacy single-line pid files', () => {
+    writePidFile('research', 'housekeeper', 1700000000011, deadPid());
+    const [run] = listDetachedRuns(root);
+    expect(run.executionId).toBeUndefined();
+  });
+
+  it('finds pid files under the squad-bound target repo when it differs from the dispatch root (#1125)', () => {
+    // Dispatch root (root, cwd) != the squad's bound target repo (targetRepo)
+    // — the exact shape of #1125: pid files written at the target repo were
+    // invisible because the scan only ever looked at the dispatch root.
+    const targetRepo = mkdtempSync(join(tmpdir(), 'squads-target-'));
+    try {
+      mkdirSync(join(root, '.agents', 'squads', 'research'), { recursive: true });
+      writeFileSync(join(root, '.agents', 'squads', 'research', 'SQUAD.md'), '# Squad: research\n');
+      vi.mocked(resolveOwnedRepoRoots).mockReturnValueOnce([root, targetRepo]);
+
+      const dir = join(targetRepo, '.agents', 'logs', 'research');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'housekeeper-1700000000012.pid'), String(process.pid));
+
+      const runs = listDetachedRuns(root);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        squad: 'research',
+        agent: 'housekeeper',
+        repoRoot: targetRepo,
+        alive: true,
+      });
+    } finally {
+      rmSync(targetRepo, { recursive: true, force: true });
+    }
   });
 });
 

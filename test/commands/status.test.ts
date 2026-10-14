@@ -35,6 +35,12 @@ vi.mock('../../src/lib/git.js', () => ({
   fetchOperationalStatus: vi.fn(),
 }));
 
+// Run-ledger (cli#1142): status reads the folded jsonl event log through
+// reconcileOrphanedRuns — mocked so tests control "what's running" directly.
+vi.mock('../../src/lib/observability.js', () => ({
+  reconcileOrphanedRuns: vi.fn(() => []),
+}));
+
 vi.mock('../../src/lib/executions.js', () => ({
   listExecutions: vi.fn(),
   getExecutionStats: vi.fn(),
@@ -72,6 +78,7 @@ import { findMemoryDir, getSquadState } from '../../src/lib/memory.js';
 import { getLiveSessionSummaryAsync, cleanupStaleSessions } from '../../src/lib/sessions.js';
 import { fetchOperationalStatus } from '../../src/lib/git.js';
 import { getExecutionStats, listExecutions } from '../../src/lib/executions.js';
+import { reconcileOrphanedRuns } from '../../src/lib/observability.js';
 import { checkForUpdate } from '../../src/lib/update.js';
 
 const mockFindSquadsDir = vi.mocked(findSquadsDir);
@@ -180,14 +187,35 @@ describe('statusCommand', () => {
   });
 
   it('handles execution stats with completed executions', async () => {
-    mockGetExecutionStats.mockReturnValue({
-      total: 5,
-      completed: 4,
-      failed: 1,
-      running: 0,
-      totalCostUsd: 2.50,
-      totalDurationMs: 3600000,
-    } as ReturnType<typeof getExecutionStats>);
+    const base = {
+      squad: 'engineering', agent: 'issue-solver', provider: 'anthropic', model: 'sonnet',
+      trigger: 'manual' as const, duration_ms: 60000, input_tokens: 0, output_tokens: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0, context_tokens: 0,
+    };
+    vi.mocked(reconcileOrphanedRuns).mockReturnValue([
+      { ...base, ts: new Date().toISOString(), id: 'exec_1', status: 'completed' as const },
+      { ...base, ts: new Date().toISOString(), id: 'exec_2', status: 'failed' as const },
+      { ...base, ts: new Date().toISOString(), id: 'exec_3', status: 'running' as const, pid: process.pid },
+    ]);
     await expect(statusCommand()).resolves.toBeUndefined();
+  });
+
+  it('reports running work from the ledger fold, not from any markdown store', async () => {
+    const base = {
+      squad: 'engineering', agent: 'issue-solver', provider: 'glm', model: 'glm-4.7',
+      trigger: 'manual' as const, duration_ms: 0, input_tokens: 0, output_tokens: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0, context_tokens: 0,
+    };
+    vi.mocked(reconcileOrphanedRuns).mockReturnValue([
+      { ...base, ts: new Date().toISOString(), id: 'exec_live', status: 'running' as const, pid: process.pid },
+    ]);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await statusCommand(undefined, { json: true });
+    const payload = JSON.parse(consoleSpy.mock.calls.map(c => c[0]).join(''));
+    expect(payload.data.executions24h.running).toBe(1);
+    expect(payload.data.working_now).toEqual([
+      expect.objectContaining({ id: 'exec_live', squad: 'engineering', agent: 'issue-solver' }),
+    ]);
+    consoleSpy.mockRestore();
   });
 });

@@ -354,3 +354,45 @@ describe('command surface (#1020)', () => {
     for (const c of canonicals) expect(c in DEPRECATED_COMMANDS).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1214 — GA4 requires session_id on every event or the property reports
+// sessions=0 and every session-scoped report comes back empty.
+// ---------------------------------------------------------------------------
+import { resolveSession } from '../src/lib/telemetry.js';
+
+describe('GA4 session construction (#1214)', () => {
+  const base = { enabled: true, anonymousId: 'anon', firstRun: 't' };
+
+  it('stamps session_id onto the MP event when given one', () => {
+    const ev = toMpEvent({ event: 'cli.run', timestamp: 't' }, '1750000000');
+    expect(ev.params.session_id).toBe('1750000000');
+  });
+
+  it('omits session_id when none is supplied (back-compat)', () => {
+    expect(toMpEvent({ event: 'cli.run', timestamp: 't' }).params.session_id).toBeUndefined();
+  });
+
+  it('reuses the session while commands keep arriving', () => {
+    const now = 1_750_000_000_000;
+    const cfg = { ...base, sessionId: '1749999999', lastEventAt: now - 60_000 };
+    expect(resolveSession(cfg, now).sessionId).toBe('1749999999');
+  });
+
+  it('starts a new session after 30 minutes of inactivity', () => {
+    const now = 1_750_000_000_000;
+    const cfg = { ...base, sessionId: '1749999999', lastEventAt: now - 31 * 60_000 };
+    expect(resolveSession(cfg, now).sessionId).not.toBe('1749999999');
+  });
+
+  it('mints a session on a config that has never had one', () => {
+    const { sessionId } = resolveSession({ ...base }, 1_750_000_000_000);
+    expect(sessionId).toBe('1750000000');
+  });
+
+  it('requests first_open exactly once per install', () => {
+    const cfg = { ...base };
+    expect(resolveSession(cfg, 1_750_000_000_000).needsFirstOpen).toBe(true);
+    expect(resolveSession(cfg, 1_750_000_001_000).needsFirstOpen).toBe(false);
+  });
+});

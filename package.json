@@ -1,7 +1,7 @@
 {
   "name": "squads-cli",
-  "version": "0.9.0",
-  "description": "Your AI workforce. Every user gets an AI manager that runs their team \u2014 finance, marketing, engineering, operations \u2014 for the cost of API calls.",
+  "version": "0.10.0",
+  "description": "Run squads of AI agents from your terminal — defined in markdown, tracked in git.",
   "type": "module",
   "bin": {
     "squads": "dist/cli.js"
@@ -32,8 +32,6 @@
     "gen:skill": "node scripts/gen-skill-reference.mjs"
   },
   "keywords": [
-    "ai-workforce",
-    "workforce",
     "autonomous-agents",
     "agent-framework",
     "ai-automation",
@@ -78,6 +76,7 @@
     "dotenv": "^17.2.3",
     "gray-matter": "^4.0.3",
     "inquirer": "^9.2.12",
+    "js-yaml": "^4.3.2",
     "minimatch": "^10.2.1",
     "open": "^11.0.0",
     "ora": "^8.0.1"
@@ -90,11 +89,28 @@
     "@types/node": "^20.19.27",
     "@typescript-eslint/eslint-plugin": "^8.51.0",
     "@typescript-eslint/parser": "^8.51.0",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.2",
     "tsup": "^8.0.1",
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.51.0",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "read-yaml-file": {
+      "js-yaml": "~3.15.0"
+    },
+    "@changesets/parse": {
+      "js-yaml": "^4.2.0"
+    },
+    "@hey-api/json-schema-ref-parser": {
+      "js-yaml": "^4.2.0"
+    },
+    "gray-matter": {
+      "js-yaml": "~3.15.0"
+    },
+    "@eslint/eslintrc": {
+      "js-yaml": "^4.2.0"
+    }
   }
 }

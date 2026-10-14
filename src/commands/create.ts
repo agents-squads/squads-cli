@@ -21,6 +21,7 @@ import { createSquadChannel } from '../lib/slack.js';
 
 interface CreateOptions {
   description?: string;
+  mission?: string;
   goal?: string;
   model?: string;
   force?: boolean;
@@ -60,7 +61,8 @@ export async function createCommand(name: string, options: CreateOptions): Promi
   }
 
   // Collect description and goal — prompt interactively if not provided via flags
-  let description = options.description;
+  // --mission is an alias for --description
+  let description = options.mission || options.description;
   let goal = options.goal;
 
   if (!options.yes && (!description || !goal)) {
@@ -130,7 +132,7 @@ export async function createCommand(name: string, options: CreateOptions): Promi
   // Track creation event
   await track('cli.create', {
     squad: squadId,
-    hasDescription: !!options.description,
+    hasDescription: !!(options.description || options.mission),
     hasGoal: !!options.goal,
     force: !!options.force,
     repo: !!options.repo,

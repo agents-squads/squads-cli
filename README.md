@@ -2,7 +2,7 @@
 
 # Agents Squads
 
-**Your AI ops teams.**
+**Run squads of AI agents from your terminal — defined in markdown, tracked in git.**
 
 Autonomous AI agents for engineering, marketing, finance, and operations.
 You make the decisions. They do the work.
@@ -23,7 +23,7 @@ git repo: no database, no server, no DSL.
 
 ```bash
 npm install -g squads-cli
-mkdir my-workforce && cd my-workforce
+mkdir my-squads && cd my-squads
 git init                       # squads runs on git — it's the state and audit trail
 squads init                    # scaffolds .agents/ with starter squads
 squads run demo hello-world    # verify your setup end to end
@@ -32,6 +32,24 @@ squads run research/analyst    # your first real agent
 
 > Claude Code must be installed and logged in (`claude /login`) before the
 > first run — `squads doctor` checks both and tells you exactly what's missing.
+
+What `squads run demo hello-world` looks like — real, unedited output:
+
+```text
+  squads run Demo
+
+- Running agent: hello-world
+Hello from hello-world, squad demo — today is 2026-07-10, and this run
+confirms the my-squads squads are installed and ready. 🎉
+
+State file written to `.agents/memory/demo/hello-world/state.md` and
+committed locally (`b694270`) — no remote is configured on this repo,
+so no push was attempted. Setup is working.
+
+  Auto-committed agent work
+✔ Agent hello-world completed (Anthropic)
+  Run completed — demo/hello-world (37.4s)
+```
 
 ## How it works
 
@@ -53,7 +71,7 @@ team — tuned by role so scanners stay lightweight and leads get the full
 picture. Agents that know what's been done don't duplicate work; agents
 that see their own feedback stop producing noise.
 
-Squads shells out to native AI CLIs (`claude`, `gemini`, `aider`, …), so
+Squads shells out to native AI CLIs (`claude`, `gemini`, `aider`, `opencode`, …), so
 mixed-model teams work out of the box: a cheap model scans, a deep
 reasoning model builds, a mid-tier model verifies.
 
@@ -80,8 +98,14 @@ squads inbox                                    # everything waiting on YOUR dec
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (default
 provider — others optional). `squads doctor` checks your machine.
 
-Everything runs locally: your machine, your API keys, your data. No
-login, no cloud, no telemetry surprises.
+Runs locally by default: your machine, your API keys, your data stay
+on disk. No account needed for the open-source CLI. The cloud login
+(`squads login`) and `--cloud` dispatch surface is hidden until the auth
+endpoint is configured (`SQUADS_AUTH_URL`); until then every feature works
+locally. Telemetry is
+anonymous and install-level only (command names, versions, error
+classes — never file contents, paths, or personal data); opt out any
+time with `DO_NOT_TRACK=1` or `SQUADS_TELEMETRY_DISABLED=1`.
 
 ## Development
 
