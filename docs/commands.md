@@ -125,6 +125,40 @@ squads scoreboard              # Compare models/executors by quality per cost
 | `history` | `-d, --days`, `-s, --squad`, `-v, --verbose`, `-j, --json` |
 | `scoreboard` | `--json`, `--days <n>`, `--resolve` |
 
+### Planning
+
+```bash
+squads plan                    # Roadmap from the plan-of-record issue: done / ready / blocked
+squads plan --json             # The same roadmap as versioned JSON for consoles and agents
+```
+
+`squads plan` reads the project's **plan of record** — a tracking issue whose body carries
+an `## Order` table, one row per deliverable in execution order:
+
+```markdown
+## Order
+
+| # | Deliverable | Issues | Blocked by | Note |
+|---|-------------|--------|------------|------|
+| 1 | Scaffold the command | #1234 | — | |
+| 2 | Parse the Order table | #1235 | #1234 | |
+| 3 | Ship the console | #1236 | @founder | needs a human go-ahead |
+```
+
+Point squads at it with `plan_issue: owner/repo#n` in `.squads/config.yml` — or the
+`SQUADS_PLAN_ISSUE` env var, which wins. The issue's sub-issues supply the open/closed
+state; a row is **done** when all its issues are closed, **blocked** when a blocker ref is
+still open (or the cell names a human), otherwise **ready**. `next` is the first ready row
+in Order. Issue refs are written as `#1234` (the plan's own repo) or `owner/repo#1234`.
+
+Unconfigured is not an error: `{ "configured": false }`, exit 0, and a one-line hint.
+At most two `gh` API calls, 20 s timeout; when GitHub is unreachable the last good roadmap
+is served from `.agents/observability/cache/plan.json` with `"stale": true` + `"error"`.
+
+| Command | Key flags |
+|---------|-----------|
+| `plan` | `-j, --json` |
+
 ### Goals & Tracking
 
 ```bash

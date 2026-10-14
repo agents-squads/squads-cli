@@ -3,47 +3,13 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { findSquadsDir } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import { colors, bold, RESET, writeLine } from '../lib/terminal.js';
+import { parseGoalsMd, type GoalInfo } from '../lib/goals-md.js';
 
-interface GoalInfo {
-  name: string;
-  status: string;
-  section: 'active' | 'achieved' | 'abandoned' | 'proposed';
-}
-
-function parseGoals(filePath: string): GoalInfo[] {
-  if (!existsSync(filePath)) return [];
-  const content = readFileSync(filePath, 'utf-8');
-  const goals: GoalInfo[] = [];
-
-  let currentSection: GoalInfo['section'] = 'active';
-
-  for (const line of content.split('\n')) {
-    if (line.startsWith('## Active')) currentSection = 'active';
-    else if (line.startsWith('## Achieved')) currentSection = 'achieved';
-    else if (line.startsWith('## Abandoned')) currentSection = 'abandoned';
-    else if (line.startsWith('## Proposed')) currentSection = 'proposed';
-
-    const match = line.match(/\*\*([^*]+)\*\*.*status:\s*(\S+)/);
-    if (match) {
-      goals.push({ name: match[1].trim(), status: match[2].trim(), section: currentSection });
-    }
-
-    // Achieved goals don't have status field — detect by section
-    if (currentSection === 'achieved' && line.match(/\*\*([^*]+)\*\*.*achieved:/)) {
-      const nameMatch = line.match(/\*\*([^*]+)\*\*/);
-      if (nameMatch) {
-        goals.push({ name: nameMatch[1].trim(), status: 'achieved', section: 'achieved' });
-      }
-    }
-  }
-
-  return goals;
-}
 
 export function registerGoalsCommand(program: Command): void {
   program
@@ -68,7 +34,7 @@ export function registerGoalsCommand(program: Command): void {
       for (const squad of squadDirs) {
         if (opts.squad && squad !== opts.squad) continue;
         const goalsPath = join(memoryDir, squad, 'goals.md');
-        const goals = parseGoals(goalsPath);
+        const goals = parseGoalsMd(goalsPath);
         const active = goals.filter(g => g.section === 'active').length;
         const achieved = goals.filter(g => g.section === 'achieved').length;
         const blocked = goals.filter(g => g.status === 'blocked' || g.status === 'AT-RISK').length;

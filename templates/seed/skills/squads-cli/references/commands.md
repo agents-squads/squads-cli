@@ -10,6 +10,7 @@
 |---------|-------------|
 | `squads init` | Plant the seed: create manager agent, CLI skill, and starter squads |
 | `squads run [target] [agent]` | Run a squad or agent: squads run <squad>/<agent> (also: <squad> <agent>). No target lists squads; --org runs all squads as one coordinated cycle. |
+| `squads domains` | Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight |
 | `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
 | `squads resume <squad>` | Resume a paused squad |
 | `squads env show <squad>` | Show execution environment for a squad |
@@ -20,6 +21,7 @@
 | `squads usage` | Show local cost/token usage (today, rolling window, by squad) |
 | `squads report` | Generate an evidence pack from local observability (default: auditor) |
 | `squads doctor` | Check local tools, auth, and project readiness |
+| `squads plan` | Roadmap from the plan-of-record issue: done / ready / blocked, with blockers |
 | `squads goal set <squad> <description>` | Set a goal for a squad |
 | `squads goal list [squad]` | List goals for squad(s) |
 | `squads goal complete <squad> <index>` | Mark a goal as completed |
