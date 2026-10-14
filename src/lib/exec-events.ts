@@ -19,8 +19,9 @@
  *   event — never a silent cap.
  */
 
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { parseOpencodeLine } from './stream-json.js';
 
 // ── Event schema ──────────────────────────────────────────────────────
 
@@ -48,12 +49,14 @@ export type ExecEvent =
   | { type: 'subagent_done'; childRunId: string; agent: string; ok: boolean }
   | { type: 'token_usage'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
   | { type: 'artifact'; kind: 'commit' | 'pr' | 'issue' | 'file'; ref: string }
-  | { type: 'run_end'; ok: boolean; durationMs: number; totalUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number }; outcomes: { actions: number; files_edited: number; commits: number; prs_created: number; issues_created: number } }
+  | { type: 'run_end'; ok: boolean; durationMs: number; totalUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number }; outcomes?: { actions: number; files_edited: number; commits: number; prs_created: number; issues_created: number } }
   | { type: 'truncated'; droppedCount: number; reason: string };
 
 /** Envelope stamped on every persisted line. */
 export interface PersistedExecEvent {
-  v: 1;
+  /** v2 (#1158) adds the optional source/provider/session_id fields below;
+   *  v1 lines remain valid — readers treat every v2 field as optional. */
+  v: 1 | 2;
   runId: string;
   /** Root of the dispatch chain (#920) — present only when ≠ runId (nested run). */
   root?: string;
@@ -61,6 +64,12 @@ export interface PersistedExecEvent {
   ts: string;
   /** Which agent in the run produced this event (fan-out attribution). */
   agent?: string;
+  /** Emitting runtime (v2): squads-cli | claude-code | claude-code-headless | opencode. */
+  source?: string;
+  /** LLM provider serving the run (v2): anthropic | deepseek | glm | ... */
+  provider?: string;
+  /** Claude Code session uuid backing the run, when known (v2). */
+  session_id?: string;
   event: ExecEvent;
 }
 
@@ -252,6 +261,112 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
   };
 }
 
+// ── opencode adapter (#1177) ──────────────────────────────────────────
+
+/** Input summary for an opencode tool call (opencode uses camelCase keys). */
+function summarizeOpencodeInput(tool: string, input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  const pick = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
+  let summary = '';
+  if (tool === 'bash') summary = pick('command');
+  else if (tool === 'read' || tool === 'write' || tool === 'edit' || tool === 'patch') summary = pick('filePath');
+  else if (tool === 'webfetch') summary = pick('url');
+  else if (tool === 'websearch') summary = pick('query');
+  else if (tool === 'task') summary = pick('description') || pick('prompt');
+  else if (tool === 'glob' || tool === 'grep') summary = pick('pattern');
+  if (!summary) {
+    try { summary = JSON.stringify(input); } catch { summary = ''; }
+  }
+  return summary.slice(0, INPUT_SUMMARY_MAX);
+}
+
+/**
+ * The opencode adapter: normalizes `opencode run --format json` JSONL lines
+ * into ExecEvents (#1177 — the fallback harness gets the same observable-
+ * execution treatment as claude-harness lanes, cli#1175/#1176).
+ *
+ * Two structural differences from Claude stream-json:
+ *  - tool calls arrive RESOLVED: one `tool_use` event carries input AND the
+ *    terminal state, so call + result + artifact mining happen in one line
+ *    (no pending-tool correlation map needed);
+ *  - usage arrives incrementally on `step_finish` events; the adapter
+ *    accumulates and emits ONE cumulative `token_usage` at the terminal
+ *    `step_finish{reason:'stop'}` — same one-usage-event contract as the
+ *    Claude adapter's terminal `result`.
+ */
+export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
+  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+
+  return {
+    parseLine(raw: string): ExecEvent[] {
+      const ev = parseOpencodeLine(raw);
+      if (!ev) return [];
+      const part = ev.part;
+
+      if (ev.type === 'tool_use' && part) {
+        const tool = part.tool || 'unknown';
+        const lower = tool.toLowerCase();
+        const state = part.state ?? {};
+        const toolInput = (state.input ?? undefined) as Record<string, unknown> | undefined;
+        const ok = state.status !== 'error';
+        const outputText = typeof state.output === 'string' ? state.output : '';
+        const str = (k: string) => (toolInput && typeof toolInput[k] === 'string' ? (toolInput[k] as string) : '');
+
+        const events: ExecEvent[] = [{ type: 'tool_call', tool, inputSummary: summarizeOpencodeInput(lower, toolInput) }];
+        if (lower === 'read') {
+          if (str('filePath')) events.push({ type: 'file_read', path: str('filePath') });
+        } else if (lower === 'write' || lower === 'edit' || lower === 'patch') {
+          const bytes = (str('content') || str('newString')).length;
+          if (str('filePath')) events.push({ type: 'file_write', path: str('filePath'), bytes });
+        } else if (lower === 'webfetch' || lower === 'websearch') {
+          const target = str('url') || str('query');
+          if (target) events.push({ type: 'web_fetch', url: target });
+        } else if (lower === 'task') {
+          events.push({
+            type: 'subagent_spawn',
+            childRunId: part.callID || '',
+            squad: '',
+            agent: str('subagent_type') || tool,
+            task: (str('description') || str('prompt')).slice(0, INPUT_SUMMARY_MAX),
+          });
+        } else if (lower === 'bash') {
+          const cmd = str('command');
+          if (/\bgit\b/.test(cmd) && /\bcommit\b/.test(cmd)) events.push({ type: 'artifact', kind: 'commit', ref: cmd.slice(0, INPUT_SUMMARY_MAX) });
+          // Artifact-creating command resolved in this same event — mine its
+          // output for the created artifact's canonical URL (#817 parity).
+          if (ok && /\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) {
+            const url = extractArtifactUrl(outputText, 'pr');
+            if (url) events.push({ type: 'artifact', kind: 'pr', ref: url });
+          }
+          if (ok && /\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) {
+            const url = extractArtifactUrl(outputText, 'issue');
+            if (url) events.push({ type: 'artifact', kind: 'issue', ref: url });
+          }
+        }
+        events.push({ type: 'tool_result', tool, ok, summary: outputText.slice(0, INPUT_SUMMARY_MAX) });
+        if (lower === 'task') {
+          events.push({ type: 'subagent_done', childRunId: part.callID || '', agent: tool, ok });
+        }
+        return events;
+      }
+
+      if (ev.type === 'step_finish' && part) {
+        const t = part.tokens || {};
+        input += t.input || 0;
+        output += (t.output || 0) + (t.reasoning || 0); // reasoning bills as output
+        cacheRead += t.cache?.read || 0;
+        cacheWrite += t.cache?.write || 0;
+        cost += typeof part.cost === 'number' ? part.cost : 0;
+        if (part.reason === 'stop') {
+          return [{ type: 'token_usage', input, output, cacheRead, cacheWrite, costEst: cost, model: '' }];
+        }
+      }
+
+      return [];
+    },
+  };
+}
+
 // ── Persistence ───────────────────────────────────────────────────────
 
 /** Default cap: ~5k events / ~2MB per run, then sample down to terminals. */
@@ -268,6 +383,81 @@ export function execEventsFile(obsRoot: string, executionId: string): string {
 }
 
 /**
+ * Root of the dispatch chain as seen from a process env (#920, #1181).
+ *
+ * Precedence: explicit SQUADS_ROOT_RUN_ID (a nested lane inherited it from
+ * buildAgentEnv) → the interactive Claude Code session this CLI is running
+ * inside (sess_<id>, the id the session-events pipeline records the session
+ * under) → undefined. ONE derivation for every stamping site — the #1182 fix
+ * covered only the child env, while the dispatching process's own writer
+ * (envelope `root`) and reporter (record `root_run_id`) read their OWN env
+ * and kept recording nothing.
+ */
+export function deriveRootRunId(env: Record<string, string | undefined> = process.env): string | undefined {
+  if (env.SQUADS_ROOT_RUN_ID) return env.SQUADS_ROOT_RUN_ID;
+  if (env.CLAUDE_CODE_SESSION_ID) return `sess_${env.CLAUDE_CODE_SESSION_ID}`;
+  return undefined;
+}
+
+// ── API flusher (#1158) ───────────────────────────────────────────────
+
+const FLUSH_BATCH_SIZE = 25;
+const FLUSH_INTERVAL_MS = 2000;
+
+/**
+ * Best-effort batched POST of persisted events to the connected API
+ * (`POST /agent-executions/{id}/events`). The jsonl file stays authoritative:
+ * a failed batch is retried once, then dropped — the server reconciles from
+ * the file later, so losing a live batch costs latency, never data. The
+ * timer is unref'd and every failure is swallowed: the flusher must never
+ * hold the process open or throw into the run path.
+ */
+export class ExecEventFlusher {
+  private buf: PersistedExecEvent[] = [];
+  private timer: NodeJS.Timeout | null = null;
+  private chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly runId: string,
+    private readonly batchSize = FLUSH_BATCH_SIZE,
+    private readonly intervalMs = FLUSH_INTERVAL_MS,
+  ) {}
+
+  push(line: PersistedExecEvent): void {
+    this.buf.push(line);
+    if (this.buf.length >= this.batchSize) {
+      void this.flush();
+    } else if (!this.timer) {
+      this.timer = setTimeout(() => void this.flush(), this.intervalMs);
+      this.timer.unref?.();
+    }
+  }
+
+  /** Send everything buffered. Batches stay ordered via an internal chain. */
+  flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.buf.length === 0) return this.chain;
+    const batch = this.buf;
+    this.buf = [];
+    this.chain = this.chain.then(async () => {
+      // Lazy import: no network machinery loaded unless a flush actually runs.
+      const { reportExecutionEvents } = await import('./api-client.js');
+      const ok = await reportExecutionEvents(this.runId, batch);
+      if (!ok) await reportExecutionEvents(this.runId, batch); // once more, then let the file replay cover it
+    }).catch(() => {});
+    return this.chain;
+  }
+
+  /** Final flush at run end. Awaitable, but safe to fire-and-forget. */
+  close(): Promise<void> {
+    return this.flush();
+  }
+}
+
+/**
  * Append-only JSONL writer for a run's event stream.
  *
  * - Best-effort: any fs error disables the writer silently — persistence must
@@ -277,6 +467,8 @@ export function execEventsFile(obsRoot: string, executionId: string): string {
  *   dropped; terminal events still land; `close()` records an explicit
  *   `truncated{droppedCount}` so a capped stream is never mistaken for a
  *   complete one.
+ * - Optionally mirrors every persisted line to an `ExecEventFlusher` (#1158)
+ *   — always after the file append, so the projection never leads the source.
  */
 export class ExecEventWriter {
   private seq = 0;
@@ -287,18 +479,42 @@ export class ExecEventWriter {
   private readonly maxEvents: number;
   private readonly maxBytes: number;
 
+  private readonly source?: string;
+  private readonly provider?: string;
+  private readonly sessionId?: string;
+  private readonly flusher?: ExecEventFlusher;
+
   constructor(
     private readonly file: string,
     private readonly runId: string,
-    opts: { maxEvents?: number; maxBytes?: number } = {},
+    opts: {
+      maxEvents?: number; maxBytes?: number;
+      source?: string; provider?: string; sessionId?: string;
+      flusher?: ExecEventFlusher;
+    } = {},
   ) {
     const envMax = Number(process.env.SQUADS_EVENTS_MAX);
     const envBytes = Number(process.env.SQUADS_EVENTS_MAX_BYTES);
     this.maxEvents = opts.maxEvents ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_EVENTS);
     this.maxBytes = opts.maxBytes ?? (Number.isFinite(envBytes) && envBytes > 0 ? envBytes : DEFAULT_MAX_BYTES);
+    this.source = opts.source;
+    this.provider = opts.provider;
+    this.sessionId = opts.sessionId;
+    this.flusher = opts.flusher;
     try {
       const dir = dirname(file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      // Resume seq after any events already persisted for this run (#1159):
+      // spawn-time run_start + reconcile-time tool events share one file, and
+      // the Postgres projection's (run_id, seq) identity silently drops
+      // colliding seqs — a restarted counter would eat real events.
+      if (existsSync(file)) {
+        const existing = readFileSync(file, 'utf8');
+        for (let i = 0; i < existing.length; i++) {
+          if (existing.charCodeAt(i) === 10) this.seq++;
+        }
+        this.bytes = existing.length;
+      }
     } catch {
       this.dead = true;
     }
@@ -312,16 +528,21 @@ export class ExecEventWriter {
       return;
     }
     // Audit chain (#920): a nested run stamps its root so a cascade's events
-    // are queryable by one id. Read per-emit (cheap) — the env is set by
-    // buildAgentEnv on the process that spawned this CLI.
-    const root = process.env.SQUADS_ROOT_RUN_ID;
+    // are queryable by one id. Read per-emit (cheap) — inherited from
+    // buildAgentEnv, or derived from the interactive session this CLI runs
+    // inside (#1181).
+    const root = deriveRootRunId();
+    const v2 = Boolean(this.source || this.provider || this.sessionId);
     const line: PersistedExecEvent = {
-      v: 1,
+      v: v2 ? 2 : 1,
       runId: this.runId,
       ...(root && root !== this.runId ? { root } : {}),
       seq: this.seq,
       ts: new Date().toISOString(),
       ...(agent ? { agent } : {}),
+      ...(this.source ? { source: this.source } : {}),
+      ...(this.provider ? { provider: this.provider } : {}),
+      ...(this.sessionId ? { session_id: this.sessionId } : {}),
       event,
     };
     try {
@@ -331,7 +552,10 @@ export class ExecEventWriter {
       this.bytes += serialized.length;
     } catch {
       this.dead = true; // fs is broken — stop trying, never throw into the run
+      return;
     }
+    // After the append — the file is the source of truth, the API a projection.
+    this.flusher?.push(line);
   }
 
   /** Run every event an adapter extracts from one raw provider line through emit. */
@@ -353,6 +577,14 @@ export class ExecEventWriter {
       this.emit({ type: 'truncated', droppedCount: this.dropped, reason: `event cap reached (${this.maxEvents} events / ${this.maxBytes} bytes)` });
     }
     this.closed = true;
+    // Fire-and-forget: the engine keeps the process alive past close() (auto
+    // commit, terminal reports); anything the flush loses, file replay covers.
+    void this.flusher?.close();
+  }
+
+  /** Awaitable final flush for callers that can wait (reconcile paths). */
+  async drain(): Promise<void> {
+    await this.flusher?.close();
   }
 
   /** Events dropped by the cap so far (visible for tests/diagnostics). */
@@ -385,9 +617,20 @@ export function normalizeDetachedLog(
   executionId: string,
   agent?: string,
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
+  provider?: string,
+  harness?: string,
 ): number {
-  const adapter = createClaudeStreamJsonAdapter();
-  const writer = new ExecEventWriter(execEventsFile(obsRoot, executionId), executionId);
+  // Adapter selection by HARNESS, not provider (#1177): the same provider can
+  // run through either harness (e.g. deepseek via `claude --model` OR via
+  // `opencode run`), and each harness has its own stream shape.
+  const adapter = harness === 'opencode'
+    ? createOpencodeStreamJsonAdapter()
+    : createClaudeStreamJsonAdapter();
+  const file = execEventsFile(obsRoot, executionId);
+  // provider attribution on every event (cli#1175): the run's model provider
+  // (glm/deepseek/anthropic/…) travels with the normalized events so the app
+  // can badge them per-provider — same as live-flushed events carry it.
+  const writer = new ExecEventWriter(file, executionId, { source: 'squads-cli', provider });
   for (const line of rawLog.split('\n')) {
     writer.ingestProviderLine(adapter, line, agent);
   }
@@ -395,5 +638,23 @@ export function normalizeDetachedLog(
   // zero events, and a run_end there would fabricate an event file.
   if (runEnd && writer.writtenCount > 0) writer.emit(runEnd, agent);
   writer.close();
+  // Reconcile doubles as API replay (#1158/#1159): the run's live flushes
+  // never happened (spawning CLI long gone), so POST the WHOLE file — spawn-
+  // time run_start included. Idempotent server-side; best-effort as always.
+  if (writer.writtenCount > 0) void replayEventsFile(file, executionId);
   return writer.writtenCount;
+}
+
+/** Best-effort replay of a run's full events file to the connected API. */
+export async function replayEventsFile(file: string, executionId: string): Promise<void> {
+  try {
+    const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as PersistedExecEvent; } catch { return null; } })
+      .filter((e): e is PersistedExecEvent => e !== null);
+    if (!lines.length) return;
+    const { reportExecutionEvents } = await import('./api-client.js');
+    for (let i = 0; i < lines.length; i += 500) {
+      if (!await reportExecutionEvents(executionId, lines.slice(i, i + 500))) return;
+    }
+  } catch { /* offline-first: the file remains the source of truth */ }
 }

@@ -10,6 +10,18 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
+import { deriveRootRunId } from './exec-events.js';
+import {
+  parseOutcomes,
+  parseBashCandidates,
+  parseToolResultBlocks,
+  resolveBashOutcome,
+  emptyOutcomes,
+  addOutcomes,
+  type RunOutcomes,
+  type BashOutcomeKind,
+  type AssistantContentBlock,
+} from './stream-json.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -25,16 +37,32 @@ export interface ObservabilityRecord {
   squad: string;
   agent: string;
   provider: string;
-  model: string;
+  model?: string;
+  // Claude Code session UUID this run's transcript was written under (#1129).
+  // Detached runs: the id the wrapper was launched with (`--session-id`, #857).
+  // Foreground runs: the basename of the session file run-capture located.
+  // Absent for non-Claude providers and for rows written before this field
+  // existed — no backfill; downstream mergers keep their prior heuristics.
+  session_id?: string;
   trigger: 'manual' | 'scheduled' | 'event' | 'smart';
-  status: 'completed' | 'failed' | 'timeout';
+  // 'running' rows are start events (run-ledger): the jsonl is an event log,
+  // and a run's current state is its LAST row (fold by id). 'orphaned' is the
+  // reaper's terminal for a running row whose pid died without reporting.
+  status: 'running' | 'completed' | 'failed' | 'timeout' | 'orphaned';
   duration_ms: number;
+  // OS pid of the run's process (start events) — what the orphan reaper
+  // checks liveness against. Absent on rows predating the ledger.
+  pid?: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd: number;
   context_tokens: number;
+  // Run brief/title — short human-readable summary of what the run was for (#1165).
+  // Lanes: first 200 chars of the --task text (PII-capped). Interactive
+  // sessions: first user message from the session transcript, same cap.
+  brief?: string;
   // What the agent DID this run (parsed from its tool_use blocks) — real output,
   // not just spend. Lets "did squad X move its backlog?" be a query, not a guess.
   actions?: number;        // total tool calls (0 ≈ noise)
@@ -56,6 +84,14 @@ export interface ObservabilityRecord {
   // Quality scoring (from COO eval)
   grade?: string;                        // A/B/C/D/F
   grade_score?: number;                  // 0-100
+  // Row provenance (#1119): squads-cli dispatches vs Claude-harness sessions
+  // merged in from ~/.claude/projects transcripts at render time. Absent on
+  // rows written by this module (always a squads-cli dispatch) — callers that
+  // merge sources tag ledger rows 'ledger' explicitly.
+  source?: 'ledger' | 'claude-code' | 'opencode';
+  // True when cost_usd is a notional list-price estimate derived from raw
+  // token counts (no billing signal), not what execution-log.ts recorded.
+  cost_estimated?: boolean;
 }
 
 export interface QueryOptions {
@@ -144,12 +180,17 @@ function getLogPath(): string | null {
 
 interface SessionUsage {
   model: string;
+  /** Basename of the session JSONL this usage was read from (#1129). */
+  session_id: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd: number;
   messages: number;
+  // What the session's tool_use blocks show the agent DID (#1060). Absent when
+  // no tool calls were seen — consumers must treat that as unknown, not zero.
+  outcomes?: RunOutcomes;
 }
 
 /**
@@ -224,8 +265,10 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
     const content = readFileSync(sessionPath, 'utf-8');
     const lines = content.split('\n').filter(Boolean);
 
+    const basename = sessionPath.split('/').pop() || '';
     const usage: SessionUsage = {
       model: 'unknown',
+      session_id: basename.endsWith('.jsonl') ? basename.slice(0, -'.jsonl'.length) : basename,
       input_tokens: 0,
       output_tokens: 0,
       cache_read_tokens: 0,
@@ -233,6 +276,15 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
       cost_usd: 0,
       messages: 0,
     };
+
+    let outcomes = emptyOutcomes();
+    // cli#1134: Bash create commands (gh pr create / gh issue create / git
+    // commit) only mark their tool_use_id as a candidate here; the count comes
+    // from the paired tool_result on the later `user` event — a verified
+    // URL/SHA in a non-error result. Mirrors squads-api#207 / PR #220's
+    // _session_aggregate: counting the command text fabricated artifacts that
+    // were never created.
+    const pendingBash = new Map<string, BashOutcomeKind[]>();
 
     for (const line of lines) {
       try {
@@ -250,8 +302,29 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
             usage.cache_write_tokens += u.cache_creation_input_tokens || 0;
           }
 
+          if (Array.isArray(msg.content)) {
+            outcomes = addOutcomes(outcomes, parseOutcomes(msg.content as AssistantContentBlock[]));
+            for (const c of parseBashCandidates(msg.content as AssistantContentBlock[])) {
+              pendingBash.set(c.id, [...c.kinds]);
+            }
+          }
+
           if (!usage.model || usage.model === 'unknown') {
             usage.model = msg.model || 'unknown';
+          }
+        }
+
+        if (record.type === 'user') {
+          const msg = record.message || {};
+          for (const r of parseToolResultBlocks(msg.content)) {
+            const kinds = pendingBash.get(r.toolUseId);
+            pendingBash.delete(r.toolUseId);
+            if (kinds && !r.isError) {
+              const inc = resolveBashOutcome(r.text, kinds);
+              outcomes.commits += inc.commits;
+              outcomes.prs_created += inc.prs_created;
+              outcomes.issues_created += inc.issues_created;
+            }
           }
         }
 
@@ -263,6 +336,11 @@ function parseSessionUsage(sessionPath: string): SessionUsage | null {
     }
 
     if (usage.messages === 0) return null;
+
+    // Same convention as the detached path (spool.ts): zero actions is
+    // indistinguishable from a parse miss, so report outcomes only when the
+    // agent verifiably did something — absent means unknown, never fake zero.
+    if (outcomes.actions > 0) usage.outcomes = outcomes;
 
     // Calculate cost from tokens if not directly available
     if (usage.cost_usd === 0) {
@@ -478,10 +556,12 @@ async function pingIngestTrigger(): Promise<void> {
 
 export function logObservability(record: ObservabilityRecord): void {
   // Audit chain (#920): when this CLI process was itself spawned by an agent
-  // run, buildAgentEnv gave it the chain — stamp every record it writes.
-  // Explicit fields on the record win (callers that know better).
-  if (!record.root_run_id && process.env.SQUADS_ROOT_RUN_ID) {
-    record.root_run_id = process.env.SQUADS_ROOT_RUN_ID;
+  // run, buildAgentEnv gave it the chain; when it runs inside an interactive
+  // Claude Code session, the session IS the root (#1181). Explicit fields on
+  // the record win (callers that know better).
+  if (!record.root_run_id) {
+    const derived = deriveRootRunId();
+    if (derived) record.root_run_id = derived;
   }
   if (!record.parent_run_id && process.env.SQUADS_PARENT_RUN_ID) {
     record.parent_run_id = process.env.SQUADS_PARENT_RUN_ID;
@@ -504,6 +584,116 @@ export function logObservability(record: ObservabilityRecord): void {
   pushToBridge(record).catch(() => {});
   // Real-time ingest trigger: notify local squads-api immediately (fire-and-forget).
   pingIngestTrigger().catch(() => {});
+}
+
+// ── Run ledger (start events + fold + orphan reaper) ─────────────────
+//
+// The jsonl is an event log: a run appends a 'running' row at spawn and a
+// terminal row at exit, and its current state is the LAST row for its id.
+// This is what makes "what's running right now" answerable from the ledger
+// instead of from unreconciled per-agent markdown (the 191-zombie bug that
+// made `squads status` report 17 phantom running runs — cli#1142).
+
+/** Append a start event. Same sinks as any other record. */
+export function logRunStarted(rec: {
+  id: string;
+  squad: string;
+  agent: string;
+  provider: string;
+  model?: string;
+  trigger: ObservabilityRecord['trigger'];
+  pid?: number;
+  task?: string;
+  brief?: string;
+}): void {
+  logObservability({
+    ts: new Date().toISOString(),
+    id: rec.id,
+    squad: rec.squad,
+    agent: rec.agent,
+    provider: rec.provider,
+    model: rec.model,
+    trigger: rec.trigger,
+    status: 'running',
+    pid: rec.pid,
+    task: rec.task,
+    brief: rec.brief,
+    duration_ms: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cost_usd: 0,
+    context_tokens: 0,
+  });
+}
+
+/** Fold the event log: one record per id. Later rows win, with one state-
+ * machine rule on top: a terminal row is never overwritten by a 'running'
+ * row for the same id. Timestamps have millisecond resolution, so a start
+ * event and its terminal can tie — and a run never goes back to running. */
+export function foldExecutions(records: ObservabilityRecord[]): ObservabilityRecord[] {
+  const byId = new Map<string, ObservabilityRecord>();
+  // records arrive newest-first from queryExecutions — walk oldest-first so
+  // later rows naturally replace earlier ones.
+  for (let i = records.length - 1; i >= 0; i--) {
+    const rec = records[i];
+    const prev = byId.get(rec.id);
+    if (prev && prev.status !== 'running' && rec.status === 'running') continue;
+    byId.set(rec.id, rec);
+  }
+  return [...byId.values()];
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A pid-less running row can't be liveness-checked; give it the same grace
+// the API-side sweeper gives (longest legitimate run observed ~85min).
+const ORPHAN_PIDLESS_AFTER_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Reap running rows whose process is gone: append an 'orphaned' terminal
+ * event locally and report it to the API (fire-and-forget). Returns the
+ * folded, post-reap view so callers render truth in the same pass.
+ */
+export function reconcileOrphanedRuns(): ObservabilityRecord[] {
+  const folded = foldExecutions(queryExecutions());
+  const now = Date.now();
+
+  for (const rec of folded) {
+    if (rec.status !== 'running') continue;
+    const dead = rec.pid
+      ? !pidAlive(rec.pid)
+      : now - new Date(rec.ts).getTime() > ORPHAN_PIDLESS_AFTER_MS;
+    if (!dead) continue;
+
+    const orphanRow: ObservabilityRecord = {
+      ...rec,
+      ts: new Date().toISOString(),
+      status: 'orphaned',
+      duration_ms: Math.max(0, now - new Date(rec.ts).getTime()),
+      error: rec.pid
+        ? `orphaned: pid ${rec.pid} gone without a terminal report`
+        : 'orphaned: no pid and no terminal report within 3h',
+    };
+    logObservability(orphanRow);
+    rec.status = orphanRow.status;
+    rec.error = orphanRow.error;
+    // Mirror to the API so Postgres converges without waiting for its own
+    // 3h sweep. Lazy import avoids a cycle (api-client → auth → …).
+    void import('./api-client.js')
+      .then(m => m.reportExecutionComplete(rec.id, 'orphaned', { error: orphanRow.error, squad: rec.squad, agent: rec.agent }))
+      .catch(() => {});
+  }
+
+  return folded;
 }
 
 // ── Read ─────────────────────────────────────────────────────────────
@@ -652,9 +842,10 @@ export function calculateCostSummary(period: 'today' | '7d' | '30d' | 'all' = '7
     bySquad[r.squad].cost += r.cost_usd;
     bySquad[r.squad].runs += 1;
 
-    if (!byModel[r.model]) byModel[r.model] = { cost: 0, runs: 0 };
-    byModel[r.model].cost += r.cost_usd;
-    byModel[r.model].runs += 1;
+    const modelKey = r.model || 'unknown';
+    if (!byModel[modelKey]) byModel[modelKey] = { cost: 0, runs: 0 };
+    byModel[modelKey].cost += r.cost_usd;
+    byModel[modelKey].runs += 1;
   }
 
   for (const squad of Object.values(bySquad)) {

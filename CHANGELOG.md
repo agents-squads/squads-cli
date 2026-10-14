@@ -5,6 +5,86 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.10.0] — 2026-10-14
+
+Run agents on Claude and Anthropic-compatible providers, keep their work out of your checkout, and record what each run actually did.
+
+### Behavior changes — read before upgrading
+- **Auto-commit is opt-in and memory-only** (#1243). After a run, nothing is committed unless `SQUADS_AUTO_COMMIT=1`, and nothing is pushed unless `SQUADS_AUTO_PUSH=1` as well. When enabled, only `.agents/memory/<squad>/` is committed; your other changes, staged or not, are left alone. Commit subject is now `memory(<squad>/<agent>): …`. See `docs/configuration.md` → "Agent memory commits".
+- **Smaller default agent tool grants** (#1253). Agents without `tool_grants` no longer get `curl`, `docker`, `duckdb`, `bq`, `gcloud`, `gws` or `stripe`. Add what an agent needs under the new `extra_tools:` frontmatter key (bare command names only). See `docs/configuration.md` → "Agent tools".
+- **`squads memory sync --push`** commits only memory paths and pushes the current branch, never a hard-coded `main` (#1257). Run worktrees branch from the repo's own trunk: `develop` if it exists, else `origin/HEAD`, else `main`/`master` (#1257, #1274).
+- **Provider work is never merged into your checkout** — foreground or background (#1151). The detached path now matches the foreground one: agent work stays on its own branch. Lanes run in their own worktree from the repo's trunk, not your current `HEAD` (#1257); a per-run guard blocks writes aimed at your primary checkout, and a detached lane whose worktree can't be created stops instead of falling back to your checkout (#1168). Review agent branches through `squads inbox`.
+- **DeepSeek lanes run through the claude harness** on DeepSeek's Anthropic-compatible endpoint, replacing the aider delegation (#1163). They need the `claude` CLI installed; the generic `aider` lane remains.
+- **`--provider` beats the agent's frontmatter `provider:`** (#1139).
+- **`squads login` is hidden from `--help`** unless `SQUADS_AUTH_URL` is set; `--cloud` exits 1 at preflight ("Cloud dispatch requires login, which is not available in this build") when auth isn't configured. Personal email addresses are no longer rejected at signup (#1213).
+- **Environment files**: the CLI reads `.env` in the current directory and `~/.squads/.env` (shell > current directory > user; existing variables are never overridden). The probes for fixed sibling-directory `.env` paths are gone. Slack notifications go to `SQUADS_SLACK_CHANNEL` (#1236).
+- **`squads trigger`, `approval` and `deploy`** stop before any request with `<command> needs an API: set SQUADS_API_URL …` when no API URL is set; `deploy` also honours the config-file `api_url` (#1258).
+- **Bot identity** (commit author, `--author` PR filters) comes from your configured GitHub App, or your own git identity when there is none (#1255).
+- **Agent contracts**: credential names may be any environment-variable-shaped name (`^[A-Z][A-Z0-9_]*$`) instead of a fixed list; `squads review` decides a blocker "needs a human" by generic keywords in its text (`needs-human`, `owner`, …) instead of specific accounts (#1254).
+- **Context layers renumbered L0–L6**, configurable in `.agents/context-policy.yml` (#1193, #1195). `founder-context.md` / `founder-alignment.md` are no longer injected into runs, and runs no longer spawn a background digest job (#1190).
+- **Squad conversations stop on evidence, not prose**: `## STATUS: DONE` / `## VERDICT: APPROVED` only *propose* completion; the run converges when commits on the run branch, or a PR with green CI, confirm it (#1221, #1123).
+- **Inbox** item kinds are `pr`, `run_branch`, `run_artifacts`, `coherence` and `strategy_proposal`; coherence items derive from `SQUAD.md` and strategy only, and the inbox no longer runs workspace scripts (#1036, #1254).
+- **Run events**: `run_end.outcomes` is omitted when unknown instead of reporting zeros (#1069), and `model` is omitted instead of `"unknown"` (#1191, #1192). Event files gain optional v2 fields `source`, `provider`, `session_id`; v1 lines stay valid (#1161).
+- A squad with no role table now warns and exits 1 instead of running zero agents (#1200). `squads orchestrate` checks for `tmux` and exits 1 with install hints when it is missing (#1237).
+- New tagline: "Run squads of AI agents from your terminal — defined in markdown, tracked in git." The npm description, keywords, seed templates and in-product strings follow it; `squads init` commits as `feat: init agent squads` (#1226).
+- The guardrail template drops its `MultiEdit` deny rules — Claude Code folded MultiEdit into Edit, and the Edit/Write rules keep the same protection (#1061).
+
+### New commands
+- `squads plan --json` — the roadmap from a plan-of-record GitHub issue (`plan_issue` in `.squads/config.yml` or `SQUADS_PLAN_ISSUE`): rows, order, blockers and sub-issues; unconfigured prints `{"configured": false}`, and an unreachable GitHub falls back to the last cached read (#1282)
+- `squads domains [--days 7] --json` — per squad: goals (from memory `goals.md`), work delivered (merged PRs, closed issues) and work in flight, in one GitHub query; unreachable repos show as unknown, never zero (#1283)
+- `squads board [--date] [--json]` — a day's executions with per-run tokens and cost, live runs and the incoming queue; includes Claude Code sessions, with estimated costs marked `~` (#1117, #1120, #1122, #1136)
+- `squads runs --wait [<squad>[/<agent>]] [--json]` — block until a background run ends and print its summary; exits non-zero on error or after 40 minutes (#1115)
+- `squads brief` — morning catch-up from a connected instance: delivered, needs you, pending (#1105, #1108, #1112)
+- `squads report --for auditor --period 30d` — an evidence pack of what agents did, what it cost and who approved it, from local data (#1212)
+- `squads context --for <run|tick|session> [--json]` — the assembled context with a per-layer manifest (#1193)
+- `squads config use <env>` / `squads config show` (#1185)
+- `squads add <name> --mission "…" -y` — non-interactive squad creation (#1086)
+
+### Providers
+- **Provider registry**: an Anthropic-compatible provider is a few lines of YAML in `~/.squads/providers.yaml` (`harness`, `base_url`, `required_env`, `models`) — no CLI release needed (#1224). `harness: native` entries dispatch through a headless engine binary (`SQUADS_ENGINE_BIN`) — experimental (#1228, #1230).
+- Kimi (Moonshot) lane on the claude harness (#1206); opencode as a lane and as a fallback harness with full event parity (#1143, #1178)
+- GLM lanes get the compiled tool allowlist (they were read-only in print mode) and real token telemetry; foreign-model cost comes from `SQUADS_<PROVIDER>_COST_PER_MTOK_IN/OUT` (e.g. `SQUADS_DEEPSEEK_…`, `SQUADS_KIMI_…`) and shows as unpriced until set — never Claude list prices (#1078, #1085, #1102, #1206)
+- Every harness lane reports the same events, model and cost as a Claude lane (#1163, #1176, #1180, #1198)
+- Lane child processes get no ambient GitHub credentials (#1088); aider no longer edits the target repo's `.gitignore` (#1141)
+
+### Truthful runs
+- **Run ledger**: a start row at spawn and a terminal row at exit, folded per run id, with an orphan reaper backed by real process liveness — `squads status` stops counting dead runs as running (#1145, #1199)
+- Execution rows carry the task, the error and a result summary on success and failure (#1137, #1138, #1167), plus the Claude Code `session_id` (#1136) and a session-derived root for runs dispatched from a session (#1182, #1183)
+- Runs that end mid-turn, hit `error_max_turns`, or stop while waiting on their own background subagent are recorded as failed, not completed (#1137, #1149)
+- Harvest: a run that guts a file without replacing it is marked suspect and failed (#1079); harness-copied files are not mistaken for agent work (#1080)
+- Detached runs: done-files are claimed atomically so a run is never recorded twice (#1148); the whole wrapper logs to the lane log (#1172); spawn failures land in the log (#1162); pid/log files live in the squad's target repo (#1152)
+- Foreground runs report real outcomes parsed from the session (#1069) and print the memory growth at completion (#1204)
+- Background runs register with a connected instance and stream step events to it in batches; the local event file stays authoritative (#1109, #1144, #1161)
+- Outcome scorecards populate from settled records, so outcome-based routing works (#1217)
+
+### Routing and dispatch
+- Worktrees route to the repo a task names, within the squad's `also_owns` allowlist; an explicit `repo X` marker wins (#1094, #1096, #1173)
+- `--cloud` dispatch carries the task, timeout and skills (#1107)
+- Bot tokens re-mint on auth failure, so lanes longer than an hour still deliver (#1146); dispatch fails loud when a `gh`-granted background lane has no bot token (#1169)
+
+### Security
+- Setup guides print `set` / `not set`, never environment values (#1249)
+- Memory push uses an env-scoped credential helper — no token in `argv` (#1251)
+- Branch names used in commands are checked to be plain ref names; runs in a repo with no trunk base on `HEAD` (#1274)
+- Memory write paths are validated before any `mkdir`/write (#1171)
+- Dependency updates past open advisories (#1074, #1246); GitHub Actions pinned to commit SHAs with Dependabot updates (#1241)
+
+### Portability
+- No logic tied to the original team's repos, branch names, people or directory layout: attribution comes from each squad's `SQUAD.md` `repo:` (#1254, #1260, #1265)
+- Fixed silent failures from bare `require()` in the ESM bundle: memory recency ranking, session cwd detection, update checks (#1262)
+- Echo the canonical squad directory name in copy-paste commands (#1075); `squads doctor` counts only this project's running squads (#1063)
+- `squads memory read` shows learnings next to state; writes default to the roster's lead agent (#1072)
+
+### Docs and CI
+- `docs/commands.md` covers the full command surface (#1197); README shows a real demo transcript and states local-first and telemetry opt-out (`DO_NOT_TRACK=1` / `SQUADS_TELEMETRY_DISABLED=1`) honestly (#1062, #1066); plainer `--help` text (#1065)
+- Anonymous telemetry now sends a GA4 `session_id` and a once-per-install `first_open` event (#1215); opt out with `DO_NOT_TRACK=1` or `SQUADS_TELEMETRY_DISABLED=1`
+- First runs print no guardrail warnings (#1061); fleet budget keys `daily_budget_usd` / `monthly_budget_usd` (`SQUADS_DAILY_BUDGET_USD` / `SQUADS_MONTHLY_BUDGET_USD`) are read into config, not yet enforced (#1036)
+
+### Known issues
+- `squads runs --wait` matches `<squad>[/<agent>]` only, not execution ids, so two runs of the same agent can't be told apart — #1281
+- `squads inbox --json` can take close to a minute on orgs with many repos — #1278
+- Background runs write step events only when they exit; live progress for detached runs is tracked in #1275
+
 ## [0.9.0] — 2026-07-07
 
 The loop release: the CLI teaches the loop, presents it, and enforces its trust properties.

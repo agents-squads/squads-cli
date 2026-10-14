@@ -90,12 +90,15 @@ export function loadConfig(): SquadsConfig {
 
   try {
     const raw = readFileSync(CONFIG_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<SquadsConfig>;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
-      current: parsed.current || 'local',
+      // Spread everything from disk first so unknown/extra fields (email,
+      // future additions) survive a load → save cycle.
+      ...(parsed as unknown as SquadsConfig),
+      current: (parsed.current as string) || 'local',
       environments: {
         ...DEFAULT_CONFIG.environments,
-        ...parsed.environments,
+        ...(parsed.environments as Record<string, EnvironmentConfig> || {}),
       },
     };
   } catch {
@@ -135,8 +138,48 @@ export function getEnvName(): string {
   return process.env.SQUADS_ENV || config.current;
 }
 
+/**
+ * Switch the active environment. Validates that the name is a known key in
+ * the environments map. Returns `true` on success, throws on invalid name.
+ */
+export function switchEnv(name: string): SquadsConfig {
+  const config = loadConfig();
+  if (!config.environments[name]) {
+    const valid = Object.keys(config.environments).join(', ');
+    throw new Error(
+      `Unknown environment "${name}". Valid environments: ${valid}`,
+    );
+  }
+  config.current = name;
+  saveConfig(config);
+  return config;
+}
+
 export function getApiUrl(): string {
   return getEnv().api_url;
+}
+
+/**
+ * The API URL for a command that can do nothing without one — read at call
+ * time. When unset: names the variable to set, sets a failing exit code and
+ * returns null so the caller stops before any request.
+ */
+export function requireApiUrl(command: string, url: string = getApiUrl()): string | null {
+  if (url) return url;
+  console.error(`${command} needs an API: set SQUADS_API_URL to its base URL.`);
+  process.exitCode = 1;
+  return null;
+}
+
+/** Wrap a command action so it runs only when an API is configured (see requireApiUrl). */
+export function withApi<A extends unknown[]>(
+  command: string,
+  fn: (...args: A) => Promise<void>,
+): (...args: A) => Promise<void> {
+  return async (...args: A) => {
+    if (!requireApiUrl(command)) return;
+    await fn(...args);
+  };
 }
 
 // Bridge = the HTTP gateway fronting Postgres; clients speak HTTP, never touch the DB directly.

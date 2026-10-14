@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -112,5 +112,79 @@ describe('harvestProviderWork (#823 — executor output must never be lost)', ()
 
     expect(existsSync(workDir)).toBe(false);
     expect(git(`rev-list --count '${branch}'`, root)).toBe('2'); // base + wip
+  });
+
+  it('flags mass deletion without replacement as suspect — corrupted whole-file edit, not work (#1076)', async () => {
+    // Base repo gets a big file the "agent" then guts to a fragment (the
+    // observed aider failure: 826 lines → 6-line patch fragment, exit 0).
+    const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    writeFileSync(join(root, 'big.ts'), big);
+    git('add -A', root);
+    git('commit -m add-big', root);
+    // Recreate the worktree from the new HEAD so the fork point includes big.ts.
+    git(`worktree remove '${workDir}' --force`, root);
+    git(`branch -D '${branch}'`, root);
+    git(`worktree add '${workDir}' -b '${branch}' HEAD`, root);
+
+    writeFileSync(join(workDir, 'big.ts'), '// fragment\nconst x = 1;\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek',
+    });
+
+    expect(result.outcome).toBe('suspect');
+    if (result.outcome === 'suspect') {
+      expect(result.detail).toContain('big.ts');
+      expect(result.branch).toBe(branch);
+    }
+    // The branch still exists for review — flagged, never destroyed.
+    expect(git(`rev-list --count '${branch}' '^HEAD'`, root)).toBe('1');
+  });
+
+  it('does NOT flag a large rewrite that adds comparable volume back (refactor, not truncation)', async () => {
+    const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    writeFileSync(join(root, 'big.ts'), big);
+    git('add -A', root);
+    git('commit -m add-big', root);
+    git(`worktree remove '${workDir}' --force`, root);
+    git(`branch -D '${branch}'`, root);
+    git(`worktree add '${workDir}' -b '${branch}' HEAD`, root);
+
+    const rewrite = Array.from({ length: 180 }, (_, i) => `rewritten ${i}`).join('\n') + '\n';
+    writeFileSync(join(workDir, 'big.ts'), rewrite);
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek',
+    });
+
+    expect(result.outcome).toBe('branch-preserved');
+  });
+
+  it('reports nothing when only harness-copied furniture is dirty (#1070)', async () => {
+    // The harness cpSyncs .agents/ into the worktree for sandboxed providers;
+    // observed: dead GLM runs "preserved" branches containing only that copy.
+    mkdirSync(join(workDir, '.agents', 'observability'), { recursive: true });
+    writeFileSync(join(workDir, '.agents', 'observability', 'reviewed.jsonl'), '{}\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'glm',
+    }, ['.agents']);
+
+    expect(result.outcome).toBe('nothing');
+  });
+
+  it('harvests real work but keeps harness furniture out of the commit (#1070)', async () => {
+    mkdirSync(join(workDir, '.agents'), { recursive: true });
+    writeFileSync(join(workDir, '.agents', 'junk.json'), '{}\n');
+    writeFileSync(join(workDir, 'real-work.ts'), 'export const fix = true;\n');
+
+    const result = await harvestProviderWork(workDir, root, branch, {
+      squadName: 'testsquad', agentName: 'testagent', provider: 'glm',
+    }, ['.agents']);
+
+    expect(result.outcome).toBe('branch-preserved');
+    const files = git(`show --stat --format= '${branch}'`, root);
+    expect(files).toContain('real-work.ts');
+    expect(files).not.toContain('.agents');
   });
 });

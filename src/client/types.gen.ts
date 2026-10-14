@@ -193,6 +193,42 @@ export type ApprovalDecision = {
 };
 
 /**
+ * ArtifactIn
+ */
+export type ArtifactIn = {
+    /**
+     * Artifact Type
+     */
+    artifact_type: string;
+    /**
+     * Metadata
+     */
+    metadata?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Number
+     */
+    number: number;
+    /**
+     * Repo
+     */
+    repo: string;
+    /**
+     * State
+     */
+    state?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
+    /**
+     * Url
+     */
+    url?: string | null;
+};
+
+/**
  * BudgetUpdate
  */
 export type BudgetUpdate = {
@@ -831,6 +867,80 @@ export type HttpValidationError = {
 };
 
 /**
+ * KnowledgeItemIn
+ */
+export type KnowledgeItemIn = {
+    /**
+     * Content
+     */
+    content: string;
+    /**
+     * Domain
+     */
+    domain: string;
+    /**
+     * Key
+     */
+    key: string;
+    /**
+     * Metadata
+     */
+    metadata?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Scope
+     */
+    scope?: string | null;
+    /**
+     * Source Ref
+     */
+    source_ref?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
+};
+
+/**
+ * KnowledgeSourceIn
+ */
+export type KnowledgeSourceIn = {
+    /**
+     * Config
+     */
+    config?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Source Type
+     */
+    source_type: string;
+};
+
+/**
+ * LoginRequest
+ */
+export type LoginRequest = {
+    /**
+     * Email
+     */
+    email: string;
+    /**
+     * Password
+     */
+    password: string;
+};
+
+/**
  * MessageResponse
  */
 export type MessageResponse = {
@@ -1009,6 +1119,28 @@ export type PortalRequest = {
 };
 
 /**
+ * ProvenanceIn
+ */
+export type ProvenanceIn = {
+    /**
+     * Agent
+     */
+    agent?: string | null;
+    /**
+     * Run Id
+     */
+    run_id?: string | null;
+    /**
+     * Source
+     */
+    source?: string | null;
+    /**
+     * Squad
+     */
+    squad?: string | null;
+};
+
+/**
  * QueryRequest
  */
 export type QueryRequest = {
@@ -1040,6 +1172,22 @@ export type QueryRequest = {
      * Timedimensions
      */
     timeDimensions?: Array<TimeDimension>;
+};
+
+/**
+ * RowIn
+ */
+export type RowIn = {
+    /**
+     * Content
+     */
+    content: {
+        [key: string]: unknown;
+    };
+    /**
+     * Key
+     */
+    key: string;
 };
 
 /**
@@ -1457,75 +1605,15 @@ export type TriggerCreate = {
 };
 
 /**
- * TriggerResponse
+ * TriggerRequest
+ *
+ * Optional body — source tag is logged for observability only.
  */
-export type TriggerResponse = {
+export type TriggerRequest = {
     /**
-     * Agent
+     * Source
      */
-    agent: string | null;
-    /**
-     * Condition
-     */
-    condition: string;
-    /**
-     * Context Template
-     */
-    context_template: {
-        [key: string]: unknown;
-    };
-    /**
-     * Cooldown
-     */
-    cooldown: string;
-    /**
-     * Created At
-     */
-    created_at: string;
-    /**
-     * Description
-     */
-    description: string | null;
-    /**
-     * Enabled
-     */
-    enabled: boolean;
-    /**
-     * Eval Schedule
-     */
-    eval_schedule: string;
-    /**
-     * Fire Count
-     */
-    fire_count: number;
-    /**
-     * Id
-     */
-    id: string;
-    /**
-     * Last Evaluated
-     */
-    last_evaluated: string | null;
-    /**
-     * Last Fired
-     */
-    last_fired: string | null;
-    /**
-     * Max Concurrent
-     */
-    max_concurrent: number;
-    /**
-     * Name
-     */
-    name: string;
-    /**
-     * Priority
-     */
-    priority: number;
-    /**
-     * Squad
-     */
-    squad: string;
+    source?: string | null;
 };
 
 /**
@@ -1616,6 +1704,43 @@ export type TurnMessageUuids = {
      * Human Message Uuid
      */
     human_message_uuid: string;
+};
+
+/**
+ * UpsertRowsRequest
+ */
+export type UpsertRowsRequest = {
+    provenance?: ProvenanceIn;
+    /**
+     * Rows
+     */
+    rows: Array<RowIn>;
+};
+
+/**
+ * UpsertRowsResponse
+ */
+export type UpsertRowsResponse = {
+    /**
+     * Dataset
+     */
+    dataset: string;
+    /**
+     * Inserted
+     */
+    inserted: number;
+    /**
+     * Total Rows
+     */
+    total_rows: number;
+    /**
+     * Unchanged
+     */
+    unchanged: number;
+    /**
+     * Updated
+     */
+    updated: number;
 };
 
 /**
@@ -1776,9 +1901,17 @@ export type RoutersExecutionsExecutionResponse = {
         [key: string]: unknown;
     } | null;
     /**
+     * Cost Usd
+     */
+    cost_usd?: number | null;
+    /**
      * Created At
      */
     created_at?: string | null;
+    /**
+     * Duration Seconds
+     */
+    duration_seconds?: number | null;
     /**
      * Error
      */
@@ -1786,13 +1919,21 @@ export type RoutersExecutionsExecutionResponse = {
     /**
      * Id
      */
-    id: number;
+    id: string;
+    /**
+     * Model
+     */
+    model?: string | null;
     /**
      * Result
      */
     result?: {
         [key: string]: unknown;
     } | null;
+    /**
+     * Source
+     */
+    source?: string | null;
     /**
      * Squad
      */
@@ -1813,6 +1954,20 @@ export type RoutersExecutionsExecutionResponse = {
      * Trigger Name
      */
     trigger_name?: string | null;
+};
+
+/**
+ * TriggerResponse
+ */
+export type RoutersIngestTriggerResponse = {
+    /**
+     * Deferred
+     */
+    deferred: boolean;
+    /**
+     * Job Id
+     */
+    job_id?: number | null;
 };
 
 /**
@@ -1865,6 +2020,78 @@ export type RoutersTriggersExecutionResponse = {
      * Trigger Id
      */
     trigger_id: string;
+};
+
+/**
+ * TriggerResponse
+ */
+export type RoutersTriggersTriggerResponse = {
+    /**
+     * Agent
+     */
+    agent: string | null;
+    /**
+     * Condition
+     */
+    condition: string;
+    /**
+     * Context Template
+     */
+    context_template: {
+        [key: string]: unknown;
+    };
+    /**
+     * Cooldown
+     */
+    cooldown: string;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Description
+     */
+    description: string | null;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * Eval Schedule
+     */
+    eval_schedule: string;
+    /**
+     * Fire Count
+     */
+    fire_count: number;
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Last Evaluated
+     */
+    last_evaluated: string | null;
+    /**
+     * Last Fired
+     */
+    last_fired: string | null;
+    /**
+     * Max Concurrent
+     */
+    max_concurrent: number;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Priority
+     */
+    priority: number;
+    /**
+     * Squad
+     */
+    squad: string;
 };
 
 export type CreateDispatchAgentDispatchPostData = {
@@ -2570,6 +2797,47 @@ export type DecideApprovalApprovalsApprovalIdDecidePostResponses = {
     200: unknown;
 };
 
+export type DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetData = {
+    body?: never;
+    path: {
+        /**
+         * Approval Id
+         */
+        approval_id: string;
+    };
+    query: {
+        /**
+         * Action
+         */
+        action: string;
+        /**
+         * Exp
+         */
+        exp: number;
+        /**
+         * Sig
+         */
+        sig: string;
+    };
+    url: '/approvals/{approval_id}/decide-link';
+};
+
+export type DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetError = DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetErrors[keyof DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetErrors];
+
+export type DecideViaSignedLinkApprovalsApprovalIdDecideLinkGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type WaitForApprovalApprovalsApprovalIdWaitGetData = {
     body?: never;
     path: {
@@ -2732,6 +3000,29 @@ export type GoogleAuthCallbackAuthGoogleCallbackGetErrors = {
 export type GoogleAuthCallbackAuthGoogleCallbackGetError = GoogleAuthCallbackAuthGoogleCallbackGetErrors[keyof GoogleAuthCallbackAuthGoogleCallbackGetErrors];
 
 export type GoogleAuthCallbackAuthGoogleCallbackGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type LoginAuthLoginPostData = {
+    body: LoginRequest;
+    path?: never;
+    query?: never;
+    url: '/auth/login';
+};
+
+export type LoginAuthLoginPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LoginAuthLoginPostError = LoginAuthLoginPostErrors[keyof LoginAuthLoginPostErrors];
+
+export type LoginAuthLoginPostResponses = {
     /**
      * Successful Response
      */
@@ -3449,6 +3740,99 @@ export type GetTodaySummaryCostsSummaryTodayGetResponses = {
      */
     200: unknown;
 };
+
+export type GetDatasetsDatasetsGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/datasets';
+};
+
+export type GetDatasetsDatasetsGetResponses = {
+    /**
+     * Response Get Datasets Datasets Get
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type GetDatasetsDatasetsGetResponse = GetDatasetsDatasetsGetResponses[keyof GetDatasetsDatasetsGetResponses];
+
+export type GetRowsDatasetsNameRowsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Name
+         */
+        name: string;
+    };
+    query?: {
+        /**
+         * Limit
+         */
+        limit?: number;
+        /**
+         * Offset
+         */
+        offset?: number;
+    };
+    url: '/datasets/{name}/rows';
+};
+
+export type GetRowsDatasetsNameRowsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetRowsDatasetsNameRowsGetError = GetRowsDatasetsNameRowsGetErrors[keyof GetRowsDatasetsNameRowsGetErrors];
+
+export type GetRowsDatasetsNameRowsGetResponses = {
+    /**
+     * Response Get Rows Datasets  Name  Rows Get
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type GetRowsDatasetsNameRowsGetResponse = GetRowsDatasetsNameRowsGetResponses[keyof GetRowsDatasetsNameRowsGetResponses];
+
+export type PushRowsDatasetsNameRowsPostData = {
+    body: UpsertRowsRequest;
+    path: {
+        /**
+         * Name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/datasets/{name}/rows';
+};
+
+export type PushRowsDatasetsNameRowsPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PushRowsDatasetsNameRowsPostError = PushRowsDatasetsNameRowsPostErrors[keyof PushRowsDatasetsNameRowsPostErrors];
+
+export type PushRowsDatasetsNameRowsPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: UpsertRowsResponse;
+};
+
+export type PushRowsDatasetsNameRowsPostResponse = PushRowsDatasetsNameRowsPostResponses[keyof PushRowsDatasetsNameRowsPostResponses];
 
 export type ListDomainsDomainsGetData = {
     body?: never;
@@ -4604,7 +4988,7 @@ export type GetExecutionExecutionsExecutionIdGetData = {
         /**
          * Execution Id
          */
-        execution_id: number;
+        execution_id: string;
     };
     query?: never;
     url: '/executions/{execution_id}';
@@ -4634,7 +5018,7 @@ export type GetExecutionArtifactsExecutionsExecutionIdArtifactsGetData = {
         /**
          * Execution Id
          */
-        execution_id: number;
+        execution_id: string;
     };
     query?: never;
     url: '/executions/{execution_id}/artifacts';
@@ -4654,6 +5038,34 @@ export type GetExecutionArtifactsExecutionsExecutionIdArtifactsGetResponses = {
      * Successful Response
      */
     200: unknown;
+};
+
+export type AddExecutionArtifactExecutionsExecutionIdArtifactsPostData = {
+    body: ArtifactIn;
+    path: {
+        /**
+         * Execution Id
+         */
+        execution_id: string;
+    };
+    query?: never;
+    url: '/executions/{execution_id}/artifacts';
+};
+
+export type AddExecutionArtifactExecutionsExecutionIdArtifactsPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AddExecutionArtifactExecutionsExecutionIdArtifactsPostError = AddExecutionArtifactExecutionsExecutionIdArtifactsPostErrors[keyof AddExecutionArtifactExecutionsExecutionIdArtifactsPostErrors];
+
+export type AddExecutionArtifactExecutionsExecutionIdArtifactsPostResponses = {
+    /**
+     * Successful Response
+     */
+    201: unknown;
 };
 
 export type ListGoogleInstallationsGoogleInstallationsGetData = {
@@ -4883,6 +5295,319 @@ export type HealthCheckHealthGetResponses = {
      */
     200: unknown;
 };
+
+export type TriggerIngestIngestTriggerPostData = {
+    /**
+     * Body
+     */
+    body?: TriggerRequest | null;
+    path?: never;
+    query?: never;
+    url: '/ingest/trigger';
+};
+
+export type TriggerIngestIngestTriggerPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TriggerIngestIngestTriggerPostError = TriggerIngestIngestTriggerPostErrors[keyof TriggerIngestIngestTriggerPostErrors];
+
+export type TriggerIngestIngestTriggerPostResponses = {
+    /**
+     * Successful Response
+     */
+    202: RoutersIngestTriggerResponse;
+};
+
+export type TriggerIngestIngestTriggerPostResponse = TriggerIngestIngestTriggerPostResponses[keyof TriggerIngestIngestTriggerPostResponses];
+
+export type ListKnowledgeKnowledgeGetData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Domain
+         */
+        domain?: string | null;
+        /**
+         * Scope
+         */
+        scope?: string | null;
+        /**
+         * Active Only
+         */
+        active_only?: boolean;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/knowledge';
+};
+
+export type ListKnowledgeKnowledgeGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListKnowledgeKnowledgeGetError = ListKnowledgeKnowledgeGetErrors[keyof ListKnowledgeKnowledgeGetErrors];
+
+export type ListKnowledgeKnowledgeGetResponses = {
+    /**
+     * Response List Knowledge Knowledge Get
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type ListKnowledgeKnowledgeGetResponse = ListKnowledgeKnowledgeGetResponses[keyof ListKnowledgeKnowledgeGetResponses];
+
+export type KnowledgeHistoryKnowledgeHistoryItemIdGetData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: number;
+    };
+    query?: {
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/knowledge/history/{item_id}';
+};
+
+export type KnowledgeHistoryKnowledgeHistoryItemIdGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type KnowledgeHistoryKnowledgeHistoryItemIdGetError = KnowledgeHistoryKnowledgeHistoryItemIdGetErrors[keyof KnowledgeHistoryKnowledgeHistoryItemIdGetErrors];
+
+export type KnowledgeHistoryKnowledgeHistoryItemIdGetResponses = {
+    /**
+     * Response Knowledge History Knowledge History  Item Id  Get
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type KnowledgeHistoryKnowledgeHistoryItemIdGetResponse = KnowledgeHistoryKnowledgeHistoryItemIdGetResponses[keyof KnowledgeHistoryKnowledgeHistoryItemIdGetResponses];
+
+export type IngestAllKnowledgeIngestPostData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/knowledge/ingest';
+};
+
+export type IngestAllKnowledgeIngestPostResponses = {
+    /**
+     * Response Ingest All Knowledge Ingest Post
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type IngestAllKnowledgeIngestPostResponse = IngestAllKnowledgeIngestPostResponses[keyof IngestAllKnowledgeIngestPostResponses];
+
+export type IngestOneKnowledgeIngestSourceNamePostData = {
+    body?: never;
+    path: {
+        /**
+         * Source Name
+         */
+        source_name: string;
+    };
+    query?: never;
+    url: '/knowledge/ingest/{source_name}';
+};
+
+export type IngestOneKnowledgeIngestSourceNamePostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type IngestOneKnowledgeIngestSourceNamePostError = IngestOneKnowledgeIngestSourceNamePostErrors[keyof IngestOneKnowledgeIngestSourceNamePostErrors];
+
+export type IngestOneKnowledgeIngestSourceNamePostResponses = {
+    /**
+     * Response Ingest One Knowledge Ingest  Source Name  Post
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type IngestOneKnowledgeIngestSourceNamePostResponse = IngestOneKnowledgeIngestSourceNamePostResponses[keyof IngestOneKnowledgeIngestSourceNamePostResponses];
+
+export type UpsertKnowledgeItemKnowledgeItemsPostData = {
+    body: KnowledgeItemIn;
+    path?: never;
+    query?: never;
+    url: '/knowledge/items';
+};
+
+export type UpsertKnowledgeItemKnowledgeItemsPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpsertKnowledgeItemKnowledgeItemsPostError = UpsertKnowledgeItemKnowledgeItemsPostErrors[keyof UpsertKnowledgeItemKnowledgeItemsPostErrors];
+
+export type UpsertKnowledgeItemKnowledgeItemsPostResponses = {
+    /**
+     * Response Upsert Knowledge Item Knowledge Items Post
+     *
+     * Successful Response
+     */
+    201: {
+        [key: string]: unknown;
+    };
+};
+
+export type UpsertKnowledgeItemKnowledgeItemsPostResponse = UpsertKnowledgeItemKnowledgeItemsPostResponses[keyof UpsertKnowledgeItemKnowledgeItemsPostResponses];
+
+export type DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: number;
+    };
+    query?: never;
+    url: '/knowledge/items/{item_id}';
+};
+
+export type DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteError = DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteErrors[keyof DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteErrors];
+
+export type DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteResponses = {
+    /**
+     * Response Deactivate Knowledge Item Knowledge Items  Item Id  Delete
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteResponse = DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteResponses[keyof DeactivateKnowledgeItemKnowledgeItemsItemIdDeleteResponses];
+
+export type GetKnowledgeItemKnowledgeItemsItemIdGetData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: number;
+    };
+    query?: never;
+    url: '/knowledge/items/{item_id}';
+};
+
+export type GetKnowledgeItemKnowledgeItemsItemIdGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetKnowledgeItemKnowledgeItemsItemIdGetError = GetKnowledgeItemKnowledgeItemsItemIdGetErrors[keyof GetKnowledgeItemKnowledgeItemsItemIdGetErrors];
+
+export type GetKnowledgeItemKnowledgeItemsItemIdGetResponses = {
+    /**
+     * Response Get Knowledge Item Knowledge Items  Item Id  Get
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetKnowledgeItemKnowledgeItemsItemIdGetResponse = GetKnowledgeItemKnowledgeItemsItemIdGetResponses[keyof GetKnowledgeItemKnowledgeItemsItemIdGetResponses];
+
+export type ListSourcesKnowledgeSourcesGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/knowledge/sources';
+};
+
+export type ListSourcesKnowledgeSourcesGetResponses = {
+    /**
+     * Response List Sources Knowledge Sources Get
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type ListSourcesKnowledgeSourcesGetResponse = ListSourcesKnowledgeSourcesGetResponses[keyof ListSourcesKnowledgeSourcesGetResponses];
+
+export type CreateSourceKnowledgeSourcesPostData = {
+    body: KnowledgeSourceIn;
+    path?: never;
+    query?: never;
+    url: '/knowledge/sources';
+};
+
+export type CreateSourceKnowledgeSourcesPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateSourceKnowledgeSourcesPostError = CreateSourceKnowledgeSourcesPostErrors[keyof CreateSourceKnowledgeSourcesPostErrors];
+
+export type CreateSourceKnowledgeSourcesPostResponses = {
+    /**
+     * Response Create Source Knowledge Sources Post
+     *
+     * Successful Response
+     */
+    201: {
+        [key: string]: unknown;
+    };
+};
+
+export type CreateSourceKnowledgeSourcesPostResponse = CreateSourceKnowledgeSourcesPostResponses[keyof CreateSourceKnowledgeSourcesPostResponses];
 
 export type GetRelevantLearningsLearningsRelevantGetData = {
     body?: never;
@@ -5589,7 +6314,7 @@ export type CreateTriggerTriggersPostResponses = {
     /**
      * Successful Response
      */
-    201: TriggerResponse;
+    201: RoutersTriggersTriggerResponse;
 };
 
 export type CreateTriggerTriggersPostResponse = CreateTriggerTriggersPostResponses[keyof CreateTriggerTriggersPostResponses];
@@ -5675,7 +6400,7 @@ export type GetTriggerTriggersTriggerIdGetResponses = {
     /**
      * Successful Response
      */
-    200: TriggerResponse;
+    200: RoutersTriggersTriggerResponse;
 };
 
 export type GetTriggerTriggersTriggerIdGetResponse = GetTriggerTriggersTriggerIdGetResponses[keyof GetTriggerTriggersTriggerIdGetResponses];
@@ -5705,7 +6430,7 @@ export type UpdateTriggerTriggersTriggerIdPatchResponses = {
     /**
      * Successful Response
      */
-    200: TriggerResponse;
+    200: RoutersTriggersTriggerResponse;
 };
 
 export type UpdateTriggerTriggersTriggerIdPatchResponse = UpdateTriggerTriggersTriggerIdPatchResponses[keyof UpdateTriggerTriggersTriggerIdPatchResponses];
@@ -5765,7 +6490,7 @@ export type ToggleTriggerTriggersTriggerIdTogglePostResponses = {
     /**
      * Successful Response
      */
-    200: TriggerResponse;
+    200: RoutersTriggersTriggerResponse;
 };
 
 export type ToggleTriggerTriggersTriggerIdTogglePostResponse = ToggleTriggerTriggersTriggerIdTogglePostResponses[keyof ToggleTriggerTriggersTriggerIdTogglePostResponses];

@@ -43,7 +43,7 @@ export interface InitOptions {
   pack?: string[];
 }
 
-type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'none';
+type Provider = 'claude' | 'gemini' | 'openai' | 'ollama' | 'cursor' | 'aider' | 'opencode' | 'none';
 
 type UseCase = 'engineering' | 'marketing' | 'growth' | 'operations' | 'full-company' | 'custom';
 
@@ -328,7 +328,7 @@ async function prompt(question: string, defaultValue = ''): Promise<string> {
 
 // CLI-based providers, in preference order — used to auto-pick a provider
 // headless when the caller didn't force one (#977).
-const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider'];
+const CLI_PROVIDER_PRIORITY: Provider[] = ['claude', 'gemini', 'ollama', 'aider', 'opencode'];
 
 /**
  * Headless (non-interactive, no --provider) provider resolution.
@@ -458,7 +458,7 @@ export function commitInitScaffold(cwd: string): void {
 
   const identity = gitIdentityArgs(cwd);
   execSync(
-    `git ${identity} commit -q -m "feat: init AI workforce\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
+    `git ${identity} commit -q -m "feat: init agent squads\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`,
     { cwd, stdio: 'pipe' }
   );
 }
@@ -471,7 +471,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 1. Welcome
   writeLine();
-  writeLine(chalk.bold('  Plant the seed for your AI workforce'));
+  writeLine(chalk.bold('  Plant the seed for your squads'));
   writeLine(chalk.dim('  https://agents-squads.com/docs/getting-started'));
   writeLine();
 
@@ -851,6 +851,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
         '# Telemetry',
         'telemetry: true',
         '',
+        '# Plan of record — the tracking issue `squads plan` reads as the roadmap',
+        '# Its body needs an "## Order" table (one row per deliverable).',
+        '# plan_issue: owner/repo#123',
+        '',
       ].join('\n');
       await fs.writeFile(configYmlPath, configContent);
     }
@@ -1004,7 +1008,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // 6. Success message
   writeLine();
-  writeLine(chalk.green.bold(`  ${businessName}'s AI workforce is ready.`));
+  writeLine(chalk.green.bold(`  ${businessName}'s squads are ready.`));
   writeLine();
   writeLine(chalk.dim('  Created:'));
 
@@ -1038,7 +1042,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   // Dynamic first-run suggestion based on use case
   const firstRun = getFirstRunCommand(selectedUseCase);
-  const firstRunCmd = `squads run ${firstRun.squad} -a ${firstRun.agent}`;
+  const firstRunCmd = `squads run ${firstRun.squad}/${firstRun.agent}`;
   writeLine(`  ${chalk.green('→')} Run your first real agent:`);
   writeLine(`     ${chalk.yellow(firstRunCmd)}`);
   writeLine();
@@ -1047,6 +1051,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   writeLine();
   writeLine(`  ${chalk.dim('Telemetry: anonymous usage events (install id, command names, versions, error classes —')}`);
   writeLine(`  ${chalk.dim('never file contents, paths, or personal data) help us fix what breaks first.')}`);
+  writeLine(`  ${chalk.dim('Opt out any time: DO_NOT_TRACK=1 or SQUADS_TELEMETRY_DISABLED=1')}`);
   writeLine();
 
   // 7. Opt-in email capture for founder outreach

@@ -71,7 +71,10 @@ const _MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
 const DEFAULT_DAILY_BUDGET = 200.0;
 const DEFAULT_DAILY_CALL_LIMIT = 1000; // Default API call limit per day
-const BRIDGE_URL = getEnv().bridge_url;
+/** Bridge URL, read per call so SQUADS_BRIDGE_URL / `config use` set after import apply. */
+function bridgeUrl(): string {
+  return getEnv().bridge_url;
+}
 const FETCH_TIMEOUT_MS = 2000; // 2 second timeout for all fetch calls
 
 /**
@@ -102,7 +105,7 @@ function calcCost(model: string, inputTokens: number, outputTokens: number): num
  */
 async function fetchFromBridge(period: 'day' | 'week' | 'month' = 'day'): Promise<CostSummary | null> {
   try {
-    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=${period}`, {
+    const response = await fetchWithTimeout(`${bridgeUrl()}/api/cost/summary?period=${period}`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -451,16 +454,16 @@ export async function fetchBridgeStats(): Promise<BridgeStats | null> {
 
     // Fetch ALL endpoints in parallel (4 requests -> 1 round trip)
     const [statsResponse, healthResponse, costResponse, weekResponse] = await Promise.all([
-      fetchWithTimeout(`${BRIDGE_URL}/stats`, {
+      fetchWithTimeout(`${bridgeUrl()}/stats`, {
         headers: { 'Content-Type': 'application/json' },
       }),
-      fetchWithTimeout(`${BRIDGE_URL}/health`, {
+      fetchWithTimeout(`${bridgeUrl()}/health`, {
         headers: { 'Content-Type': 'application/json' },
       }),
-      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=day`, {
+      fetchWithTimeout(`${bridgeUrl()}/api/cost/summary?period=day`, {
         headers: { 'Content-Type': 'application/json' },
       }),
-      fetchWithTimeout(`${BRIDGE_URL}/api/cost/summary?period=week`, {
+      fetchWithTimeout(`${bridgeUrl()}/api/cost/summary?period=week`, {
         headers: { 'Content-Type': 'application/json' },
       }),
     ]);
@@ -538,7 +541,7 @@ export interface QuotaInfo {
 
 export async function fetchQuotaInfo(): Promise<QuotaInfo | null> {
   try {
-    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/autonomy/score`);
+    const response = await fetchWithTimeout(`${bridgeUrl()}/api/autonomy/score`);
     if (!response.ok) return null;
 
     const data = await response.json() as {
@@ -593,7 +596,7 @@ export interface RateLimits {
  */
 export async function fetchRateLimits(): Promise<RateLimits> {
   try {
-    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/rate-limits`, {
+    const response = await fetchWithTimeout(`${bridgeUrl()}/api/rate-limits`, {
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -694,7 +697,7 @@ export interface Insights {
  */
 export async function fetchInsights(period: 'day' | 'week' | 'month' = 'week'): Promise<Insights> {
   try {
-    const response = await fetchWithTimeout(`${BRIDGE_URL}/api/insights?period=${period}`, {
+    const response = await fetchWithTimeout(`${bridgeUrl()}/api/insights?period=${period}`, {
       headers: { 'Content-Type': 'application/json' },
     });
 

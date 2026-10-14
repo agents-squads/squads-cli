@@ -6,9 +6,8 @@
  * state management, scoring, cooldowns, and post-run reactions.
  */
 
-import { createHash } from 'crypto';
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -18,7 +17,8 @@ import {
 } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { getOutcomeScoreModifier } from './outcomes.js';
-import { ingestMemorySignal } from './api-client.js';
+import { isSlackConfigured, slackApi } from './slack.js';
+import { botAuthorArg, getBotLoginSync } from './github.js';
 import {
   colors,
   RESET,
@@ -65,10 +65,6 @@ export interface PRWithReviews {
   comments: ReviewComment[];
 }
 
-export type MemoryFileType = 'state' | 'learnings' | 'executions' | 'events' | 'directives';
-
-export const INGESTIBLE_FILES: MemoryFileType[] = ['state', 'learnings', 'executions'];
-
 // ── Loop State ───────────────────────────────────────────────────────
 
 const STATE_DIR = join(homedir(), '.squads', 'daemon');
@@ -86,7 +82,6 @@ export interface LoopState {
     durationMs: number;
   }>;
   failCounts: Record<string, number>; // squad:agent → consecutive failures
-  memoryHashes: Record<string, string>; // squad/agent/file_type → content hash
   cooldowns: Record<string, number>; // squad:agent → timestamp of last dispatch
 }
 
@@ -97,7 +92,6 @@ export function defaultState(): LoopState {
     dailyCostDate: new Date().toISOString().slice(0, 10),
     recentRuns: [],
     failCounts: {},
-    memoryHashes: {},
     cooldowns: {},
   };
 }
@@ -109,7 +103,6 @@ export function loadLoopState(): LoopState {
     const raw = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
     // Ensure new fields exist for backward compatibility
     if (!raw.cooldowns) raw.cooldowns = {};
-    if (!raw.memoryHashes) raw.memoryHashes = {};
     return raw as LoopState;
   } catch {
     return defaultState();
@@ -401,10 +394,10 @@ export function scoreSquads(
         score -= 10 * failures;
       }
 
-      const outcomeModifier = getOutcomeScoreModifier(squadName, agentForStaleness);
-      if (outcomeModifier !== 0) {
-        score += outcomeModifier;
-        reason += ` (outcome: ${outcomeModifier > 0 ? '+' : ''}${outcomeModifier})`;
+      const outcomeResult = getOutcomeScoreModifier(squadName, agentForStaleness);
+      if (outcomeResult.modifier !== 0) {
+        score += outcomeResult.modifier;
+        reason += ` (outcome: ${outcomeResult.modifier > 0 ? '+' : ''}${outcomeResult.modifier}: ${outcomeResult.reason})`;
       }
 
       if (score > 0 && (issues.length > 0 || !repo)) {
@@ -492,9 +485,10 @@ export function getPRsWithReviewFeedback(
   repo: string,
   ghEnv: Record<string, string> = {},
 ): PRWithReviews[] {
+  const botLogin = getBotLoginSync();
   try {
     const prsRaw = execSync(
-      `gh pr list -R ${repo} --state open --author "agents-squads[bot]" --json number,title,headRefName --limit 10`,
+      `gh pr list -R ${repo} --state open${botAuthorArg()} --json number,title,headRefName --limit 10`,
       { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...ghEnv } },
     );
     const prs = JSON.parse(prsRaw) as Array<{ number: number; title: string; headRefName: string }>;
@@ -519,7 +513,7 @@ export function getPRsWithReviewFeedback(
           if (!line.trim()) continue;
           try {
             const comment = JSON.parse(line) as ReviewComment;
-            if (comment.author === 'agents-squads[bot]') continue;
+            if (botLogin && comment.author === botLogin) continue;
             comments.push(comment);
           } catch {
             continue;
@@ -570,114 +564,18 @@ export function buildReviewTask(pr: PRWithReviews): string {
 
 // ── Slack ────────────────────────────────────────────────────────────
 
+/**
+ * Post a daemon/escalation message to Slack. Best-effort and opt-in: does nothing
+ * unless both SLACK_BOT_TOKEN and SQUADS_SLACK_CHANNEL (a channel or user ID) are set.
+ */
 export async function slackNotify(message: string): Promise<void> {
+  const channel = process.env.SQUADS_SLACK_CHANNEL;
+  if (!channel || !isSlackConfigured()) return;
+
   try {
-    const envPath = join(homedir(), 'agents-squads', 'hq', '.env');
-    if (!existsSync(envPath)) return;
-
-    const env = readFileSync(envPath, 'utf-8');
-    const tokenMatch = env.match(/SLACK_BOT_TOKEN=(.+)/);
-    if (!tokenMatch) return;
-
-    const token = tokenMatch[1].trim();
-    const founderId = 'U0A6NQ3U0JG';
-
-    await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ channel: founderId, text: message }),
-      signal: AbortSignal.timeout(10000),
-    });
+    await slackApi('POST', 'chat.postMessage', { channel, text: message }, 10000);
   } catch {
     // Silent — Slack is best-effort
-  }
-}
-
-// ── Memory ingestion ─────────────────────────────────────────────────
-
-/**
- * Push changed memory files to the cognition engine.
- * Reads agent memory files (state, learnings, executions) for squads that ran,
- * computes content hash, and POSTs to API if changed since last push.
- * Fire-and-forget — never blocks the cycle.
- */
-export async function pushMemorySignals(
-  squads: string[],
-  state: LoopState,
-  verbose: boolean,
-): Promise<void> {
-  const memDir = findMemoryDir();
-  if (!memDir) return;
-
-  // Initialize memoryHashes if missing (backward compat with old state files)
-  if (!state.memoryHashes) {
-    state.memoryHashes = {};
-  }
-
-  const promises: Promise<void>[] = [];
-
-  for (const squad of squads) {
-    const squadPath = join(memDir, squad);
-    if (!existsSync(squadPath)) continue;
-
-    let agents: string[];
-    try {
-      agents = readdirSync(squadPath, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => e.name);
-    } catch {
-      continue;
-    }
-
-    for (const agent of agents) {
-      for (const fileType of INGESTIBLE_FILES) {
-        const filePath = join(squadPath, agent, `${fileType}.md`);
-        if (!existsSync(filePath)) continue;
-
-        let content: string;
-        try {
-          content = readFileSync(filePath, 'utf-8');
-        } catch {
-          continue;
-        }
-
-        if (!content.trim()) continue;
-
-        const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
-        const key = `${squad}/${agent}/${fileType}`;
-
-        if (state.memoryHashes[key] === hash) continue;
-
-        const p = ingestMemorySignal({
-          squad,
-          agent,
-          file_type: fileType,
-          content,
-          content_hash: hash,
-        }).then((result) => {
-          if (result) {
-            state.memoryHashes[key] = hash;
-            if (verbose && result.status === 'ingested') {
-              writeLine(`  ${colors.dim}Memory: ${key} → ${result.signals_created || 0} signals${RESET}`);
-            }
-          }
-        }).catch(() => {
-          // Silent — memory ingestion is best-effort
-        });
-
-        promises.push(p);
-      }
-    }
-  }
-
-  if (promises.length > 0) {
-    await Promise.race([
-      Promise.allSettled(promises),
-      new Promise<void>(resolve => setTimeout(resolve, 10000)),
-    ]);
   }
 }
 

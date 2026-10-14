@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -301,6 +301,215 @@ describe('executions', () => {
       const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
       expect(formatRelativeTime(twoDaysAgo)).toBe('2d ago');
     });
+  });
+});
+
+// ── #889: zombie "running" entry cleanup ─────────────────────────────────
+import { tombstoneZombieRuns, logExecution } from '../src/lib/execution-log.js';
+
+describe('tombstoneZombieRuns (#889)', () => {
+  beforeEach(() => {
+    // Create test directory structure (separate scope from executions describe block)
+    mkdirSync(join(MEMORY_DIR, 'cli', 'code-eval'), { recursive: true });
+  });
+  it('returns 0 when no execution log exists', () => {
+    const count = tombstoneZombieRuns('cli', 'nonexistent-agent');
+    expect(count).toBe(0);
+  });
+
+  it('returns 0 when log has no running entries', () => {
+    const logContent = `# cli/code-eval - Execution Log
+
+---
+<!-- exec:exec_completed -->
+**2026-01-08T10:00:00.000Z** | Status: completed
+- ID: \`exec_completed\`
+- Trigger: manual
+- Task Type: evaluation
+- Completed: 2026-01-08T10:05:00.000Z
+- Duration: 300.0s
+
+---
+<!-- exec:exec_failed -->
+**2026-01-08T11:00:00.000Z** | Status: failed
+- ID: \`exec_failed\`
+- Trigger: manual
+- Task Type: evaluation
+- Completed: 2026-01-08T11:05:00.000Z
+- Duration: 300.0s
+- Error: something broke
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), logContent);
+
+    const count = tombstoneZombieRuns('cli', 'code-eval');
+    expect(count).toBe(0);
+
+    // Verify content unchanged
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), 'utf-8');
+    expect(after).toBe(logContent);
+  });
+
+  it('tombstones a single zombie running entry', () => {
+    const logContent = `# cli/code-eval - Execution Log
+
+---
+<!-- exec:exec_running -->
+**2026-01-08T10:00:00.000Z** | Status: running
+- ID: \`exec_running\`
+- Trigger: manual
+- Task Type: evaluation
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), logContent);
+
+    const count = tombstoneZombieRuns('cli', 'code-eval');
+    expect(count).toBe(1);
+
+    // Verify the entry was tombstoned
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), 'utf-8');
+    expect(after).not.toContain('Status: running');
+    expect(after).toContain('Status: failed');
+    expect(after).toContain('zombie entry');
+    expect(after).toContain('- Completed:');
+    expect(after).toContain('- Duration: unknown');
+    expect(after).toContain('- Error: zombie entry');
+  });
+
+  it('tombstones multiple zombie running entries', () => {
+    const logContent = `# cli/code-eval - Execution Log
+
+---
+<!-- exec:exec_1 -->
+**2026-01-08T10:00:00.000Z** | Status: running
+- ID: \`exec_1\`
+- Trigger: manual
+- Task Type: evaluation
+
+---
+<!-- exec:exec_2 -->
+**2026-01-08T11:00:00.000Z** | Status: running
+- ID: \`exec_2\`
+- Trigger: manual
+- Task Type: evaluation
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), logContent);
+
+    const count = tombstoneZombieRuns('cli', 'code-eval');
+    expect(count).toBe(2);
+
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), 'utf-8');
+    // Both entries should be fixed
+    expect(after.match(/Status: failed/g)).toHaveLength(2);
+    expect(after.match(/zombie entry/g)).toHaveLength(2);
+  });
+
+  it('preserves completed and failed entries alongside zombies', () => {
+    const logContent = `# cli/code-eval - Execution Log
+
+---
+<!-- exec:exec_ok -->
+**2026-01-08T10:00:00.000Z** | Status: completed
+- ID: \`exec_ok\`
+- Trigger: manual
+- Task Type: evaluation
+- Completed: 2026-01-08T10:05:00.000Z
+- Duration: 300.0s
+
+---
+<!-- exec:exec_zombie -->
+**2026-01-08T11:00:00.000Z** | Status: running
+- ID: \`exec_zombie\`
+- Trigger: manual
+- Task Type: evaluation
+
+---
+<!-- exec:exec_bad -->
+**2026-01-08T12:00:00.000Z** | Status: failed
+- ID: \`exec_bad\`
+- Trigger: manual
+- Task Type: evaluation
+- Completed: 2026-01-08T12:05:00.000Z
+- Duration: 300.0s
+- Error: bad data
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), logContent);
+
+    const count = tombstoneZombieRuns('cli', 'code-eval');
+    expect(count).toBe(1);
+
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), 'utf-8');
+
+    // Completed entry should be untouched (no tombstone text)
+    expect(after).toContain('Status: completed');
+    expect(after.match(/Status: completed/g)).toHaveLength(1);
+
+    // Failed entry should keep its original error message
+    expect(after).toContain('bad data');
+
+    // Zombie should be tombstoned
+    expect(after).toContain('zombie entry');
+    expect(after).toContain('Duration: unknown');
+
+    // Verify only the one zombie entry has "zombie entry" text
+    expect(after.match(/zombie entry/g)).toHaveLength(1);
+  });
+
+  it('handles legacy format entries without exec: markers', () => {
+    // Legacy format has no <!-- exec:ID --> marker
+    const logContent = `# cli/code-eval - Execution Log
+
+---
+**2026-01-08T10:00:00.000Z** | Status: running
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), logContent);
+
+    const count = tombstoneZombieRuns('cli', 'code-eval');
+    expect(count).toBe(1);
+
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'code-eval', 'executions.md'), 'utf-8');
+    expect(after).not.toContain('Status: running');
+    expect(after).toContain('Status: failed');
+    expect(after).toContain('zombie entry');
+  });
+
+  it('is called automatically by logExecution before writing a new entry', () => {
+    // Set up a log with a zombie entry
+    mkdirSync(join(MEMORY_DIR, 'cli', 'zombie-test'), { recursive: true });
+    const logContent = `# cli/zombie-test - Execution Log
+
+---
+<!-- exec:exec_old_zombie -->
+**2026-01-08T10:00:00.000Z** | Status: running
+- ID: \`exec_old_zombie\`
+- Trigger: manual
+- Task Type: evaluation
+`;
+    writeFileSync(join(MEMORY_DIR, 'cli', 'zombie-test', 'executions.md'), logContent);
+
+    // Log a new execution — this should trigger tombstoneZombieRuns
+    logExecution({
+      squadName: 'cli',
+      agentName: 'zombie-test',
+      executionId: 'exec_new',
+      startTime: '2026-07-22T12:00:00.000Z',
+      status: 'running',
+      trigger: 'manual',
+      taskType: 'execution',
+    });
+
+    // Read and verify
+    const after = readFileSync(join(MEMORY_DIR, 'cli', 'zombie-test', 'executions.md'), 'utf-8');
+
+    // Old zombie should be tombstoned
+    expect(after).toContain('Status: failed');
+    expect(after).toContain('zombie entry');
+
+    // New entry should exist and be running
+    expect(after).toContain('exec_new');
+    expect(after).toContain('Status: running');
+
+    // Verify exactly one "Status: running" (the new entry)
+    const runningMatches = after.match(/Status: running/g);
+    expect(runningMatches).toHaveLength(1);
   });
 });
 

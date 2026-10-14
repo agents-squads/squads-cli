@@ -7,7 +7,7 @@ Starter squads, building your own, customizing context layers, and secrets.
 The first experience matters. Rather than shipping an empty framework and
 asking you to figure out what to build, `squads init` ships with 4 squads
 designed to deliver visible output from the very first run. These aren't
-demo squads — they're the foundation of an operational AI workforce.
+demo squads — they're the foundation of operational squads.
 
 | Squad | What It Does | Agents |
 |-------|-------------|--------|
@@ -71,7 +71,7 @@ What is the #1 priority right now? What metric are you optimizing?
 What constraints apply? What should agents NOT do?
 ```
 
-Falls back to `memory/company/directives.md` or `.agents/company.md` if `strategy.md` doesn't exist.
+Falls back in order (first non-empty wins): `strategy.md` → `.agents/company.md` (legacy primary) → `memory/company/directives.md` (legacy, backward compat).
 
 ### 3. Squad Goals (what each team does)
 
@@ -99,6 +99,43 @@ you actually need.
 git workflow, memory protocol, output standards. You rarely need to change
 this, but you can customize it for your team's conventions.
 
+## Agent tools
+
+Agents are granted a minimal toolchain by default: `git`, `gh`, `npm`, `node`
+(plus `npx`, `python3`, `bash`/`sh` for helper scripts, basic file and shell
+utilities, and the `squads` CLI). Nothing else on your machine is callable
+until you opt in.
+
+Opt in per agent with `extra_tools` in the agent file's frontmatter. Each entry
+is a bare command name and is added to the defaults (you do not restate them):
+
+```yaml
+---
+role: worker
+extra_tools: [gws, wrangler]
+---
+```
+
+This grants `Bash(gws:*)` and `Bash(wrangler:*)` to that agent only. Suggested
+tools, never granted unless you list them:
+
+| Tool | CLI for |
+|------|---------|
+| `gws` | Google Workspace |
+| `gcloud` | Google Cloud |
+| `wrangler` | Cloudflare |
+| `bq` | BigQuery |
+| `stripe` | Stripe |
+| `docker` | Docker |
+| `duckdb` | DuckDB |
+| `curl` | HTTP requests |
+
+Any other CLI works the same way. Entries must be plain command names;
+anything with spaces, parentheses, colons, globs or shell characters is
+ignored. For full control, declare `tool_grants` instead (see
+[agent-contract.md](agent-contract.md)); `extra_tools` is appended to that list
+too.
+
 ## Secrets
 
 Agents need API keys to execute. Squads reads secrets from a `.env` file
@@ -112,9 +149,58 @@ ANTHROPIC_API_KEY=sk-ant-...    # Required for Claude Code (default provider)
 GEMINI_API_KEY=...               # Required for Gemini CLI
 OPENAI_API_KEY=sk-...            # Required for Codex
 GITHUB_TOKEN=ghp_...             # Recommended for gh CLI operations
+
+# Optional: daemon escalations and summaries to Slack (both required)
+SLACK_BOT_TOKEN=xoxb-...
+SQUADS_SLACK_CHANNEL=C0123456789  # a channel ID, or a user ID for DMs
 ```
 
-`squads run` loads `.env` automatically before dispatching any agent.
+`squads` loads the `.env` in the current directory and then the user-level
+`~/.squads/.env` (handy for keys you share across projects). A key set in both
+takes the project value; a variable already exported in your shell wins over both.
 If a required key is missing, the provider's CLI will report the error —
 Squads doesn't mask or intercept auth failures. Add `.env` to your
 `.gitignore` to keep secrets out of version control.
+
+## GitHub App (optional)
+
+By default Squads uses your own `gh` login and git identity. To have agents open
+PRs and commit as a GitHub App instead, create
+`~/.squads/secrets/github-app.json`:
+
+```json
+{
+  "app_id": 123456,
+  "installation_id": 7890123,
+  "pem_path": "~/.squads/secrets/my-app.pem",
+  "bot_name": "my-app[bot]",
+  "bot_email": "111111+my-app[bot]@users.noreply.github.com"
+}
+```
+
+`app_id`, `installation_id` and `pem_path` (the App's private key) are required.
+`bot_name` and `bot_email` are optional: when omitted, Squads derives them from
+the App (`GET /app` gives the slug; the identity is `<slug>[bot]` and
+`<id>+<slug>[bot]@users.noreply.github.com`) and caches the result in
+`~/.squads/cache/github-app-identity.json`. `bot_name` doubles as the login used
+for `gh ... --author` filters. With no App configured, commits keep your own
+git identity and those filters use `@me`.
+
+## Agent memory commits
+
+Agents work in their own git worktree and keep their memory in `.agents/memory/<squad>/`
+of your checkout. Squads never commits or pushes it unless you opt in:
+
+```bash
+SQUADS_AUTO_COMMIT=1   # after a successful run, commit .agents/memory/<squad>/ only
+SQUADS_AUTO_PUSH=1     # also push that commit (requires SQUADS_AUTO_COMMIT=1)
+```
+
+`.agents/memory/<squad>/` is the only path Squads commits — your other changes, staged
+or not, are left alone (edits you made yourself inside that squad's memory folder are
+included). `SQUADS_AUTO_PUSH` pushes your current branch, so any other unpushed commits
+on it go too. Without the opt-in, the run ends by telling you where the memory changed.
+
+`squads memory sync --push` does the same for all of `.agents/memory/`: it commits only
+that folder and pushes your current branch. With both variables set, `squads memory sync`
+pushes without the flag. Its pull step rebases your current branch onto its upstream.

@@ -272,45 +272,78 @@ describe('detectConvergence', () => {
     expect(result.reason).toContain('Cost ceiling');
   });
 
-  it('converges when convergence phrase detected', () => {
+  // Prose no longer converges anything (spec convergence-by-artifact-2026-08-13).
+  // These previously asserted the opposite — they encoded the trust model we
+  // thought we had, which is exactly how cli#873 shipped.
+
+  it('does NOT converge on a completion phrase — prose is not evidence', () => {
     const t = makeTranscript([{ agent: 'worker', role: 'worker', content: 'PR created. Session complete.' }]);
     const result = detectConvergence(t, 20, 25);
-    expect(result.converged).toBe(true);
+    expect(result.converged).toBe(false);
+    expect(result.state).toBe('continue');
   });
 
-  it('continues when continuation phrase detected (beats convergence)', () => {
-    const t = makeTranscript([{ agent: 'worker', role: 'worker', content: 'PR created but still needs review and more work.' }]);
+  it('does NOT converge on an incidental mention of passing tests', () => {
+    const t = makeTranscript([
+      { agent: 'worker', role: 'worker', content: 'I need to make sure tests pass before merging.' },
+    ]);
     const result = detectConvergence(t, 20, 25);
     expect(result.converged).toBe(false);
-    expect(result.reason).toContain('Continuation');
+    expect(result.state).toBe('continue');
   });
 
-  it('converges when lead signals completion', () => {
-    const t = makeTranscript([{ agent: 'lead', role: 'lead', content: 'All work is done. Session is complete.' }]);
+  it('lead STATUS: DONE only PROPOSES — never converges on its own', () => {
+    const t = makeTranscript([{ agent: 'lead', role: 'lead', content: '## STATUS: DONE' }]);
     const result = detectConvergence(t, 20, 25);
-    expect(result.converged).toBe(true);
+    expect(result.state).toBe('proposed');
+    expect(result.converged).toBe(false);
     expect(result.reason).toContain('Lead signaled');
   });
 
-  it('converges when verifier approves', () => {
-    const t = makeTranscript([{ agent: 'verifier', role: 'verifier', content: 'LGTM. All tests pass.' }]);
+  it('verifier VERDICT: APPROVED only PROPOSES', () => {
+    const t = makeTranscript([{ agent: 'verifier', role: 'verifier', content: '## VERDICT: APPROVED' }]);
     const result = detectConvergence(t, 20, 25);
-    expect(result.converged).toBe(true);
-    expect(result.reason).toContain('Verifier approved');
+    expect(result.state).toBe('proposed');
+    expect(result.converged).toBe(false);
   });
 
-  it('continues when verifier rejects', () => {
-    const t = makeTranscript([{ agent: 'verifier', role: 'verifier', content: 'Tests failed. Needs fixes.' }]);
+  it('verifier VERDICT: REJECTED continues the cycle', () => {
+    const t = makeTranscript([{ agent: 'verifier', role: 'verifier', content: '## VERDICT: REJECTED' }]);
     const result = detectConvergence(t, 20, 25);
     expect(result.converged).toBe(false);
+    expect(result.state).toBe('continue');
     expect(result.reason).toContain('Verifier rejected');
   });
 
-  it('continues when no signals detected', () => {
+  it('BLOCKED is terminal but NOT success (cli#1154)', () => {
+    const t = makeTranscript([{ agent: 'worker', role: 'worker', content: 'BLOCKED: need git push approval' }]);
+    const result = detectConvergence(t, 20, 25);
+    expect(result.state).toBe('blocked');
+    expect(result.converged).toBe(false);
+  });
+
+  it('a DONE claim contradicted by the agent own handoff does not propose (#990)', () => {
+    const t = makeTranscript([{
+      agent: 'worker', role: 'worker',
+      content: '## HANDOFF\ncompleted: some of it\nundone: the migration\ncommands: `npm test` -> 1\n\n## STATUS: DONE',
+    }]);
+    const result = detectConvergence(t, 20, 25);
+    expect(result.state).toBe('continue');
+    expect(result.reason).toContain('contradicted');
+  });
+
+  it('behaves identically in Spanish — no language in the decision path', () => {
+    const en = makeTranscript([{ agent: 'lead', role: 'lead', content: 'All work is done. Session complete.' }]);
+    const es = makeTranscript([{ agent: 'lead', role: 'lead', content: 'Todo el trabajo esta listo. Sesion completa.' }]);
+    expect(detectConvergence(en, 20, 25).state).toBe(detectConvergence(es, 20, 25).state);
+    expect(detectConvergence(es, 20, 25).converged).toBe(false);
+  });
+
+  it('continues when no marker is present', () => {
     const t = makeTranscript([{ agent: 'worker', role: 'worker', content: 'Here is my analysis of the situation.' }]);
     const result = detectConvergence(t, 20, 25);
     expect(result.converged).toBe(false);
-    expect(result.reason).toContain('No signals');
+    expect(result.state).toBe('continue');
   });
 });
 

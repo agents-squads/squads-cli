@@ -13,7 +13,7 @@ Starter squad — proves your setup works in under 30 seconds.
 
 | Agent | Role | Purpose |
 |-------|------|---------|
-| hello-world | lead | Confirms your AI workforce is online and ready |
+| hello-world | lead | Confirms your squads are online and ready |
 
 ## Usage
 

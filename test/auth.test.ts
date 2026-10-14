@@ -3,7 +3,7 @@ import { existsSync, unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  isPersonalEmail,
+  isAuthConfigured,
   getEmailDomain,
   saveSession,
   loadSession,
@@ -13,73 +13,33 @@ import {
 } from '../src/lib/auth.js';
 
 describe('auth utilities', () => {
-  describe('isPersonalEmail', () => {
-    it('rejects gmail.com', () => {
-      expect(isPersonalEmail('user@gmail.com')).toBe(true);
+  describe('isAuthConfigured', () => {
+    const original = process.env.SQUADS_AUTH_URL;
+
+    afterEach(() => {
+      // Restore — never leak env state across tests.
+      if (original === undefined) delete process.env.SQUADS_AUTH_URL;
+      else process.env.SQUADS_AUTH_URL = original;
     });
 
-    it('rejects googlemail.com', () => {
-      expect(isPersonalEmail('user@googlemail.com')).toBe(true);
+    it('returns false when SQUADS_AUTH_URL is unset', () => {
+      delete process.env.SQUADS_AUTH_URL;
+      expect(isAuthConfigured()).toBe(false);
     });
 
-    it('rejects yahoo.com', () => {
-      expect(isPersonalEmail('user@yahoo.com')).toBe(true);
+    it('returns false when SQUADS_AUTH_URL is empty', () => {
+      process.env.SQUADS_AUTH_URL = '';
+      expect(isAuthConfigured()).toBe(false);
     });
 
-    it('rejects yahoo regional domains', () => {
-      expect(isPersonalEmail('user@yahoo.co.uk')).toBe(true);
-      expect(isPersonalEmail('user@yahoo.fr')).toBe(true);
+    it('returns false when SQUADS_AUTH_URL is whitespace-only', () => {
+      process.env.SQUADS_AUTH_URL = '   ';
+      expect(isAuthConfigured()).toBe(false);
     });
 
-    it('rejects hotmail.com', () => {
-      expect(isPersonalEmail('user@hotmail.com')).toBe(true);
-    });
-
-    it('rejects outlook.com', () => {
-      expect(isPersonalEmail('user@outlook.com')).toBe(true);
-    });
-
-    it('rejects live.com', () => {
-      expect(isPersonalEmail('user@live.com')).toBe(true);
-    });
-
-    it('rejects icloud.com', () => {
-      expect(isPersonalEmail('user@icloud.com')).toBe(true);
-    });
-
-    it('rejects protonmail.com', () => {
-      expect(isPersonalEmail('user@protonmail.com')).toBe(true);
-    });
-
-    it('rejects proton.me', () => {
-      expect(isPersonalEmail('user@proton.me')).toBe(true);
-    });
-
-    it('rejects hey.com', () => {
-      expect(isPersonalEmail('user@hey.com')).toBe(true);
-    });
-
-    it('accepts business domains', () => {
-      expect(isPersonalEmail('user@acme.com')).toBe(false);
-      expect(isPersonalEmail('user@company.io')).toBe(false);
-      expect(isPersonalEmail('user@startup.co')).toBe(false);
-    });
-
-    it('accepts agents-squads.com', () => {
-      expect(isPersonalEmail('user@agents-squads.com')).toBe(false);
-    });
-
-    it('handles uppercase domains', () => {
-      expect(isPersonalEmail('user@GMAIL.COM')).toBe(true);
-      expect(isPersonalEmail('user@Gmail.Com')).toBe(true);
-    });
-
-    it('returns false for invalid email without @', () => {
-      expect(isPersonalEmail('invalid')).toBe(false);
-    });
-
-    it('returns false for empty string', () => {
-      expect(isPersonalEmail('')).toBe(false);
+    it('returns true when SQUADS_AUTH_URL is set', () => {
+      process.env.SQUADS_AUTH_URL = 'https://auth.example.com';
+      expect(isAuthConfigured()).toBe(true);
     });
   });
 

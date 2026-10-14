@@ -118,9 +118,9 @@ export function readGuardrailPermissions(guardrailPath: string | undefined): unk
  * Follow the pointer to the real per-worktree git dir; on any failure fall
  * back to a tmpdir rather than take the spawn down.
  */
-export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
-  let target = dir;
+export function resolveSettingsDir(dir: string): string {
   try {
+    let target = dir;
     if (existsSync(dir) && !statSync(dir).isDirectory()) {
       const pointer = readFileSync(dir, 'utf-8').match(/^gitdir:\s*(.+)\s*$/m);
       if (!pointer) throw new Error(`${dir} exists but is not a directory or gitdir pointer`);
@@ -128,9 +128,14 @@ export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir:
       target = isAbsolute(gitDir) ? gitDir : join(dirname(dir), gitDir);
     }
     mkdirSync(target, { recursive: true });
+    return target;
   } catch {
-    target = mkdtempSync(join(tmpdir(), 'squads-sandbox-'));
+    return mkdtempSync(join(tmpdir(), 'squads-sandbox-'));
   }
+}
+
+export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
+  const target = resolveSettingsDir(dir);
   const path = join(target, 'squads-sandbox-settings.json');
   writeFileSync(path, JSON.stringify(settings, null, 2));
   return path;

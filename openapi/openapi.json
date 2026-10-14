@@ -330,6 +330,68 @@
         "title": "ApprovalDecision",
         "type": "object"
       },
+      "ArtifactIn": {
+        "properties": {
+          "artifact_type": {
+            "title": "Artifact Type",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Metadata",
+            "type": "object"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "artifact_type",
+          "repo",
+          "number"
+        ],
+        "title": "ArtifactIn",
+        "type": "object"
+      },
       "BudgetUpdate": {
         "properties": {
           "alert_threshold_pct": {
@@ -1416,6 +1478,116 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "KnowledgeItemIn": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "domain",
+          "key",
+          "content"
+        ],
+        "title": "KnowledgeItemIn",
+        "type": "object"
+      },
+      "KnowledgeSourceIn": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source_type"
+        ],
+        "title": "KnowledgeSourceIn",
+        "type": "object"
+      },
+      "LoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "type": "object"
+      },
       "MessageResponse": {
         "properties": {
           "content": {
@@ -1732,6 +1904,57 @@
         "title": "PortalRequest",
         "type": "object"
       },
+      "ProvenanceIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "squad": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Squad"
+          }
+        },
+        "title": "ProvenanceIn",
+        "type": "object"
+      },
       "QueryRequest": {
         "properties": {
           "cube": {
@@ -1783,6 +2006,26 @@
           "cube"
         ],
         "title": "QueryRequest",
+        "type": "object"
+      },
+      "RowIn": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "content"
+        ],
+        "title": "RowIn",
         "type": "object"
       },
       "SlackMessageCreate": {
@@ -2487,9 +2730,11 @@
         "title": "TriggerCreate",
         "type": "object"
       },
-      "TriggerResponse": {
+      "TriggerRequest": {
+        "additionalProperties": false,
+        "description": "Optional body \u2014 source tag is logged for observability only.",
         "properties": {
-          "agent": {
+          "source": {
             "anyOf": [
               {
                 "type": "string"
@@ -2498,114 +2743,10 @@
                 "type": "null"
               }
             ],
-            "title": "Agent"
-          },
-          "condition": {
-            "title": "Condition",
-            "type": "string"
-          },
-          "context_template": {
-            "additionalProperties": true,
-            "title": "Context Template",
-            "type": "object"
-          },
-          "cooldown": {
-            "title": "Cooldown",
-            "type": "string"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "eval_schedule": {
-            "title": "Eval Schedule",
-            "type": "string"
-          },
-          "fire_count": {
-            "title": "Fire Count",
-            "type": "integer"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "last_evaluated": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Evaluated"
-          },
-          "last_fired": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Fired"
-          },
-          "max_concurrent": {
-            "title": "Max Concurrent",
-            "type": "integer"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "priority": {
-            "title": "Priority",
-            "type": "integer"
-          },
-          "squad": {
-            "title": "Squad",
-            "type": "string"
+            "title": "Source"
           }
         },
-        "required": [
-          "id",
-          "name",
-          "description",
-          "squad",
-          "agent",
-          "condition",
-          "eval_schedule",
-          "priority",
-          "cooldown",
-          "max_concurrent",
-          "context_template",
-          "enabled",
-          "last_evaluated",
-          "last_fired",
-          "fire_count",
-          "created_at"
-        ],
-        "title": "TriggerResponse",
+        "title": "TriggerRequest",
         "type": "object"
       },
       "TriggerSyncItem": {
@@ -2768,6 +2909,60 @@
           "assistant_message_uuid"
         ],
         "title": "TurnMessageUuids",
+        "type": "object"
+      },
+      "UpsertRowsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "provenance": {
+            "$ref": "#/components/schemas/ProvenanceIn"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RowIn"
+            },
+            "minItems": 1,
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "UpsertRowsRequest",
+        "type": "object"
+      },
+      "UpsertRowsResponse": {
+        "properties": {
+          "dataset": {
+            "title": "Dataset",
+            "type": "string"
+          },
+          "inserted": {
+            "title": "Inserted",
+            "type": "integer"
+          },
+          "total_rows": {
+            "title": "Total Rows",
+            "type": "integer"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "integer"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dataset",
+          "total_rows",
+          "inserted",
+          "updated",
+          "unchanged"
+        ],
+        "title": "UpsertRowsResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -3044,6 +3239,17 @@
             ],
             "title": "Context"
           },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -3055,6 +3261,17 @@
               }
             ],
             "title": "Created At"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
           },
           "error": {
             "anyOf": [
@@ -3069,7 +3286,18 @@
           },
           "id": {
             "title": "Id",
-            "type": "integer"
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           },
           "result": {
             "anyOf": [
@@ -3082,6 +3310,17 @@
               }
             ],
             "title": "Result"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "squad": {
             "anyOf": [
@@ -3138,6 +3377,30 @@
           "status"
         ],
         "title": "ExecutionResponse",
+        "type": "object"
+      },
+      "routers__ingest__TriggerResponse": {
+        "properties": {
+          "deferred": {
+            "title": "Deferred",
+            "type": "boolean"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          }
+        },
+        "required": [
+          "deferred"
+        ],
+        "title": "TriggerResponse",
         "type": "object"
       },
       "routers__triggers__ExecutionResponse": {
@@ -3246,6 +3509,127 @@
           "error"
         ],
         "title": "ExecutionResponse",
+        "type": "object"
+      },
+      "routers__triggers__TriggerResponse": {
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "condition": {
+            "title": "Condition",
+            "type": "string"
+          },
+          "context_template": {
+            "additionalProperties": true,
+            "title": "Context Template",
+            "type": "object"
+          },
+          "cooldown": {
+            "title": "Cooldown",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "eval_schedule": {
+            "title": "Eval Schedule",
+            "type": "string"
+          },
+          "fire_count": {
+            "title": "Fire Count",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_evaluated": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Evaluated"
+          },
+          "last_fired": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fired"
+          },
+          "max_concurrent": {
+            "title": "Max Concurrent",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "squad": {
+            "title": "Squad",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "squad",
+          "agent",
+          "condition",
+          "eval_schedule",
+          "priority",
+          "cooldown",
+          "max_concurrent",
+          "context_template",
+          "enabled",
+          "last_evaluated",
+          "last_fired",
+          "fire_count",
+          "created_at"
+        ],
+        "title": "TriggerResponse",
         "type": "object"
       }
     },
@@ -4543,6 +4927,74 @@
         ]
       }
     },
+    "/approvals/{approval_id}/decide-link": {
+      "get": {
+        "description": "Decide an approval from a signed digest link (C2a, company-os \u00a7Identity).\n\nAuth is the HMAC token itself \u2014 scoped to (approval_id, action), expiring,\nrevocable by rotating APPROVAL_LINK_SECRET. Single-use falls out of the\nalready-decided guard. Returns HTML because the caller is an email click.",
+        "operationId": "decide_via_signed_link_approvals__approval_id__decide_link_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "title": "Action",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Via Signed Link",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/approvals/{approval_id}/wait": {
       "get": {
         "description": "Long-poll until decision or timeout. Tenant-scoped for user callers.",
@@ -4820,6 +5272,46 @@
         "summary": "Google Auth Callback",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "description": "Authenticate with email + password.\n\nOn success: sets httpOnly Secure SameSite=Lax session cookie (30d)\nand returns the user object. Token is stored hashed in user_sessions.\n\nError shapes:\n  401 {\"detail\": \"Invalid email or password\"}\n  429 {\"detail\": \"Too many login attempts. Retry after N seconds\",\n       \"retry_after\": N}",
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "auth-local"
         ]
       }
     },
@@ -6126,6 +6618,157 @@
         ]
       }
     },
+    "/datasets": {
+      "get": {
+        "description": "List all datasets with row counts and last_changed timestamp.\n\nOpen in SQUADS_ENV=development (auth middleware passes GET /datasets* through).\nRequires X-API-Key in production.",
+        "operationId": "get_datasets_datasets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Datasets Datasets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Datasets",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
+    "/datasets/{name}/rows": {
+      "get": {
+        "description": "Read rows from dataset *name* with limit/offset pagination.\n\nNOTE: Minimal read path for local tooling and smoke tests.\nThe A7 federation layer (squads-api#89 follow-up PR) supersedes this\nfor cross-dataset analytics and semantic queries.\n\nReturns [] if the dataset does not exist (non-error, idempotent).",
+        "operationId": "get_rows_datasets__name__rows_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Rows Datasets  Name  Rows Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Rows",
+        "tags": [
+          "datasets"
+        ]
+      },
+      "post": {
+        "description": "Upsert a batch of rows into dataset *name*.\n\n- New key \u2192 inserted + snapshot recorded\n- Existing key with changed content \u2192 updated + snapshot recorded\n- Existing key with same content \u2192 unchanged (last_seen touched only)\n\nBatch limit: 5 000 rows per request (HTTP 413 if exceeded).\nDataset name must match ^[a-z][a-z0-9_]{1,62}$.",
+        "operationId": "push_rows_datasets__name__rows_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertRowsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsertRowsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Push Rows",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
     "/domains": {
       "get": {
         "description": "Per-domain summary cards for the cockpit home grid (over the semantic layer).",
@@ -6160,7 +6803,7 @@
     },
     "/domains/query": {
       "post": {
-        "description": "Run an ad-hoc Cube-shaped query against a declared cube.",
+        "description": "Run an ad-hoc Cube-shaped query against a declared cube. Requires viewer role.\n\nRoutes by the cube's `storage` hint:\n  \"postgres\"   \u2192 asyncpg pool (existing path)\n  \"warehouse\"  \u2192 DuckDB warehouse file (ds_* tables)\n  \"federated\"  \u2192 DuckDB + postgres_scanner ATTACH",
         "operationId": "query_domain_route_domains_query_post",
         "requestBody": {
           "content": {
@@ -6209,7 +6852,7 @@
     },
     "/domains/schema": {
       "get": {
-        "description": "Introspection: domains \u2192 cubes \u2192 measures/dimensions.",
+        "description": "Introspection: domains \u2192 cubes \u2192 measures/dimensions. Requires viewer role.",
         "operationId": "domains_schema_domains_schema_get",
         "responses": {
           "200": {
@@ -6225,6 +6868,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
         "summary": "Domains Schema",
         "tags": [
           "domains"
@@ -8222,7 +8870,7 @@
     },
     "/executions": {
       "get": {
-        "description": "List trigger executions. Tenant-scoped if authenticated.",
+        "description": "List agent runs from the Ingestion v2 substrate (v_agent_runs).\n\nWas squads.trigger_executions \u2014 a legacy table holding only dead\ntrigger-evaluation attempts, which made the app's run feed show 100%\nfailures (squads-app#33). v_agent_runs is the quarantined view every\nanalytical consumer shares (api#98).",
         "operationId": "list_executions_executions_get",
         "parameters": [
           {
@@ -8308,7 +8956,7 @@
     },
     "/executions/{execution_id}": {
       "get": {
-        "description": "Get execution details. Tenant-scoped if authenticated.",
+        "description": "Get a single agent run from the substrate (v_agent_runs, see list).",
         "operationId": "get_execution_executions__execution_id__get",
         "parameters": [
           {
@@ -8317,7 +8965,7 @@
             "required": true,
             "schema": {
               "title": "Execution Id",
-              "type": "integer"
+              "type": "string"
             }
           }
         ],
@@ -8356,7 +9004,7 @@
     },
     "/executions/{execution_id}/artifacts": {
       "get": {
-        "description": "Resolve the artifacts an execution produced (PRs / issues) to live status.\n\nReads the execution's `result.artifacts` \u2014 a list of refs like\n`{\"type\": \"pr\"|\"issue\", \"repo\": \"owner/name\", \"number\": N}` \u2014 and fetches\neach one's current GitHub state (CI / review / merge) so the cockpit can\nshow and act on the real work.",
+        "description": "Resolve artifacts an execution produced (PRs / issues) to live GitHub status.\n\nChecks the normalized execution_artifacts table first (agent_executions rows).\nFalls back to trigger_executions.result.artifacts JSONB for legacy rows.",
         "operationId": "get_execution_artifacts_executions__execution_id__artifacts_get",
         "parameters": [
           {
@@ -8365,7 +9013,7 @@
             "required": true,
             "schema": {
               "title": "Execution Id",
-              "type": "integer"
+              "type": "string"
             }
           }
         ],
@@ -8395,6 +9043,55 @@
           }
         ],
         "summary": "Get Execution Artifacts",
+        "tags": [
+          "executions"
+        ]
+      },
+      "post": {
+        "description": "Record a GitHub PR or issue as a work artifact for an agent execution.\n\nIdempotent: re-posting the same (execution_id, artifact_type, repo, number)\nupdates the existing row rather than inserting a duplicate.",
+        "operationId": "add_execution_artifact_executions__execution_id__artifacts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Execution Artifact",
         "tags": [
           "executions"
         ]
@@ -8738,6 +9435,482 @@
           }
         },
         "summary": "Health Check"
+      }
+    },
+    "/ingest/trigger": {
+      "post": {
+        "description": "Defer the ``ingest_usage`` Procrastinate task.\n\nReturns 202 + ``{\"deferred\": true, \"job_id\": <id>}`` on success.\n\nReturns 503 if the queue / database is unavailable.  The periodic sweep\n(every 2 minutes) will still pick up the data \u2014 the run record is safe.",
+        "operationId": "trigger_ingest_ingest_trigger_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TriggerRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routers__ingest__TriggerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Defer usage ingestion immediately",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
+    "/knowledge": {
+      "get": {
+        "description": "List org-knowledge items, optionally filtered by domain/scope.",
+        "operationId": "list_knowledge_knowledge_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Active Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Knowledge Knowledge Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Knowledge",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/history/{item_id}": {
+      "get": {
+        "description": "Full snapshot history for a knowledge item.",
+        "operationId": "knowledge_history_knowledge_history__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Knowledge History Knowledge History  Item Id  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Knowledge History",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/ingest": {
+      "post": {
+        "description": "Run ingestion for all enabled sources.",
+        "operationId": "ingest_all_knowledge_ingest_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Ingest All Knowledge Ingest Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ingest All",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/ingest/{source_name}": {
+      "post": {
+        "description": "Run ingestion for a single named source.",
+        "operationId": "ingest_one_knowledge_ingest__source_name__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_name",
+            "required": true,
+            "schema": {
+              "title": "Source Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ingest One Knowledge Ingest  Source Name  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest One",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/items": {
+      "post": {
+        "description": "Manually create or update a knowledge item (upsert on domain+scope+key).",
+        "operationId": "upsert_knowledge_item_knowledge_items_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upsert Knowledge Item Knowledge Items Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Knowledge Item",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/items/{item_id}": {
+      "delete": {
+        "description": "Soft-delete a knowledge item (is_active = false).",
+        "operationId": "deactivate_knowledge_item_knowledge_items__item_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Deactivate Knowledge Item Knowledge Items  Item Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Knowledge Item",
+        "tags": [
+          "knowledge"
+        ]
+      },
+      "get": {
+        "description": "Get a single knowledge item by id.",
+        "operationId": "get_knowledge_item_knowledge_items__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Knowledge Item Knowledge Items  Item Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Knowledge Item",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/sources": {
+      "get": {
+        "description": "List registered knowledge sources.",
+        "operationId": "list_sources_knowledge_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Sources Knowledge Sources Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Sources",
+        "tags": [
+          "knowledge"
+        ]
+      },
+      "post": {
+        "description": "Register a new ingestion source.",
+        "operationId": "create_source_knowledge_sources_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeSourceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Source Knowledge Sources Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Source",
+        "tags": [
+          "knowledge"
+        ]
       }
     },
     "/learnings/relevant": {
@@ -9972,7 +11145,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TriggerResponse"
+                  "$ref": "#/components/schemas/routers__triggers__TriggerResponse"
                 }
               }
             },
@@ -10110,7 +11283,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TriggerResponse"
+                  "$ref": "#/components/schemas/routers__triggers__TriggerResponse"
                 }
               }
             },
@@ -10167,7 +11340,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TriggerResponse"
+                  "$ref": "#/components/schemas/routers__triggers__TriggerResponse"
                 }
               }
             },
@@ -10265,7 +11438,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TriggerResponse"
+                  "$ref": "#/components/schemas/routers__triggers__TriggerResponse"
                 }
               }
             },

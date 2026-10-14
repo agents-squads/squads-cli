@@ -13,9 +13,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { writeLine } from "../lib/terminal.js";
-import { getApiUrl } from "../lib/env-config.js";
-
-const API_URL = getApiUrl();
+import { getApiUrl, withApi } from "../lib/env-config.js";
 
 interface Trigger {
   id: string;
@@ -48,7 +46,7 @@ async function fetchScheduler<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${getApiUrl()}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -223,7 +221,7 @@ async function showStatus(): Promise<void> {
     writeLine();
   } catch {
     console.error(chalk.red("Scheduler not running or unreachable"));
-    writeLine(chalk.gray(`  Expected at: ${API_URL}`));
+    writeLine(chalk.gray(`  Expected at: ${getApiUrl()}`));
   }
 }
 
@@ -236,42 +234,42 @@ export function registerTriggerCommand(program: Command): void {
   trigger
     .command("list [squad]")
     .description("List triggers")
-    .action(async (squad?: string) => {
+    .action(withApi('squads trigger', async (squad?: string) => {
       await listTriggers(squad);
-    });
+    }));
 
   trigger
     .command("sync")
     .description("Sync SQUAD.md triggers to scheduler")
-    .action(async () => {
+    .action(withApi('squads trigger', async () => {
       await syncTriggers();
-    });
+    }));
 
   trigger
     .command("fire <name>")
     .description("Manually fire a trigger")
-    .action(async (name: string) => {
+    .action(withApi('squads trigger', async (name: string) => {
       await fireTrigger(name);
-    });
+    }));
 
   trigger
     .command("enable <name>")
     .description("Enable a trigger")
-    .action(async (name: string) => {
+    .action(withApi('squads trigger', async (name: string) => {
       await toggleTrigger(name, true);
-    });
+    }));
 
   trigger
     .command("disable <name>")
     .description("Disable a trigger")
-    .action(async (name: string) => {
+    .action(withApi('squads trigger', async (name: string) => {
       await toggleTrigger(name, false);
-    });
+    }));
 
   trigger
     .command("status")
     .description("Show scheduler status")
-    .action(async () => {
+    .action(withApi('squads trigger', async () => {
       await showStatus();
-    });
+    }));
 }

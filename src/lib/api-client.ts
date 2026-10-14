@@ -24,12 +24,31 @@ function agentExecutionPath(
   return `/agent-executions/${encodeURIComponent(executionId)}`;
 }
 
-function getApiConfig(): { apiUrl: string; token: string } | null {
-  const session = loadSession();
-  if (!session?.accessToken || session.status !== 'active') return null;
-
+// /agent-executions is scheduler-gated server-side (verify_scheduler_api_key —
+// X-API-Key only, Bearer is not accepted). Background/unattended dispatch has
+// no interactive `squads login` session, so the scheduler/platform key is the
+// auth path that actually authenticates here — same precedence as
+// cloud-dispatch.ts. An interactive session's Bearer token is sent too when
+// present, so a logged-in dev's calls keep working either way.
+function getApiConfig(): { apiUrl: string; headers: Record<string, string> } | null {
   const apiUrl = getApiUrl();
-  return { apiUrl, token: session.accessToken };
+  if (!apiUrl) return null;
+
+  const headers: Record<string, string> = {};
+
+  const session = loadSession();
+  if (session?.accessToken && session.status === 'active') {
+    headers.Authorization = `Bearer ${session.accessToken}`;
+  }
+
+  const apiKey = process.env.SQUADS_PLATFORM_API_TOKEN || process.env.SCHEDULER_API_KEY;
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+
+  if (Object.keys(headers).length === 0) return null; // no auth available — offline-first
+
+  return { apiUrl, headers };
 }
 
 async function apiRequest(
@@ -45,7 +64,7 @@ async function apiRequest(
       method,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
+        ...config.headers,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -68,6 +87,7 @@ export async function reportExecutionStart(
     trigger?: string;
     model?: string;
     brief?: string;
+    pid?: number;
   },
 ): Promise<string | null> {
   const config = getApiConfig();
@@ -78,17 +98,22 @@ export async function reportExecutionStart(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
+        ...config.headers,
       },
       body: JSON.stringify({
+        // One run, one id (run-ledger contract): the API honors this id, so
+        // the terminal PATCH and the jsonl batch ingest land on the SAME row.
+        // The old flow let the server mint a second identity that nothing
+        // ever completed — every such row sat 'running' forever.
+        execution_id: executionId,
         squad,
         agent,
         executor: 'cli',
         brief: metadata?.brief,
         model: metadata?.model,
         metadata: {
-          local_execution_id: executionId,
           trigger: metadata?.trigger || 'manual',
+          ...(metadata?.pid ? { pid: metadata.pid } : {}),
         },
       }),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -105,21 +130,46 @@ export async function reportExecutionStart(
 /**
  * Report execution completion to the API.
  * Non-blocking: fire-and-forget.
+ *
+ * squad/agent ride along so a terminal report whose start never arrived
+ * (offline dispatch, killed process) still lands as a terminal row — the
+ * API upserts on identity instead of 404ing.
  */
 export async function reportExecutionComplete(
   executionId: string,
-  status: 'completed' | 'failed',
+  status: 'completed' | 'failed' | 'orphaned',
   details?: {
     summary?: string;
     error?: string;
     durationMs?: number;
+    squad?: string;
+    agent?: string;
+    model?: string;
   },
 ): Promise<boolean> {
   return apiRequest(agentExecutionPath(executionId), 'PATCH', {
     status,
     ...(details?.summary ? { summary: details.summary } : {}),
     ...(details?.error ? { error: details.error } : {}),
+    ...(details?.durationMs ? { duration_ms: details.durationMs } : {}),
+    ...(details?.squad ? { squad: details.squad } : {}),
+    ...(details?.agent ? { agent: details.agent } : {}),
+    ...(details?.model ? { model: details.model } : {}),
   });
+}
+
+/**
+ * Batch-report a run's step events (XEU: exec-event unification, #1158).
+ * Body mirrors the per-run jsonl envelopes verbatim; the API ingests
+ * idempotently on (run_id, seq), so replaying a file is safe.
+ * Returns false on any failure — callers treat the file as authoritative.
+ */
+export async function reportExecutionEvents(
+  executionId: string,
+  events: unknown[],
+): Promise<boolean> {
+  if (events.length === 0) return true;
+  return apiRequest(`${agentExecutionPath(executionId)}/events`, 'POST', { events });
 }
 
 /**
@@ -151,53 +201,4 @@ export async function reportConversationResult(
       },
     },
   });
-}
-
-
-/**
- * Push a cognition signal to the API.
- * Fire-and-forget — returns true on success, false on failure.
- */
-export async function pushCognitionSignal(signal: {
-  source: string;
-  signal_type: string;
-  value?: number;
-  unit?: string;
-  data?: Record<string, unknown>;
-  entity_type?: string;
-  entity_id?: string;
-  confidence?: number;
-}): Promise<boolean> {
-  return apiRequest('/cognition/signals', 'POST', signal);
-}
-
-/**
- * Ingest a memory file into the cognition engine.
- * Fire-and-forget — returns result or null on failure.
- */
-export async function ingestMemorySignal(body: {
-  squad: string;
-  agent: string;
-  file_type: 'state' | 'learnings' | 'executions' | 'events' | 'directives';
-  content: string;
-  content_hash: string;
-}): Promise<{ status: string; signals_created?: number } | null> {
-  const config = getApiConfig();
-  if (!config) return null;
-
-  try {
-    const response = await fetch(`${config.apiUrl}/cognition/signals/ingest-memory`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
-    });
-    if (!response.ok) return null;
-    return await response.json() as { status: string; signals_created?: number };
-  } catch {
-    return null; // Silent failure — offline-first
-  }
 }

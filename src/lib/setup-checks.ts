@@ -80,6 +80,14 @@ export const PROVIDERS: Record<string, ProviderInfo> = {
     requiresSubscription: false,
     requiresApiKey: true,
   },
+  opencode: {
+    id: 'opencode',
+    name: 'OpenCode',
+    cliCheck: 'opencode',
+    installCmd: 'curl -fsSL https://opencode.ai/install.sh | bash',
+    requiresSubscription: false,
+    requiresApiKey: true,
+  },
   none: {
     id: 'none',
     name: 'Planning Only (no agent execution)',

@@ -14,8 +14,8 @@ import {
   gradeExecution,
   pollOutcomes,
   computeAllScorecards,
+  reconcileUnsettledRecords,
 } from '../lib/outcomes.js';
-import { pushCognitionSignal } from '../lib/api-client.js';
 import {
   colors,
   bold,
@@ -32,7 +32,6 @@ import {
   checkNewPRs,
   getPRsWithReviewFeedback,
   buildReviewTask,
-  pushMemorySignals,
   slackNotify,
 } from '../lib/squad-loop.js';
 
@@ -177,6 +176,20 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
   // Gather intelligence
   writeLine(`  ${colors.dim}Scanning org state...${RESET}`);
   const squadRepos = getSquadRepos();
+
+  // Reconcile unsettled records via git state (branches with no PRs)
+  const totalReconciled = { settled: 0, merged: 0, rejected: 0, abandoned: 0 };
+  for (const repo of Object.values(squadRepos)) {
+    const reconciled = reconcileUnsettledRecords(repo, botGhEnv);
+    totalReconciled.settled += reconciled.settled;
+    totalReconciled.merged += reconciled.merged;
+    totalReconciled.rejected += reconciled.rejected;
+    totalReconciled.abandoned += reconciled.abandoned;
+  }
+  if (totalReconciled.settled > 0) {
+    writeLine(`  ${colors.dim}Reconciled ${totalReconciled.settled} record(s) via git (${totalReconciled.merged} merged, ${totalReconciled.abandoned} abandoned)${RESET}`);
+  }
+
   const signals = scoreSquads(state, squadRepos, botGhEnv);
 
   if (signals.length === 0) {
@@ -289,7 +302,6 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
       result.costEstimate += estimatedCost;
 
       // Record artifacts for outcome tracking (only real completions)
-      let qualityGrade: string | undefined;
       if (effectiveOutcome === 'completed') {
         const repo = squadRepos[job.squad];
         if (repo) {
@@ -305,19 +317,6 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
           // Grade the execution quality
           if (record) {
             const { grade, reason } = gradeExecution(record);
-            qualityGrade = grade;
-
-            // Push quality signal to cognition engine
-            pushCognitionSignal({
-              source: 'execution',
-              signal_type: 'execution_quality',
-              value: { A: 4, B: 3, C: 2, D: 1, F: 0 }[grade] ?? 0,
-              unit: 'quality_score',
-              data: { grade, reason, cost_usd: estimatedCost },
-              entity_type: 'agent',
-              entity_id: `${job.squad}/${job.agent}`,
-              confidence: 0.9,
-            });
 
             if (options.verbose) {
               const gradeColor = grade <= 'B' ? colors.green : grade >= 'D' ? colors.red : colors.yellow;
@@ -327,25 +326,9 @@ async function runCycle(options: DaemonOptions): Promise<CycleResult> {
         }
       }
 
-      // Push execution signal to cognition engine (fire-and-forget)
-      pushCognitionSignal({
-        source: 'execution',
-        signal_type: effectiveOutcome === 'completed' ? 'agent_completed' : 'agent_failed',
-        value: effectiveOutcome === 'completed' ? 1 : 0,
-        unit: 'completion',
-        data: { outcome: effectiveOutcome, durationMs, cost_usd: estimatedCost, quality_grade: qualityGrade },
-        entity_type: 'agent',
-        entity_id: `${job.squad}/${job.agent}`,
-        confidence: 0.95,
-      });
-
       return { job, outcome: effectiveOutcome, durationMs };
     }),
   );
-
-  // Push changed memory files to cognition engine (fire-and-forget)
-  const dispatchedSquads = [...new Set(toDispatch.map(s => s.squad))];
-  await pushMemorySignals(dispatchedSquads, state, options.verbose);
 
   // Trim recent runs to last 50
   state.recentRuns = state.recentRuns.slice(-50);

@@ -55,8 +55,11 @@ const sampleStats = {
 describe('registerTriggerCommand', () => {
   let program: Command;
   let originalFetch: typeof global.fetch;
+  const savedApiUrl = process.env.SQUADS_API_URL;
 
   beforeEach(() => {
+    // The commands need an API URL (read at call time); don't depend on ~/.squads.
+    process.env.SQUADS_API_URL = 'http://api.test';
     originalFetch = global.fetch;
     vi.clearAllMocks();
     program = new Command();
@@ -66,6 +69,8 @@ describe('registerTriggerCommand', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (savedApiUrl === undefined) delete process.env.SQUADS_API_URL;
+    else process.env.SQUADS_API_URL = savedApiUrl;
   });
 
   it('registers the trigger command on the program', () => {

@@ -263,15 +263,24 @@ function appendToSquadMemory(
 }
 
 /**
- * Pull latest memory changes from git remote
+ * Pull latest memory changes into the current branch from its upstream —
+ * whatever branch the operator is on, never a hard-coded one (#1247).
  */
-function gitPullMemory(): { success: boolean; output: string; behind: number; ahead: number } {
+function gitPullMemory(memoryDir: string): { success: boolean; output: string; behind: number; ahead: number } {
+  const git = (cmd: string): string =>
+    execSync(cmd, { cwd: memoryDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
   try {
-    // First fetch to see what's different
-    execSync('git fetch origin', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      git('git rev-parse --abbrev-ref --symbolic-full-name @{upstream}');
+    } catch {
+      return { success: true, output: 'No upstream branch — nothing to pull', behind: 0, ahead: 0 };
+    }
 
-    // Check how many commits behind/ahead
-    const status = execSync('git status -sb', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    // First fetch to see what's different
+    git('git fetch --quiet');
+
+    // Check how many commits behind/ahead of the upstream
+    const status = git('git status -sb');
     const behindMatch = status.match(/behind (\d+)/);
     const aheadMatch = status.match(/ahead (\d+)/);
     const behind = behindMatch ? parseInt(behindMatch[1]) : 0;
@@ -281,11 +290,9 @@ function gitPullMemory(): { success: boolean; output: string; behind: number; ah
       return { success: true, output: 'Already up to date', behind: 0, ahead };
     }
 
-    // Pull with rebase to get latest
-    const output = execSync('git pull --rebase origin main', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Pull with rebase to get latest. --autostash: agent memory is usually
+    // uncommitted here, and a dirty tree would otherwise refuse the rebase.
+    const output = git('git pull --rebase --autostash');
 
     return { success: true, output: output.trim(), behind, ahead };
   } catch (error) {
@@ -790,38 +797,46 @@ async function syncLearningsToPostgres(verbose?: boolean): Promise<void> {
 }
 
 /**
- * Push local memory changes to git remote
+ * Commit `.agents/memory/` and push the current branch (#1247). The commit
+ * carries the memory pathspec, so anything else the operator had staged stays
+ * staged and uncommitted; the push goes to the branch the operator is on.
  */
-function gitPushMemory(): { success: boolean; output: string } {
+function gitPushMemory(memoryDir: string): { success: boolean; output: string } {
+  const git = (cmd: string): string =>
+    execSync(cmd, { cwd: memoryDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
   try {
-    // Check if there are uncommitted changes in memory
-    const status = execSync('git status --porcelain .agents/memory/', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-
-    if (status) {
-      // Stage and commit memory changes. Repo-scoped fallback identity (#980)
-      // when no git identity is configured — never touches global/repo config.
-      execSync('git add .agents/memory/', { stdio: ['pipe', 'pipe', 'pipe'] });
-      const identity = gitIdentityArgs(process.cwd());
-      execSync(`git ${identity} commit -m "chore: sync squad memory"`, {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+    const branch = git('git rev-parse --abbrev-ref HEAD').trim();
+    if (!branch || branch === 'HEAD') {
+      return { success: false, output: 'Detached HEAD — check out a branch to push memory' };
     }
 
-    // Push to remote
-    const output = execSync('git push origin main', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Check if there are uncommitted changes in memory (cwd = the memory dir)
+    if (git('git status --porcelain -- .').trim()) {
+      // Repo-scoped fallback identity (#980) when no git identity is
+      // configured — never touches global/repo config.
+      git('git add -A -- .');
+      const identity = gitIdentityArgs(memoryDir);
+      git(`git ${identity} commit -m "chore: sync squad memory" -- .`);
+    }
 
-    return { success: true, output: output.trim() || 'Pushed successfully' };
+    const output = git('git push origin HEAD');
+    return { success: true, output: output.trim() || `Pushed ${branch}` };
   } catch (error) {
     const err = error as { message?: string };
     return { success: false, output: err.message || 'Push failed' };
   }
+}
+
+function pushMemory(memoryDir: string): void {
+  writeLine(`  ${icons.progress} Pushing to remote...`);
+  const pushResult = gitPushMemory(memoryDir);
+
+  if (pushResult.success) {
+    writeLine(`  ${icons.success} ${colors.green}Pushed memory updates to remote${RESET}`);
+  } else {
+    writeLine(`  ${icons.error} ${colors.red}Push failed: ${pushResult.output}${RESET}`);
+  }
+  writeLine();
 }
 
 export async function syncCommand(options: { verbose?: boolean; push?: boolean; pull?: boolean; postgres?: boolean; dimensions?: boolean; learnings?: boolean; autoLearn?: boolean } = {}): Promise<void> {
@@ -924,12 +939,14 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
 
   // Default behavior: pull from remote
   const doPull = options.pull !== false; // Pull by default unless explicitly disabled
-  const doPush = options.push === true; // Only push if explicitly requested
+  // Push only when asked: --push, or the same opt-in as agent memory commits.
+  const doPush = options.push === true
+    || (process.env.SQUADS_AUTO_COMMIT === '1' && process.env.SQUADS_AUTO_PUSH === '1');
 
   // Step 1: Pull from git remote
   if (doPull) {
     writeLine(`  ${icons.progress} Pulling from remote...`);
-    const pullResult = gitPullMemory();
+    const pullResult = gitPullMemory(memoryDir);
 
     if (pullResult.success) {
       if (pullResult.behind > 0) {
@@ -1007,6 +1024,8 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     }
 
     writeLine();
+    // Memory an agent wrote is uncommitted, so "no new commits" says nothing about it.
+    if (doPush) pushMemory(memoryDir);
     return;
   }
 
@@ -1020,6 +1039,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
     writeLine(`  ${colors.yellow}No squad-related commits found${RESET}`);
     writeLine();
     updateLastSyncTime(memoryDir);
+    if (doPush) pushMemory(memoryDir);
     return;
   }
 
@@ -1050,17 +1070,7 @@ export async function syncCommand(options: { verbose?: boolean; push?: boolean; 
   updateLastSyncTime(memoryDir);
 
   // Step 3: Push to remote if requested
-  if (doPush) {
-    writeLine(`  ${icons.progress} Pushing to remote...`);
-    const pushResult = gitPushMemory();
-
-    if (pushResult.success) {
-      writeLine(`  ${icons.success} ${colors.green}Pushed memory updates to remote${RESET}`);
-    } else {
-      writeLine(`  ${icons.error} ${colors.red}Push failed: ${pushResult.output}${RESET}`);
-    }
-    writeLine();
-  }
+  if (doPush) pushMemory(memoryDir);
 
   // Step 4: Sync to Postgres if requested
   if (options.postgres) {

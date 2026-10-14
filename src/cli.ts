@@ -29,17 +29,17 @@ process.stderr.on('error', (err: NodeJS.ErrnoException) => {
   throw err;
 });
 
-// Load .env from multiple locations (first found wins)
+// Load the project's .env, then the user-level ~/.squads/.env for keys shared across
+// projects. Both are read; dotenv never overrides a key that is already set, so the
+// process environment wins over the project file, and the project file over the user file.
 const envPaths = [
   join(process.cwd(), '.env'),
-  join(process.cwd(), '..', 'hq', '.env'),
-  join(homedir(), 'agents-squads', 'hq', '.env'),
+  join(homedir(), '.squads', '.env'),
 ];
 
 for (const envPath of envPaths) {
   if (existsSync(envPath)) {
     config({ path: envPath, quiet: true });
-    break;
   }
 }
 
@@ -194,7 +194,7 @@ installCommandTelemetry(program);
 
 program
   .name('squads')
-  .description('Your AI workforce — business operating system for AI managers')
+  .description('Run squads of AI agents from your terminal — defined in markdown, tracked in git')
   .version(version)
   .addHelpText('after', `
 Resources:
@@ -271,6 +271,7 @@ program
   .command('add <name>')
   .description('Add a new squad with directory structure and starter files')
   .option('-d, --description <text>', 'Squad mission (one sentence)')
+  .option('--mission <text>', 'Squad mission (one sentence) - alias for --description')
   .option('-g, --goal <text>', 'First goal for the squad')
   .option('-m, --model <model>', 'Default model (default: sonnet)')
   .option('-f, --force', 'Overwrite existing squad')
@@ -281,6 +282,7 @@ program
 Examples:
   $ squads add marketing                          Add with interactive prompts
   $ squads add marketing -d "Drive growth" -y     Add non-interactively
+  $ squads add marketing --mission "Drive growth" -y  Add with --mission flag
   $ squads add marketing --force                  Overwrite existing squad
   $ squads add marketing --repo                   Add with GitHub repo
   $ squads add marketing --repo --org myorg       Add with GitHub repo in specific org
@@ -296,13 +298,13 @@ program.command('create <name>', { hidden: true }).description('[renamed]').acti
 // Run command - execute squads or individual agents
 program
   .command('run [target] [agent]')
-  .description('Run a squad or agent (no target lists squads). Use --org to run all squads as one coordinated cycle.')
+  .description('Run a squad or agent: squads run <squad>/<agent> (also: <squad> <agent>). No target lists squads; --org runs all squads as one coordinated cycle.')
   .allowExcessArguments(false)
   .option('-v, --verbose', 'Verbose output')
   .option('-d, --dry-run', 'Show what would be run without executing')
   .option('-a, --agent <agent>', 'Run specific agent within squad')
   .option('-t, --timeout <minutes>', 'Per-agent execution timeout in minutes (default: 15)')
-  .option('-p, --parallel', 'Run all agents in parallel (N tmux sessions)')
+  .option('-p, --parallel', 'Run all agents in parallel (add -b to run them in the background)')
   .option('-l, --lead', 'Lead mode: single orchestrator using Task tool for parallelization')
   .option('-b, --background', 'Run agent in background (detached process)')
   .option('-w, --watch', 'Run in background but tail the log for visibility')
@@ -339,7 +341,7 @@ Examples:
   $ squads run engineering code-review  Same as above (space notation)
   $ squads run engineering -a code-review  Same as above (flag notation)
   $ squads run engineering --dry-run    Preview what would run
-  $ squads run engineering --parallel   Run all agents in parallel (tmux)
+  $ squads run engineering --parallel   Run all agents in parallel
   $ squads run engineering --lead       Single orchestrator with Task tool
   $ squads run engineering -b           Run in background (detached)
   $ squads run engineering -w           Run in background but tail logs
@@ -365,6 +367,28 @@ program.command('list').description('List squads (alias for: squads status)').ac
   const { statusCommand } = await import('./commands/status.js');
   return statusCommand();
 });
+
+// Domains command — per-domain (squad) business scorecard (#1280): goals set,
+// delivered (git-derived merged PRs + closed issues), and what's in flight.
+program
+  .command('domains')
+  .description('Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight')
+  .option('--days <n>', 'Delivery window in days (default 7)', '7')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Delivery is git-derived from GitHub for each domain's repos — one batched
+search, never one call per repo. Unreachable GitHub degrades to the last good
+result from .agents/observability/cache/domains.json, marked stale.
+
+Examples:
+  $ squads domains                    Scorecard for every domain
+  $ squads domains --days 30          Wider delivery window
+  $ squads domains --json             Machine-readable (console, digests)
+`)
+  .action(async (options) => {
+    const { domainsCommand } = await import('./commands/domains.js');
+    return domainsCommand(options);
+  });
 
 // Pause command - suspend a squad (enforced by runner + org planner + cron)
 program
@@ -399,7 +423,7 @@ registerOrchestrateCommand(program);
 // Env command - squad execution environment (MCP, skills, budget, model)
 const env = program
   .command('env')
-  .description('View squad execution environment (MCP, skills, model, budget)')
+  .description('View what a squad run uses: tool integrations (MCP), skills, model, and cost budget')
   .action(() => { env.outputHelp(); });
 
 env
@@ -531,6 +555,7 @@ program
   .description('Show squad status and state')
   .option('-v, --verbose', 'Show detailed status')
   .option('-j, --json', 'Output as JSON')
+  .option('-a, --all', 'Show every squad and completed milestones (default: what is moving now)')
   .action(async (squad, options) => {
     const { statusCommand } = await import('./commands/status.js');
     return statusCommand(squad, options);
@@ -546,7 +571,22 @@ program
   .option('-a, --agent', 'Output JSON for agent consumption')
   .option('-j, --json', 'Output as JSON (alias for --agent)')
   .option('-v, --verbose', 'Show additional details')
+  .option('--for <type>', 'Context assembly manifest: run, tick, session (#1049)')
+  .option('--agent-name <name>', 'Agent name for assembly manifest (requires --for --squad)')
   .action(async (options) => {
+    // #1049: when --for is provided, route to the context assembler manifest
+    if (options.for) {
+      if (!options.squad) {
+        console.error(chalk.red('\n  --squad is required when using --for\n'));
+        process.exit(1);
+      }
+      if (!options.agentName) {
+        console.error(chalk.red('\n  --agent-name is required when using --for\n'));
+        process.exit(1);
+      }
+      const { contextAssembleCommand } = await import('./commands/context.js');
+      return contextAssembleCommand(options.squad, options.agentName, options.for, { json: options.json, verbose: options.verbose });
+    }
     const { contextFeedCommand } = await import('./commands/context-feed.js');
     return contextFeedCommand(options);
   });
@@ -573,6 +613,33 @@ program
     return budgetCheckCommand(squad, options);
   });
 
+// Board command — day-scoped execution board (#1116): tiles, live runs,
+// today's ledger executions, and the incoming queue. One screen for a day
+// of heavy dispatching.
+program
+  .command('board')
+  .description('Day-scoped execution board: tiles, live runs, executions, incoming queue')
+  .option('--date <YYYY-MM-DD>', 'Board day (local time, default today)')
+  .option('--json', 'Output the full board as one JSON object')
+  .addHelpText('after', `
+Cost honesty:
+  Tiles sum cost_usd from the local ledger (.agents/observability/executions.jsonl).
+  A row with cost_usd 0 but recorded tokens shows its tokens instead of $0.00 —
+  a visible gap, never a fabricated price. GLM lane runs record cost 0 unless
+  you set env rates (USD per million tokens):
+    SQUADS_GLM_COST_PER_MTOK_IN    input-token rate
+    SQUADS_GLM_COST_PER_MTOK_OUT   output-token rate
+
+Examples:
+  $ squads board                    Today's board
+  $ squads board --date 2026-07-12  A past day
+  $ squads board --json             Machine-readable (scripting)
+`)
+  .action(async (options) => {
+    const { boardCommand } = await import('./commands/board.js');
+    return boardCommand(options);
+  });
+
 // Usage command - local-first cost/token view from executions.jsonl (no Bridge)
 program
   .command('usage')
@@ -583,6 +650,19 @@ program
   .action(async (options) => {
     const { usageCommand } = await import('./commands/usage.js');
     return usageCommand(options);
+  });
+
+// Report command — auditor evidence pack from executions.jsonl + reviewed.jsonl + git log (#1207)
+program
+  .command('report')
+  .description('Generate an evidence pack from local observability (default: auditor)')
+  .option('--for <audience>', 'Report audience (currently supported: auditor)')
+  .option('--period <period>', 'Time window: Nd (e.g. 30d) or YYYY-MM-DD..YYYY-MM-DD', '30d')
+  .option('--format <format>', 'Output format: md or html', 'md')
+  .option('--out <path>', 'Write to <path> (default: stdout for md, .agents/reports/ for html). Use "-" for stdout.')
+  .action(async (options) => {
+    const { reportCommand } = await import('./commands/report.js');
+    return reportCommand(options);
   });
 
 // Health command - quick infrastructure check
@@ -616,6 +696,17 @@ program
   .action(async (options) => {
     const { historyCommand } = await import('./commands/history.js');
     return historyCommand(options);
+  });
+
+// Plan command - the project's roadmap from its plan-of-record tracking issue
+program
+  .command('plan')
+  .description('Roadmap from the plan-of-record issue: done / ready / blocked, with blockers')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (options) => {
+    const { planCommand } = await import('./commands/plan.js');
+    const code = await planCommand(options);
+    if (code !== 0) process.exitCode = code;
   });
 
 // Results command - KPI goals vs actuals
@@ -1109,8 +1200,11 @@ program
   });
 
 // Auth commands
+// `login` is hidden from --help until the auth endpoint is configured
+// (SQUADS_AUTH_URL). Invoking it when unconfigured prints a one-line
+// "not available in this build" message (#1208).
 program
-  .command('login')
+  .command('login', { hidden: !process.env.SQUADS_AUTH_URL })
   .description('Log in to Squads (Pro & Enterprise)')
   .action(async () => {
     const { loginCommand } = await import('./commands/login.js');
@@ -1156,6 +1250,32 @@ registerCredentialsCommand(program);
 registerReviewCommand(program);
 registerBriefCommand(program);
 
+// Config command group - environment configuration
+const configCmd = program
+  .command('config')
+  .description('View and switch environment configuration (local, staging, prod)')
+  .action(() => {
+    configCmd.outputHelp();
+  });
+
+configCmd
+  .command('use <env>')
+  .description('Switch to a named environment (local, staging, prod)')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (env, options) => {
+    const { configUseCommand } = await import('./commands/config.js');
+    return configUseCommand(env, options);
+  });
+
+configCmd
+  .command('show')
+  .description('Show current environment config and resolved URLs')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (options) => {
+    const { configShowCommand } = await import('./commands/config.js');
+    return configShowCommand(options);
+  });
+
 // Providers command - show LLM CLI availability for multi-LLM support
 program
   .command('providers')
@@ -1196,6 +1316,7 @@ program
   .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
   .option('--report <execId>', 'Context-economy report for a finished run (per-agent cost, cache hits, per-layer)')
   .option('--outcome <execId>', 'Did the run\'s output land? Resolve its PRs/issues live: merged/open/closed')
+  .option('--wait [runId]', 'Block until a background run ends, then print a summary (default: newest live run)')
   .action(async (options) => {
     const { runsCommand } = await import('./commands/runs.js');
     return runsCommand(options);
@@ -1219,7 +1340,7 @@ program
 // bounded dispatch that lands on a squads/proposal-* branch for inbox review.
 program
   .command('propose')
-  .description('Draft one complementary deliverable as a reviewable proposal branch (ambient, bounded, local-only)')
+  .description('Draft one extra deliverable on a proposal branch you review before it lands — scoped, and never leaves your machine')
   .option('--squad <name>', 'Squad to dispatch (default: keyword-overlap heuristic against BUSINESS_BRIEF/README/package.json)')
   .option('--cost-ceiling <usd>', 'Cost ceiling in USD (default: 5)')
   .option('--json', 'Output as JSON')
@@ -1238,7 +1359,7 @@ Examples:
 // task class × provider × model, from the execution ledger. Read-only.
 program
   .command('scoreboard')
-  .description('Executor quality-per-cost ranking from real runs (read-only, provenance-labeled)')
+  .description('Compare models and executors by quality per cost, with the source of every number shown (read-only)')
   .option('--json', 'Output as JSON')
   .option('--days <n>', 'Window in days (default 30)')
   .option('--resolve', 'Check recent PR artifacts live against GitHub for landed-rate (slower)')
@@ -1266,6 +1387,19 @@ program
   .action(async (options) => {
     const { commandsCommand } = await import('./commands/commands.js');
     return commandsCommand(program, options);
+  });
+
+// ─── Internal (hidden — invoked by squads-cli itself, not a user-facing surface) ──
+
+// Registered as `credential.helper` for bot-spawned agents (#1133): git execs
+// this as a fresh subprocess every time it needs credentials, so it mints a
+// live installation token instead of relying on a static one baked into a
+// long-running child's env. See buildBotGitCredentialEnv in lib/github.ts.
+program.command('__git-credential-helper <action>', { hidden: true })
+  .description('[internal] git credential helper — mints a live bot token')
+  .action(async (action: string) => {
+    const { runGitCredentialHelper } = await import('./lib/github.js');
+    await runGitCredentialHelper(action);
   });
 
 // ─── Removed commands (hidden from --help, show helpful message if invoked) ──

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
@@ -210,5 +210,27 @@ describe('ambient proposal class (#983 — squads propose lands distinctly)', ()
 
     const [item] = scanStrandedBranches(dir);
     expect(item.title).toContain('PROPOSAL (partial) —');
+  });
+});
+
+describe('no company-specific scanners', () => {
+  it('does not execute workspace scripts or read GPS backups when building the inbox', () => {
+    initRepo();
+    const marker = join(dir, 'script-ran');
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    for (const name of ['validate-goals.sh', 'coherence-check.sh']) {
+      writeFileSync(join(dir, 'scripts', name), `#!/bin/bash\ntouch "${marker}"\necho "⤴ REVIEW: x"\necho "FAIL: y"\n`);
+    }
+    const intel = join(dir, 'data', 'intelligence');
+    mkdirSync(intel, { recursive: true });
+    const stale = join(intel, 'gps.duckdb.backup.20200101');
+    writeFileSync(stale, 'x');
+    const old = new Date('2020-01-01');
+    utimesSync(stale, old, old);
+
+    const items = buildInbox(dir, dir);
+    expect(existsSync(marker)).toBe(false);
+    expect(items.some((i) => (i.kind as string) === 'oracle_alert' || (i.kind as string) === 'goal')).toBe(false);
+    expect(items.some((i) => i.kind === 'coherence')).toBe(false);
   });
 });

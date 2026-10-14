@@ -16,7 +16,7 @@ Governance files set the **target**; memory files capture the **trajectory**. If
 
 ## How it's enforced
 
-`squads run` (and the daemon) launch each agent with `--settings templates/guardrail.json`, which carries native Claude Code `permissions.deny` rules for `Edit`/`Write`/`MultiEdit` on `goals.md`, `directives.md`, `SQUAD.md`. An agent that tries to edit one is refused by Claude Code itself ("denied by your permission settings") — no custom hook, no parsing.
+`squads run` (and the daemon) launch each agent with `--settings templates/guardrail.json`, which carries native Claude Code `permissions.deny` rules for `Edit`/`Write` on `goals.md`, `directives.md`, `SQUAD.md`. An agent that tries to edit one is refused by Claude Code itself ("denied by your permission settings") — no custom hook, no parsing.
 
 **Interactive sessions are unaffected.** The founder's (and cofounder's) own Claude Code sessions don't get the injected `--settings`, so they edit governance files normally. The boundary is exactly *human-in-session can; autonomous agent can't* — including when the COO runs as a scheduled agent (it executes, it doesn't rewrite goals).
 

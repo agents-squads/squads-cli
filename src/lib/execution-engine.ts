@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventWriter, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -41,17 +41,19 @@ import {
   registerContextWithBridge,
   updateExecutionStatus,
 } from './execution-log.js';
-import { logObservability, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
+import { logObservability, logRunStarted, captureSessionUsage, snapshotGoals, diffGoals, type ObservabilityRecord } from './observability.js';
+import { parseStreamJson, parseOpencodeJson, parseOpencodeLine, StreamJsonAccumulator } from './stream-json.js';
 import { findMemoryDir } from './memory.js';
 import { buildSpoolWriterShell, buildWatchdogShell } from './spool.js';
 import { detectProviderFromModel } from './providers.js';
 import { getBridgeUrl } from './env-config.js';
-import { getBotGitEnv, getBotPushUrl, getCoAuthorTrailer, getBotGhEnv } from './github.js';
+import { getBotGitEnv, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
+import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
 import {
   colors,
   RESET,
@@ -61,29 +63,36 @@ import {
 import {
   getCLIConfig,
   isProviderCLIAvailable,
+  commandExists,
 } from './llm-clis.js';
-import { gitIdentityArgs } from './git.js';
+import { gitIdentityArgs, integrationBranch } from './git.js';
+import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
 export const VERIFICATION_STATE_MAX_CHARS = 2000;
 export const VERIFICATION_EXEC_TIMEOUT_MS = 30000;
 export const LOG_FILE_INIT_DELAY_MS = 500;
 export const VERBOSE_COMMAND_MAX_CHARS = 50;
+/** Cap on the dispatch task text reported to the API as the execution's brief (#1131). */
+export const TASK_BRIEF_MAX_CHARS = 500;
+/** Cap on the ledger brief (#1165) — shorter than TASK_BRIEF_MAX_CHARS to prevent PII leakage in user-facing surfaces. */
+export const BRIEF_MAX_CHARS = 200;
 
 /**
  * The default agent tool surface — the compiler fallback when an agent
  * declares no explicit contract grants (#920). Shared by the foreground and
  * detached spawn paths so P1 closes the detached bypass with the SAME proven
  * surface foreground runs have exercised for months.
+ *
+ * Deliberately minimal: git/gh/npm/node plus basic shell + file tools. Other CLIs
+ * (gws, gcloud, wrangler, bq, stripe, docker, duckdb, curl, ...) are opt-in per
+ * agent via frontmatter `extra_tools` — see compileAllowedTools in agent-contract.ts.
  */
 export const DEFAULT_AGENT_TOOLS: string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
   'Bash(git:*)', 'Bash(gh:*)', 'Bash(npm:*)', 'Bash(npx:*)',
-  'Bash(node:*)', 'Bash(python3:*)', 'Bash(curl:*)',
+  'Bash(node:*)', 'Bash(python3:*)',
   'Bash(bash:*)', 'Bash(sh:*)', // agents run their own helper scripts (e.g. an agent's watchlist.sh)
-  'Bash(docker:*)', 'Bash(duckdb:*)',
-  'Bash(bq:*)', 'Bash(gcloud:*)',
-  'Bash(gws:*)', 'Bash(stripe:*)',
   'Bash(ls:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
   'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
   'Bash(echo:*)', 'Bash(chmod:*)', 'Bash(date:*)',
@@ -134,6 +143,15 @@ export interface ExecuteWithClaudeOptions {
   squadName: string;
   agentName: string;
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
+  /**
+   * Executor harness override (#1177). 'opencode' reroutes an anthropic-model
+   * run through `opencode run` instead of the claude CLI. Defaults from
+   * SQUADS_HARNESS; independent of this, a missing claude binary auto-falls
+   * back to opencode when installed (anti-lock-in).
+   */
+  harness?: string;
+  /** Task directive — `<repo>#<n>` refs route the run to an also_owns repo (#1092) */
+  task?: string;
   /** Assembly-time context stats from gatherSquadContext — emitted as the run's `context_assembled` event (#902). */
   contextStats?: ContextStats;
 }
@@ -141,29 +159,48 @@ export interface ExecuteWithClaudeOptions {
 // ── Auto-commit ──────────────────────────────────────────────────────
 
 /**
- * Auto-commit agent work after execution completes.
- * Commits as the Agents Squads bot (if configured), pushes with bot token.
- * Falls back to user's git identity if bot not configured.
+ * Commit — and optionally push — the memory an agent wrote into the operator's checkout.
+ *
+ * The agent's code changes live in its own worktree (the agent commits them, or
+ * harvestProviderWork preserves them on the agent branch). The only thing it may write
+ * into the operator's checkout is its squad's memory, so that is the only path staged
+ * here — never `git add -A`, which swept the operator's own uncommitted work into a
+ * bot commit and pushed it.
+ *
+ * Opt-in: nothing is committed unless SQUADS_AUTO_COMMIT=1, and nothing is pushed unless
+ * SQUADS_AUTO_PUSH=1 as well. Otherwise the memory stays uncommitted and the returned
+ * message tells the user where.
  */
 export async function autoCommitAgentWork(
   squadName: string,
   agentName: string,
   executionId: string,
   provider?: string,
-): Promise<{ committed: boolean; message?: string; error?: string }> {
-  const { execSync } = await import('child_process');
+): Promise<{ committed: boolean; pushed?: boolean; message?: string; error?: string }> {
+  const { execSync, execFileSync } = await import('child_process');
   const { detectGitHubRepo } = await import('./github.js');
   const projectRoot = getProjectRoot();
 
+  // Squad names come from directory names; refuse anything that could escape a pathspec
+  // (including `.` / `..`, which would widen the scope to all of .agents/).
+  if (!/^(?!\.)[\w.-]+$/.test(squadName)) return { committed: false };
+  const scope = join('.agents', 'memory', squadName);
+
   try {
-    // Check for uncommitted changes
-    const status = execSync('git status --porcelain', {
+    const status = execFileSync('git', ['status', '--porcelain', '--', scope], {
       encoding: 'utf-8',
       cwd: projectRoot,
     }).trim();
 
     if (!status) {
       return { committed: false };
+    }
+
+    if (process.env.SQUADS_AUTO_COMMIT !== '1') {
+      return {
+        committed: false,
+        message: `Agent memory changed in ${scope} — left uncommitted (set SQUADS_AUTO_COMMIT=1 to commit it automatically)`,
+      };
     }
 
     // Get bot identity for commits
@@ -173,19 +210,19 @@ export async function autoCommitAgentWork(
       env: { ...process.env, ...botEnv },
     };
 
-    // Stage all changes (agent work should be committed)
-    execSync('git add -A', execOpts);
+    // Stage only this squad's memory — the operator's other changes are not ours to commit.
+    execFileSync('git', ['add', '-A', '--', scope], execOpts);
 
     // PII/secret guard — never let an agent's auto-commit leak a credential or
     // PII into a (possibly public) repo. Scan only the staged ADDITIONS; if any
     // finding, unstage and refuse to commit (safe failure: work stays local,
     // surfaced as an error rather than pushed).
-    const stagedDiff = execSync('git diff --cached', {
+    const stagedDiff = execFileSync('git', ['diff', '--cached', '--', scope], {
       encoding: 'utf-8', cwd: projectRoot, maxBuffer: 32 * 1024 * 1024,
     });
     const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
     if (findings.length > 0) {
-      try { execSync('git reset', execOpts); } catch { /* refuse to commit regardless */ }
+      try { execFileSync('git', ['reset', '-q', '--', scope], execOpts); } catch { /* refuse to commit regardless */ }
       return {
         committed: false,
         error: `blocked: ${findings.length} secret/PII finding(s) in staged changes — ${summarizeFindings(findings)}`,
@@ -197,39 +234,62 @@ export async function autoCommitAgentWork(
     const shortExecId = executionId.slice(0, 12);
     const coAuthor = getCoAuthorTrailer(provider || 'claude');
     const msgFile = join(projectRoot, '.git', 'SQUADS_COMMIT_MSG');
-    writeFileSync(msgFile, `feat(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
+    writeFileSync(msgFile, `memory(${squadName}/${agentName}): execution ${shortExecId}\n\n${coAuthor}\n`);
 
-    // Commit using --file to avoid shell interpolation. Repo-scoped fallback
-    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/
-    // GIT_COMMITTER_* env vars from botEnv (if set) still take precedence.
+    // Commit using --file to avoid shell interpolation, and with the memory pathspec so
+    // anything the operator had staged stays staged and uncommitted. Repo-scoped fallback
+    // identity (#980) when no git identity is configured — GIT_AUTHOR_*/GIT_COMMITTER_*
+    // env vars from botEnv (if set) still take precedence. `scope` is validated above.
     const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git ${identity} commit --file "${msgFile}"`, execOpts);
+      execSync(`git ${identity} commit --file "${msgFile}" -- "${scope}"`, execOpts);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
 
-    // Push to origin using bot token
+    if (process.env.SQUADS_AUTO_PUSH !== '1') {
+      return {
+        committed: true,
+        pushed: false,
+        message: `Committed agent memory in ${scope} (not pushed — set SQUADS_AUTO_PUSH=1 to push it)`,
+      };
+    }
+
+    // Push (opt-in above). `spawnSync` never throws on a failed push (only on a
+    // spawn-level error) — the status/stderr must be checked explicitly.
+    let pushed = false;
     try {
       const { spawnSync } = await import('child_process');
       const repo = detectGitHubRepo(projectRoot);
       // Validate repo format (org/name) to prevent injection
-      if (repo && /^[\w.-]+\/[\w.-]+$/.test(repo)) {
-        const pushUrl = await getBotPushUrl(repo);
-        if (pushUrl) {
-          // Use spawnSync with args array to avoid shell injection
-          spawnSync('git', ['push', pushUrl, 'HEAD'], { ...execOpts, stdio: 'pipe' });
-        } else {
-          spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
-        }
+      const validRepo = repo && /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : undefined;
+
+      // Authenticate through the env-scoped credential helper (buildBotGitCredentialEnv),
+      // never a token in the push URL: argv is visible to every local user via `ps`. The
+      // helper mints a live installation token on each request, so a long agent turn can't
+      // outlive it (#1133). Without a GitHub App it is empty and git pushes to origin as-is.
+      const credEnv = buildBotGitCredentialEnv();
+      const target = validRepo && Object.keys(credEnv).length > 0 ? `https://github.com/${validRepo}.git` : 'origin';
+      const result = spawnSync('git', ['push', target, 'HEAD'], {
+        ...execOpts,
+        env: { ...execOpts.env, ...credEnv },
+        stdio: 'pipe',
+      });
+      const stderr = result.stderr?.toString('utf-8') ?? result.error?.message ?? '';
+      if (result.status !== 0) {
+        writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${stderr}${RESET}`);
       } else {
-        spawnSync('git', ['push', 'origin', 'HEAD'], { ...execOpts, stdio: 'pipe' });
+        pushed = true;
       }
     } catch (e) {
       writeLine(`  ${colors.dim}warn: git push failed (commit is still local): ${e instanceof Error ? e.message : String(e)}${RESET}`);
     }
 
-    return { committed: true, message: `Committed changes from ${agentName}` };
+    return {
+      committed: true,
+      pushed,
+      message: pushed ? `Committed and pushed agent memory in ${scope}` : `Committed agent memory in ${scope}`,
+    };
   } catch (error) {
     return { committed: false, error: String(error) };
   }
@@ -391,7 +451,15 @@ export async function preflightExecutorCheck(provider: string): Promise<boolean>
 export function buildAgentEnv(
   baseEnv: Record<string, string>,
   execContext: ExecutionContext,
-  options?: { effort?: EffortLevel; skills?: string[]; includeOtel?: boolean; ghToken?: string }
+  options?: {
+    effort?: EffortLevel;
+    skills?: string[];
+    includeOtel?: boolean;
+    ghToken?: string;
+    /** GIT_CONFIG_* env from buildBotGitCredentialEnv() — keeps the spawned
+     *  agent's own `git push` authenticated past the token's ~1h TTL (#1133). */
+    gitCredentialEnv?: Record<string, string>;
+  }
 ): Record<string, string> {
   // Strip CLAUDECODE to allow spawning claude from within a Claude Code session
   const { CLAUDECODE: _, ...cleanEnv } = baseEnv;
@@ -405,7 +473,11 @@ export function buildAgentEnv(
     // Audit chain (#920): the root anchors aggregate cost/traceability across
     // nested dispatches (an agent running `squads run` inherits these). Root
     // propagates unchanged; parent is always the run doing THIS spawn.
-    SQUADS_ROOT_RUN_ID: baseEnv.SQUADS_ROOT_RUN_ID || execContext.executionId,
+    // #1181: a dispatch from inside an interactive Claude Code session roots
+    // at that session's own run record (sess_<id>) — shared derivation with
+    // the event writer and the observability reporter, so all three stamping
+    // sites agree. Explicit SQUADS_ROOT_RUN_ID keeps precedence.
+    SQUADS_ROOT_RUN_ID: deriveRootRunId(baseEnv) || execContext.executionId,
     SQUADS_PARENT_RUN_ID: execContext.executionId,
     BRIDGE_API: getBridgeUrl(),
   };
@@ -413,6 +485,9 @@ export function buildAgentEnv(
   // Inject bot GH_TOKEN so agents create PRs/issues as the bot identity,
   // not the user's personal gh auth. This enables founder to review/approve.
   if (options?.ghToken) env.GH_TOKEN = options.ghToken;
+
+  // Live-refreshing git credential helper (#1133) — see buildBotGitCredentialEnv.
+  if (options?.gitCredentialEnv) Object.assign(env, options.gitCredentialEnv);
 
   // Inject per-squad GCP credential if available
   // Agents get GOOGLE_APPLICATION_CREDENTIALS pointing to their squad's service account key
@@ -464,13 +539,69 @@ export function logVerboseExecution(config: {
 
 // ── Worktree management ──────────────────────────────────────────────
 
-/** Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir) */
-export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null): string {
+/**
+ * Resolve the target repo root from the squad's repo field (e.g. "org/squads-cli" → sibling dir).
+ * A `<repo>#<n>` ref in the task directive may reroute to an `also_owns` repo (#1092) —
+ * allowlisted to [repo, ...also_owns], never an arbitrary repo named in the task.
+ */
+export function resolveTargetRepoRoot(projectRoot: string, squad: Squad | null, task?: string): string {
   if (!squad?.repo) return projectRoot;
+  if (task) {
+    const owned = [squad.repo, ...(squad.also_owns ?? [])];
+    // cli#1121: an EXPLICIT repo marker ("repo <owner>/<name>", "in repo X",
+    // "target repo: X") beats issue-ref order — a task like "work repo-B#180
+    // (app side, repo repo-A)" used to bind to repo-B because the first
+    // owner/repo#N token won, wasting a full lane run on the wrong sandbox.
+    // Same allowlist discipline: a marker naming a repo the squad does NOT
+    // own is ignored, never routed to.
+    const marker = task.match(/(?:\bin\s+repo|\btarget\s+repo|\brepo)[:\s]+([\w.-]+\/[\w.-]+)/i);
+    if (marker) {
+      const [mOrg, mName] = [marker[1].slice(0, marker[1].lastIndexOf('/')), marker[1].split('/').pop()!];
+      const hit = owned.find((o) => {
+        const slash = o.lastIndexOf('/');
+        const [oOrg, oName] = slash === -1 ? [undefined, o] : [o.slice(0, slash), o.slice(slash + 1)];
+        return oName === mName && (!oOrg || oOrg === mOrg);
+      });
+      if (hit) {
+        const candidate = join(projectRoot, '..', hit.split('/').pop()!);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+    for (const ref of task.matchAll(/(?:([\w.-]+)\/)?([\w.-]+)#\d+/g)) {
+      const [, refOrg, refName] = ref;
+      const hit = owned.find((o) => {
+        const slash = o.lastIndexOf('/');
+        const [oOrg, oName] = slash === -1 ? [undefined, o] : [o.slice(0, slash), o.slice(slash + 1)];
+        return oName === refName && (!refOrg || !oOrg || refOrg === oOrg);
+      });
+      if (!hit) continue; // ref to a repo this squad doesn't own — ignore
+      const candidate = join(projectRoot, '..', hit.split('/').pop()!);
+      if (existsSync(candidate)) return candidate;
+      // owned but not checked out as a sibling — a later owned ref may still match
+    }
+  }
   const repoName = squad.repo.split('/').pop();
   if (!repoName) return projectRoot;
   const candidatePath = join(projectRoot, '..', repoName);
   return existsSync(candidatePath) ? candidatePath : projectRoot;
+}
+
+/** All repo roots a squad may operate in: primary repo + existing also_owns sibling dirs (#1092) */
+export function resolveOwnedRepoRoots(projectRoot: string, squad: Squad | null): string[] {
+  const roots = [resolveTargetRepoRoot(projectRoot, squad)];
+  for (const owned of squad?.also_owns ?? []) {
+    const name = owned.split('/').pop();
+    if (!name) continue;
+    const candidate = join(projectRoot, '..', name);
+    if (existsSync(candidate)) roots.push(candidate);
+  }
+  return roots;
+}
+
+/** Whether a compiled tool surface grants gh — i.e. the agent is expected to
+ * open PRs/comment on issues, so a dead bot mint means a wasted run (cli#1150). */
+export function toolsRequireGh(tools: string[]): boolean {
+  return tools.some((t) => /^Bash\(gh([ :]|\))/.test(t));
 }
 
 /** Create an isolated worktree for agent execution (Node.js-based, for foreground mode) */
@@ -528,11 +659,17 @@ export function cleanupWorktree(
 
 // ── Provider work harvest ─────────────────────────────────────────────
 
+// #1076 thresholds: a file losing ≥50 lines with <10% of them replaced reads
+// as a corrupted whole-file edit; legitimate refactors add back comparable volume.
+const TRUNCATION_MIN_DELETED_LINES = 50;
+const TRUNCATION_REPLACEMENT_RATIO = 0.1;
+
 export type HarvestOutcome =
   | { outcome: 'in-place' }          // ran in projectRoot directly — nothing to move
   | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
   | { outcome: 'branch-preserved'; branch: string }  // committed to the agent branch — the only landing path (#966)
-  | { outcome: 'blocked'; detail: string };          // secret/PII scan refused the commit — worktree kept
+  | { outcome: 'blocked'; detail: string }           // secret/PII scan refused the commit — worktree kept
+  | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
 
 /**
  * Harvest file changes a non-anthropic executor left in its worktree.
@@ -553,18 +690,27 @@ export async function harvestProviderWork(
   projectRoot: string,
   branchName: string,
   info: { squadName: string; agentName: string; provider: string },
+  /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
+   *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
+  excludePaths: string[] = [],
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
   const run = (cmd: string, cwd: string) =>
     execSync(cmd, { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
 
+  // Pathspec that hides harness-copied furniture from every work-detection step.
+  const excludeSpec = excludePaths
+    .map((p) => `':(exclude)${p.replace(/'/g, '')}'`)
+    .join(' ');
+  const pathspec = excludeSpec ? ` -- . ${excludeSpec}` : '';
+
   // 1. Commit any uncommitted changes the executor left behind
-  const dirty = run('git status --porcelain', workDir).trim();
+  const dirty = run(`git status --porcelain${pathspec}`, workDir).trim();
   if (dirty) {
     const botEnv = await getBotGitEnv();
     const env = { ...process.env, ...botEnv };
-    execSync('git add -A', { cwd: workDir, env, stdio: 'pipe' });
+    execSync(`git add -A${pathspec}`, { cwd: workDir, env, stdio: 'pipe' });
 
     // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
     const stagedDiff = execSync('git diff --cached', {
@@ -598,12 +744,93 @@ export async function harvestProviderWork(
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
-  // 3. Preserve on the agent branch — integration is a human decision made
+  // 3. Truncation guard (#1076): a file losing nearly everything with almost
+  //    nothing added back is a corrupted whole-file edit, not work — aider has
+  //    replaced an 826-line file with its 6-line patch fragment and exited 0.
+  //    Diff against the branch's fork point (projectRoot HEAD may have moved
+  //    during the run) and flag; the inbox gate decides, never auto-land.
+  try {
+    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
+    const gutted: string[] = [];
+    for (const row of numstat.split('\n')) {
+      const [addStr, delStr, file] = row.split('\t');
+      const added = parseInt(addStr, 10);
+      const deleted = parseInt(delStr, 10);
+      if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue; // binary file
+      if (deleted >= TRUNCATION_MIN_DELETED_LINES && added < deleted * TRUNCATION_REPLACEMENT_RATIO) {
+        gutted.push(`${file} (-${deleted}/+${added})`);
+      }
+    }
+    if (gutted.length > 0) {
+      return {
+        outcome: 'suspect',
+        branch: branchName,
+        detail: `mass deletion without replacement: ${gutted.join(', ')}`,
+      };
+    }
+  } catch { /* diff unavailable — fall through to preserve; the gate still reviews */ }
+
+  // 4. Preserve on the agent branch — integration is a human decision made
   //    through the inbox gate, never a side effect of a run finishing (#966).
   return { outcome: 'branch-preserved', branch: branchName };
 }
 
 // ── Detached execution helpers ───────────────────────────────────────
+
+/**
+ * Detached-lane shell equivalent of harvestProviderWork (#966/#1126): commit
+ * whatever the executor left in workDir and preserve it on the dedicated
+ * agent branch — NEVER merge/ff into projectRoot's checked-out branch. The
+ * pre-#966 version of this shell path fast-forwarded projectRoot whenever the
+ * branch was ahead, silently landing unreviewed agent commits on whatever the
+ * operator had checked out; the foreground TS path was fixed by #966 but this
+ * detached path was not until #1126. Integration is an inbox decision, never
+ * a side effect of a background run finishing — the branch ref is logged
+ * loudly to the run's log file so `squads inbox`'s stranded-branch scanner
+ * surfaces it. Returns '' when the agent ran in projectRoot directly (nothing
+ * to harvest). Exported standalone (mirroring buildDetachedShellScript) so
+ * the preserve-only contract can be exercised against a real git repo in
+ * tests, the same way harvestProviderWork is.
+ */
+export function buildDetachedHarvestShell(config: {
+  workDir: string;
+  projectRoot: string;
+  branchName: string;
+  squadName: string;
+  agentName: string;
+  provider: string;
+  logFile: string;
+}): string {
+  if (config.workDir === config.projectRoot) return '';
+  // Author = the user's git identity (same as the TS-side harvest); the
+  // repo-scoped fallback identity (#980, single source of truth via
+  // gitIdentityArgs) applies ONLY when no git identity is configured.
+  const harvestMsg = `-m 'feat(${config.squadName}/${config.agentName}): agent work via ${config.provider}' -m '${getCoAuthorTrailer(config.provider)}'`;
+  const harvestIdentity = gitIdentityArgs(config.workDir);
+  return `; git -C '${config.workDir}' add -A 2>/dev/null` +
+    `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
+    `; KEEP_BRANCH=''; HARVEST=none` +
+    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
+    `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
+    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
+}
+
+/**
+ * Shell snippet writing a detached wrapper's pid file. Line 1 is always the
+ * wrapper's pid (unchanged format — `squads runs`/liveness checks read only
+ * this line). Line 2, when an executionId is known, is this run's API
+ * execution id (#1131) — read back by runs-inventory's cleanStaleRuns() so a
+ * wrapper that dies before ever reaching the spool writer can still report
+ * its postmortem instead of leaving the API row stuck at 'running' forever.
+ */
+function buildPidFileWriteCmd(pidFile: string, executionId?: string): string {
+  const safeExecId = executionId ? executionId.replace(/[^A-Za-z0-9_-]/g, '') : '';
+  return safeExecId
+    ? `printf '%s\\n%s\\n' "$$" '${safeExecId}' > '${pidFile}'`
+    : `echo $$ > '${pidFile}'`;
+}
 
 /** Build shell script for detached execution with worktree isolation */
 export function buildDetachedShellScript(config: {
@@ -650,6 +877,7 @@ export function buildDetachedShellScript(config: {
         logFile: config.logFile,
         timeoutFlag,
         sessionId: safeSessionId,
+        harness: 'claude',
       })
     : '';
   // stream-json (#902): the detached log is a LIVE event stream instead of a
@@ -671,10 +899,24 @@ export function buildDetachedShellScript(config: {
   // Repo-scoped fallback identity (#980) computed once here (TS side) rather
   // than inline in the shell — single source of truth via gitIdentityArgs.
   const identity = gitIdentityArgs(config.projectRoot);
-  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; WORK_DIR='${config.projectRoot}'; if git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD 2>/dev/null; then WORK_DIR='${worktreeDir}'; fi; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
+  // cli#1166: worktree creation failure used to SILENTLY fall back to the
+  // primary checkout — that's exactly how a lane switched the live
+  // checkout's branch under foreign uncommitted work. An autonomous lane
+  // never runs in the primary root: fail loud, keep the pid file (the
+  // lane-death backstop reports the postmortem, #1131).
+  const script = `mkdir -p '${config.projectRoot}/../.worktrees'; if ! git -C '${config.projectRoot}' ${identity} worktree add '${worktreeDir}' -b '${branchName}' HEAD >> '${config.logFile}' 2>&1; then echo 'FATAL: worktree creation failed — refusing to run the lane in the primary checkout (cli#1166)' >> '${config.logFile}'; exit 1; fi; WORK_DIR='${worktreeDir}'; cd "\${WORK_DIR}"; unset CLAUDECODE; ${buildWatchdogShell(executorCmd, watchdogSecs, timeoutFlag)}; ${cleanup}${spool}`;
   // pid file removed on clean wrapper exit — a surviving pid file with a dead
-  // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4).
-  return `echo $$ > '${config.pidFile}'; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
+  // pid is the orphan signal `squads runs --clean` keys on (hq#450 D4). Its
+  // second line (when known) is this run's API execution id (#1131) — the
+  // only way cleanStaleRuns' lane-death backstop can report a postmortem for
+  // a wrapper that died before it ever reached the spool writer.
+  const pidFileWrite = buildPidFileWriteCmd(config.pidFile, config.executionId);
+  // cli#1135: a wrapper segment dying before its own redirect used to leave
+  // NO log file — 'exited with code 1' was the whole postmortem. exec-redirect
+  // the entire wrapper into the lane log first thing: the log file now exists
+  // from the instant the wrapper starts, and every segment's stderr (mkdir,
+  // worktree add, cd, executor spawn, spool) lands in it.
+  return `${pidFileWrite}; exec >> '${config.logFile}' 2>&1; START=$(date +%s); ${script}; rm -f '${config.pidFile}'`;
 }
 
 /** Prepare log directory and file paths for detached execution */
@@ -703,6 +945,7 @@ export function executeForeground(config: {
   execContext: ExecutionContext;
   startMs: number;
   provider?: string;
+  task?: string;
   /** Exec-event stream (#902) — run_end/token_usage emitted here on close. */
   events?: ExecEventWriter;
 }): Promise<string> {
@@ -716,6 +959,21 @@ export function executeForeground(config: {
       stdio: 'inherit',
       cwd: workDir,
       env: config.agentEnv,
+    });
+
+    // Run-ledger start event: the close handler below writes the terminal row
+    // for the SAME id, so the fold sees running → completed/failed. pid is the
+    // spawned claude process — dies with the run, so the orphan reaper can
+    // tell "still working" from "crashed without reporting".
+    logRunStarted({
+      id: config.execContext.executionId,
+      squad: config.squadName,
+      agent: config.agentName,
+      provider: config.provider || 'anthropic',
+      model: config.agentEnv.SQUADS_MODEL || undefined,
+      trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
+      pid: claude.pid,
+      brief: config.task?.slice(0, BRIEF_MAX_CHARS),
     });
 
     claude.on('close', async (code) => {
@@ -734,7 +992,8 @@ export function executeForeground(config: {
         squad: config.squadName,
         agent: config.agentName,
         provider: config.provider || 'anthropic',
-        model: sessionUsage?.model || config.agentEnv.SQUADS_MODEL || 'unknown',
+        model: sessionUsage?.model || config.agentEnv.SQUADS_MODEL || undefined,
+        session_id: sessionUsage?.session_id,
         trigger: (config.execContext.trigger || 'manual') as ObservabilityRecord['trigger'],
         status: code === 0 ? 'completed' : 'failed',
         duration_ms: durationMs,
@@ -744,10 +1003,20 @@ export function executeForeground(config: {
         cache_write_tokens: sessionUsage?.cache_write_tokens || 0,
         cost_usd: sessionUsage?.cost_usd || 0,
         context_tokens: 0,
+        brief: config.task?.slice(0, BRIEF_MAX_CHARS),
         error: code !== 0 ? `Claude exited with code ${code}` : undefined,
         goals_before: Object.keys(goalsBefore).length > 0 ? goalsBefore : undefined,
         goals_after: Object.keys(goalsAfter).length > 0 ? goalsAfter : undefined,
         goals_changed: goalsChanged.length > 0 ? goalsChanged : undefined,
+        // Real outcomes parsed from the session JSONL (#1060) — absent when
+        // unknown so the scoreboard never ingests fake zeros.
+        ...(sessionUsage?.outcomes ? {
+          actions: sessionUsage.outcomes.actions,
+          files_edited: sessionUsage.outcomes.files_edited,
+          commits: sessionUsage.outcomes.commits,
+          prs_created: sessionUsage.outcomes.prs_created,
+          issues_created: sessionUsage.outcomes.issues_created,
+        } : {}),
       };
       logObservability(obsRecord);
 
@@ -774,7 +1043,7 @@ export function executeForeground(config: {
             cacheWrite: sessionUsage?.cache_write_tokens || 0,
             costEst: sessionUsage?.cost_usd || 0,
           },
-          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
+          outcomes: sessionUsage?.outcomes,
         });
         config.events.close();
       }
@@ -786,9 +1055,11 @@ export function executeForeground(config: {
         });
 
         const commitResult = await autoCommitAgentWork(config.squadName, config.agentName, config.execContext.executionId, config.provider);
-        if (commitResult.committed) {
+        if (commitResult.error) {
+          writeLine(`  ${colors.dim}warn: agent memory not committed — ${commitResult.error}${RESET}`);
+        } else if (commitResult.message) {
           writeLine();
-          writeLine(`  ${colors.green}Auto-committed agent work${RESET}`);
+          writeLine(`  ${commitResult.committed ? colors.green : colors.dim}${commitResult.message}${RESET}`);
         }
 
         cleanupWorktree(workDir, config.projectRoot);
@@ -818,6 +1089,7 @@ export function executeForeground(config: {
         duration_ms: durationMs,
         input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
         cost_usd: 0, context_tokens: 0,
+        brief: config.task?.slice(0, BRIEF_MAX_CHARS),
         error: String(err),
       });
 
@@ -831,7 +1103,6 @@ export function executeForeground(config: {
           ok: false,
           durationMs,
           totalUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0 },
-          outcomes: { actions: 0, files_edited: 0, commits: 0, prs_created: 0, issues_created: 0 },
         });
         config.events.close();
       }
@@ -853,6 +1124,14 @@ export async function executeWatch(config: {
   logFile: string;
   pidFile?: string;
   wrapperScript: string;
+  /** Execution context for spawn-failure reporting (#1157) */
+  execContext?: {
+    executionId: string;
+    squadName: string;
+    agentName: string;
+    model?: string;
+    trigger?: string;
+  };
 }): Promise<string> {
   const child = spawn('sh', ['-c', config.wrapperScript], {
     cwd: config.projectRoot,
@@ -861,6 +1140,44 @@ export async function executeWatch(config: {
     env: config.agentEnv,
   });
   child.unref();
+
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    if (config.execContext) {
+      const durationMs = Date.now(); // No start timestamp in watch mode
+      logObservability({
+        ts: new Date().toISOString(),
+        id: config.execContext!.executionId,
+        squad: config.execContext!.squadName,
+        agent: config.execContext!.agentName,
+        provider: 'anthropic',
+        model: config.execContext!.model || undefined,
+        trigger: (config.execContext!.trigger || 'manual') as ObservabilityRecord['trigger'],
+        status: 'failed',
+        duration_ms: durationMs,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: 0,
+        context_tokens: 0,
+        error: `Failed to spawn watch lane: ${err.message}`,
+      });
+      updateExecutionStatus(config.execContext!.squadName, config.execContext!.agentName, config.execContext!.executionId, 'failed', {
+        error: `Failed to spawn watch lane: ${err.message}`,
+        durationMs,
+      });
+      // Report spawn failure to the API (fire-and-forget)
+      void reportExecutionComplete(config.execContext!.executionId, 'failed', {
+        error: `Failed to spawn watch lane: ${err.message}`,
+        durationMs,
+        squad: config.execContext!.squadName,
+        agent: config.execContext!.agentName,
+      });
+    }
+  });
 
   await new Promise(resolve => setTimeout(resolve, LOG_FILE_INIT_DELAY_MS));
 
@@ -884,6 +1201,18 @@ export async function executeWatch(config: {
 }
 
 // ── Main execution functions ─────────────────────────────────────────
+
+/**
+ * Map a resolved anthropic model to opencode's `provider/model` syntax
+ * (#1177). Aliases (sonnet/opus/haiku) return undefined — opencode then uses
+ * its own configured default model, which never drifts with Claude releases.
+ */
+function toOpencodeModel(model: string | null | undefined): string | undefined {
+  if (!model) return undefined;
+  if (model.includes('/')) return model;
+  if (/^claude-/i.test(model)) return `anthropic/${model}`;
+  return undefined;
+}
 
 export async function executeWithClaude(
   prompt: string,
@@ -944,8 +1273,9 @@ export async function executeWithClaude(
   const resolvedModel = resolveModel(effectiveModel, squad, taskType);
   const provider = resolvedModel ? detectProviderFromModel(resolvedModel) : 'anthropic';
 
-  // Resolve target repo for worktree creation (squad.repo → sibling dir)
-  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad);
+  // Resolve target repo for worktree creation (squad.repo → sibling dir;
+  // task refs may reroute to an also_owns repo, #1092)
+  const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad, options.task);
 
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {
@@ -955,8 +1285,38 @@ export async function executeWithClaude(
       writeLine(`  ${colors.dim}Provider: ${provider}${RESET}`);
     }
     return executeWithProvider(provider, prompt, {
-      verbose, foreground, cwd: targetRepoRoot, squadName, agentName,
+      verbose, foreground, cwd: targetRepoRoot, squadName, agentName, task: options.task,
     });
+  }
+
+  // Fallback harness (#1177, anti-lock-in): reroute an anthropic-model run
+  // through `opencode run` when explicitly requested (options.harness /
+  // SQUADS_HARNESS=opencode) or when the claude binary itself is missing and
+  // opencode is installed. Downstream this is the provider path — worktree,
+  // spool (harness-stamped), reconcile — with opencode-shaped observability
+  // at full parity (cli#1175 contract).
+  const requestedHarness = options.harness || process.env.SQUADS_HARNESS || '';
+  if (requestedHarness === 'opencode' || !commandExists('claude')) {
+    if (commandExists('opencode')) {
+      if (requestedHarness !== 'opencode') {
+        writeLine(`  ${colors.yellow}claude CLI not found — falling back to the opencode harness (#1177)${RESET}`);
+      }
+      return executeWithProvider('opencode', prompt, {
+        verbose,
+        foreground: !(background === true) && !watch,
+        cwd: targetRepoRoot,
+        squadName,
+        agentName,
+        model: toOpencodeModel(resolvedModel),
+        trigger,
+        timeoutMinutes,
+        task: options.task,
+      });
+    }
+    if (requestedHarness === 'opencode') {
+      throw new Error(`harness 'opencode' requested but the opencode CLI is not installed. Install: ${getCLIConfig('opencode')?.install}`);
+    }
+    // claude missing, opencode missing — fall through; the claude spawn fails loud.
   }
 
   const claudeModelAlias = resolvedModel ? getClaudeModelAlias(resolvedModel) : undefined;
@@ -980,7 +1340,12 @@ export async function executeWithClaude(
   // CLI at dispatch (only we know the layers); the run's tool activity follows —
   // live for foreground, appended at reconcile for detached (from the raw
   // stream-json log the executor writes).
-  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId);
+  const events = new ExecEventWriter(execEventsFile(projectRoot, execContext.executionId), execContext.executionId, {
+    source: 'squads-cli',
+    provider,
+    // Live projection to the connected API (#1158) — file write never blocks on it.
+    flusher: new ExecEventFlusher(execContext.executionId),
+  });
   events.emit({
     type: 'run_start',
     squad: squadName,
@@ -1001,10 +1366,30 @@ export async function executeWithClaude(
 
   // Get bot token so agents create PRs/issues as bot identity (not user's personal gh auth)
   let botGhToken: string | undefined;
+  let mintError: string | undefined;
   try {
     const ghEnv = await getBotGhEnv();
     botGhToken = ghEnv.GH_TOKEN;
-  } catch { /* graceful: falls back to user's gh auth */ }
+  } catch (e) {
+    mintError = e instanceof Error ? e.message : String(e);
+  }
+  // cli#1150: an agent granted Bash(gh:*) is EXPECTED to open PRs / comment
+  // on issues. Detached lanes are fresh subprocesses with no interactive gh
+  // login — with a failed mint they run their whole budget issuing failing
+  // gh calls (or worse, land personal-auth PRs from ambient credentials).
+  // Fail at dispatch, not at the end of a wasted run. Foreground keeps the
+  // graceful fallback: the operator is present and may have gh auth.
+  if (!botGhToken && !runInForeground) {
+    const compiledForMint = compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS);
+    if (toolsRequireGh(compiledForMint.tools)) {
+      throw new Error(
+        `bot token mint failed and this agent's tools include gh (${mintError ?? 'unknown error'}) — ` +
+        `a detached lane would burn its whole run on failing gh calls (cli#1150). ` +
+        `Fix the GitHub App credentials (~/.squads/secrets/github-app.json) and re-dispatch.`,
+      );
+    }
+  }
+  const botGitCredentialEnv = buildBotGitCredentialEnv();
 
   // ── Foreground mode ──────────────────────────────────────────────────
   if (runInForeground) {
@@ -1041,25 +1426,38 @@ export async function executeWithClaude(
     // sandbox (Seatbelt/bubblewrap) — FS isolation (write = worktree + memory) + denyRead
     // of credential dirs + a network domain allowlist — merging the guardrail hooks in.
     const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
+    // Worktree guard (cli#1166/#1153): a per-spawn PreToolUse hook that
+    // blocks mutations aimed at the primary checkout. It self-disarms when
+    // the session cwd IS the primary root (foreground fallback mode), so
+    // injecting it unconditionally is safe.
+    const guardScript = writeWorktreeGuardScript(
+      targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
+    );
+    const guardHooks = buildWorktreeGuardHooks(guardScript);
     if (sandboxEnabled()) {
       const memDir = findMemoryDir();
       const settings = buildSandboxSettings({
         cwd: targetRepoRoot,
         writeScope: memDir ? [memDir] : [],
-        guardrailHooks: readGuardrailHooks(guardrailPath),
+        guardrailHooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
         guardrailPermissions: readGuardrailPermissions(guardrailPath),
         strict: sandboxStrict(),
       });
       const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
       claudeArgs.push('--settings', settingsPath);
-    } else if (guardrailPath) {
-      claudeArgs.push('--settings', guardrailPath);
+    } else {
+      const settings: Record<string, unknown> = {
+        hooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
+      };
+      const perms = readGuardrailPermissions(guardrailPath);
+      if (perms) settings.permissions = perms;
+      claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git')));
     }
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
 
     const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken,
+      effort, skills: mergedSkills, includeOtel: true, ghToken: botGhToken, gitCredentialEnv: botGitCredentialEnv,
     });
     // P2: native subprocess credential scrub (strips Anthropic/cloud creds from bash children).
     if (sandboxEnabled()) agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
@@ -1067,14 +1465,18 @@ export async function executeWithClaude(
     return executeForeground({
       prompt, claudeArgs, agentEnv, projectRoot: targetRepoRoot,
       squadName, agentName, execContext, startMs, provider, events,
+      task: options.task,
     });
   }
 
   // ── Detached modes (watch + background) ──────────────────────────────
   const timestamp = Date.now();
-  const { logFile, pidFile } = prepareLogFiles(projectRoot, squadName, agentName, timestamp);
+  // targetRepoRoot, not projectRoot (dispatch root) — pid/log files must land
+  // where runs-inventory.ts's inventoryRoots() scans (squad's bound repo), or
+  // `squads runs` invoked from the target repo misses live lanes (#1125).
+  const { logFile, pidFile } = prepareLogFiles(targetRepoRoot, squadName, agentName, timestamp);
   const agentEnv = buildAgentEnv(spawnEnv as Record<string, string>, execContext, {
-    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken,
+    effort, skills: mergedSkills, includeOtel: !runInWatch, ghToken: botGhToken, gitCredentialEnv: botGitCredentialEnv,
   });
 
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
@@ -1086,19 +1488,30 @@ export async function executeWithClaude(
   // lives in the repo's .git (shared across a repo's runs — same content).
   const detachedGuardrail = resolveGuardrailSettings(targetRepoRoot);
   let detachedSettingsFile: string | undefined;
+  // Worktree guard (cli#1166/#1153) — same per-spawn mutation block as
+  // foreground; detached lanes are where both escapes actually happened.
+  const detachedGuardScript = writeWorktreeGuardScript(
+    targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
+  );
+  const detachedGuardHooks = buildWorktreeGuardHooks(detachedGuardScript);
   if (sandboxEnabled()) {
     const memDirDetached = findMemoryDir();
     const settings = buildSandboxSettings({
       cwd: targetRepoRoot,
       writeScope: memDirDetached ? [memDirDetached] : [],
-      guardrailHooks: readGuardrailHooks(detachedGuardrail),
+      guardrailHooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
       guardrailPermissions: readGuardrailPermissions(detachedGuardrail),
       strict: sandboxStrict(),
     });
     detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
     agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
-  } else if (detachedGuardrail) {
-    detachedSettingsFile = detachedGuardrail;
+  } else {
+    const settings: Record<string, unknown> = {
+      hooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
+    };
+    const detachedPerms = readGuardrailPermissions(detachedGuardrail);
+    if (detachedPerms) settings.permissions = detachedPerms;
+    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
   }
 
   const wrapperScript = buildDetachedShellScript({
@@ -1119,6 +1532,29 @@ export async function executeWithClaude(
   // events are normalized from the raw stream-json log at reconcile (spool.ts).
   events.close();
 
+  // Register run start with the API for background/watch modes (#1100).
+  // brief carries the dispatch task text (#1131) — the postmortem "what was
+  // this run even for" the app can't answer today without it.
+  // Fire-and-forget: never block the dispatch on API reachability
+  void reportExecutionStart(squadName, agentName, execContext.executionId, {
+    trigger,
+    model: claudeModelAlias || resolvedModel,
+    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+  });
+  // Ledger start event. No pid: the wrapper's pidFile is the liveness
+  // authority for detached runs and reconcileDetachedRuns writes the
+  // terminal row; the reaper's 3h fallback covers a vanished pidFile.
+  logRunStarted({
+    id: execContext.executionId,
+    squad: squadName,
+    agent: agentName,
+    provider: 'anthropic',
+    model: claudeModelAlias || resolvedModel || undefined,
+    trigger: trigger as ObservabilityRecord['trigger'],
+    task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+  });
+
   if (runInWatch) {
     if (verbose) {
       logVerboseExecution({
@@ -1127,7 +1563,20 @@ export async function executeWithClaude(
       });
     }
 
-    return executeWatch({ projectRoot: targetRepoRoot, agentEnv, logFile, pidFile, wrapperScript });
+    return executeWatch({
+      projectRoot: targetRepoRoot,
+      agentEnv,
+      logFile,
+      pidFile,
+      wrapperScript,
+      execContext: {
+        executionId: execContext.executionId,
+        squadName,
+        agentName,
+        model: claudeModelAlias || resolvedModel,
+        trigger,
+      },
+    });
   }
 
   // ── Background mode ──────────────────────────────────────────────────
@@ -1147,6 +1596,42 @@ export async function executeWithClaude(
   });
   child.unref();
 
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    const durationMs = Date.now() - startMs;
+    logObservability({
+      ts: new Date().toISOString(),
+      id: execContext.executionId,
+      squad: squadName,
+      agent: agentName,
+      provider: 'anthropic',
+      model: claudeModelAlias || resolvedModel || undefined,
+      trigger: trigger as ObservabilityRecord['trigger'],
+      status: 'failed',
+      duration_ms: durationMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      context_tokens: 0,
+      error: `Failed to spawn background lane: ${err.message}`,
+    });
+    updateExecutionStatus(squadName, agentName, execContext.executionId, 'failed', {
+      error: `Failed to spawn background lane: ${err.message}`,
+      durationMs,
+    });
+    // Report spawn failure to the API (fire-and-forget)
+    void reportExecutionComplete(execContext.executionId, 'failed', {
+      error: `Failed to spawn background lane: ${err.message}`,
+      durationMs,
+      squad: squadName,
+      agent: agentName,
+    });
+  });
+
   if (verbose) {
     writeLine(`  ${colors.dim}Monitor: tail -f ${logFile}${RESET}`);
   }
@@ -1162,6 +1647,52 @@ export async function executeWithClaude(
  * Unlike executeWithClaude which has full session management,
  * other CLIs run in simpler non-interactive mode.
  */
+/**
+ * The base a provider-lane worktree branches from (#1083): the repo's
+ * integration branch on origin (see integrationBranch()), never the operator's
+ * checked-out HEAD. Best-effort fetch keeps the base fresh; offline falls back
+ * to the stale local ref (still better than operator HEAD), then HEAD when no
+ * remote refs exist at all (fresh local-only repos).
+ */
+export function resolveIntegrationBase(projectRoot: string): string {
+  const trunk = integrationBranch(projectRoot);
+  // A trunk that exists only locally can't be a remote base — try the usual names next.
+  const candidates = [...new Set([trunk, 'main', 'master'].filter((b): b is string => !!b))];
+  for (const branch of candidates) {
+    const ref = `origin/${branch}`;
+    try {
+      execSync(`git rev-parse --verify --quiet '${ref}'`, { cwd: projectRoot, stdio: 'pipe' });
+      try {
+        execSync(`git fetch origin '${branch}' --quiet`, { cwd: projectRoot, stdio: 'pipe', timeout: 10_000 });
+      } catch { /* offline — stale ref beats operator HEAD */ }
+      return ref;
+    } catch { /* ref absent — try next */ }
+  }
+  return 'HEAD';
+}
+
+/**
+ * Ambient-credential guard for provider lanes (#1084). Provider work lands via
+ * harvest + the inbox gate (#966), never the lane's own pushes/PRs — a GLM run
+ * created a PR authored by the OPERATOR's personal account by inheriting
+ * ambient gh auth. Strip the env tokens and point gh at an empty, per-run
+ * config dir so keychain-backed `gh` auth can't ride along either. (git's own
+ * credential helpers / ssh keys are out of scope here — sandbox P2 covers FS
+ * and network isolation.)
+ */
+export function providerCredentialGuard(timestamp: number): Record<string, string | undefined> {
+  let ghConfigDir: string | undefined;
+  try {
+    ghConfigDir = join(tmpdir(), `squads-ghconfig-${timestamp}`);
+    mkdirSync(ghConfigDir, { recursive: true });
+  } catch { ghConfigDir = undefined; }
+  return {
+    GH_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    ...(ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : {}),
+  };
+}
+
 export async function executeWithProvider(
   provider: string,
   prompt: string,
@@ -1176,6 +1707,10 @@ export async function executeWithProvider(
     trigger?: ExecutionContext['trigger'];
     startMs?: number;
     timeoutMinutes?: number;
+    /** Compiled tool allowlist for claude-harness lanes (#1073). */
+    allowedTools?: string[];
+    /** Dispatch task text — reported to the API as the execution's brief (#1131). */
+    task?: string;
   }
 ): Promise<string> {
   const cliConfig = getCLIConfig(provider);
@@ -1188,9 +1723,17 @@ export async function executeWithProvider(
     throw new Error(`CLI '${cliConfig.command}' not found. Install: ${cliConfig.install}`);
   }
 
-  const projectRoot = options.cwd || getProjectRoot();
+  const dispatchRoot = getProjectRoot();
   const squadName = options.squadName || 'unknown';
   const agentName = options.agentName || 'unknown';
+  // Callers that already resolved the squad's bound repo pass cwd (#1092
+  // task-reroute, agent-runner.ts / execution-engine.ts's own delegation).
+  // Callers that don't (lead/sequential modes in run-modes.ts) get the same
+  // resolution here — otherwise worktree, harvest, and pid/log placement
+  // (below) all land in the dispatch root instead of the squad's target
+  // repo, the same blind spot runs-inventory.ts scans around (#1125).
+  const projectRoot = options.cwd
+    || resolveTargetRepoRoot(dispatchRoot, squadName !== 'unknown' ? loadSquad(squadName) : null, options.task);
   const timestamp = Date.now();
 
   // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
@@ -1200,6 +1743,7 @@ export async function executeWithProvider(
   const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
     ...(cliConfig.env?.() ?? {}),
+    ...providerCredentialGuard(timestamp),
     SQUADS_SQUAD: squadName,
     SQUADS_AGENT: agentName,
     SQUADS_PROVIDER: provider,
@@ -1208,14 +1752,18 @@ export async function executeWithProvider(
     if (providerEnv[key] === undefined) delete providerEnv[key];
   }
 
-  // Create isolated worktree for this agent (same pattern as executeWithClaude)
+  // Create isolated worktree for this agent — branched from the repo's
+  // INTEGRATION base, never the operator's checked-out HEAD (#1083): a lane
+  // spawned while the operator sat on an unmerged fix branch produced a PR
+  // mixing that branch's content into the agent's diff.
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
-    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' HEAD`, { cwd: projectRoot, stdio: 'pipe' });
+    const base = resolveIntegrationBase(projectRoot);
+    execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
@@ -1225,12 +1773,16 @@ export async function executeWithProvider(
   // agent definitions, memory, and config files. Providers like Gemini restrict
   // file reads to the workspace directory, so these must be local.
   let effectivePrompt = prompt;
+  // Paths the harness itself materializes in the worktree — excluded from the
+  // harvest so furniture never gets committed as "agent work" (#1070).
+  const harnessCopiedPaths: string[] = [];
   if (workDir !== projectRoot) {
     const agentsDir = join(projectRoot, '.agents');
     const targetAgentsDir = join(workDir, '.agents');
     if (existsSync(agentsDir) && !existsSync(targetAgentsDir)) {
       try {
         cpSync(agentsDir, targetAgentsDir, { recursive: true });
+        harnessCopiedPaths.push('.agents');
       } catch (e) {
         writeLine(`  ${colors.dim}warn: .agents copy failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
       }
@@ -1239,7 +1791,12 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = options.model ? { model: options.model } : undefined;
+  const buildOpts = (options.model || options.allowedTools?.length)
+    ? {
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+      }
+    : undefined;
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
 
   if (options.verbose) {
@@ -1253,6 +1810,46 @@ export async function executeWithProvider(
       writeLine(`  ${colors.dim}Prompt delivery: stdin${RESET}`);
     }
   }
+
+  // One id for the whole run, resolved once: the start event, the terminal
+  // row, and the API report must share it or the ledger fold sees two runs —
+  // one forever 'running' (the exact bug the run-ledger kills).
+  const executionId = options.executionId || generateExecutionId();
+
+  // Native-harness lanes (#1227): the engine writes the PersistedExecEvent v2
+  // stream itself, so it gets the canonical events file, the execution id to
+  // stamp every envelope with, and a per-run task store for convergence
+  // gating (#1218). The CLI runs NO writer for these lanes — two writers on
+  // one events file is how a ledger splits a run in two. Appended to the
+  // single argv source so the background wrapper inherits them too (#1101).
+  if (cliConfig.nativeEvents) {
+    args.push(
+      '--events', execEventsFile(dispatchRoot, executionId),
+      '--run-id', executionId,
+      '--tasks', join(dispatchRoot, '.agents', 'observability', 'tasks', executionId),
+    );
+  }
+
+  // Exec events for provider lanes (#1159): stream-json lanes (claude-harness
+  // foreign providers — glm, deepseek) normalize through the Claude adapter
+  // live in foreground; detached lanes get run_start here and the rest at
+  // spool reconcile (normalizeDetachedLog resumes the seq counter).
+  const events = (cliConfig.streamJson || cliConfig.opencodeJson)
+    ? new ExecEventWriter(execEventsFile(dispatchRoot, executionId), executionId, {
+        source: 'squads-cli',
+        provider,
+        flusher: new ExecEventFlusher(executionId),
+      })
+    : null;
+  events?.emit({
+    type: 'run_start',
+    squad: squadName,
+    agent: agentName,
+    mode: options.foreground ? 'foreground' : 'background',
+    model: options.model || '',
+    role: '',
+    startedAt: new Date(timestamp).toISOString(),
+  });
 
   // Foreground mode: run directly in terminal
   if (options.foreground) {
@@ -1268,15 +1865,60 @@ export async function executeWithProvider(
         env: providerEnv,
       });
 
-      // Tail buffer for usage parsing (cap to keep memory bounded)
-      const OUTPUT_TAIL_MAX = 256 * 1024;
+      logRunStarted({
+        id: executionId,
+        squad: squadName,
+        agent: agentName,
+        provider,
+        model: options.model || undefined,
+        trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+        pid: proc.pid,
+        task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+        brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+      });
+
+      // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
+      // lanes get a larger cap — outcomes accumulate across ALL events, so a
+      // tight tail would undercount long runs (#1077).
+      const OUTPUT_TAIL_MAX = (cliConfig.streamJson || cliConfig.opencodeJson) ? 4 * 1024 * 1024 : 256 * 1024;
       let outputTail = '';
+      // Live exec-event normalization (#1159) — one adapter per run, shaped
+      // for the harness that emits the stream (#1177).
+      const adapter = events
+        ? (cliConfig.opencodeJson ? createOpencodeStreamJsonAdapter() : createClaudeStreamJsonAdapter())
+        : null;
+      let lineBuf = '';
       if (captureUsage) {
         const append = (chunk: Buffer) => {
           outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
         };
-        proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
-        proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        if (cliConfig.streamJson || cliConfig.opencodeJson) {
+          // Render assistant text live instead of echoing raw JSONL (#1077).
+          const renderer = cliConfig.streamJson
+            ? new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'))
+            : null;
+          proc.stdout?.on('data', (c: Buffer) => {
+            renderer?.push(c.toString('utf-8'));
+            append(c);
+            lineBuf += c.toString('utf-8');
+            const lines = lineBuf.split('\n');
+            lineBuf = lines.pop() ?? '';
+            for (const l of lines) {
+              if (events && adapter) events.ingestProviderLine(adapter, l, agentName);
+              // opencode: text parts render live from the same line split.
+              if (cliConfig.opencodeJson) {
+                const ev = parseOpencodeLine(l);
+                if (ev?.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text) {
+                  process.stdout.write(ev.part.text + '\n');
+                }
+              }
+            }
+          });
+          proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        } else {
+          proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
+          proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        }
       }
 
       // For stdinPrompt providers (e.g. Ollama), pipe the prompt via stdin
@@ -1290,21 +1932,50 @@ export async function executeWithProvider(
         // Token/cost figures come from the provider's own output when parseable.
         const startMs = options.startMs || timestamp;
         const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        // Model attribution for stream-json providers (#937): the provider's
+        // own output carries the real model name (e.g. deepseek-v4-flash).
+        // options.model may carry a leaked Claude model from frontmatter when
+        // an agent is re-laned (provider: deepseek, model: claude-sonnet-4).
+        // Use the stream's model for observability so cost analysis records
+        // the truth, not a leak. The spool reconcile path already does this
+        // for detached runs (spool.ts:283-290); foreground needs it here.
+        const streamModel = outputTail && cliConfig.streamJson
+          ? parseStreamJson(outputTail).usage.model
+          : undefined;
         // #936: providers can exit 0 after printing a fatal API error — detect
         // from output so the ledger never credits a failed run as completed.
         const fatal = detectProviderFatalError(outputTail);
         if (fatal) {
           writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
         }
+        // Harvest BEFORE the ledger write so a suspect harvest (#1076) can mark
+        // the run failed — and regardless of exit code: partial work from a
+        // failed run must not evaporate either.
+        let harvest: HarvestOutcome = { outcome: 'in-place' };
+        try {
+          harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
+            squadName, agentName, provider,
+          }, harnessCopiedPaths);
+        } catch (e) {
+          writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+        }
+        const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
+        // Stream-json lanes carry real outcomes in the event stream (#1077) —
+        // same omit-when-unknown convention as everywhere else (#1060).
+        const streamOutcomes = outputTail && cliConfig.streamJson
+          ? parseStreamJson(outputTail).outcomes
+          : outputTail && cliConfig.opencodeJson
+            ? parseOpencodeJson(outputTail).outcomes
+            : null;
         logObservability({
           ts: new Date().toISOString(),
-          id: options.executionId || generateExecutionId(),
+          id: executionId,
           squad: squadName,
           agent: agentName,
           provider,
-          model: options.model || 'unknown',
+          model: streamModel || options.model || undefined,
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
-          status: code === 0 && !fatal ? 'completed' : 'failed',
+          status: code === 0 && !fatal && !suspect ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
           input_tokens: usage?.input_tokens || 0,
           output_tokens: usage?.output_tokens || 0,
@@ -1312,26 +1983,48 @@ export async function executeWithProvider(
           cache_write_tokens: 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
-          error: fatal ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
+          brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+          ...(streamOutcomes && streamOutcomes.actions > 0 ? {
+            actions: streamOutcomes.actions,
+            files_edited: streamOutcomes.files_edited,
+            commits: streamOutcomes.commits,
+            prs_created: streamOutcomes.prs_created,
+            issues_created: streamOutcomes.issues_created,
+          } : {}),
+          error: fatal
+            ?? (suspect ? `suspect harvest: ${suspect}` : undefined)
+            ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
         }
-        // Harvest regardless of exit code — partial work from a failed run
-        // must not evaporate either.
-        let harvest: HarvestOutcome = { outcome: 'in-place' };
-        try {
-          harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
-            squadName, agentName, provider,
+        if (events) {
+          if (lineBuf.trim() && adapter) events.ingestProviderLine(adapter, lineBuf, agentName);
+          events.emit({
+            type: 'run_end',
+            ok: code === 0 && !fatal && !suspect,
+            durationMs: Date.now() - startMs,
+            totalUsage: {
+              input: usage?.input_tokens || 0,
+              output: usage?.output_tokens || 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              costEst: usage?.cost_usd || 0,
+            },
+            ...(streamOutcomes && streamOutcomes.actions > 0 ? { outcomes: streamOutcomes } : {}),
           });
-        } catch (e) {
-          writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
+          events.close();
         }
 
         switch (harvest.outcome) {
           case 'branch-preserved':
             writeLine(`  ${colors.green}Agent work preserved on branch ${harvest.branch}${RESET}`);
             writeLine(`  ${colors.dim}Review and land it through the gate: squads inbox${RESET}`);
+            cleanupWorktree(workDir, projectRoot, { keepBranch: true });
+            break;
+          case 'suspect':
+            writeLine(`  ${colors.red}SUSPECT harvest (run marked failed): ${harvest.detail}${RESET}`);
+            writeLine(`  ${colors.dim}Branch kept for review — do NOT land without inspecting: ${harvest.branch}${RESET}`);
             cleanupWorktree(workDir, projectRoot, { keepBranch: true });
             break;
           case 'blocked':
@@ -1365,32 +2058,20 @@ export async function executeWithProvider(
     mkdirSync(logDir, { recursive: true });
   }
 
-  const escapedPrompt = effectivePrompt.replace(/'/g, "'\\''");
-  const providerArgs = cliConfig.buildArgs(escapedPrompt).map(a => `'${a}'`).join(' ');
-  // Detached harvest (shell equivalent of harvestProviderWork): commit whatever
-  // the executor wrote, fast-forward the project root, and only delete the
-  // agent branch when its work is integrated or empty — never lose output.
-  // Author = the user's git identity (same as the TS-side harvest); the
-  // repo-scoped fallback identity (#980, single source of truth via
-  // gitIdentityArgs) applies ONLY when no git identity is configured.
-  const harvestMsg = `-m 'feat(${squadName}/${agentName}): agent work via ${provider}' -m '${getCoAuthorTrailer(provider)}'`;
-  const harvestIdentity = gitIdentityArgs(workDir);
-  const cleanupCmd = workDir !== projectRoot
-    ? `; git -C '${workDir}' add -A 2>/dev/null` +
-      `; git -C '${workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
-      `; KEEP_BRANCH=''; HARVEST=none` +
-      `; if [ "$(git -C '${projectRoot}' rev-list --count '${branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then` +
-      ` { git -C '${projectRoot}' merge --ff-only '${branchName}' >/dev/null 2>&1 && HARVEST=merged; } || { KEEP_BRANCH=1; HARVEST=preserved; }; fi` +
-      `; git -C '${projectRoot}' worktree remove '${workDir}' --force 2>/dev/null` +
-      `; if [ -z "$KEEP_BRANCH" ]; then git -C '${projectRoot}' branch -D '${branchName}' 2>/dev/null;` +
-      ` else echo "agent work preserved on branch ${branchName} (merge manually)" >> '${logFile}'; fi`
-    : '';
+  // Single argv source with the foreground path (#1101): rebuilding here via a
+  // second buildArgs call silently dropped buildOpts — background claude-harness
+  // lanes spawned with NO --allowedTools, so every Write/Edit was denied in
+  // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
+  const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+  const cleanupCmd = buildDetachedHarvestShell({
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+  });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.
   const timeoutFlag = `${pidFile}.timeout`;
   const spoolCmd = options.executionId
     ? buildSpoolWriterShell({
-        obsRoot: getProjectRoot(),
+        obsRoot: dispatchRoot,
         execId: options.executionId,
         squad: squadName,
         agent: agentName,
@@ -1399,14 +2080,24 @@ export async function executeWithProvider(
         trigger: options.trigger || 'manual',
         logFile,
         timeoutFlag,
+        // Harness stamp (#1177) — reconcile picks the stream parser/adapter by
+        // this, not by provider: claude-harness lanes and opencode lanes emit
+        // different JSONL shapes; plain provider CLIs (aider) stamp nothing.
+        // 'native' lanes (#1227): the engine wrote the events file itself, so
+        // reconcile must NOT parse the log as a stream — usage comes from the
+        // lane's parseUsage over the engine's --json result.
+        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : cliConfig.nativeEvents ? 'native' : '',
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
-  const wrapperScript = `echo $$ > '${pidFile}'; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
+  // pid file's second line (when known) is this run's API execution id
+  // (#1131) — see buildPidFileWriteCmd.
+  const wrapperScript = `${buildPidFileWriteCmd(pidFile, options.executionId)}; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
 
+  // Register run start with the API for provider background mode (#1100).
   const child = spawn('sh', ['-c', wrapperScript], {
     cwd: workDir,
     detached: true,
@@ -1415,6 +2106,60 @@ export async function executeWithProvider(
   });
 
   child.unref();
+
+  // Spawn-failure handler (#1157): if the wrapper itself fails to start,
+  // nothing inside the script runs — no pid file, no spool, no events.
+  // Record the failure so the run doesn't disappear from observability.
+  child.on('error', (err) => {
+    const durationMs = Date.now() - timestamp;
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squadName,
+      agent: agentName,
+      provider,
+      model: options.model || undefined,
+      trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+      status: 'failed',
+      duration_ms: durationMs,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      context_tokens: 0,
+      error: `Failed to spawn provider background lane: ${err.message}`,
+    });
+    // Report spawn failure to the API (fire-and-forget)
+    void reportExecutionComplete(executionId, 'failed', {
+      error: `Failed to spawn provider background lane: ${err.message}`,
+      durationMs,
+      squad: squadName,
+      agent: agentName,
+    });
+  });
+
+  // Register run start AFTER spawn so the report carries the wrapper pid —
+  // the sh wrapper lives for the run's duration, so it's the liveness signal
+  // the orphan reaper checks. Fire-and-forget (#1131 brief; never block on
+  // API reachability), same id as the spool's terminal report.
+  void reportExecutionStart(squadName, agentName, executionId, {
+    trigger: options.trigger || 'manual',
+    model: options.model,
+    brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    pid: child.pid,
+  });
+  logRunStarted({
+    id: executionId,
+    squad: squadName,
+    agent: agentName,
+    provider,
+    model: options.model || undefined,
+    trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
+    pid: child.pid,
+    task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
+    brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+  });
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Log: ${logFile}${RESET}`);

@@ -68,6 +68,9 @@ export async function runCloudDispatch(
           model: options.model,
           provider: options.provider,
           effort: options.effort,
+          task: options.task,
+          timeout: options.timeout,
+          skills: options.skills,
         },
       }),
     });

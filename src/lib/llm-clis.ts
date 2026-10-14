@@ -8,6 +8,9 @@
  */
 
 import { execSync } from 'child_process';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
+import { loadProviderRegistry, anthropicCompatEnv, readProviderSecret, type ProviderEntry } from './provider-registry.js';
 
 export interface CLIConfig {
   /** Provider identifier (matches provider field in SQUAD.md/agent.md) */
@@ -35,11 +38,35 @@ export interface CLIConfig {
   parseUsage?: (output: string) => ProviderUsage | null;
 
   /**
+   * The CLI emits Claude Code stream-json (JSONL events), not prose (#1077).
+   * The foreground runner renders assistant text live instead of echoing raw
+   * JSONL, and parses outcomes from the same stream.
+   */
+  streamJson?: boolean;
+
+  /**
+   * The CLI emits opencode `--format json` JSONL events (#1177) — a different
+   * shape from Claude stream-json, normalized by its own adapter
+   * (createOpencodeStreamJsonAdapter) and parser (parseOpencodeJson).
+   * Mutually exclusive with `streamJson`.
+   */
+  opencodeJson?: boolean;
+
+  /**
    * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
    * Anthropic-compatible endpoint). A key set to undefined is REMOVED from the
    * child env — needed when an inherited variable would shadow the injected one.
    */
   env?: () => Record<string, string | undefined>;
+
+  /**
+   * Native-harness lane (#1227): the engine writes its own PersistedExecEvent
+   * v2 stream. The runner hands it the canonical events file, the execution id
+   * and a per-run task store via argv, and must NOT also run its own event
+   * writer for the lane — two writers on one file is how a ledger splits a
+   * run in two.
+   */
+  nativeEvents?: boolean;
 }
 
 export interface RunOptions {
@@ -51,6 +78,9 @@ export interface RunOptions {
 
   /** Dry run - just show what would execute */
   dryRun?: boolean;
+
+  /** Compiled tool allowlist for claude-harness lanes (#1073); others ignore it */
+  allowedTools?: string[];
 }
 
 export interface ProviderUsage {
@@ -67,6 +97,46 @@ function parseTokenCount(raw: string): number {
   const base = parseFloat(match[1]);
   const mult = match[2] === 'k' ? 1_000 : match[2] === 'M' ? 1_000_000 : 1;
   return Math.round(base * mult);
+}
+
+/**
+ * Usage from a claude-harness stream-json tail (#1077 — glm lane; #1159 —
+ * every foreign lane on the claude harness). Token counts come from the
+ * stream's events. The result event's cost_usd is DISCARDED: the claude CLI
+ * prices foreign models at Claude rates (measured ~25× overstatement on
+ * glm-4.7), which would corrupt every ROI comparison. Cost = tokens × env
+ * rates (SQUADS_<PROVIDER>_COST_PER_MTOK_IN/OUT, $ per million tokens);
+ * unset rates leave cost 0 — a visible gap, never a fabricated number.
+ */
+function makeClaudeHarnessStreamUsage(envPrefix: string): (output: string) => ProviderUsage | null {
+  return (output) => {
+    const stream = parseStreamJson(output);
+    const u = stream.usage;
+    if (!u.input_tokens && !u.output_tokens) return null;
+    let cost = 0;
+    const inRate = parseFloat(process.env[`SQUADS_${envPrefix}_COST_PER_MTOK_IN`] || '');
+    const outRate = parseFloat(process.env[`SQUADS_${envPrefix}_COST_PER_MTOK_OUT`] || '');
+    if (Number.isFinite(inRate) && Number.isFinite(outRate)) {
+      cost = (u.input_tokens * inRate + u.output_tokens * outRate) / 1_000_000;
+    }
+    return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: cost };
+  };
+}
+
+export const parseGlmStreamUsage = makeClaudeHarnessStreamUsage('GLM');
+export const parseDeepseekStreamUsage = makeClaudeHarnessStreamUsage('DEEPSEEK');
+export const parseKimiStreamUsage = makeClaudeHarnessStreamUsage('KIMI');
+
+/**
+ * Usage from an opencode `--format json` log (#1177). Unlike the claude
+ * harness (which prices foreign models at Claude rates — discarded above),
+ * opencode's step_finish cost is the provider's REAL price, so it's trusted.
+ */
+export function parseOpencodeUsage(output: string): ProviderUsage | null {
+  const stream = parseOpencodeJson(output);
+  const u = stream.usage;
+  if (!u.input_tokens && !u.output_tokens) return null;
+  return { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cost_usd: u.cost_usd };
 }
 
 /**
@@ -104,6 +174,7 @@ const PROVIDER_FATAL = [
   /insufficient balance|please recharge|insufficient_quota|exceeded your current quota/i,
   /The supported API model names are/,
   /invalid api key|incorrect api key/i,
+  /AI_\w*Error/,  // opencode (Vercel AI SDK) — AI_APICallError, AI_LoadAPIKeyError, etc. (#978)
 ];
 
 /** Returns the matched failure line for logging, or null when output looks healthy. */
@@ -123,6 +194,12 @@ export function detectProviderFatalError(output: string): string | null {
  */
 export function commandExists(command: string): boolean {
   try {
+    // Absolute/relative paths bypass `which` — SQUADS_ENGINE_BIN points at a
+    // built binary, not a PATH entry.
+    if (command.includes('/')) {
+      accessSync(command, fsConstants.X_OK);
+      return true;
+    }
     execSync(`which ${command}`, { stdio: 'pipe' });
     return true;
   } catch {
@@ -172,15 +249,18 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     buildArgs: (prompt) => ['exec', prompt],
   },
 
-  // DeepSeek has no first-party agentic CLI; delegate to aider, which speaks
-  // DeepSeek's chat-completions API natively via DEEPSEEK_API_KEY. (codex was
-  // considered but recent versions dropped chat-completions wire support, and
-  // DeepSeek does not implement the Responses API.)
+  // DeepSeek serves an Anthropic-compatible endpoint (api.deepseek.com/anthropic
+  // — verified live 2026-07-17: proper Anthropic message shape + usage block),
+  // so the claude CLI is the agentic harness, same pattern as glm below (#1159).
+  // Replaces the aider delegation: one harness → one stream shape → the Claude
+  // adapter emits exec-events for every lane, and deepseek lanes gain tool
+  // allowlists, subagents, and artifact mining aider never had. (The earlier
+  // aider rationale predated DeepSeek's Anthropic-format support.)
   deepseek: {
     provider: 'deepseek',
-    displayName: 'DeepSeek (via aider)',
-    command: 'aider',
-    install: 'pip install aider-install && aider-install, then set DEEPSEEK_API_KEY',
+    displayName: 'DeepSeek (via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set DEEPSEEK_API_KEY',
     buildArgs: (prompt, opts) => {
       // Agents re-laned to deepseek keep their anthropic `model:` frontmatter,
       // and DeepSeek's API rejects foreign names (#937) — only honor a model
@@ -190,16 +270,26 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
         ? requested
         : process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
       return [
-        '--model',
-        `deepseek/${model}`,
-        '--message',
+        '--print',
+        // Structured event stream so usage + outcomes are parseable (#1077);
+        // --verbose is required by the claude CLI for stream-json in print mode.
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--model', model,
+        // In --print mode permission prompts can't be answered (#1073).
+        ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+        '--disable-slash-commands',
         prompt,
-        '--yes',
-        '--no-auto-commits',
-        ...aiderMapTokensArgs(),
       ];
     },
-    parseUsage: parseAiderUsage,
+    streamJson: true,
+    parseUsage: parseDeepseekStreamUsage,
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.DEEPSEEK_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
   },
 
   // GLM (z.ai) serves an Anthropic-compatible endpoint, so the claude CLI is
@@ -212,13 +302,59 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     install: 'npm i -g @anthropic-ai/claude-code, then set GLM_API_KEY',
     buildArgs: (prompt, opts) => [
       '--print',
+      // Structured event stream so usage + outcomes are parseable (#1077);
+      // --verbose is required by the claude CLI for stream-json in print mode.
+      '--output-format', 'stream-json',
+      '--verbose',
       '--model',
       opts?.model || process.env.GLM_MODEL || 'glm-4.7',
+      // In --print mode permission prompts can't be answered, so without an
+      // allowlist every Edit/Write is denied and the lane is read-only (#1073).
+      ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+      '--disable-slash-commands',
       prompt,
     ],
+    streamJson: true,
+    parseUsage: parseGlmStreamUsage,
     env: () => ({
       ANTHROPIC_BASE_URL: process.env.GLM_BASE_URL || 'https://api.z.ai/api/anthropic',
       ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_MODEL: undefined,
+    }),
+  },
+
+  // Kimi (Moonshot) serves an Anthropic-compatible endpoint (verified live
+  // 2026-07-24: proper Anthropic message shape + usage on /anthropic/v1/messages
+  // for kimi-k3), so the claude CLI is the agentic harness, same pattern as
+  // glm/deepseek. K3 is a reasoning model that emits `thinking` blocks — the
+  // stream adapter already handles those (glm-4.7/5.2 do the same). Point it at
+  // Moonshot and auth with KIMI_API_KEY; ANTHROPIC_API_KEY is removed so an
+  // inherited key can't shadow the token.
+  kimi: {
+    provider: 'kimi',
+    displayName: 'Kimi (Moonshot via claude)',
+    command: 'claude',
+    install: 'npm i -g @anthropic-ai/claude-code, then set KIMI_API_KEY',
+    buildArgs: (prompt, opts) => [
+      '--print',
+      // Structured event stream so usage + outcomes are parseable (#1077);
+      // --verbose is required by the claude CLI for stream-json in print mode.
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--model',
+      opts?.model || process.env.KIMI_MODEL || 'kimi-k3',
+      // In --print mode permission prompts can't be answered, so without an
+      // allowlist every Edit/Write is denied and the lane is read-only (#1073).
+      ...(opts?.allowedTools?.length ? ['--allowedTools', ...opts.allowedTools] : []),
+      '--disable-slash-commands',
+      prompt,
+    ],
+    streamJson: true,
+    parseUsage: parseKimiStreamUsage,
+    env: () => ({
+      ANTHROPIC_BASE_URL: process.env.KIMI_BASE_URL || 'https://api.moonshot.ai/anthropic',
+      ANTHROPIC_AUTH_TOKEN: process.env.KIMI_API_KEY,
       ANTHROPIC_API_KEY: undefined,
       ANTHROPIC_MODEL: undefined,
     }),
@@ -247,6 +383,31 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     install: 'pip install aider-install && aider-install',
     buildArgs: (prompt) => ['--message', prompt, '--yes', ...aiderMapTokensArgs()],
     parseUsage: parseAiderUsage,
+  },
+
+  // opencode is the FALLBACK HARNESS (#1177, anti-lock-in): a second
+  // multi-provider agentic executor so the fleet survives a broken/locked-out
+  // claude CLI. `--format json` emits a structured event stream (normalized by
+  // createOpencodeStreamJsonAdapter); `--auto` approves permissions — lanes
+  // run in isolated worktrees, same containment as every other lane. Cost in
+  // its step_finish events is REAL provider pricing (models.dev rates), so no
+  // env-rate table is needed.
+  opencode: {
+    provider: 'opencode',
+    displayName: 'OpenCode (fallback harness)',
+    command: 'opencode',
+    install: 'curl -fsSL https://opencode.ai/install.sh | bash',
+    buildArgs: (prompt, opts) => {
+      const args = ['run', '--format', 'json', '--auto'];
+      // opencode wants `provider/model` (e.g. deepseek/deepseek-chat,
+      // anthropic/claude-sonnet-5); bare names pass through for its default.
+      if (opts?.model) args.push('--model', opts.model);
+      if (opts?.cwd) args.push('--dir', opts.cwd);
+      args.push(prompt);
+      return args;
+    },
+    opencodeJson: true,
+    parseUsage: parseOpencodeUsage,
   },
 
   ollama: {
@@ -302,10 +463,153 @@ export function normalizeProviderName(provider: string): string {
 }
 
 /**
- * Get CLI config for a provider
+ * Synthesize a CLIConfig from a user registry entry (#1156, spec
+ * provider-registry-2026-08-13). Built-ins always win, so a registry file can
+ * never change the behaviour of a shipped provider — this only ADDS providers,
+ * which is what keeps the migration behaviour-preserving.
+ *
+ * Only the `claude` harness against an Anthropic-compatible endpoint is
+ * synthesized: that is the proven GLM/DeepSeek pattern and the case #1156
+ * exists for — a new Kimi-like provider becomes one YAML entry, zero
+ * TypeScript. `native` entries synthesize through `nativeConfigFromRegistry`
+ * (#1227); anything else returns undefined rather than silently falling back
+ * to a third-party binary — a silent fallback is precisely the dependency
+ * this work removes.
+ */
+function configFromRegistry(name: string): CLIConfig | undefined {
+  const entry = loadProviderRegistry().providers[name];
+  if (!entry) return undefined;
+  if (entry.harness === 'native') return nativeConfigFromRegistry(entry);
+  if (entry.harness !== 'claude' || !entry.base_url) return undefined;
+
+  const defaultModel = entry.models?.[0];
+  return {
+    provider: entry.name,
+    displayName: entry.display_name ?? `${entry.name} (via claude)`,
+    command: 'claude',
+    install: `npm i -g @anthropic-ai/claude-code, then add the credential at ~/.squads/secrets/${entry.key_ref ?? '<key_ref>'}`,
+    buildArgs: (_prompt, opts) => {
+      // Honour a model override only when it belongs to this provider: an
+      // agent re-laned here keeps its previous `model:` frontmatter, and a
+      // foreign model name is rejected by the endpoint (the #937 failure).
+      const requested = opts?.model?.replace(new RegExp(`^${entry.name}/`), '');
+      const model = requested && entry.models?.includes(requested) ? requested : defaultModel;
+      return [
+        '--print',
+        '--output-format', 'stream-json',
+        '--verbose',
+        ...(model ? ['--model', model] : []),
+      ];
+    },
+    stdinPrompt: true,
+    streamJson: true,
+    parseUsage: makeClaudeHarnessStreamUsage(entry.name.toUpperCase()),
+    env: () => anthropicCompatEnv(entry),
+  };
+}
+
+/** claude-harness tool name → native engine permission rule (#1227). */
+const NATIVE_TOOL_RULES: Record<string, string> = {
+  read: 'read(*)', write: 'write(*)', edit: 'edit(*)',
+  glob: 'glob(*)', grep: 'grep(*)', bash: 'bash(*)',
+};
+
+/**
+ * Translate a lane's compiled tool allowlist into engine `--allow` rules.
+ * Task tools are always granted — they are the run's own coordination
+ * channel (#1218), and the gate's fallback deny would otherwise mute it.
+ * A lane with no allowlist gets the standard surface including bash — the
+ * same effective grant a claude-harness lane has without --allowedTools.
+ */
+export function nativeAllowRules(allowedTools?: string[]): string[] {
+  const rules = ['task_create(*)', 'task_claim(*)', 'task_complete(*)', 'task_block(*)', 'task_list(*)'];
+  if (!allowedTools) return [...rules, ...Object.values(NATIVE_TOOL_RULES)];
+  for (const t of allowedTools) {
+    const rule = NATIVE_TOOL_RULES[t.trim().toLowerCase()];
+    if (rule && !rules.includes(rule)) rules.push(rule);
+  }
+  return rules;
+}
+
+/**
+ * Usage from the engine's `--json` stdout result — the native lane's
+ * equivalent of stream scraping. The result is the last top-level JSON
+ * object on the stream; anything unparseable is no usage, not a wrong usage.
+ */
+export function parseNativeJsonUsage(output: string): ProviderUsage | null {
+  // The result is a top-level pretty-printed JSON object: either the whole
+  // output, or the last line that opens one (`\n{` — nested objects are
+  // indented, so only the top level matches).
+  const trimmed = output.trim();
+  const nl = trimmed.lastIndexOf('\n{');
+  const candidate = nl < 0 ? trimmed : trimmed.slice(nl + 1);
+  if (!candidate.startsWith('{')) return null;
+  try {
+    const r = JSON.parse(candidate) as {
+      usage?: { input?: number; output?: number };
+      costEst?: number;
+    };
+    if (!r.usage || typeof r.usage.input !== 'number') return null;
+    return {
+      input_tokens: r.usage.input,
+      output_tokens: r.usage.output ?? 0,
+      cost_usd: typeof r.costEst === 'number' ? r.costEst : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Auth for a native lane: the key_ref secret rides the child env, never argv. */
+function nativeEnv(entry: ProviderEntry): Record<string, string | undefined> {
+  const token = (entry.key_ref && readProviderSecret(entry.key_ref))
+    || (entry.required_env ?? []).map(v => process.env[v]).find(Boolean)
+    || undefined;
+  return { SQUADS_ENGINE_API_KEY: token };
+}
+
+/**
+ * Synthesize a CLIConfig for a `harness: native` registry entry (#1227).
+ *
+ * The engine speaks the openai-chat wire today; an entry declaring
+ * `api: anthropic-messages` gets NO runtime — undefined, loud, and no
+ * fallback, exactly as before this synthesis existed.
+ */
+function nativeConfigFromRegistry(entry: ProviderEntry): CLIConfig | undefined {
+  if (entry.api !== undefined && entry.api !== 'openai-chat') return undefined;
+
+  const defaultModel = entry.models?.[0];
+  return {
+    provider: entry.name,
+    displayName: entry.display_name ?? `${entry.name} (native)`,
+    command: process.env.SQUADS_ENGINE_BIN ?? 'squads-engine',
+    install: 'build squads-engine and link its bin (npm link in the engine repo), or point SQUADS_ENGINE_BIN at dist/cli/bin.js',
+    nativeEvents: true,
+    buildArgs: (prompt, opts) => {
+      // Honour a model override only when it belongs to this provider — same
+      // leak guard as the claude-harness lanes (#937).
+      const requested = opts?.model?.replace(new RegExp(`^${entry.name}/`), '');
+      const model = requested && entry.models?.includes(requested) ? requested : defaultModel;
+      return [
+        '-p', prompt,
+        '--provider', entry.name,
+        ...(entry.base_url ? ['--base-url', entry.base_url] : []),
+        ...(model ? ['--model', model] : []),
+        '--json', '--quiet',
+        ...nativeAllowRules(opts?.allowedTools).flatMap(r => ['--allow', r]),
+      ];
+    },
+    parseUsage: parseNativeJsonUsage,
+    env: () => nativeEnv(entry),
+  };
+}
+
+/**
+ * Get CLI config for a provider — built-in first, then the user registry.
  */
 export function getCLIConfig(provider: string): CLIConfig | undefined {
-  return LLM_CLIS[normalizeProviderName(provider)];
+  const name = normalizeProviderName(provider);
+  return LLM_CLIS[name] ?? configFromRegistry(name);
 }
 
 /**

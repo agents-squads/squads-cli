@@ -33,3 +33,26 @@ describe('agent-runner provider routing (#844)', () => {
     expect(source).toMatch(/import \{[^}]*resolveTargetRepoRoot[^}]*\} from '\.\/execution-engine\.js'/s);
   });
 });
+
+/**
+ * Regression guard for #1124: an explicit `--provider` flag must beat the
+ * agent file's frontmatter provider. The bug shipped the chain as
+ * `agentProvider || options.provider || …`, so a pinned agent silently
+ * ignored the operator's override — dispatching a claude-pinned lane onto
+ * GLM was impossible from the CLI. Same source-contract style as #844:
+ * a full runAgent() test would need the same 8+ mocks.
+ */
+describe('agent-runner provider precedence (#1124)', () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'lib', 'agent-runner.ts'),
+    'utf8'
+  );
+
+  it('resolves --provider ahead of agent frontmatter provider', () => {
+    const resolution = source.match(/normalizeProviderName\(([^)]*)\)/)?.[1] ?? '';
+    const flagIdx = resolution.indexOf('options.provider');
+    const agentIdx = resolution.indexOf('agentProvider');
+    expect(flagIdx).toBeGreaterThanOrEqual(0);
+    expect(agentIdx).toBeGreaterThan(flagIdx);
+  });
+});

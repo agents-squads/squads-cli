@@ -58,6 +58,8 @@ export interface SquadFrontmatter {
   name?: string;
   mission?: string;
   repo?: string;
+  /** Additional repos this squad owns and may be routed to via task refs (#1092) */
+  also_owns?: string[];
   stack?: string;
   context?: SquadContext;
   effort?: EffortLevel;
@@ -146,6 +148,8 @@ export interface Squad {
   effort?: EffortLevel;  // Squad-level default effort
   context?: SquadContext;  // Frontmatter context block
   repo?: string;
+  /** Additional repos this squad owns and may be routed to via task refs (#1092) */
+  also_owns?: string[];
   stack?: string;
   /** Agents that participate in squad conversations. Others run on schedules. */
   conversation_agents?: string[];
@@ -229,7 +233,7 @@ function walkUpForSquadsDir(startDir: string, maxLevels: number): string | null 
  * 2. If that fails and we are inside a git worktree or subdirectory, get the
  *    git toplevel via `git rev-parse --show-toplevel` and walk up from there.
  * 3. Also check the parent of the git toplevel so that sibling layouts like
- *    `agents-squads/hq/` are found when CWD is `agents-squads/.worktrees/xxx/`.
+ *    `workspace/hq/` are found when CWD is `workspace/.worktrees/xxx/`.
  *
  * @returns Path to squads directory or null if not found
  */
@@ -424,6 +428,9 @@ export function parseSquadFile(filePath: string): Squad {
     effort: fm.effort,
     context: fm.context,
     repo: fm.repo,
+    also_owns: Array.isArray(fm.also_owns)
+      ? fm.also_owns.filter((v): v is string => typeof v === 'string')
+      : undefined,
     stack: fm.stack,
     conversation_agents: Array.isArray(fm.conversation_agents) ? fm.conversation_agents : undefined,
     providers: fm.providers,
@@ -593,6 +600,47 @@ export function loadSquad(squadName: string): Squad | null {
   if (!existsSync(squadFile)) return null;
 
   return parseSquadFile(squadFile);
+}
+
+/**
+ * Squad → repo short names, from each SQUAD.md `repo:` field (`org/name` or
+ * `name`; the short name is what local clones and `gh` results are keyed on).
+ * Squads without a `repo:` map to []. Empty when there is no squads directory.
+ */
+export function squadRepoMap(squadsDir: string | null = findSquadsDir()): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  if (!squadsDir) return map;
+  for (const name of listSquads(squadsDir)) {
+    let repo: string | undefined;
+    try {
+      repo = parseSquadFile(join(squadsDir, name, 'SQUAD.md')).repo;
+    } catch {
+      // unreadable SQUAD.md — the squad still exists, just without a repo
+    }
+    const short = typeof repo === 'string' ? repo.trim().replace(/\.git$/, '').split('/').pop() : '';
+    map[name] = short ? [short] : [];
+  }
+  return map;
+}
+
+/**
+ * The squad named as a whole word in `text` (case-insensitive). Longest name
+ * first, and `-` counts as part of a name, so "web-api: fix" is `web-api`,
+ * not `web`. Null when none matches.
+ */
+export function squadNamedIn(text: string, squads: string[]): string | null {
+  const lower = text.toLowerCase();
+  const byLength = [...squads].sort((a, b) => b.length - a.length);
+  for (const squad of byLength) {
+    const word = squad.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(?<![\\w-])${word}(?![\\w-])`).test(lower)) return squad;
+  }
+  return null;
+}
+
+/** The squads whose `repo:` is `repo` (short name). */
+export function squadsForRepo(repo: string, map: Record<string, string[]>): string[] {
+  return Object.keys(map).filter(squad => map[squad].includes(repo));
 }
 
 /**
