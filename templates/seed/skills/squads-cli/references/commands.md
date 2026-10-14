@@ -10,6 +10,7 @@
 |---------|-------------|
 | `squads init` | Plant the seed: create manager agent, CLI skill, and starter squads |
 | `squads run [target] [agent]` | Run a squad or agent: squads run <squad>/<agent> (also: <squad> <agent>). No target lists squads; --org runs all squads as one coordinated cycle. |
+| `squads domains` | Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight |
 | `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
 | `squads resume <squad>` | Resume a paused squad |
 | `squads env show <squad>` | Show execution environment for a squad |
