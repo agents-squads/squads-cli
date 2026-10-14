@@ -2,7 +2,8 @@
  * Template loading and variable substitution for squads setup
  *
  * Template sources (checked in order):
- * 1. Local agents-squads repo clone (if in agents-squads directory)
+ * 1. A templates repo named by SQUADS_TEMPLATES_PATH (e.g. a clone of
+ *    agents-squads/agents-squads — has domain starters)
  * 2. User's global templates (~/.squads/templates/)
  * 3. Bundled templates (dist/templates/)
  */
@@ -29,28 +30,20 @@ export interface TemplateSource {
 
 /**
  * Find templates directory with priority:
- * 1. Local agents-squads repo (best - has domain starters)
+ * 1. SQUADS_TEMPLATES_PATH — a repo with .agents/squads/_template (domain starters)
  * 2. User's global templates (~/.squads/templates/)
  * 3. Bundled templates in CLI package
  */
 function findTemplatesDir(): TemplateSource {
-  // 1. Check for local agents-squads repo (look for .agents/squads/_template)
-  const repoLocations = [
-    join(process.cwd(), '..', 'agents-squads'),           // Sibling directory
-    join(homedir(), 'agents-squads', 'agents-squads'),    // Common clone location
-    join(homedir(), 'code', 'agents-squads'),             // Alternative
-    join(homedir(), 'projects', 'agents-squads'),         // Alternative
-  ];
-
-  for (const repoPath of repoLocations) {
-    const templatePath = join(repoPath, '.agents', 'squads', '_template');
-    if (existsSync(templatePath) && existsSync(join(templatePath, 'SQUAD.md'))) {
-      return {
-        type: 'repo',
-        path: repoPath,
-        description: `agents-squads repo at ${repoPath}`,
-      };
-    }
+  // 1. Explicit templates repo — never guessed from where one company keeps
+  //    its clones.
+  const repoPath = process.env.SQUADS_TEMPLATES_PATH;
+  if (repoPath && existsSync(join(repoPath, '.agents', 'squads', '_template', 'SQUAD.md'))) {
+    return {
+      type: 'repo',
+      path: repoPath,
+      description: `templates repo at ${repoPath} (SQUADS_TEMPLATES_PATH)`,
+    };
   }
 
   // 2. Check user's global templates

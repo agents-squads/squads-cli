@@ -6,7 +6,7 @@ import { spawn, execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { findSquadsDir, type Squad } from './squad-parser.js';
-import { resolveMcpConfigPath } from './mcp-config.js';
+import { getMcpConfigsDir, resolveMcpConfigPath } from './mcp-config.js';
 import { colors, RESET, writeLine } from './terminal.js';
 import type { ExecutionContext } from './run-types.js';
 
@@ -24,42 +24,26 @@ export function generateExecutionId(): string {
 // ── MCP config resolution ────────────────────────────────────────────
 
 /**
- * Select MCP config based on squad name and context
- * Uses three-tier resolution:
- * 1. Squad context.mcp from SQUAD.md frontmatter (dynamic)
- * 2. User override at ~/.claude/mcp-configs/{squad}.json
- * 3. Legacy hardcoded mapping (backward compatibility)
- * 4. Fallback to ~/.claude.json
+ * Select MCP config based on squad name and context:
+ * 1. Squad context.mcp from SQUAD.md frontmatter (generated config, or the
+ *    user override at ~/.claude/mcp-configs/{squad}.json)
+ * 2. User override at ~/.claude/mcp-configs/{squad}.json for squads without
+ *    a context block
+ * 3. None — empty string skips the --mcp-config flag
  */
 export function selectMcpConfig(squadName: string, squad?: Squad | null): string {
-  // Tier 1 & 2: Use new context-based resolution if squad has context.mcp
   if (squad?.context?.mcp && squad.context.mcp.length > 0) {
     return resolveMcpConfigPath(squadName, squad.context.mcp);
   }
 
-  // Tier 3: Legacy hardcoded mapping (for squads without context block)
-  const home = process.env.HOME || '';
-  const configsDir = join(home, '.claude', 'mcp-configs');
-
-  const squadConfigs: Record<string, string> = {
-    website: 'website.json',
-    research: 'research.json',
-    intelligence: 'research.json',
-    analytics: 'data.json',
-    engineering: 'data.json',
-  };
-
-  const configFile = squadConfigs[squadName.toLowerCase()];
-  if (configFile) {
-    const configPath = join(configsDir, configFile);
-    if (existsSync(configPath)) {
-      return configPath;
-    }
+  const userConfig = join(getMcpConfigsDir(), `${squadName}.json`);
+  if (existsSync(userConfig)) {
+    return userConfig;
   }
 
-  // Tier 4: No MCP config — return empty string to skip --mcp-config flag.
-  // Previously fell back to ~/.claude.json but that's Claude's settings file,
-  // not an MCP config, and causes claude to exit silently with no output.
+  // No MCP config — empty string skips --mcp-config. (~/.claude.json is
+  // Claude's settings file, not an MCP config: passing it makes claude exit
+  // silently with no output.)
   return '';
 }
 
