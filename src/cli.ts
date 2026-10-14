@@ -676,6 +676,17 @@ program
     return historyCommand(options);
   });
 
+// Plan command - the project's roadmap from its plan-of-record tracking issue
+program
+  .command('plan')
+  .description('Roadmap from the plan-of-record issue: done / ready / blocked, with blockers')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (options) => {
+    const { planCommand } = await import('./commands/plan.js');
+    const code = await planCommand(options);
+    if (code !== 0) process.exitCode = code;
+  });
+
 // Results command - KPI goals vs actuals
 program
   .command('results [squad]')
