@@ -266,6 +266,25 @@ describe('## Order table parsing', () => {
 // ── Row states ───────────────────────────────────────────────────────
 
 describe('roadmap states', () => {
+  it('qualifies `repo#n` refs with the plan owner — issue and blocker cells', () => {
+    const body = '## Order\n| # | Deliverable | Issue | Blocked by | State |\n|---|---|---|---|---|\n' +
+      '| 9 | API public | squads-api#287, squads-cli#1272 | squads-api#288 ← hq#515 (red-team) | blocked |\n';
+    const row = roadmapFrom(body, SUB_ISSUES).rows[0]!;
+    expect(row.issues).toEqual(['agents-squads/squads-api#287', 'agents-squads/squads-cli#1272']);
+    expect(row.blockers).toEqual(['agents-squads/squads-api#288', 'agents-squads/hq#515']);
+    expect(row.humanBlocker).toBe('(red-team)');
+    const sep = roadmapFrom('## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n| 13 | Home | squads-engine#8 | squads-cli#1279 · squads-cli#1280 |\n', SUB_ISSUES).rows[0]!;
+    expect(sep.humanBlocker).toBeNull();
+    const mixed = roadmapFrom('## Order\n| # | D | Issue | Blocked by |\n|---|---|---|---|\n| 5 | Slack | hq#550 | squads-cli#1276 · founder Slack app setup |\n', SUB_ISSUES).rows[0]!;
+    expect(mixed.humanBlocker).toBe('founder Slack app setup');
+  });
+
+  it('accepts a qualified heading — `## Order (founder 10-14)` — but not `## Ordering`', () => {
+    const table = '| # | Deliverable | Issue | Blocked by | State |\n|---|---|---|---|---|\n| 11 | CLI plan | squads-cli#1279 | — | todo |\n';
+    expect(roadmapFrom(`## Order (founder 10-14)\n${table}`, SUB_ISSUES).rows.map(r => r.n)).toEqual([11]);
+    expect(roadmapFrom(`## Ordering notes\n${table}`, SUB_ISSUES).rows).toHaveLength(0);
+  });
+
   it('returns no rows and no throw when there is no ## Order section', () => {
     for (const body of ['## Why\n\nnothing here\n', '## Order\n\nprose, no table\n', '']) {
       const roadmap = roadmapFrom(body);

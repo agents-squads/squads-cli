@@ -178,8 +178,11 @@ interface RawRow {
   note: string;
 }
 
-const ORDER_HEADING_RE = /^#{1,6}\s+Order\s*$/i;
+/** `## Order`, optionally followed by a qualifier: `## Order (founder 10-14)`. */
+const ORDER_HEADING_RE = /^#{1,6}\s+Order\b.*$/i;
 const FULL_REF_RE = /([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*)#(\d+)/g;
+/** `repo#n` — a repo in the plan's owner, the form plan tables use most. */
+const REPO_REF_RE = /(?<![\w/.-])([A-Za-z0-9][\w.-]*)#(\d+)/g;
 const SHORT_REF_RE = /(?<![\w/])#(\d+)/g;
 const MD_LINK_RE = /\[([^\]]*)\]\(([^)\s]+)\)/g;
 const GH_ISSUE_URL_RE = /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(?:issues|pull)\/(\d+)/i;
@@ -265,11 +268,17 @@ function extractRefs(cell: string, planRepo: string): { refs: string[]; text: st
     refs.push(`${owner}#${number}`);
     return ' ';
   });
+  const owner = planRepo.split('/')[0];
+  work = work.replace(REPO_REF_RE, (_m, repo: string, number: string) => {
+    refs.push(`${owner}/${repo}#${Number(number)}`);
+    return ' ';
+  });
   work = work.replace(SHORT_REF_RE, (_m, number: string) => {
     refs.push(`${planRepo}#${Number(number)}`);
     return ' ';
   });
-  const text = stripMarkup(work).replace(/^[\s,;:|\-–—/]+|[\s,;:|\-–—/]+$/g, '');
+  // Separators left behind once refs are lifted out: `a · b`, `a ← b`, `a, b`.
+  const text = stripMarkup(work).replace(/^[\s,;:|\-–—/·•←→+&]+|[\s,;:|\-–—/·•←→+&]+$/g, '');
   return { refs: dedupe(refs), text: PLACEHOLDERS.has(text.toLowerCase()) ? null : text };
 }
 
