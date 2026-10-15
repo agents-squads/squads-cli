@@ -9,8 +9,16 @@
  *   .squads/config.yml   plan_issue: owner/repo#n
  *   env override         SQUADS_PLAN_ISSUE=owner/repo#n
  *
+ * GitHub gives an issue exactly one parent, so a row naming an issue that is
+ * already attached to a *different* epic never appears in this plan's
+ * sub-issue graph — and used to read as never done even after it closed
+ * (issue #1299). Those refs are resolved with one direct issue lookup each and
+ * flagged `linked: false` in the JSON, so the missing plan link is visible.
+ *
  * This module is filesystem- and network-light by design:
- *   - at most TWO `gh` invocations per run (issue body, sub-issue states);
+ *   - `gh` access in three phases: the issue body, its sub-issue states, and —
+ *     only for the refs the sub-issue graph does not cover — one direct lookup
+ *     each, at most `UNLINKED_FETCH_CONCURRENCY` in flight;
  *   - every invocation goes through `execFile` with an **argument vector** —
  *     never a shell string, so no cell of the tracking issue can reach a shell;
  *   - a 20 s timeout per call;
@@ -86,6 +94,19 @@ export interface PlanRow {
   /** A "Blocked by" cell that names a human (no ref), verbatim. */
   humanBlocker: string | null;
   note: string;
+  /**
+   * True when the plan's sub-issue graph covers every ref this row names — or
+   * the row names none. False for a row delivering or blocked by an issue that
+   * is parented to another epic: its state had to be read directly, and the
+   * tracking issue is missing the sub-issue link (issue #1299).
+   */
+  linked: boolean;
+  /**
+   * The refs behind `linked: false`, in cell order. A same-repo `#n` blocker
+   * that names a row is *not* listed — the table's own grammar makes that a row
+   * reference, so no plan link is missing.
+   */
+  unlinked: string[];
 }
 
 export interface PlanCounts {
@@ -376,12 +397,55 @@ export function indexSubIssues(subIssues: SubIssue[], planRepo: string): IssueSt
 
 // ── Roadmap assembly ─────────────────────────────────────────────────
 
+/** State lookups made one ref at a time, for refs the sub-issue graph misses. */
+export interface DirectStates {
+  /** `owner/repo#n` (lowercased) → closed? */
+  states: IssueStateIndex;
+  /** Why a lookup failed, keyed the same way — a row note, never a throw. */
+  errors: Map<string, string>;
+}
+
 export interface BuildRoadmapArgs {
   plan: PlanRef;
   body: string;
   subIssues: SubIssue[];
+  /** States fetched directly for refs the sub-issue graph does not cover (#1299). */
+  direct?: DirectStates;
   url?: string;
   fetchedAt: string;
+}
+
+/** True for a same-repo `#n` blocker that names a row of this table. */
+function rowRefMatcher(plan: PlanRef, rowNumbers: Set<number>): (ref: string) => boolean {
+  const planRepo = `${plan.owner}/${plan.repo}`.toLowerCase();
+  return (ref: string): boolean => {
+    const m = ref.match(/^([^#]+)#(\d+)$/);
+    return m !== null && m[1].toLowerCase() === planRepo && rowNumbers.has(Number(m[2]));
+  };
+}
+
+/**
+ * Refs a row names that the plan's **sub-issue graph** does not cover, in cell
+ * order: the issues it delivers plus its blocker refs, minus any same-repo `#n`
+ * blocker that names a row — that is a row reference by the table's own
+ * grammar, not an issue, so no plan link is missing for it.
+ */
+function uncoveredRefs(row: RawRow, subStates: IssueStateIndex, isRowRef: (ref: string) => boolean): string[] {
+  return dedupe([...row.issues, ...row.blockerRefs.filter(ref => !isRowRef(ref))])
+    .filter(ref => !subStates.has(ref.toLowerCase()));
+}
+
+/**
+ * The row's own note, plus one clause per ref whose direct lookup failed: the
+ * row keeps the state it would have had, and says why it could not be
+ * sharpened (issue #1299).
+ */
+function annotateNote(note: string, unlinked: string[], direct: DirectStates | undefined): string {
+  const clauses = unlinked
+    .map(ref => ({ ref, reason: direct?.errors.get(ref.toLowerCase()) }))
+    .filter((entry): entry is { ref: string; reason: string } => entry.reason !== undefined)
+    .map(({ ref, reason }) => `state of ${ref} unverified — ${reason}`);
+  return [note, ...clauses].filter(part => part.length > 0).join(' · ');
 }
 
 /**
@@ -391,16 +455,26 @@ export interface BuildRoadmapArgs {
  * read as a *row* reference — a row that is not done blocks its dependents; a
  * blocker whose state cannot be verified counts as still open), otherwise
  * **ready**. A row with no issue ref is never done.
+ *
+ * A ref the sub-issue graph does not cover is answered by `direct` instead
+ * (issue #1299): GitHub allows an issue one parent, so a row delivering an
+ * issue attached to another epic would otherwise never read done. Those refs
+ * come out in `unlinked` with `linked: false`; a ref whose lookup failed leaves
+ * the row exactly as it would have been, plus a note saying so.
  */
-export function buildRoadmap({ plan, body, subIssues, url, fetchedAt }: BuildRoadmapArgs): PlanRoadmap {
+export function buildRoadmap({ plan, body, subIssues, direct, url, fetchedAt }: BuildRoadmapArgs): PlanRoadmap {
   const raw = parseOrderRows(body, plan);
-  const states = indexSubIssues(subIssues, `${plan.owner}/${plan.repo}`);
+  const subStates = indexSubIssues(subIssues, `${plan.owner}/${plan.repo}`);
   const planRepoLower = `${plan.owner}/${plan.repo}`.toLowerCase();
+  // Direct lookups fill what the graph cannot; a ref is never in both, and the
+  // sub-issue answer wins if it ever is.
+  const states: IssueStateIndex = direct ? new Map([...direct.states, ...subStates]) : subStates;
 
   const byNumber = new Map<number, number>();
   raw.forEach((row, index) => {
     if (!byNumber.has(row.n)) byNumber.set(row.n, index);
   });
+  const isRowRef = rowRefMatcher(plan, new Set(byNumber.keys()));
 
   // A row is done on its own issues alone — checked first so a finished row is
   // never reported as blocked by something it already absorbed.
@@ -436,6 +510,7 @@ export function buildRoadmap({ plan, body, subIssues, url, fetchedAt }: BuildRoa
       : blockers[index].length > 0 || row.humanBlocker !== null
         ? 'blocked'
         : 'ready';
+    const unlinked = uncoveredRefs(row, subStates, isRowRef);
     return {
       n: row.n,
       title: row.title,
@@ -443,7 +518,9 @@ export function buildRoadmap({ plan, body, subIssues, url, fetchedAt }: BuildRoa
       state,
       blockers: blockers[index],
       humanBlocker: row.humanBlocker,
-      note: row.note,
+      note: annotateNote(row.note, unlinked, direct),
+      linked: unlinked.length === 0,
+      unlinked,
     };
   });
 
@@ -479,15 +556,91 @@ export function subIssuesArgs(plan: PlanRef): string[] {
   return ['api', `repos/${plan.owner}/${plan.repo}/issues/${plan.number}/sub_issues?per_page=100`, '--paginate', '--slurp'];
 }
 
+/** `gh api repos/{o}/{r}/issues/{n}` — the state of one ref, read directly. */
+export function refIssueArgs(ref: PlanRef): string[] {
+  return ['api', `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`];
+}
+
+/** How many direct issue lookups run at once. */
+export const UNLINKED_FETCH_CONCURRENCY = 8;
+
+/**
+ * The table's refs that the sub-issue index does not cover — the ones that need
+ * a direct lookup (issue #1299). Every returned ref is validated with
+ * `parsePlanRef` first, so nothing a cell can express reaches a `gh` API path
+ * as anything but `owner` / `repo` / `number` in GitHub's slug alphabet.
+ */
+export function unlinkedRefs(body: string, plan: PlanRef, known: IssueStateIndex): PlanRef[] {
+  const rows = parseOrderRows(body, plan);
+  const isRowRef = rowRefMatcher(plan, new Set(rows.map(row => row.n)));
+  const seen = new Set<string>();
+  const refs: PlanRef[] = [];
+  for (const row of rows) {
+    for (const ref of uncoveredRefs(row, known, isRowRef)) {
+      if (seen.has(ref.toLowerCase())) continue;
+      seen.add(ref.toLowerCase());
+      const parsed = parsePlanRef(ref);
+      if (parsed) refs.push(parsed); // unparseable refs stay unknown, never guessed
+    }
+  }
+  return refs;
+}
+
+/** `{ "state": "closed" }` → true, `"open"` → false, anything else → unknown. */
+function parseIssueState(raw: string): boolean | undefined {
+  const payload = JSON.parse(raw) as { state?: unknown };
+  const state = typeof payload?.state === 'string' ? payload.state.toLowerCase() : '';
+  if (state === 'closed') return true;
+  if (state === 'open') return false;
+  return undefined;
+}
+
+/**
+ * Resolve each ref with one `gh api` issue lookup, **never throwing**: a failed
+ * or unreadable lookup is recorded in `errors` and left out of `states`, so its
+ * row keeps the state it would have had and gains a note instead.
+ */
+export async function fetchUnlinkedStates(
+  refs: PlanRef[],
+  runner: GhRunner = defaultGhRunner,
+): Promise<DirectStates> {
+  const states: IssueStateIndex = new Map();
+  const errors = new Map<string, string>();
+
+  for (let at = 0; at < refs.length; at += UNLINKED_FETCH_CONCURRENCY) {
+    const batch = refs.slice(at, at + UNLINKED_FETCH_CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map(ref => runner(refIssueArgs(ref))));
+    settled.forEach((result, index) => {
+      const key = batch[index].slug.toLowerCase();
+      if (result.status === 'rejected') {
+        errors.set(key, errorMessage(result.reason));
+        return;
+      }
+      let state: boolean | undefined;
+      try {
+        state = parseIssueState(result.value);
+      } catch {
+        state = undefined; // unparseable ≠ closed, and never a throw
+      }
+      if (state === undefined) errors.set(key, 'unreadable response');
+      else states.set(key, state);
+    });
+  }
+
+  return { states, errors };
+}
+
 interface PlanIssuePayload {
   body?: string;
   html_url?: string;
 }
 
 /**
- * Two `gh` calls: the tracking issue, then its sub-issues. Throws on
- * transport failure, auth failure, or unparseable output — the caller decides
- * whether to fall back to cache.
+ * The tracking issue, its sub-issues, then one direct lookup per ref the
+ * sub-issue graph does not cover (usually none). Throws on transport failure,
+ * auth failure, or unparseable output from the first two calls — the caller
+ * decides whether to fall back to cache. A failed *direct* lookup never throws:
+ * it is a row note.
  */
 export async function fetchPlanRoadmap(
   plan: PlanRef,
@@ -503,11 +656,18 @@ export async function fetchPlanRoadmap(
   // an error, never "no sub-issues" (that would cache every row as not done).
   if (!Array.isArray(parsedSubs)) throw new Error('unexpected sub-issues response from GitHub');
   const subIssues: SubIssue[] = (parsedSubs as unknown[]).flatMap((p) => (Array.isArray(p) ? p : [p])) as SubIssue[];
+  const body = typeof issue?.body === 'string' ? issue.body : '';
+
+  // The body is parsed again inside buildRoadmap: that keeps the assembly pure
+  // and a second pass over a table this size costs nothing.
+  const known = indexSubIssues(subIssues, `${plan.owner}/${plan.repo}`);
+  const direct = await fetchUnlinkedStates(unlinkedRefs(body, plan, known), runner);
 
   return buildRoadmap({
     plan,
-    body: typeof issue?.body === 'string' ? issue.body : '',
+    body,
     subIssues,
+    direct,
     url: typeof issue?.html_url === 'string' ? issue.html_url : undefined,
     fetchedAt: now().toISOString(),
   });
