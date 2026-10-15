@@ -48,7 +48,11 @@ function fmtDuration(ms: number): string {
 export function renderEvent(event: ExecEvent): string | null {
   switch (event.type) {
     case 'run_start':
-      return `${colors.cyan}▶${RESET} ${event.squad}${event.agent ? `/${event.agent}` : ''} ${colors.dim}(${event.mode}${event.model ? `, ${event.model}` : ''}${event.role ? `, ${event.role}` : ''})${RESET}`;
+      return `${colors.cyan}▶${RESET} ${event.squad}${event.agent ? `/${event.agent}` : ''}${event.title ? ` · ${event.title}` : ''} ${colors.dim}(${event.mode}${event.model ? `, ${event.model}` : ''}${event.role ? `, ${event.role}` : ''})${RESET}`;
+    case 'message':
+      return `${colors.dim}${event.role === 'user' ? '›' : '⏺'} ${event.text.split('\n')[0]!.slice(0, 160)}${RESET}`;
+    case 'usage_running':
+      return null; // live views read it; the feed shows the terminal token_usage
     case 'context_assembled': {
       const evicted = event.layers.filter((l) => l.evicted).length;
       return `${colors.dim}⧉ context: ${event.layers.length - evicted} layers, ~${fmtTokens(event.totalTokensEst)} tokens (budget ${fmtTokens(event.budgetTokens)})${evicted ? ` · ${evicted} evicted` : ''}${RESET}`;

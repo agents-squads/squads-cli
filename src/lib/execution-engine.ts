@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile, runStartFields } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -1354,6 +1354,7 @@ export async function executeWithClaude(
     model: claudeModelAlias || resolvedModel || '',
     role: options.contextStats?.role || '',
     startedAt: new Date(startMs).toISOString(),
+    ...runStartFields(options.task),
   });
   if (options.contextStats) {
     events.emit({
@@ -1849,6 +1850,7 @@ export async function executeWithProvider(
     model: options.model || '',
     role: '',
     startedAt: new Date(timestamp).toISOString(),
+    ...runStartFields(options.task),
   });
 
   // Foreground mode: run directly in terminal

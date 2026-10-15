@@ -81,6 +81,7 @@ import {
   ExecEventWriter,
   createClaudeStreamJsonAdapter,
   execEventsFile,
+  runStartFields,
 } from './exec-events.js';
 import { compileAllowedTools } from './agent-contract.js';
 import { findMemoryDir } from './memory.js';
@@ -774,6 +775,7 @@ export async function runConversation(
     model: options.model || modelForRole('lead'),
     role: contextRole,
     startedAt: new Date(cycleStartMs).toISOString(),
+    ...runStartFields(options.task),
   });
   const squadContext = gatherSquadContext(squad.name, lead.name, {
     agentPath: lead.path, role: contextRole,

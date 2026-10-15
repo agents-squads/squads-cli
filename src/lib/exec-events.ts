@@ -19,6 +19,7 @@
  *   event — never a silent cap.
  */
 
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -40,7 +41,14 @@ export interface ContextLayerStat {
 }
 
 export type ExecEvent =
-  | { type: 'run_start'; squad: string; agent?: string; mode: string; model: string; role: string; startedAt: string }
+  /** `title`: one line naming the work (the task's first line, or the referenced issue's title);
+   *  `task`: the full task, redacted like every event (both additive, #1275). */
+  | { type: 'run_start'; squad: string; agent?: string; mode: string; model: string; role: string; startedAt: string; title?: string; task?: string }
+  /** What the agent (or the person) said — full in the local file, cut when flushed to the API (#1275). */
+  | { type: 'message'; role: 'assistant' | 'user'; text: string }
+  /** Running totals while a run goes. `token_usage` stays one terminal event per agent (readers sum it);
+   *  this one is for live views, which take the latest per run (#1275). */
+  | { type: 'usage_running'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
   | { type: 'context_assembled'; layers: ContextLayerStat[]; totalTokensEst: number; budgetTokens: number }
   | { type: 'tool_call'; tool: string; inputSummary: string }
   /** `chars`/`sha256` describe the whole result; `summary` is a redacted excerpt — empty for file-reading tools. */
@@ -206,6 +214,10 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
    * the created artifact's URL — the resolvable ref outcome capture needs).
    */
   const pendingTools = new Map<string, { name: string; artifact?: 'pr' | 'issue' }>();
+  /** Usage per API message id: stream-json repeats a message once per content block,
+   *  so the running total is the sum of each message's latest usage. */
+  const usageById = new Map<string, Record<string, number>>();
+  let anon = 0;
 
   return {
     parseLine(raw: string): ExecEvent[] {
@@ -218,10 +230,16 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
         return []; // stray non-JSON line (warning etc.) — not an event
       }
 
-      const message = ev.message as { content?: ClaudeContentBlock[]; usage?: Record<string, number>; model?: string } | undefined;
+      const message = ev.message as { id?: string; content?: ClaudeContentBlock[]; usage?: Record<string, number>; model?: string } | undefined;
 
       if (ev.type === 'assistant' && Array.isArray(message?.content)) {
         const events: ExecEvent[] = [];
+        const text = message.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text as string)
+          .join('\n')
+          .trim();
+        if (text) events.push({ type: 'message', role: 'assistant', text });
         for (const block of message.content) {
           if (!block || block.type !== 'tool_use') continue;
           if (block.id && block.name) {
@@ -235,6 +253,21 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
             pendingTools.set(block.id, { name: block.name, artifact });
           }
           events.push(...eventsFromToolUse(block));
+        }
+        if (message.usage && typeof message.usage === 'object') {
+          const key = message.id || `anon-${anon++}`;
+          const before = JSON.stringify(usageById.get(key));
+          if (usageById.size >= PENDING_TOOL_MAP_MAX) usageById.clear();
+          usageById.set(key, message.usage);
+          if (JSON.stringify(message.usage) !== before) {
+            const sum = (k: string) => [...usageById.values()].reduce((n, u) => n + (typeof u[k] === 'number' ? u[k]! : 0), 0);
+            events.push({
+              type: 'usage_running',
+              input: sum('input_tokens'), output: sum('output_tokens'),
+              cacheRead: sum('cache_read_input_tokens'), cacheWrite: sum('cache_creation_input_tokens'),
+              costEst: 0, model: message.model || '',
+            });
+          }
         }
         return events;
       }
@@ -357,6 +390,10 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
         return events;
       }
 
+      if (ev.type === 'text' && typeof part?.text === 'string' && part.text.trim()) {
+        return [{ type: 'message', role: 'assistant', text: part.text }];
+      }
+
       if (ev.type === 'step_finish' && part) {
         const t = part.tokens || {};
         input += t.input || 0;
@@ -364,9 +401,11 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
         cacheRead += t.cache?.read || 0;
         cacheWrite += t.cache?.write || 0;
         cost += typeof part.cost === 'number' ? part.cost : 0;
+        const running: ExecEvent = { type: 'usage_running', input, output, cacheRead, cacheWrite, costEst: cost, model: '' };
         if (part.reason === 'stop') {
-          return [{ type: 'token_usage', input, output, cacheRead, cacheWrite, costEst: cost, model: '' }];
+          return [running, { type: 'token_usage', input, output, cacheRead, cacheWrite, costEst: cost, model: '' }];
         }
+        return [running];
       }
 
       return [];
@@ -411,6 +450,47 @@ export function deriveRootRunId(env: Record<string, string | undefined> = proces
 const FLUSH_BATCH_SIZE = 25;
 const FLUSH_INTERVAL_MS = 2000;
 
+/** Message text sent to the API, at most (the local file keeps it whole). */
+const FLUSH_TEXT_MAX = 200;
+
+/** A run's title: the task's first line, one line, at most 100 characters. */
+export function runTitle(task: string | undefined): string | undefined {
+  const first = (task ?? '').split('\n').map((l) => l.trim()).find(Boolean);
+  if (!first) return undefined;
+  const t = first.replace(/^#+\s*/, '').replace(/\s+/g, ' ');
+  return t.length > 100 ? `${t.slice(0, 99)}…` : t;
+}
+
+/** `owner/repo#n` when the task is nothing but a reference to an issue ("Work owner/repo#12"). */
+export function taskIssueRef(task: string | undefined): { repo: string; n: number } | undefined {
+  const m = /^\s*(?:work|solve|fix|do)?\s*(?:on\s+)?([\w.-]+\/[\w.-]+)#(\d+)\s*$/i.exec(task ?? '');
+  return m ? { repo: m[1]!, n: Number(m[2]) } : undefined;
+}
+
+/** run_start's title and task fields from the dispatch task. A bare issue reference is titled
+ *  with the issue's title when `gh` answers within 4 s; otherwise with the task's first line. */
+export function runStartFields(task: string | undefined, lookup: (repo: string, n: number) => string | undefined = ghIssueTitle): { title?: string; task?: string } {
+  if (!task?.trim()) return {};
+  const ref = taskIssueRef(task);
+  let title: string | undefined;
+  if (ref) {
+    try {
+      title = lookup(ref.repo, ref.n)?.trim() || undefined;
+    } catch {
+      // no gh, no network: the task's own words
+    }
+  }
+  title = title ? runTitle(`${title} (${ref!.repo}#${ref!.n})`) : runTitle(task);
+  return { ...(title ? { title } : {}), task };
+}
+
+function ghIssueTitle(repo: string, n: number): string | undefined {
+  const out = execFileSync('gh', ['issue', 'view', String(n), '-R', repo, '--json', 'title', '-q', '.title'], {
+    encoding: 'utf8', timeout: 4_000, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return out.split('\n')[0];
+}
+
 /**
  * Best-effort batched POST of persisted events to the connected API
  * (`POST /agent-executions/{id}/events`). The jsonl file stays authoritative:
@@ -431,6 +511,9 @@ export class ExecEventFlusher {
   ) {}
 
   push(line: PersistedExecEvent): void {
+    // Message text goes to the API cut; the local file keeps it whole.
+    const ev = line.event;
+    if (ev.type === 'message' && ev.text.length > FLUSH_TEXT_MAX) line = { ...line, event: { ...ev, text: `${ev.text.slice(0, FLUSH_TEXT_MAX)}…` } };
     this.buf.push(line);
     if (this.buf.length >= this.batchSize) {
       void this.flush();

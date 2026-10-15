@@ -171,11 +171,11 @@ export function redactText(text: string, known: readonly string[] = knownSecrets
  *  identifiers included (a tool name or an agent name can carry a value too). */
 const STRUCTURAL = new Set(['type', 'startedAt', 'sha256']);
 /** Free-text fields cut to SUMMARY_MAX after redaction. */
-const CAPPED = new Set(['summary', 'inputSummary', 'ref', 'task', 'url']);
+const CAPPED = new Set(['summary', 'inputSummary', 'ref', 'url']);
 
 /** How sensitive an event is when nothing was redacted. */
 const BASE: Record<string, Sensitivity> = {
-  run_start: 'low', context_assembled: 'low', token_usage: 'low', run_end: 'low', subagent_done: 'low',
+  context_assembled: 'low', token_usage: 'low', usage_running: 'low', run_end: 'low', subagent_done: 'low',
   truncated: 'low', file_read: 'low', file_write: 'low',
 };
 
@@ -189,7 +189,9 @@ export function redactEvent<E extends { type: string }>(event: E, known: readonl
       if (STRUCTURAL.has(key)) return v;
       const r = redactText(v, known);
       fired = fired || r.fired;
-      return CAPPED.has(key) && r.text.length > SUMMARY_MAX ? r.text.slice(0, SUMMARY_MAX) : r.text;
+      // run_start.task is the whole brief (kept whole, redacted); a subagent's task is an excerpt.
+      const cap = CAPPED.has(key) || (key === 'task' && event.type === 'subagent_spawn');
+      return cap && r.text.length > SUMMARY_MAX ? r.text.slice(0, SUMMARY_MAX) : r.text;
     }
     if (v && typeof v === 'object') {
       if (seen.has(v)) return '[cycle]';
@@ -200,5 +202,6 @@ export function redactEvent<E extends { type: string }>(event: E, known: readonl
     return v;
   };
   const out = walk(event, '') as E;
-  return { event: out, sensitivity: fired ? 'high' : (BASE[event.type] ?? 'moderate') };
+  const base = event.type === 'run_start' ? ((event as { task?: string }).task ? 'moderate' : 'low') : (BASE[event.type] ?? 'moderate');
+  return { event: out, sensitivity: fired ? 'high' : base };
 }

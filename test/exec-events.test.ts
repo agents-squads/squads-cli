@@ -4,7 +4,11 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   createClaudeStreamJsonAdapter,
+  createOpencodeStreamJsonAdapter,
   ExecEventWriter,
+  runStartFields,
+  runTitle,
+  taskIssueRef,
   execEventsFile,
   normalizeDetachedLog,
   type ExecEvent,
@@ -105,8 +109,61 @@ describe('claudeStreamJsonAdapter', () => {
     expect(adapter.parseLine('')).toEqual([]);
     expect(adapter.parseLine('warning: something')).toEqual([]);
     expect(adapter.parseLine(JSON.stringify({ type: 'system', subtype: 'init' }))).toEqual([]);
-    // assistant text-only (no tool_use) is not an event in v1
-    expect(adapter.parseLine(assistantLine([{ type: 'text', text: 'thinking…' }]))).toEqual([]);
+    // assistant text is a `message` event (#1275)
+    expect(adapter.parseLine(assistantLine([{ type: 'text', text: 'thinking…' }]))).toEqual([{ type: 'message', role: 'assistant', text: 'thinking…' }]);
+  });
+});
+
+describe('#1275 part 2 — message, running usage, run titles', () => {
+  const line = (id: string, content: object[], usage?: object) =>
+    JSON.stringify({ type: 'assistant', message: { id, model: 'claude-opus-5-5', content, ...(usage ? { usage } : {}) } });
+
+  it('claude: text → message; usage → usage_running summed per API message, repeats not double-counted; token_usage stays terminal', () => {
+    const a = createClaudeStreamJsonAdapter();
+    const u1 = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 };
+    expect(a.parseLine(line('m1', [{ type: 'text', text: 'Looking at it.' }], u1))).toEqual([
+      { type: 'message', role: 'assistant', text: 'Looking at it.' },
+      { type: 'usage_running', input: 10, output: 5, cacheRead: 100, cacheWrite: 0, costEst: 0, model: 'claude-opus-5-5' },
+    ]);
+    // the same message again (one line per content block): no new usage event
+    expect(a.parseLine(line('m1', [{ type: 'tool_use', id: 't', name: 'Bash', input: { command: 'ls' } }], u1)).map((e) => e.type)).toEqual(['tool_call']);
+    const r = a.parseLine(line('m2', [{ type: 'text', text: 'Done.' }], { input_tokens: 20, output_tokens: 7 }));
+    expect(r.at(-1)).toMatchObject({ type: 'usage_running', input: 30, output: 12, cacheRead: 100 });
+    expect(a.parseLine(JSON.stringify({ type: 'result', usage: { input_tokens: 30, output_tokens: 12 } }))).toEqual([
+      expect.objectContaining({ type: 'token_usage', input: 30, output: 12 }),
+    ]);
+  });
+
+  it('opencode: text parts → message; each step → usage_running, the last also token_usage', () => {
+    const a = createOpencodeStreamJsonAdapter();
+    expect(a.parseLine(JSON.stringify({ type: 'text', part: { text: 'Fixing the test.' } }))).toEqual([{ type: 'message', role: 'assistant', text: 'Fixing the test.' }]);
+    expect(a.parseLine(JSON.stringify({ type: 'step_finish', part: { reason: 'tool-calls', tokens: { input: 5, output: 2 } } })).map((e) => e.type)).toEqual(['usage_running']);
+    expect(a.parseLine(JSON.stringify({ type: 'step_finish', part: { reason: 'stop', tokens: { input: 5, output: 2 } } })).map((e) => e.type)).toEqual(['usage_running', 'token_usage']);
+  });
+
+  it('run_start title: the task\'s first line, or the referenced issue\'s title; lookup failures fall back', () => {
+    expect(runTitle('## Fix the flaky test\nmore detail')).toBe('Fix the flaky test');
+    expect(runTitle('x'.repeat(150))).toHaveLength(100);
+    expect(runTitle('   \n  ')).toBeUndefined();
+    expect(taskIssueRef('Work agents-squads/squads-cli#1300')).toEqual({ repo: 'agents-squads/squads-cli', n: 1300 });
+    expect(taskIssueRef('Work agents-squads/squads-cli#1300 and also #1')).toBeUndefined();
+    expect(runStartFields('Work a/b#7', () => 'domains: --since window')).toEqual({ title: 'domains: --since window (a/b#7)', task: 'Work a/b#7' });
+    expect(runStartFields('Work a/b#7', () => { throw new Error('no gh'); })).toEqual({ title: 'Work a/b#7', task: 'Work a/b#7' });
+    expect(runStartFields(undefined)).toEqual({});
+  });
+
+  it('the file keeps a message whole; the API gets it cut', () => {
+    // A real flusher holding its batch (big batch, long interval): what it would send is in its buffer.
+    const flusher = new ExecEventFlusher('run_m', 1000, 60_000);
+    const pushed = () => (flusher as unknown as { buf: PersistedExecEvent[] }).buf;
+    const file = join(mkdtempSync(join(tmpdir(), 'msg-')), 'e.jsonl');
+    const w = new ExecEventWriter(file, 'run_m', { flusher });
+    const long = 'word '.repeat(200);
+    w.emit({ type: 'message', role: 'assistant', text: long });
+    const written = JSON.parse(readFileSync(file, 'utf8').trim()) as PersistedExecEvent;
+    expect((written.event as { text: string }).text).toBe(long);
+    expect(written.sensitivity).toBe('moderate');
+    expect((pushed()[0]!.event as { text: string }).text.length).toBeLessThanOrEqual(201);
   });
 });
 
