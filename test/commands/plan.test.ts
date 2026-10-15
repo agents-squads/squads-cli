@@ -832,16 +832,21 @@ describe('refs outside the sub-issue graph', () => {
     );
   });
 
-  it('treats an unreadable lookup response as unknown, never as closed', async () => {
-    const runner: GhRunner = async args => {
-      const path = args[1] ?? '';
-      if (path.includes('/sub_issues')) return JSON.stringify([subs([800, 'open'])]);
-      if (path.endsWith('/issues/1279')) return JSON.stringify({ body: NOT_LINKED, html_url: PLAN_URL });
-      return 'not json at all';
-    };
-    const { roadmap } = await loadPlanRoadmap({ plan: PLAN, runner, cachePath: null });
-    expect(roadmap.rows[0]!.state).toBe('ready');
-    expect(roadmap.rows[0]!.note).toContain('unreadable response');
+  it('treats an unreadable or stateless lookup response as unknown, never as closed', async () => {
+    // A 404 body is valid JSON with no `state` at all: anything but a definite
+    // "closed" must leave the row alone rather than quietly mark it done.
+    const responses = ['not json at all', '{"message":"Not Found","status":"404"}', '{"state":null}'];
+    for (const response of responses) {
+      const runner: GhRunner = async args => {
+        const path = args[1] ?? '';
+        if (path.includes('/sub_issues')) return JSON.stringify([subs([800, 'open'])]);
+        if (path.endsWith('/issues/1279')) return JSON.stringify({ body: NOT_LINKED, html_url: PLAN_URL });
+        return response;
+      };
+      const { roadmap } = await loadPlanRoadmap({ plan: PLAN, runner, cachePath: null });
+      expect(roadmap.rows[0]!.state, response).toBe('ready');
+      expect(roadmap.rows[0]!.note, response).toContain('unreadable response');
+    }
   });
 
   it('spends no extra call when the graph covers every ref, and never fetches a row reference', async () => {
