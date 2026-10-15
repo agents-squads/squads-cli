@@ -14,6 +14,7 @@ import {
   type ExecEvent,
   type PersistedExecEvent,
 } from '../src/lib/exec-events.js';
+import { renderEvent } from '../src/lib/event-render.js';
 
 // ── Fixture lines (real claude --output-format stream-json shapes) ─────────
 
@@ -132,6 +133,21 @@ describe('#1275 part 2 — message, running usage, run titles', () => {
     expect(a.parseLine(JSON.stringify({ type: 'result', usage: { input_tokens: 30, output_tokens: 12 } }))).toEqual([
       expect.objectContaining({ type: 'token_usage', input: 30, output: 12 }),
     ]);
+  });
+
+  it('review fixes: no message id → no running usage; option-like repos refused; titles and renders carry no escapes; writer throttles running usage', () => {
+    const a = createClaudeStreamJsonAdapter();
+    const noId = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 10 } } });
+    expect(a.parseLine(noId).map((e) => e.type)).toEqual(['message']);
+    expect(a.parseLine(noId).map((e) => e.type)).toEqual(['message']);
+    expect(taskIssueRef('Work -x/--y#1')).toBeUndefined();
+    expect(taskIssueRef('Work ../b#2')).toBeUndefined();
+    expect(runTitle('evil \x1b]52;c;ZXZpbA==\x07 title')).not.toMatch(/\x1b|\x07/);
+    expect(renderEvent({ type: 'message', role: 'assistant', text: 'hi \x1b[2J\x1b]0;pwn\x07 there' })).not.toMatch(/\x1b\[2J|\x1b\]0/);
+    const file = join(mkdtempSync(join(tmpdir(), 'thr-')), 'e.jsonl');
+    const w = new ExecEventWriter(file, 'run_t');
+    for (let i = 0; i < 5; i++) w.emit({ type: 'usage_running', input: i, output: 0, cacheRead: 0, cacheWrite: 0, costEst: 0, model: '' });
+    expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
   it('opencode: text parts → message; each step → usage_running, the last also token_usage', () => {

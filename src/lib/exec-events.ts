@@ -217,7 +217,6 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
   /** Usage per API message id: stream-json repeats a message once per content block,
    *  so the running total is the sum of each message's latest usage. */
   const usageById = new Map<string, Record<string, number>>();
-  let anon = 0;
 
   return {
     parseLine(raw: string): ExecEvent[] {
@@ -254,10 +253,11 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
           }
           events.push(...eventsFromToolUse(block));
         }
-        if (message.usage && typeof message.usage === 'object') {
-          const key = message.id || `anon-${anon++}`;
+        // Without a message id the repeats of one message can't be told apart: no running usage
+        // then (the terminal token_usage still lands). At the map cap, updates stop — never reset.
+        if (message.id && message.usage && typeof message.usage === 'object' && (usageById.has(message.id) || usageById.size < PENDING_TOOL_MAP_MAX)) {
+          const key = message.id;
           const before = JSON.stringify(usageById.get(key));
-          if (usageById.size >= PENDING_TOOL_MAP_MAX) usageById.clear();
           usageById.set(key, message.usage);
           if (JSON.stringify(message.usage) !== before) {
             const sum = (k: string) => [...usageById.values()].reduce((n, u) => n + (typeof u[k] === 'number' ? u[k]! : 0), 0);
@@ -450,6 +450,9 @@ export function deriveRootRunId(env: Record<string, string | undefined> = proces
 const FLUSH_BATCH_SIZE = 25;
 const FLUSH_INTERVAL_MS = 2000;
 
+/** usage_running is written at most this often per run. */
+const USAGE_RUNNING_MS = 2_000;
+
 /** Message text sent to the API, at most (the local file keeps it whole). */
 const FLUSH_TEXT_MAX = 200;
 
@@ -457,13 +460,15 @@ const FLUSH_TEXT_MAX = 200;
 export function runTitle(task: string | undefined): string | undefined {
   const first = (task ?? '').split('\n').map((l) => l.trim()).find(Boolean);
   if (!first) return undefined;
-  const t = first.replace(/^#+\s*/, '').replace(/\s+/g, ' ');
+  // eslint-disable-next-line no-control-regex
+  const t = first.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/^#+\s*/, '').replace(/\s+/g, ' ');
   return t.length > 100 ? `${t.slice(0, 99)}…` : t;
 }
 
 /** `owner/repo#n` when the task is nothing but a reference to an issue ("Work owner/repo#12"). */
 export function taskIssueRef(task: string | undefined): { repo: string; n: number } | undefined {
-  const m = /^\s*(?:work|solve|fix|do)?\s*(?:on\s+)?([\w.-]+\/[\w.-]+)#(\d+)\s*$/i.exec(task ?? '');
+  // The repo can never look like an option: it starts with a letter or digit.
+  const m = /^\s*(?:work|solve|fix|do)?\s*(?:on\s+)?([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*)#(\d+)\s*$/i.exec(task ?? '');
   return m ? { repo: m[1]!, n: Number(m[2]) } : undefined;
 }
 
@@ -486,7 +491,7 @@ export function runStartFields(task: string | undefined, lookup: (repo: string, 
 
 function ghIssueTitle(repo: string, n: number): string | undefined {
   const out = execFileSync('gh', ['issue', 'view', String(n), '-R', repo, '--json', 'title', '-q', '.title'], {
-    encoding: 'utf8', timeout: 4_000, stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8', timeout: 4_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'],
   });
   return out.split('\n')[0];
 }
@@ -512,8 +517,10 @@ export class ExecEventFlusher {
 
   push(line: PersistedExecEvent): void {
     // Message text goes to the API cut; the local file keeps it whole.
+    // Free text goes to the API cut (message text, the run's full task); the local file keeps it whole.
     const ev = line.event;
     if (ev.type === 'message' && ev.text.length > FLUSH_TEXT_MAX) line = { ...line, event: { ...ev, text: `${ev.text.slice(0, FLUSH_TEXT_MAX)}…` } };
+    if (ev.type === 'run_start' && ev.task && ev.task.length > FLUSH_TEXT_MAX) line = { ...line, event: { ...ev, task: `${ev.task.slice(0, FLUSH_TEXT_MAX)}…` } };
     this.buf.push(line);
     if (this.buf.length >= this.batchSize) {
       void this.flush();
@@ -563,6 +570,7 @@ export class ExecEventFlusher {
 export class ExecEventWriter {
   private seq = 0;
   private bytes = 0;
+  private lastRunning = -Infinity;
   private dropped = 0;
   private dead = false;
   private closed = false;
@@ -612,6 +620,13 @@ export class ExecEventWriter {
 
   emit(event: ExecEvent, agent?: string): void {
     if (this.dead || this.closed) return;
+    // Running usage is for live views: at most one every USAGE_RUNNING_MS, so it can't crowd
+    // tool events out of the cap (the terminal token_usage always lands).
+    if (event.type === 'usage_running') {
+      const now = Date.now();
+      if (now - this.lastRunning < USAGE_RUNNING_MS) return;
+      this.lastRunning = now;
+    }
     const capped = this.seq >= this.maxEvents || this.bytes >= this.maxBytes;
     if (capped && !UNCAPPED_TYPES.has(event.type)) {
       this.dropped++;
