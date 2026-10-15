@@ -374,16 +374,22 @@ program
   .command('domains')
   .description('Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight')
   .option('--days <n>', 'Delivery window in days (default 7)', '7')
+  .option('--since <iso>', 'Delivery window from an exact ISO-8601 moment — overrides --days')
   .option('--json', 'Output as JSON')
   .addHelpText('after', `
 Delivery is git-derived from GitHub for each domain's repos — one batched
 search, never one call per repo. Unreachable GitHub degrades to the last good
 result from .agents/observability/cache/domains.json, marked stale.
 
+--days is a fixed length ending now; --since names the window's start exactly
+(--since overrides --days). Either way --json reports the period measured as
+window: { since, until }.
+
 Examples:
-  $ squads domains                    Scorecard for every domain
-  $ squads domains --days 30          Wider delivery window
-  $ squads domains --json             Machine-readable (console, digests)
+  $ squads domains                          Scorecard for every domain
+  $ squads domains --days 30                Wider delivery window
+  $ squads domains --since 2026-10-01       Everything since a given moment
+  $ squads domains --json                   Machine-readable (console, digests)
 `)
   .action(async (options) => {
     const { domainsCommand } = await import('./commands/domains.js');
