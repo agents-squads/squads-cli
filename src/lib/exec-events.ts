@@ -19,9 +19,11 @@
  *   event — never a silent cap.
  */
 
+import { createHash } from 'crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseOpencodeLine } from './stream-json.js';
+import { redactEvent, type Sensitivity } from './event-redact.js';
 
 // ── Event schema ──────────────────────────────────────────────────────
 
@@ -41,7 +43,8 @@ export type ExecEvent =
   | { type: 'run_start'; squad: string; agent?: string; mode: string; model: string; role: string; startedAt: string }
   | { type: 'context_assembled'; layers: ContextLayerStat[]; totalTokensEst: number; budgetTokens: number }
   | { type: 'tool_call'; tool: string; inputSummary: string }
-  | { type: 'tool_result'; tool: string; ok: boolean; summary: string }
+  /** `chars`/`sha256` describe the whole result; `summary` is a redacted excerpt — empty for file-reading tools. */
+  | { type: 'tool_result'; tool: string; ok: boolean; summary: string; chars?: number; sha256?: string }
   | { type: 'file_read'; path: string }
   | { type: 'file_write'; path: string; bytes: number }
   | { type: 'web_fetch'; url: string }
@@ -70,6 +73,9 @@ export interface PersistedExecEvent {
   provider?: string;
   /** Claude Code session uuid backing the run, when known (v2). */
   session_id?: string;
+  /** How sensitive the event is (#1275): low = lifecycle/usage, moderate = text and
+   *  excerpts, high = redaction fired. Additive: older readers ignore it. */
+  sensitivity?: Sensitivity;
   event: ExecEvent;
 }
 
@@ -86,7 +92,33 @@ export interface ProviderEventAdapter {
 
 /** Cap on the tool-id → name correlation map (defensive; ~2 entries/turn). */
 const PENDING_TOOL_MAP_MAX = 10_000;
-const INPUT_SUMMARY_MAX = 200;
+/** Adapters keep this much of a text; emit() redacts it, then cuts to SUMMARY_MAX —
+ *  so a secret straddling the cut is masked whole, never left half-shown. */
+const INPUT_SUMMARY_MAX = 8 * 1024;
+
+/** Tools whose result is file content: the event keeps its size and hash, never the text. */
+const CONTENT_TOOLS = new Set(['read', 'grep', 'notebookread']);
+
+/** A tool result as an event: size and hash of the whole, a redactable excerpt. */
+function toolResultEvent(tool: string, ok: boolean, text: string): Extract<ExecEvent, { type: 'tool_result' }> {
+  return {
+    type: 'tool_result', tool, ok,
+    summary: CONTENT_TOOLS.has(tool.toLowerCase()) ? '' : text.slice(0, INPUT_SUMMARY_MAX),
+    chars: text.length,
+    sha256: createHash('sha256').update(text).digest('hex'),
+  };
+}
+
+/** Input fields whose values a tool_call keeps (redacted); for anything else only the field names. */
+const KEPT_INPUT = ['command', 'file_path', 'filePath', 'notebook_path', 'pattern', 'query', 'url'];
+
+/** The kept part of a tool's input: an allowlisted value, else `{field, …}`. */
+function keptInput(input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  for (const k of KEPT_INPUT) if (typeof input[k] === 'string' && input[k]) return (input[k] as string).slice(0, INPUT_SUMMARY_MAX);
+  const keys = Object.keys(input);
+  return keys.length ? `{${keys.join(', ')}}` : '';
+}
 
 interface ClaudeContentBlock {
   type?: string;
@@ -99,21 +131,8 @@ interface ClaudeContentBlock {
   is_error?: boolean;
 }
 
-function summarizeToolInput(name: string, input: Record<string, unknown> | undefined): string {
-  if (!input) return '';
-  const pick = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
-  const lower = name.toLowerCase();
-  let summary = '';
-  if (lower === 'bash') summary = pick('command');
-  else if (lower === 'read' || lower === 'write' || lower === 'edit' || lower === 'notebookedit') summary = pick('file_path');
-  else if (lower === 'webfetch') summary = pick('url');
-  else if (lower === 'websearch') summary = pick('query');
-  else if (lower === 'agent' || lower === 'task') summary = pick('description') || pick('prompt');
-  else if (lower === 'glob' || lower === 'grep') summary = pick('pattern');
-  if (!summary) {
-    try { summary = JSON.stringify(input); } catch { summary = ''; }
-  }
-  return summary.slice(0, INPUT_SUMMARY_MAX);
+function summarizeToolInput(_name: string, input: Record<string, unknown> | undefined): string {
+  return keptInput(input);
 }
 
 /** Events derived from one `tool_use` block (call + specialization + artifacts). */
@@ -229,7 +248,7 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
           pendingTools.delete(block.tool_use_id);
           const ok = block.is_error !== true;
           const fullText = toolResultText(block.content);
-          events.push({ type: 'tool_result', tool, ok, summary: fullText.slice(0, INPUT_SUMMARY_MAX) });
+          events.push(toolResultEvent(tool, ok, fullText));
           if (tool.toLowerCase() === 'agent' || tool.toLowerCase() === 'task') {
             events.push({ type: 'subagent_done', childRunId: block.tool_use_id, agent: tool, ok });
           }
@@ -264,20 +283,8 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
 // ── opencode adapter (#1177) ──────────────────────────────────────────
 
 /** Input summary for an opencode tool call (opencode uses camelCase keys). */
-function summarizeOpencodeInput(tool: string, input: Record<string, unknown> | undefined): string {
-  if (!input) return '';
-  const pick = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
-  let summary = '';
-  if (tool === 'bash') summary = pick('command');
-  else if (tool === 'read' || tool === 'write' || tool === 'edit' || tool === 'patch') summary = pick('filePath');
-  else if (tool === 'webfetch') summary = pick('url');
-  else if (tool === 'websearch') summary = pick('query');
-  else if (tool === 'task') summary = pick('description') || pick('prompt');
-  else if (tool === 'glob' || tool === 'grep') summary = pick('pattern');
-  if (!summary) {
-    try { summary = JSON.stringify(input); } catch { summary = ''; }
-  }
-  return summary.slice(0, INPUT_SUMMARY_MAX);
+function summarizeOpencodeInput(_tool: string, input: Record<string, unknown> | undefined): string {
+  return keptInput(input);
 }
 
 /**
@@ -343,7 +350,7 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
             if (url) events.push({ type: 'artifact', kind: 'issue', ref: url });
           }
         }
-        events.push({ type: 'tool_result', tool, ok, summary: outputText.slice(0, INPUT_SUMMARY_MAX) });
+        events.push(toolResultEvent(tool, ok, outputText));
         if (lower === 'task') {
           events.push({ type: 'subagent_done', childRunId: part.callID || '', agent: tool, ok });
         }
@@ -533,6 +540,9 @@ export class ExecEventWriter {
     // inside (#1181).
     const root = deriveRootRunId();
     const v2 = Boolean(this.source || this.provider || this.sessionId);
+    // Redaction at write time (#1275): the one place every event passes, so
+    // the file and the API flush below carry the same redacted line.
+    const { event: safe, sensitivity } = redactEvent(event);
     const line: PersistedExecEvent = {
       v: v2 ? 2 : 1,
       runId: this.runId,
@@ -543,7 +553,8 @@ export class ExecEventWriter {
       ...(this.source ? { source: this.source } : {}),
       ...(this.provider ? { provider: this.provider } : {}),
       ...(this.sessionId ? { session_id: this.sessionId } : {}),
-      event,
+      sensitivity,
+      event: safe,
     };
     try {
       const serialized = JSON.stringify(line) + '\n';
