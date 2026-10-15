@@ -6,26 +6,40 @@ so the file and the API always carry the same line. Events are **sensitive by de
 
 ## Redaction (at write time)
 
-Every free-text field of an event is redacted. Structural fields are left alone: `type`, `kind`, `tool`,
-`model`, `mode`, `role`, `squad`, `agent`, `childRunId`, `startedAt` and `sha256`.
+Every string in an event is redacted, identifiers included, since a value can ride in a tool or model name.
+Only `type`, `startedAt` and `sha256` are left alone. Text longer than 32 KB is cut before matching, and every
+pattern has a bounded prefix, so no input makes redaction slow. Redaction never throws into a run: an event
+that can't be redacted is dropped and a `truncated` marker is written instead. It is never written raw.
 
 Two kinds of masking apply, in this order, and each match becomes `[redacted:<kind>]`:
 
-1. **Known values** (`known`): exact matches of 12 or more characters.
+1. **Known values** (`known`): exact matches of 8 or more characters, each also in its JSON-escaped and
+   URL-encoded form. The list is reloaded when the store directory changes.
    - From each regular file in the local secret store (`~/.squads/secrets/`, or `SQUADS_SECRETS_DIR`). For JSON
-     files only fields whose name says key, secret, token, password, private or credential count; other files
-     count whole and line by line. Links and files over 256 KB are skipped.
+     files only fields whose name says key, secret, token, pass, pwd, private, credential, pem or auth count;
+     other files count whole and line by line. Links and files over 256 KB are skipped.
    - From environment variables whose name says API key, token, secret, password, credential, private key or
      access key.
 2. **Patterns** (`REDACT_PATTERNS` in `src/lib/event-redact.ts`; a server should re-apply them on ingest):
-   - `private-key`: a PEM private-key block, including one cut before its END line
+   - `private-key`: any PEM or PGP private-key block (RSA, EC, OPENSSH, ENCRYPTED, PGP … BLOCK), including one
+     cut before its END line
    - the commit scanner's shapes (`src/lib/secret-scan.ts`): `anthropic-key`, `openai-key`, `github-token`,
      `github-pat`, `slack-token`, `aws-access-key`, `google-api-key`, `stripe-key`, `chilean-rut`
-   - `api-key`: `sk-` followed by 16 or more token characters
-   - `jwt`: three dot-separated base64url segments starting with `eyJ`
-   - `bearer`: the token after `Bearer `
-   - `assigned`: the value in `key=value` or `key: value` when the key names a password, secret, token, API key,
-     access key or private key. References (`$VAR`, `$(…)`, `process.env.X`, `<placeholder>`) are kept.
+   - token shapes: `api-key` (`sk-…`), `gitlab-token` (`glpat-`), `npm-token` (`npm_`), `huggingface-token`
+     (`hf_`), `sendgrid-key` (`SG.`), `pypi-token` (`pypi-`), `jwt`
+   - `url-credential`: the password in `scheme://user:password@host`
+   - `authorization`: the credential after `Authorization:`, with any scheme (Bearer, token, Basic, Digest);
+     `bearer`: the token after `Bearer `
+   - `flag`: `--password X`, `--token=X` and the like, and `-pSECRET` (mysql style)
+   - `query`: the value of `key`, `sig`, `signature`, `code`, `token`, `access_token`, `api_key` and `password`
+     in a query string
+   - `assigned`: the value in `key=value` or `key: value` when the key names a password, pass, pwd, secret,
+     token, API key, access key, private key, auth or credential. References (`$VAR`, `$(…)`, `process.env.X`,
+     `<placeholder>`) are kept.
+   - `chilean-rut`: also without dots (`12345678-5`)
+
+Known gap: a private key split across two events is masked in the first event but not in the second, unless
+the key is in the secret store (where its lines are known values).
 
 Text is redacted first and cut second: `summary`, `inputSummary`, `ref`, `task` and `url` are cut to 200
 characters after redaction, so a secret that straddles the cut leaves no fragment behind.

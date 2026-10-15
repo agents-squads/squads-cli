@@ -542,7 +542,15 @@ export class ExecEventWriter {
     const v2 = Boolean(this.source || this.provider || this.sessionId);
     // Redaction at write time (#1275): the one place every event passes, so
     // the file and the API flush below carry the same redacted line.
-    const { event: safe, sensitivity } = redactEvent(event);
+    // It never throws into the run: an event that can't be redacted is dropped, never written raw.
+    let safe: ExecEvent;
+    let sensitivity: Sensitivity;
+    try {
+      ({ event: safe, sensitivity } = redactEvent(event));
+    } catch {
+      safe = { type: 'truncated', droppedCount: 1, reason: `a ${String(event.type)} event could not be redacted and was dropped` };
+      sensitivity = 'high';
+    }
     const line: PersistedExecEvent = {
       v: v2 ? 2 : 1,
       runId: this.runId,

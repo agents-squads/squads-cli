@@ -49,7 +49,22 @@ describe('redactText', () => {
       [`token ${GH}`, '[redacted:github-token]'],
       [PEM, '[redacted:private-key]'],
       ['-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC', '[redacted:private-key]'], // cut before END
-      ['curl -H "Authorization: Bearer abc.def-ghi_jkl"', 'Bearer [redacted:bearer]'],
+      ['curl -H "Authorization: Bearer abc.def-ghi_jkl"', 'Bearer [redacted:authorization]'],
+      ['curl -H "Authorization: token ghx1234567890abcdef"', 'token [redacted:authorization]'],
+      ['curl -H "Authorization: Basic dXNlcjpwYXNzd29yZA=="', 'Basic [redacted:authorization]'],
+      ['git remote add o https://user:hunter2hunter2@github.com/x/y', 'user:[redacted:url-credential]@github.com'],
+      ['DATABASE_URL=postgres://squads:squadsdb@localhost:5432/squads', ':[redacted:url-credential]@localhost'],
+      ['mysql -pSuperSecret123 db', '-p[redacted:flag]'],
+      ['tool --password hunter2hunter2 --token=abcdefghijklmnop', '--password [redacted:flag]'],
+      ['export DB_PASS=hunter2hunter2', 'DB_PASS=[redacted:assigned]'],
+      ['https://x.com/a?key=AIzaNotReallyButLong123&x=1', '?key=[redacted:query]'],
+      [`glpat-${'x'.repeat(20)}`, '[redacted:gitlab-token]'],
+      [`npm_${'A1'.repeat(18)}`, '[redacted:npm-token]'],
+      [`hf_${'b2'.repeat(17)}`, '[redacted:huggingface-token]'],
+      ['-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF0abc\n-----END PGP PRIVATE KEY BLOCK-----', '[redacted:private-key]'],
+      ['id 12345678-5 here', '[redacted:chilean-rut]'],
+      [JSON.stringify({ v: `pa"ss${KNOWN}` }), '[redacted:known]'],
+      [`https://x?v=${encodeURIComponent(`${KNOWN}/+`)}`, '[redacted:'],
       ['jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlMTIz', '[redacted:jwt]'],
       ['DB_PASSWORD=hunter2hunter2', 'DB_PASSWORD=[redacted:assigned]'],
       ['{"api_key": "abcd1234efgh"}', '[redacted:assigned]'],
@@ -68,6 +83,18 @@ describe('redactText', () => {
     expect(REDACT_PATTERNS.length).toBeGreaterThan(8);
   });
 
+  it('never slow and never throwing: long padding, cycles, BigInt', () => {
+    for (const pad of ['password', 'Bearer', 'authorization:', '--token']) {
+      const t0 = Date.now();
+      redactText(pad + ' '.repeat(64 * 1024) + 'x');
+      expect(Date.now() - t0, pad).toBeLessThan(500);
+    }
+    const cyclic: Record<string, unknown> = { type: 'tool_call', tool: 'x' };
+    cyclic.self = cyclic;
+    expect(() => redactEvent(cyclic as never)).not.toThrow();
+    expect(() => redactEvent({ type: 'token_usage', n: 10n } as never)).not.toThrow();
+  });
+
   it('redacts before cutting: a secret straddling the cut leaves no fragment', () => {
     const { event } = redactEvent({ type: 'tool_result', tool: 'Bash', ok: true, summary: `${'x'.repeat(SUMMARY_MAX - 10)}${KNOWN}` });
     expect(event.summary.length).toBeLessThanOrEqual(SUMMARY_MAX);
@@ -75,7 +102,10 @@ describe('redactText', () => {
   });
 
   it('sensitivity: lifecycle low, text moderate, redaction high; structural fields untouched', () => {
-    expect(redactEvent({ type: 'token_usage', input: 1, model: 'sk-0123456789abcdefXYZ' }).sensitivity).toBe('low');
+    expect(redactEvent({ type: 'token_usage', input: 1, model: 'claude-opus-5-5' }).sensitivity).toBe('low');
+    // identifiers are redacted too: a value can ride in a tool or model name
+    expect(redactEvent({ type: 'token_usage', input: 1, model: 'sk-0123456789abcdefXYZ' })).toMatchObject({ sensitivity: 'high', event: { model: '[redacted:api-key]' } });
+    expect(redactEvent({ type: 'tool_call', tool: `mcp__x_${GH}`, inputSummary: '' }).event.tool).not.toContain(GH);
     expect(redactEvent({ type: 'tool_call', tool: 'Bash', inputSummary: 'ls' }).sensitivity).toBe('moderate');
     expect(redactEvent({ type: 'tool_call', tool: 'Bash', inputSummary: `echo ${GH}` }).sensitivity).toBe('high');
   });
