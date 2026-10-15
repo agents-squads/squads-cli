@@ -7,12 +7,15 @@
  * `lib/domains.ts`; this command renders it — a table for a human, versioned
  * JSON (`--json`) for the console home screen and Slack digests.
  *
- * `--json` carries `v: 1`, `days`, `fetchedAt`, `stale`, and `domains` sorted
+ * The delivery window is `--days` long, or runs from an exact moment with
+ * `--since <ISO-8601>` — what a console needs to open on "since you were last
+ * here". `--json` carries `v: 1`, `days`, `window` (`{ since, until }` — the
+ * period the counts actually cover), `fetchedAt`, `stale`, and `domains` sorted
  * by last activity (newest first).
  */
 
 import { getProjectRoot } from '../lib/run-utils.js';
-import { buildDomains, type DomainRow, type DomainsReport } from '../lib/domains.js';
+import { buildDomains, parseSince, type DomainRow, type DomainsReport } from '../lib/domains.js';
 import {
   colors,
   bold,
@@ -26,10 +29,26 @@ import {
 export interface DomainsCommandOptions {
   /** Delivery window, in days (string from Commander). Default 7. */
   days?: string;
+  /** Window start, ISO-8601 (from Commander). Overrides `--days` when set. */
+  since?: string;
   json?: boolean;
 }
 
 const DEFAULT_DAYS = 7;
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * How the footer names the window: a whole-day window reads better as a length
+ * ("in the last 7 days"), an exact `--since` moment as its start.
+ */
+export function windowPhrase(report: DomainsReport): string {
+  const span = (Date.parse(report.window.until) - Date.parse(report.window.since)) / MS_PER_DAY;
+  const rounded = Math.round(span);
+  return Math.abs(span - rounded) < 1e-6
+    ? `in the last ${rounded} day${rounded === 1 ? '' : 's'}`
+    : `since ${report.window.since}`;
+}
 
 /** "3/5 · 1 late", or "3/5" when nothing is overdue; "—" with no goals. */
 export function goalsCell(row: DomainRow): string {
@@ -114,8 +133,8 @@ export function renderDomainsTable(report: DomainsReport): void {
   }
 
   const note = report.stale
-    ? `${colors.yellow}delivered figures served from cache — GitHub was unreachable${RESET}`
-    : `${dim}delivered = merged PRs + closed issues in the last ${report.days} day${report.days === 1 ? '' : 's'} (git-derived)${RESET}`;
+    ? `${colors.yellow}delivered figures served from cache (${report.window.since} → ${report.window.until}) — GitHub was unreachable${RESET}`
+    : `${dim}delivered = merged PRs + closed issues ${windowPhrase(report)} (git-derived)${RESET}`;
   writeLine();
   writeLine(note);
   writeLine();
@@ -124,15 +143,17 @@ export function renderDomainsTable(report: DomainsReport): void {
 export async function domainsCommand(options: DomainsCommandOptions = {}): Promise<void> {
   const days = options.days === undefined ? DEFAULT_DAYS : parseInt(options.days, 10);
   if (!Number.isInteger(days) || days <= 0) {
-    const msg = `Invalid --days "${options.days}" — expected a positive integer`;
-    if (options.json) writeLine(JSON.stringify({ ok: false, command: 'domains', error: msg }));
-    else writeLine(`${colors.red}${msg}${RESET}`);
-    process.exitCode = 1;
-    return;
+    return fail(options, `Invalid --days "${options.days}" — expected a positive integer`);
+  }
+  // An explicit start is checked here, not guessed at in the lib: a window the
+  // caller can't see is worse than a refusal.
+  const since = options.since === undefined ? undefined : parseSince(options.since);
+  if (since === null) {
+    return fail(options, `Invalid --since "${options.since}" — expected an ISO-8601 date or timestamp (e.g. 2026-10-15 or 2026-10-15T11:13:00Z)`);
   }
 
   const projectRoot = getProjectRoot();
-  const report = buildDomains({ projectRoot, days });
+  const report = buildDomains({ projectRoot, days, ...(since === undefined ? {} : { since }) });
 
   if (options.json) {
     writeLine(JSON.stringify(report, null, 2));
@@ -145,4 +166,11 @@ export async function domainsCommand(options: DomainsCommandOptions = {}): Promi
     return;
   }
   renderDomainsTable(report);
+}
+
+/** One error path for a bad flag: JSON when `--json`, else a red line; exit 1. */
+function fail(options: DomainsCommandOptions, msg: string): void {
+  if (options.json) writeLine(JSON.stringify({ ok: false, command: 'domains', error: msg }));
+  else writeLine(`${colors.red}${msg}${RESET}`);
+  process.exitCode = 1;
 }
