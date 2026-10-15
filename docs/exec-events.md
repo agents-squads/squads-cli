@@ -61,3 +61,24 @@ Every persisted line carries `sensitivity`. The field is additive, so older read
 | `low` | `run_start`, `context_assembled`, `token_usage`, `run_end`, `subagent_done`, `truncated`, `file_read`, `file_write` |
 | `moderate` | everything carrying text or excerpts: `tool_call`, `tool_result`, `web_fetch`, `subagent_spawn`, `artifact` |
 | `high` | any event in which redaction fired |
+
+## Messages, running usage and run titles
+
+- **`message` `{ role, text }`**: what the agent said, from the Claude and opencode adapters. The local file
+  keeps the text whole (redacted); the API flush cuts it to 200 characters. Sensitivity is `moderate`, or `high`
+  when redaction fired.
+- **`usage_running` `{ input, output, cacheRead, cacheWrite, costEst, model }`**: running totals while a run
+  goes, for live views, which take the **latest** per run. `token_usage` stays one terminal event per agent,
+  because readers sum it per agent (`context-report`); emitting running totals as `token_usage` would
+  double-count.
+  - Claude: summed over API messages, using each message's latest usage. Stream-json repeats a message once per
+    content block, and the repeats are not counted twice.
+  - opencode: one per step; the last step is followed by `token_usage`.
+  - Providers that report output tokens only in the final result (DeepSeek through Claude Code) show
+    `output: 0` until `token_usage`. `costEst` is 0 for Claude.
+- **`run_start.title` and `run_start.task`**:
+  - `title` is the task's first line (at most 100 characters). A task that is only an issue reference
+    (`Work owner/repo#12`) is titled with that issue's title, via `gh` with a 4-second limit, falling back to
+    the task.
+  - `task` is the full task, redacted.
+  - Both fields are additive. `run_start` is `low` without a task and `moderate` with one.
