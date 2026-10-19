@@ -15,6 +15,7 @@ import {
   type PersistedExecEvent,
 } from '../src/lib/exec-events.js';
 import { renderEvent } from '../src/lib/event-render.js';
+import { parseOpencodeJson } from '../src/lib/stream-json.js';
 
 // ── Fixture lines (real claude --output-format stream-json shapes) ─────────
 
@@ -168,18 +169,50 @@ describe('#1275 part 2 — message, running usage, run titles', () => {
     expect(runStartFields(undefined)).toEqual({});
   });
 
-  it('the file keeps a message whole; the API gets it cut', () => {
+  it('the file and the API copy keep message, reasoning and task text whole (#1316)', () => {
     // A real flusher holding its batch (big batch, long interval): what it would send is in its buffer.
     const flusher = new ExecEventFlusher('run_m', 1000, 60_000);
     const pushed = () => (flusher as unknown as { buf: PersistedExecEvent[] }).buf;
     const file = join(mkdtempSync(join(tmpdir(), 'msg-')), 'e.jsonl');
     const w = new ExecEventWriter(file, 'run_m', { flusher });
-    const long = 'word '.repeat(200);
+    const long = 'word '.repeat(1000);
+    w.emit({ type: 'run_start', squad: 's', mode: 'foreground', model: 'm', role: '', startedAt: 'now', task: long });
     w.emit({ type: 'message', role: 'assistant', text: long });
-    const written = JSON.parse(readFileSync(file, 'utf8').trim()) as PersistedExecEvent;
-    expect((written.event as { text: string }).text).toBe(long);
-    expect(written.sensitivity).toBe('moderate');
-    expect((pushed()[0]!.event as { text: string }).text.length).toBeLessThanOrEqual(201);
+    w.emit({ type: 'reasoning', text: long, step: 2 });
+    const written = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as PersistedExecEvent);
+    expect(written.map((l) => l.sensitivity)).toEqual(['moderate', 'moderate', 'moderate']);
+    expect(pushed()).toEqual(written);
+    expect((pushed()[0]!.event as { task: string }).task).toBe(long);
+    expect((pushed()[1]!.event as { text: string }).text).toBe(long);
+    expect(pushed()[2]!.event).toEqual({ type: 'reasoning', text: long, step: 2 });
+  });
+
+  it('a credential inside reasoning is redacted at write time and marks the event high', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'rsn-')), 'e.jsonl');
+    const w = new ExecEventWriter(file, 'run_r');
+    const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+    w.emit({ type: 'reasoning', text: `The env has GH_TOKEN=${token}, use it to push.` });
+    const line = readFileSync(file, 'utf8');
+    expect(line).not.toContain(token);
+    expect(JSON.parse(line).sensitivity).toBe('high');
+  });
+
+  it('opencode --thinking: reasoning parts → reasoning; the run output stays the text only', () => {
+    const log = readFileSync(join(__dirname, 'fixtures', 'opencode', 'thinking-run.jsonl'), 'utf8');
+    const a = createOpencodeStreamJsonAdapter();
+    const events = log.split('\n').flatMap((l) => a.parseLine(l));
+    expect(events.map((e) => e.type)).toEqual(['reasoning', 'message', 'usage_running', 'token_usage']);
+    expect((events[0] as { text: string }).text).toMatch(/391/);
+    expect(parseOpencodeJson(log).text).toBe((events[1] as { text: string }).text);
+  });
+
+  it('claude: a thinking block with text → reasoning; the empty ones claude -p sends today → nothing', () => {
+    const a = createClaudeStreamJsonAdapter();
+    expect(a.parseLine(assistantLine([{ type: 'thinking', thinking: '', signature: 'sig' }, { type: 'text', text: '40' }])))
+      .toEqual([{ type: 'message', role: 'assistant', text: '40' }]);
+    expect(a.parseLine(assistantLine([{ type: 'thinking', thinking: 'n=40 gives 41*41.' }])))
+      .toEqual([{ type: 'reasoning', text: 'n=40 gives 41*41.' }]);
+    expect(renderEvent({ type: 'reasoning', text: 'first line\nsecond' })).toContain('∴ first line');
   });
 });
 
@@ -320,6 +353,18 @@ describe('ExecEventFlusher', () => {
     const [runId, batch] = vi.mocked(reportExecutionEvents).mock.calls[0];
     expect(runId).toBe('exec_flush_1');
     expect((batch as PersistedExecEvent[]).map((e) => e.seq)).toEqual([0, 1, 2]);
+  });
+
+  it('sends a batch once it reaches the byte budget, whatever the count (#1316)', async () => {
+    const { reportExecutionEvents } = await import('../src/lib/api-client.js');
+    const flusher = new ExecEventFlusher('exec_flush_1', 25, 60_000, 10_000);
+    const big = (seq: number): PersistedExecEvent => ({ ...envelope(seq), event: { type: 'message', role: 'assistant', text: 'x'.repeat(6_000) } });
+    flusher.push(big(0));
+    expect(reportExecutionEvents).not.toHaveBeenCalled();
+    flusher.push(big(1));
+    flusher.push(envelope(2));
+    await flusher.close();
+    expect(vi.mocked(reportExecutionEvents).mock.calls.map(([, b]) => (b as PersistedExecEvent[]).map((e) => e.seq))).toEqual([[0, 1], [2]]);
   });
 
   it('close() sends whatever is buffered', async () => {

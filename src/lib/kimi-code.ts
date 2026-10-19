@@ -42,6 +42,8 @@ export interface KimiMessage {
   tool_calls?: KimiToolCall[];
   tool_call_id?: string;
   session_id?: string;
+  /** OpenAI-style reasoning field; not seen on kimi-code 2.2.0 stdout, read when present. */
+  reasoning_content?: unknown;
 }
 
 /** Parse one stdout line; null for blank lines and non-JSON noise (stderr in the same log). */
@@ -175,6 +177,40 @@ function resolveSessionDir(sessionId: string, home: string): string | undefined 
   return isAbsolute(dir) ? dir : join(home, dir);
 }
 
+/** The main agent's wire log for a session, or undefined when the id, index entry or file is missing. */
+function sessionWirePath(sessionId: string, home: string): string | undefined {
+  if (!SESSION_ID_RE.test(sessionId)) return undefined;
+  const sessionDir = resolveSessionDir(sessionId, home);
+  if (!sessionDir) return undefined;
+  const wire = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+  return existsSync(wire) ? wire : undefined;
+}
+
+/**
+ * The model's reasoning for a kimi session, in step order, from its wire log (#1316). Reads the
+ * `context.append_loop_event` records whose event is a `content.part` with a `think` part — one per
+ * step that reasoned. The same text repeats inside `agent.message.appended`; reading only the loop
+ * events counts it once. Empty when the wire log is missing or unreadable.
+ */
+export function readKimiSessionReasoning(sessionId: string, home: string = kimiHome()): { step?: number; text: string }[] {
+  const out: { step?: number; text: string }[] = [];
+  try {
+    const wire = sessionWirePath(sessionId, home);
+    if (!wire) return out;
+    for (const line of readFileSync(wire, 'utf-8').split('\n')) {
+      if (!line.includes('"think"') || !line.includes('"context.append_loop_event"')) continue;
+      let rec: { type?: string; event?: { type?: string; step?: unknown; part?: { type?: string; think?: unknown } } };
+      try { rec = JSON.parse(line); } catch { continue; }
+      const ev = rec.event;
+      if (rec.type !== 'context.append_loop_event' || ev?.type !== 'content.part' || ev.part?.type !== 'think') continue;
+      const text = ev.part.think;
+      if (typeof text !== 'string' || !text.trim()) continue;
+      out.push(typeof ev.step === 'number' ? { step: ev.step, text } : { text });
+    }
+  } catch { /* unreadable wire: no reasoning, never a run failure */ }
+  return out;
+}
+
 /**
  * Token usage for a kimi session from its wire log. Counts ONLY `usage.record`
  * records (one per step). Returns null when the index entry, the wire log or any
@@ -184,12 +220,9 @@ function resolveSessionDir(sessionId: string, home: string): string | undefined 
  * cache_read = inputCacheRead; cache_write = inputCacheCreation; output = output.
  */
 export function readKimiSessionUsage(sessionId: string, home: string = kimiHome()): KimiSessionUsage | null {
-  if (!SESSION_ID_RE.test(sessionId)) return null;
   try {
-    const sessionDir = resolveSessionDir(sessionId, home);
-    if (!sessionDir) return null;
-    const wire = join(sessionDir, 'agents', 'main', 'wire.jsonl');
-    if (!existsSync(wire)) return null;
+    const wire = sessionWirePath(sessionId, home);
+    if (!wire) return null;
     const total: KimiSessionUsage = {
       input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, model: '', steps: 0,
     };

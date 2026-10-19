@@ -175,14 +175,14 @@ describe('opencode lane (#1177 — fallback harness, `opencode run --format json
     expect(LLM_CLIS.opencode.command).toBe('opencode');
   });
 
-  it('builds a headless run with --format json (never --auto, cli#1306) and the prompt LAST', () => {
+  it('builds a headless run with --format json and --thinking (never --auto, cli#1306) and the prompt LAST', () => {
     const args = LLM_CLIS.opencode.buildArgs('do the thing');
-    expect(args).toEqual(['run', '--format', 'json', 'do the thing']);
+    expect(args).toEqual(['run', '--format', 'json', '--thinking', 'do the thing']);
   });
 
   it('appends --model and --dir before the prompt when provided', () => {
     const args = LLM_CLIS.opencode.buildArgs('hi', { model: 'deepseek/deepseek-chat', cwd: '/repo' });
-    expect(args).toEqual(['run', '--format', 'json', '--model', 'deepseek/deepseek-chat', '--dir', '/repo', 'hi']);
+    expect(args).toEqual(['run', '--format', 'json', '--thinking', '--model', 'deepseek/deepseek-chat', '--dir', '/repo', 'hi']);
   });
 
   // #1177: opencode is the fallback HARNESS — full observability parity
