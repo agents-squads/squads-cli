@@ -13,6 +13,7 @@ export type ProviderName =
   | 'azure'
   | 'mistral'
   | 'groq'
+  | 'opencode'
   | 'unknown';
 
 export interface ProviderDetection {
@@ -181,18 +182,40 @@ export const PROVIDERS: Record<Exclude<ProviderName, 'unknown'>, ProviderConfig>
       'gpt-35-turbo': { input: 0.5, output: 1.5 }, // Azure uses different name
     },
   },
+
+  // opencode's hosted gateway (cli#1307): `opencode/<model>` ids route to the
+  // opencode harness, which serves several no-cost models (`opencode/*-free`).
+  // Cost is never estimated from this table — opencode's step_finish events
+  // carry the REAL provider price (0 for the free models), parsed from the run
+  // log by parseOpencodeUsage.
+  opencode: {
+    name: 'opencode',
+    displayName: 'OpenCode',
+    envVars: [], // anonymous gateway access; `opencode auth` login is optional
+    modelPatterns: [/^opencode\//i],
+    defaultPricing: { input: 0, output: 0 },
+    models: {},
+  },
 };
 
 /**
  * Detect the LLM provider from a model name string.
- * Supports Anthropic, OpenAI, Google, Mistral, Groq, AWS Bedrock, and Azure.
+ * Supports Anthropic, OpenAI, Google, Mistral, Groq, AWS Bedrock, Azure,
+ * and the opencode gateway (`opencode/<model>`, cli#1307).
  * @param model - Model identifier (e.g., 'claude-3-5-sonnet', 'gpt-4o')
  * @returns Provider name or 'unknown' if unrecognized
  */
 export function detectProviderFromModel(model: string): ProviderName {
   const modelLower = model.toLowerCase();
 
-  // AWS Bedrock - check first (model IDs include provider prefix)
+  // opencode gateway (cli#1307) — checked first: an opencode/ id can embed
+  // another provider's name (e.g. opencode/anthropic.claude-…) and must not
+  // fall into the Bedrock substring check below.
+  if (modelLower.startsWith('opencode/')) {
+    return 'opencode';
+  }
+
+  // AWS Bedrock - check before the bare-name rules (model IDs include provider prefix)
   if (
     modelLower.includes('anthropic.') ||
     modelLower.includes('amazon.') ||

@@ -46,7 +46,7 @@ export interface RunOptions {
   effort?: EffortLevel; // Effort level: high, medium, low
   skills?: string[]; // Skills to load (skill IDs or local paths)
   trigger?: 'manual' | 'scheduled' | 'event' | 'smart'; // Trigger source for telemetry
-  provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama
+  provider?: string; // LLM provider: anthropic, google, openai, mistral, xai, aider, ollama, opencode, kimi-code
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
   verify?: boolean; // Post-execution verification (default true, --no-verify to skip)
   cloud?: boolean; // Dispatch to cloud worker via API instead of local execution
