@@ -403,8 +403,10 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
   // opencode is the FALLBACK HARNESS (#1177, anti-lock-in): a second
   // multi-provider agentic executor so the fleet survives a broken/locked-out
   // claude CLI. `--format json` emits a structured event stream (normalized by
-  // createOpencodeStreamJsonAdapter); `--auto` approves permissions — lanes
-  // run in isolated worktrees, same containment as every other lane. Cost in
+  // createOpencodeStreamJsonAdapter). Permissions are NOT auto-approved: the
+  // runner writes a per-spawn permission config from the agent contract and
+  // wraps the spawn in the OS sandbox (opencode-governance.ts, cli#1306) —
+  // `--auto` must never come back. Cost in
   // its step_finish events is REAL provider pricing (models.dev rates), so no
   // env-rate table is needed.
   opencode: {
@@ -413,7 +415,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     command: 'opencode',
     install: 'curl -fsSL https://opencode.ai/install.sh | bash',
     buildArgs: (prompt, opts) => {
-      const args = ['run', '--format', 'json', '--auto'];
+      const args = ['run', '--format', 'json'];
       // opencode wants `provider/model` (e.g. deepseek/deepseek-chat,
       // anthropic/claude-sonnet-5); bare names pass through for its default.
       if (opts?.model) args.push('--model', opts.model);
@@ -422,6 +424,9 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       return args;
     },
     opencodeJson: true,
+    // `opencode run` reads piped stdin to EOF — inherited non-TTY stdin hung
+    // foreground lanes forever (agent shells, cron, console spawns).
+    stdinIgnore: true,
     parseUsage: parseOpencodeUsage,
   },
 
@@ -439,9 +444,11 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     install: 'install the Kimi Code CLI (kimi), then run `kimi` once and log in with your Kimi For Coding subscription',
     buildArgs: (prompt, opts) => {
       const args = ['-p', prompt, '--output-format', 'stream-json'];
-      // `kimi-code/k3` → `-m k3`; a model that isn't a kimi alias (e.g. a
-      // Claude model leaked from frontmatter) is not passed — kimi uses its default.
-      const model = opts?.model?.replace(/^kimi-code\//, '');
+      // Passed through as-is: kimi's own config names its aliases
+      // `kimi-code/k3`, `kimi-code/kimi-for-coding`, … (verified 2.2.0 — a bare
+      // `k3` is rejected: "Model \"k3\" is not configured"). A Claude model
+      // leaked from frontmatter is not passed — kimi uses its default.
+      const model = opts?.model;
       if (model && !/^claude/i.test(model)) args.push('-m', model);
       return args;
     },

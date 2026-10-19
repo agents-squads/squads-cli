@@ -78,7 +78,7 @@ describe.skipIf(!darwin || !existsSyncSandboxExec())('executeWithProvider kimi-c
 
     const r = recorded();
     expect(r.cwd).toContain(join(root, '.worktrees', 'demo-tester-')); // the worktree, not the repo
-    expect(r.args).toBe('-p do it --output-format stream-json -m k3');
+    expect(r.args).toBe('-p do it --output-format stream-json -m kimi-code/k3');
     expect(r.kimikey).toBe('unset');
     expect(r.anthropic).toBe('unset');
     expect(r.ghtoken).toBe('unset');
@@ -111,7 +111,7 @@ describe.skipIf(!darwin || !existsSyncSandboxExec())('executeWithProvider kimi-c
 
     const r = recorded();
     expect(r.cwd).toContain(join(root, '.worktrees', 'demo-tester-'));
-    expect(r.args).toBe('-p do it --output-format stream-json -m k3');
+    expect(r.args).toBe('-p do it --output-format stream-json -m kimi-code/k3');
     expect(r.kimikey).toBe('unset');
     expect(r.anthropic).toBe('unset');
     expect(r.stdin_bytes).toBe('0');

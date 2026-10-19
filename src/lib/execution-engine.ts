@@ -57,6 +57,9 @@ import {
 } from './sandbox-settings.js';
 import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
 import {
+  OpencodeGovernanceError, compileOpencodePermission, opencodeConfigEnv, resolveOpencodeSandbox, writeOpencodeConfig,
+} from './opencode-governance.js';
+import {
   colors,
   RESET,
   icons,
@@ -675,6 +678,20 @@ export type HarvestOutcome =
   | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
 
 /**
+ * Fork point of a lane branch when no base SHA was recorded (salvage of
+ * crashed runs): the merge-base with the integration ref the worktree was
+ * created from (#1083), never the operator's HEAD (#1310). No network here.
+ */
+function forkPoint(projectRoot: string, branchName: string): string {
+  for (const ref of ['origin/develop', 'origin/main', 'HEAD']) {
+    try {
+      return execSync(`git merge-base '${ref}' '${branchName}'`, { cwd: projectRoot, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* ref absent or unrelated — try next */ }
+  }
+  return 'HEAD';
+}
+
+/**
  * Harvest file changes a non-anthropic executor left in its worktree.
  *
  * Claude agents commit and push their own work (per the gh workflow they are
@@ -696,6 +713,11 @@ export async function harvestProviderWork(
   /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
    *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
   excludePaths: string[] = [],
+  /** SHA the worktree was branched from (#1310). Every harvest diff is taken
+   *  against it — never the operator's checked-out HEAD, which can sit on an
+   *  unrelated commit and make its extra files read as lane deletions. Salvage
+   *  callers that never recorded one fall back to the operator-HEAD merge-base. */
+  baseSha?: string,
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
@@ -743,7 +765,7 @@ export async function harvestProviderWork(
   // 2. Anything to integrate?
   let ahead = '0';
   try {
-    ahead = run(`git rev-list --count '${branchName}' '^HEAD'`, projectRoot).trim();
+    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? forkPoint(projectRoot, branchName)}'`, projectRoot).trim();
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
@@ -753,7 +775,7 @@ export async function harvestProviderWork(
   //    Diff against the branch's fork point (projectRoot HEAD may have moved
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
-    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const base = baseSha ?? forkPoint(projectRoot, branchName);
     const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
@@ -804,8 +826,13 @@ export function buildDetachedHarvestShell(config: {
   agentName: string;
   provider: string;
   logFile: string;
+  /** SHA the worktree was branched from (#1310); without it the check falls
+   *  back to the operator HEAD, which keeps no-op branches when HEAD sits on
+   *  an unrelated commit. */
+  baseSha?: string;
 }): string {
   if (config.workDir === config.projectRoot) return '';
+  const aheadOf = config.baseSha && /^[0-9a-f]{7,64}$/.test(config.baseSha) ? config.baseSha : 'HEAD';
   // Author = the user's git identity (same as the TS-side harvest); the
   // repo-scoped fallback identity (#980, single source of truth via
   // gitIdentityArgs) applies ONLY when no git identity is configured.
@@ -814,7 +841,7 @@ export function buildDetachedHarvestShell(config: {
   return `; git -C '${config.workDir}' add -A 2>/dev/null` +
     `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
     `; KEEP_BRANCH=''; HARVEST=none` +
-    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
     `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
     `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
     ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
@@ -1720,6 +1747,57 @@ export function providerCredentialGuard(timestamp: number): Record<string, strin
 }
 
 /**
+ * Governance for an opencode lane (cli#1306): contract grants + guardrail +
+ * worktree guard → a per-spawn permission config (delivered via env, copy on
+ * disk for audit), and the OS sandbox wrapper. Throws OpencodeGovernanceError
+ * (refuse the run) — there is no `--auto` fallback.
+ */
+export function prepareOpencodeGovernance(opts: {
+  projectRoot: string; workDir: string; squadName: string; agentName: string;
+  allowedTools?: string[]; verbose?: boolean;
+}): { env: Record<string, string>; wrap: (command: string, args: string[]) => { command: string; args: string[] } } {
+  const squadsDir = findSquadsDir();
+  const agentPath = squadsDir ? join(squadsDir, opts.squadName, `${opts.agentName}.md`) : '';
+  const tools = opts.allowedTools?.length
+    ? opts.allowedTools
+    : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools;
+  const memDir = findMemoryDir();
+  const config = compileOpencodePermission({
+    tools,
+    guardrailPermissions: readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)),
+    primaryRoot: opts.projectRoot,
+    workDir: opts.workDir,
+    memoryDir: memDir || undefined,
+  });
+  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const configPath = writeOpencodeConfig(config, settingsDir);
+  if (opts.verbose) writeLine(`  ${colors.dim}opencode permissions: ${configPath}${RESET}`);
+
+  let wrap = (command: string, args: string[]) => ({ command, args });
+  if (!sandboxEnabled()) {
+    writeLine(`  ${colors.yellow}SQUADS_SANDBOX=0 — opencode lane runs WITHOUT the OS sandbox (permission config still enforced)${RESET}`);
+  } else {
+    let gitCommon = '';
+    try {
+      gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
+    } catch { /* not a git dir — nothing to commit to */ }
+    const sandbox = resolveOpencodeSandbox(
+      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean) },
+      join(settingsDir, `opencode-sandbox-${Date.now()}.sb`),
+    );
+    if (sandbox) {
+      if (sandbox.profile) writeFileSync(sandbox.args[1], sandbox.profile);
+      wrap = (command, args) => ({ command: sandbox.command, args: [...sandbox.args, command, ...args] });
+    } else if (sandboxStrict()) {
+      throw new OpencodeGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) and SQUADS_SANDBOX_STRICT=1');
+    } else {
+      writeLine(`  ${colors.yellow}OS sandbox unavailable — opencode lane runs with the permission config only${RESET}`);
+    }
+  }
+  return { env: opencodeConfigEnv(config), wrap };
+}
+
+/**
  * Governance for a kimi-code lane (cli#1309). `kimi -p` auto-approves every
  * tool and cannot take `--auto`, so there is no permission config to write —
  * the contract is checked (refuse what kimi cannot honour), the guardrail's
@@ -1760,11 +1838,10 @@ export function prepareKimiGovernance(opts: {
     profilePath,
   );
   if (!sandbox) {
-    if (sandboxStrict() || denyWriteNames.length > 0) {
-      throw new KimiGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) — kimi -p has no permission surface of its own');
-    }
-    writeLine(`  ${colors.yellow}OS sandbox unavailable — kimi-code lane runs unconfined and kimi -p approves every tool${RESET}`);
-    return { wrap: wrapIdentity };
+    // kimi -p approves every tool and has no permission surface of its own:
+    // the sandbox is the ONLY control, so its absence refuses the run. Running
+    // unconfined is an explicit SQUADS_SANDBOX=0 decision, never a fallback.
+    throw new KimiGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) — kimi -p has no permission surface of its own; set SQUADS_SANDBOX=0 to run unconfined explicitly');
   }
   if (sandbox.profile) writeFileSync(profilePath, sandbox.profile);
   return { wrap: (command, args) => ({ command: sandbox.command, args: [...sandbox.args, command, ...args] }) };
@@ -1836,12 +1913,16 @@ export async function executeWithProvider(
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
+  let baseSha: string | undefined;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
     const base = resolveIntegrationBase(projectRoot);
     execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
+    try {
+      baseSha = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* harvest falls back to the operator-HEAD merge-base */ }
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
@@ -1868,23 +1949,39 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = (options.model || options.allowedTools?.length)
-    ? {
-        ...(options.model ? { model: options.model } : {}),
-        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
-      }
-    : undefined;
+  // The lane's directory travels explicitly: the child inherits the
+  // operator's PWD, and harnesses that resolve their project from PWD/--dir
+  // (opencode) otherwise ran in the operator's checkout, not the worktree.
+  providerEnv.PWD = workDir;
+  const buildOpts = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+    cwd: workDir,
+  };
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
 
-  // kimi-code governance (cli#1309): contract check + OS sandbox. Fail closed —
-  // a refused run drops the worktree just created, and `--auto` (rejected by
-  // `kimi -p` anyway) can never reach spawn.
+  // Governed harnesses (cli#1306 opencode, cli#1309 kimi-code): permission
+  // config and/or OS sandbox. Fail closed — a refused run drops the worktree
+  // just created, and `--auto` can never reach spawn.
   let spawnCommand = cliConfig.command;
   let spawnArgs = args;
-  if (cliConfig.kimiCodeJson) {
+  if (cliConfig.opencodeJson || cliConfig.kimiCodeJson) {
     try {
-      if (args.includes('--auto')) throw new KimiGovernanceError('--auto is not permitted');
-      const gov = prepareKimiGovernance({ projectRoot, workDir, squadName, agentName });
+      if (args.includes('--auto')) {
+        throw cliConfig.opencodeJson
+          ? new OpencodeGovernanceError('--auto is not permitted')
+          : new KimiGovernanceError('--auto is not permitted');
+      }
+      let gov: { wrap: (command: string, args: string[]) => { command: string; args: string[] } };
+      if (cliConfig.opencodeJson) {
+        const og = prepareOpencodeGovernance({
+          projectRoot, workDir, squadName, agentName, allowedTools: options.allowedTools, verbose: options.verbose,
+        });
+        Object.assign(providerEnv, og.env);
+        gov = og;
+      } else {
+        gov = prepareKimiGovernance({ projectRoot, workDir, squadName, agentName });
+      }
       const wrapped = gov.wrap(cliConfig.command, args);
       spawnCommand = wrapped.command;
       spawnArgs = wrapped.args;
@@ -2069,7 +2166,7 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          }, harnessCopiedPaths);
+          }, harnessCopiedPaths, baseSha);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
@@ -2181,10 +2278,10 @@ export async function executeWithProvider(
   // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
   const shq = (a: string) => `'${a.replace(/'/g, "'\\''")}'`;
   const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-  // Sandbox-wrapped lanes (kimi-code, cli#1309): the wrapper's own argv precedes the lane's.
+  // Sandbox-wrapped lanes (opencode cli#1306, kimi-code cli#1309): the wrapper's own argv precedes the lane's.
   const wrapperPrefix = spawnArgs.slice(0, spawnArgs.length - args.length).map(shq).join(' ');
   const cleanupCmd = buildDetachedHarvestShell({
-    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile, baseSha,
   });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.

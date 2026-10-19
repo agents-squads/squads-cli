@@ -81,11 +81,14 @@ describe('sandbox profile', () => {
   });
   afterEach(() => { rmSync(work, { recursive: true, force: true }); });
 
-  it('lets kimi write its own sessions/logs/index but NOT bin, config.toml or credentials', () => {
+  it('lets kimi write its measured state (sessions, logs, OAuth refresh, index) but NOT bin, config.toml or updates', () => {
     const p = buildKimiSeatbeltProfile({ workDir: work, writeDirs: [], kimiHome: khome });
-    expect(p).toContain(`(subpath "${join(khome, 'sessions')}")`);
-    expect(p).toContain(`(subpath "${join(khome, 'logs')}")`);
-    expect(p).toContain(`(literal "${join(khome, 'session_index.jsonl')}")`);
+    for (const d of ['sessions', 'logs', 'cache', 'telemetry', 'file-history', 'credentials', 'oauth']) {
+      expect(p).toContain(`(subpath "${join(khome, d)}")`);
+    }
+    expect(p).toContain('session_index[.]jsonl[^/]*$');
+    expect(p).toContain('workspaces[.]json[^/]*$');
+    expect(p).not.toContain(join(khome, 'updates'));
     expect(p).not.toContain(join(khome, 'bin'));
     expect(p).not.toContain('config.toml');
     expect(p).not.toContain(`(subpath "${khome}")`); // the whole state root is never writable
@@ -168,6 +171,16 @@ describe.skipIf(!canSeatbelt)('real Seatbelt enforcement', () => {
     expect(existsSync(probe)).toBe(false);
     expect(run(`echo x > "${join(khome, 'bin', 'kimi')}"`).status).not.toBe(0);
     expect(run(`echo x >> "${join(khome, 'config.toml')}"`).status).not.toBe(0);
+  });
+
+  it('allows the atomic temp+rename of root state files; blocks other root files and updates/', () => {
+    const ws = join(khome, 'workspaces.json');
+    expect(run(`echo '{}' > "${ws}.tmp-1" && mv "${ws}.tmp-1" "${ws}"`).status).toBe(0);
+    expect(existsSync(ws)).toBe(true);
+    expect(run(`echo x > "${join(khome, 'tui.toml')}"`).status).not.toBe(0);
+    expect(run(`echo x > "${join(khome, 'hooks.toml')}"`).status).not.toBe(0);
+    expect(run(`mkdir -p "${join(khome, 'updates')}" && echo x > "${join(khome, 'updates', 'kimi')}"`).status).not.toBe(0);
+    expect(run(`mv "${ws}" "${join(khome, 'config.toml')}"`).status).not.toBe(0);
   });
 
   it('blocks writes to guardrail-named files in any case, allows other files', () => {

@@ -160,16 +160,31 @@ export interface KimiSandbox {
 const sbplStr = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 /**
- * What kimi itself writes: per-session state and logs, plus the index mapping
- * session ids to dirs. Anything else under ~/.kimi-code (bin, config.toml,
- * credentials) stays read-only. If a live run shows kimi needs another path,
- * add it HERE — the failure is visible (kimi errors), never silent.
+ * What kimi itself writes — measured on kimi-code 2.2.0 under Seatbelt
+ * (2026-10-19): per-session state, logs, caches, telemetry, file history, the
+ * OAuth refresh (`credentials/`, `oauth/` — rewritten on every run; the lane
+ * can already READ the token kimi needs, so write adds no exfiltration), and
+ * two root files written atomically (temp file + rename in ~/.kimi-code).
+ * NOT writable: `bin/` (the binary), `config.toml` (it declares hooks — an
+ * escape), `tui.toml`, `server.token`, `updates/` (self-update staging; kimi
+ * runs fine without it). If a live run shows kimi needs another path, add it
+ * HERE — the failure is visible (kimi errors), never silent.
  */
 function kimiStatePaths(home: string): { dirs: string[]; files: string[] } {
   return {
-    dirs: [join(home, 'sessions'), join(home, 'logs')],
-    files: [join(home, 'session_index.jsonl')],
+    dirs: ['sessions', 'logs', 'cache', 'telemetry', 'file-history', 'credentials', 'oauth'].map((d) => join(home, d)),
+    files: ['session_index.jsonl', 'workspaces.json'].map((f) => join(home, f)),
   };
+}
+
+/**
+ * SBPL regex for `<path>` plus an atomic-write temp suffix in the same dir
+ * (`<path>.tmp-123`, …). Backslashes are not escapes in SBPL `#"..."`
+ * literals, so every non-[A-Za-z0-9/_-] char becomes a bracket class.
+ */
+function atomicFileRegex(path: string): string {
+  const body = [...path].map((c) => (/[A-Za-z0-9/_-]/.test(c) ? c : `[${c}]`)).join('');
+  return `#"^${body}[^/]*$"`;
 }
 
 function writableRoots(opts: KimiSandboxOptions): string[] {
@@ -214,7 +229,7 @@ export function buildKimiSeatbeltProfile(opts: KimiSandboxOptions): string {
     '(allow default)',
     '(deny file-write*)',
     `(allow file-write* ${writableRoots(opts).map((r) => `(subpath ${sbplStr(r)})`).join(' ')})`,
-    `(allow file-write* ${state.files.flatMap((f) => [...new Set([f, realOrSame(f)])]).map((f) => `(literal ${sbplStr(f)})`).join(' ')})`,
+    `(allow file-write* ${state.files.flatMap((f) => [...new Set([f, realOrSame(f)])]).map((f) => `(regex ${atomicFileRegex(f)})`).join(' ')})`,
     '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/(tty|ttys|fd)[0-9]*$"))',
   ];
   // Last match wins in SBPL: denies come after the allows they carve out of.

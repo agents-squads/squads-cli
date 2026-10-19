@@ -179,7 +179,7 @@ describe('kimi-code CLIConfig', () => {
   });
 
   it('maps kimi-code/<alias> to -m <alias> and drops leaked Claude models', () => {
-    expect(cfg.buildArgs('x', { model: 'kimi-code/k3' }).slice(-2)).toEqual(['-m', 'k3']);
+    expect(cfg.buildArgs('x', { model: 'kimi-code/k3' }).slice(-2)).toEqual(['-m', 'kimi-code/k3']);
     expect(cfg.buildArgs('x', { model: 'claude-sonnet-5' })).not.toContain('-m');
     expect(cfg.buildArgs('x')).not.toContain('-m');
   });
