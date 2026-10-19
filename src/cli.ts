@@ -311,7 +311,7 @@ program
   .option('--use-api', 'Use API credits instead of subscription')
   .option('--effort <level>', 'Effort level: high, medium, low (default: from SQUAD.md or high)')
   .option('--skills <skills...>', 'Skills to load (skill IDs or local paths)')
-  .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama')
+  .option('--provider <provider>', 'LLM provider: anthropic, google, openai, mistral, xai, aider, ollama, opencode, kimi-code (opencode/<model> and kimi-code/<model> also select their harness)')
   .option('--model <model>', 'Model to use (e.g., opus, sonnet, haiku, gemini-2.5-flash, gpt-4o)')
   .option('--trigger <type>', 'Trigger source: manual, scheduled, event, smart (default: manual)')
   .option('--cloud', 'Dispatch execution to cloud worker via API (requires squads login)')

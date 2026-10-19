@@ -171,7 +171,7 @@ describe('kimi lane (Moonshot Anthropic-compatible endpoint via claude CLI)', ()
 describe('opencode lane (#1177 — fallback harness, `opencode run --format json`)', () => {
   it('is registered in LLM_CLIS with the right identity', () => {
     expect(LLM_CLIS.opencode.provider).toBe('opencode');
-    expect(LLM_CLIS.opencode.displayName).toBe('OpenCode (fallback harness)');
+    expect(LLM_CLIS.opencode.displayName).toBe('OpenCode');
     expect(LLM_CLIS.opencode.command).toBe('opencode');
   });
 

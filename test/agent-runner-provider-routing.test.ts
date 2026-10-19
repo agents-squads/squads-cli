@@ -56,3 +56,31 @@ describe('agent-runner provider precedence (#1124)', () => {
     expect(agentIdx).toBeGreaterThan(flagIdx);
   });
 });
+
+/**
+ * cli#1307: an `opencode/<model>` id (flag or agent frontmatter) selects the
+ * opencode provider — after an explicit --provider, before agent/squad
+ * provider defaults — so the run takes the governed provider path without
+ * SQUADS_HARNESS.
+ */
+describe('agent-runner model-prefix provider (#1307)', () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'lib', 'agent-runner.ts'),
+    'utf8'
+  );
+
+  it('derives the provider from the model id, flag first then frontmatter', () => {
+    expect(source).toMatch(/const modelForProvider = options\.model \|\| parseAgentFrontmatter\(agentPath\)\.model;/);
+    expect(source).toMatch(/detectProviderFromModel\(modelForProvider\) === 'opencode'/);
+  });
+
+  it('ranks it after --provider and before the agent/squad provider', () => {
+    const resolution = source.match(/normalizeProviderName\(([^)]*)\)/)?.[1] ?? '';
+    const flag = resolution.indexOf('options.provider');
+    const model = resolution.indexOf('modelProvider');
+    const agent = resolution.indexOf('agentProvider');
+    expect(flag).toBeGreaterThanOrEqual(0);
+    expect(model).toBeGreaterThan(flag);
+    expect(agent).toBeGreaterThan(model);
+  });
+});

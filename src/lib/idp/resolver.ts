@@ -4,8 +4,7 @@
  * Resolution order:
  * 1. SQUADS_IDP_PATH env var (explicit override)
  * 2. .agents/idp/ in project root (co-located)
- * 3. ../idp/ sibling repo (our setup)
- * 4. ~/agents-squads/idp/ (absolute fallback)
+ * 3. ../idp/ sibling repo
  */
 
 import { existsSync } from 'fs';
@@ -32,13 +31,6 @@ export function findIdpDir(): string | null {
     if (existsSync(join(sibling, 'catalog'))) {
       return resolve(sibling);
     }
-  }
-
-  // 4. Absolute fallback
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  const absolute = join(home, 'agents-squads', 'idp');
-  if (existsSync(join(absolute, 'catalog'))) {
-    return absolute;
   }
 
   return null;

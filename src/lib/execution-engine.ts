@@ -1374,6 +1374,25 @@ export async function executeWithClaude(
     });
   }
 
+  // opencode/<model> (cli#1307): the model prefix selects the opencode harness
+  // by itself — agent frontmatter `model: opencode/<model>` needs no
+  // SQUADS_HARNESS. The id is already opencode's own provider/model syntax and
+  // passes through unchanged as --model. Same governed provider path as the
+  // explicit-harness lane below (permission config + OS sandbox, cli#1306).
+  if (provider === 'opencode') {
+    return executeWithProvider('opencode', prompt, {
+      verbose,
+      foreground: !(background === true) && !watch,
+      cwd: targetRepoRoot,
+      squadName,
+      agentName,
+      model: resolvedModel,
+      trigger,
+      timeoutMinutes,
+      task: options.task,
+    });
+  }
+
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {
     if (verbose) {

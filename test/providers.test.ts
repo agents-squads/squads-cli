@@ -329,3 +329,19 @@ describe('provider detection', () => {
     });
   });
 });
+
+describe('opencode gateway ids (#1307)', () => {
+  it('routes opencode/<model> to the opencode provider, before the Bedrock substring rule', async () => {
+    const { detectProviderFromModel } = await import('../src/lib/providers.js');
+    expect(detectProviderFromModel('opencode/glm-5.3-flash-free')).toBe('opencode');
+    expect(detectProviderFromModel('OpenCode/deepseek-v4.1-flash-free')).toBe('opencode');
+    expect(detectProviderFromModel('opencode/anthropic.claude-x')).toBe('opencode');
+    expect(detectProviderFromModel('claude-sonnet-5')).toBe('anthropic');
+  });
+
+  it('passes the id through unchanged as opencode --model', async () => {
+    const { getCLIConfig } = await import('../src/lib/llm-clis.js');
+    const args = getCLIConfig('opencode')!.buildArgs('p', { model: 'opencode/glm-5.3-flash-free' });
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'opencode/glm-5.3-flash-free']);
+  });
+});

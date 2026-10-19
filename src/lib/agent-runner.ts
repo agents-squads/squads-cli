@@ -74,6 +74,7 @@ import {
   isProviderCLIAvailable,
   normalizeProviderName,
 } from './llm-clis.js';
+import { detectProviderFromModel } from './providers.js';
 import { loadSession } from './auth.js';
 import { getApiUrl } from './env-config.js';
 
@@ -316,13 +317,19 @@ ${systemContext}${squadContext}${cognitionContext}${learningContext}`;
   const squad = loadSquad(squadName);
   const squadDefaultProvider = squad?.providers?.default;
 
-  const provider = normalizeProviderName(options.provider || agentProvider || squadDefaultProvider || 'anthropic');
+  // A model id can name its provider (cli#1307): `opencode/<model>` (flag or
+  // agent frontmatter) selects the opencode harness unless --provider says
+  // otherwise — the governed provider path, no SQUADS_HARNESS needed.
+  const modelForProvider = options.model || parseAgentFrontmatter(agentPath).model;
+  const modelProvider = modelForProvider && detectProviderFromModel(modelForProvider) === 'opencode' ? 'opencode' : undefined;
+  const provider = normalizeProviderName(options.provider || modelProvider || agentProvider || squadDefaultProvider || 'anthropic');
   const isAnthropic = provider === 'anthropic';
 
-  if (options.verbose && (agentProvider || squadDefaultProvider)) {
+  if (options.verbose && (agentProvider || squadDefaultProvider || modelProvider)) {
     writeLine(`  ${colors.dim}Provider resolution:${RESET}`);
     if (agentProvider) writeLine(`    ${colors.dim}Agent: ${agentProvider}${RESET}`);
     if (options.provider) writeLine(`    ${colors.dim}CLI: ${options.provider}${RESET}`);
+    if (modelProvider) writeLine(`    ${colors.dim}Model: ${modelForProvider} → ${modelProvider}${RESET}`);
     if (squadDefaultProvider) writeLine(`    ${colors.dim}Squad: ${squadDefaultProvider}${RESET}`);
     writeLine(`    ${colors.dim}→ Using: ${provider}${RESET}`);
   }
