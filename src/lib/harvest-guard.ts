@@ -23,7 +23,9 @@ import { execFileSync } from 'child_process';
 import { lstatSync, readFileSync, realpathSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
-export type WorktreeLinkCheck = { ok: true } | { ok: false; reason: string };
+export type WorktreeLinkCheck =
+  | { ok: true; gitdir: string; commonDir: string }
+  | { ok: false; reason: string };
 
 /**
  * Read the `gitdir:` target out of a worktree's `.git` file. Call right after
@@ -94,7 +96,41 @@ export function verifyWorktreeLink(
   } catch {
     return { ok: false, reason: `${gitdir} has no readable back-link to the worktree` };
   }
-  return { ok: true };
+
+  // The admin dir lives inside the writable git common dir, so the lane can
+  // edit it: `commondir` redirects git to a decoy common dir (its config's
+  // filter drivers then run in harness git — verified), and `config.worktree`
+  // injects config when extensions.worktreeConfig is on. squads never creates
+  // either variant, so anything but the real common dir refuses.
+  try {
+    const cd = readFileSync(join(gitdir, 'commondir'), 'utf-8').trim();
+    if (!sameRealPath(resolve(gitdir, cd), commonDir)) {
+      return { ok: false, reason: `${gitdir}/commondir redirects to ${cd}, not ${commonDir}` };
+    }
+  } catch {
+    return { ok: false, reason: `${gitdir} has no readable commondir` };
+  }
+  try {
+    lstatSync(join(gitdir, 'config.worktree'));
+    return { ok: false, reason: `${gitdir}/config.worktree exists (per-worktree config is never created by squads)` };
+  } catch { /* absent — expected */ }
+  return { ok: true, gitdir, commonDir };
+}
+
+/**
+ * Env that pins git to the verified admin dir and the REAL common dir, so a
+ * later edit of the `.git` file or of `commondir` cannot redirect harvest git
+ * (GIT_COMMON_DIR outranks the commondir file). Apply to calls run in the
+ * worktree only.
+ */
+export function pinnedGitEnv(workDir: string, gitdir: string, commonDir: string): Record<string, string> {
+  return { GIT_DIR: gitdir, GIT_COMMON_DIR: commonDir, GIT_WORK_TREE: workDir };
+}
+
+/** Same pin as a shell env-assignment prefix (single-quoted values). */
+export function pinnedGitEnvShell(workDir: string, gitdir: string, commonDir: string): string {
+  const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  return Object.entries(pinnedGitEnv(workDir, gitdir, commonDir)).map(([k, v]) => `${k}=${q(v)}`).join(' ');
 }
 
 /**

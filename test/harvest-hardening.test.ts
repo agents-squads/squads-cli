@@ -86,6 +86,26 @@ describe('harvest git hardening (#1311)', () => {
     expect(existsSync(marker)).toBe(true);
   });
 
+  /** Review finding: redirect the REAL admin dir's `commondir` at a decoy common
+   *  dir whose config defines a filter driver the operator never configured. */
+  function plantDecoyCommondir(): string {
+    const { script, marker } = trap(scratch, 'filter');
+    const decoyCommon = join(scratch, 'decoy-common');
+    execSync(`cp -R '${join(root, '.git')}' '${decoyCommon}'`);
+    execSync(`git config --file '${join(decoyCommon, 'config')}' filter.evil.clean '${script}'`);
+    const admin = readWorktreeGitdirLink(workDir)!;
+    writeFileSync(join(admin, 'commondir'), `${decoyCommon}\n`);
+    writeFileSync(join(workDir, '.gitattributes'), '* filter=evil\n');
+    writeFileSync(join(workDir, 'loot.md'), 'lane output\n');
+    return marker;
+  }
+
+  it('the commondir attack is real: plain git in the worktree runs a decoy-defined filter', () => {
+    const marker = plantDecoyCommondir();
+    git('add -A', workDir);
+    expect(existsSync(marker)).toBe(true);
+  });
+
   describe('harvestProviderWork', () => {
     it('refuses a worktree whose .git was re-pointed at a decoy gitdir — hook never runs, branch kept', async () => {
       const recorded = readWorktreeGitdirLink(workDir);
@@ -116,6 +136,26 @@ describe('harvest git hardening (#1311)', () => {
       git(`worktree add '${sibling}' -b agent/testsquad/other-1 HEAD`, root);
       writeFileSync(join(workDir, '.git'), readFileSync(join(sibling, '.git'), 'utf-8'));
       writeFileSync(join(workDir, 'x.md'), 'x\n');
+      const result = await harvestProviderWork(
+        workDir, root, branch, { squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek' },
+      );
+      expect(result.outcome).toBe('refused');
+    });
+
+    it('refuses a redirected commondir — the decoy filter never runs (review finding)', async () => {
+      const recorded = readWorktreeGitdirLink(workDir);
+      const marker = plantDecoyCommondir();
+      const result = await harvestProviderWork(
+        workDir, root, branch, { squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek' },
+        [], undefined, recorded,
+      );
+      expect(result.outcome).toBe('refused');
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('refuses a planted per-worktree config.worktree', async () => {
+      const admin = readWorktreeGitdirLink(workDir)!;
+      writeFileSync(join(admin, 'config.worktree'), '[core]\n\tfsmonitor = /bin/false\n');
       const result = await harvestProviderWork(
         workDir, root, branch, { squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek' },
       );
@@ -176,6 +216,13 @@ describe('harvest git hardening (#1311)', () => {
       expect(readFileSync(logFile, 'utf-8')).toContain('harvest REFUSED');
     });
 
+    it('refuses a commondir redirected after the script was built — decoy filter never runs', () => {
+      const script = build();
+      const marker = plantDecoyCommondir();
+      execSync(`true ${script}`, { shell: '/bin/sh', cwd: root });
+      expect(existsSync(marker)).toBe(false);
+    });
+
     it('a normal lane still preserves its work on the branch and removes the worktree', () => {
       const script = build();
       writeFileSync(join(workDir, 'report.md'), '# Agent report\n');
@@ -211,7 +258,7 @@ describe('harvest git hardening (#1311)', () => {
 
   describe('verifyWorktreeLink', () => {
     it('accepts the worktree git created and rejects a directory-form .git', () => {
-      expect(verifyWorktreeLink(workDir, root, readWorktreeGitdirLink(workDir))).toEqual({ ok: true });
+      expect(verifyWorktreeLink(workDir, root, readWorktreeGitdirLink(workDir))).toMatchObject({ ok: true });
       rmSync(join(workDir, '.git'));
       mkdirSync(join(workDir, '.git'));
       expect(verifyWorktreeLink(workDir, root).ok).toBe(false);

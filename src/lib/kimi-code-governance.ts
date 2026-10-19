@@ -26,7 +26,7 @@
  * into one shared sandbox module is a follow-up.
  */
 
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -202,6 +202,14 @@ function gitControlPaths(opts: KimiSandboxOptions): { dirs: string[]; files: str
     for (const r of new Set([d, realOrSame(d)])) {
       dirs.push(join(r, 'hooks'));
       files.push(join(r, 'config'), join(r, 'config.worktree'));
+      // Worktree admin dirs: `commondir` / `gitdir` / `config.worktree` would
+      // redirect harness git to a decoy common dir or inject config (#1311).
+      // HEAD, index, logs stay writable — commits need them.
+      let admins: string[] = [];
+      try { admins = readdirSync(join(r, 'worktrees')); } catch { /* no linked worktrees */ }
+      for (const a of admins) {
+        for (const f of ['commondir', 'gitdir', 'config.worktree']) files.push(join(r, 'worktrees', a, f));
+      }
     }
   }
   return { dirs, files };

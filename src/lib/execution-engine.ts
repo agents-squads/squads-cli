@@ -71,7 +71,7 @@ import {
   commandExists,
 } from './llm-clis.js';
 import { gitIdentityArgs, integrationBranch } from './git.js';
-import { hardenedGitFlags, readWorktreeGitdirLink, verifyWorktreeLink } from './harvest-guard.js';
+import { hardenedGitFlags, pinnedGitEnv, pinnedGitEnvShell, readWorktreeGitdirLink, verifyWorktreeLink } from './harvest-guard.js';
 import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -741,10 +741,14 @@ export async function harvestProviderWork(
   // Every harvest git call runs with hooks/fsmonitor/ssh/ext-diff/filters
   // neutralised — only these calls; the operator's own commits keep their hooks.
   const hardened = `git ${hardenedGitFlags(projectRoot)}`;
+  // Calls in the worktree are pinned to the verified admin + real common dir.
+  const pin = pinnedGitEnv(workDir, link.gitdir, link.commonDir);
+  const envFor = (cwd: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined =>
+    cwd === workDir ? { ...(env ?? process.env), ...pin } : env;
   const run = (cmd: string, cwd: string) =>
-    execSync(cmd.replace(/^git /, `${hardened} `), { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync(cmd.replace(/^git /, `${hardened} `), { encoding: 'utf-8', cwd, env: envFor(cwd), stdio: ['pipe', 'pipe', 'pipe'] });
   const runQuiet = (cmd: string, cwd: string, env?: NodeJS.ProcessEnv) =>
-    execSync(cmd.replace(/^git /, `${hardened} `), { cwd, env, stdio: 'pipe' });
+    execSync(cmd.replace(/^git /, `${hardened} `), { cwd, env: envFor(cwd, env), stdio: 'pipe' });
 
   // Pathspec that hides harness-copied furniture from every work-detection step.
   const excludeSpec = excludePaths
@@ -761,7 +765,7 @@ export async function harvestProviderWork(
 
     // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
     const stagedDiff = execSync(`${hardened} diff --cached --no-ext-diff --no-textconv`, {
-      encoding: 'utf-8', cwd: workDir, maxBuffer: 32 * 1024 * 1024,
+      encoding: 'utf-8', cwd: workDir, env: envFor(workDir), maxBuffer: 32 * 1024 * 1024,
     });
     const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
     if (findings.length > 0) {
@@ -868,9 +872,17 @@ export function buildDetachedHarvestShell(config: {
   const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
   const gitFile = q(`${config.workDir}/.git`);
   const hg = `git ${hardenedGitFlags(config.projectRoot)}`;
-  return `; HARVEST_OK=1; if [ -z ${q(expectedGitFile)} ] || [ -L ${gitFile} ] || [ ! -f ${gitFile} ] || [ "$(cat ${gitFile} 2>/dev/null)" != ${q(expectedGitFile)} ]; then HARVEST_OK=''; fi` +
-    `; if [ -n "$HARVEST_OK" ]; then ${hg} -C '${config.workDir}' add -A 2>/dev/null` +
-    `; ${hg} -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1; fi` +
+  // Pin worktree git to the creation-time admin dir and the REAL common dir
+  // (resolved now, before the lane runs) — a rewritten `commondir` or `.git`
+  // can't redirect it. Unresolvable → refuse (empty pin never runs git).
+  const verified = recordedLink ? verifyWorktreeLink(config.workDir, config.projectRoot, recordedLink) : null;
+  const pinEnv = verified && verified.ok ? pinnedGitEnvShell(config.workDir, verified.gitdir, verified.commonDir) : '';
+  const adminCheck = verified && verified.ok
+    ? ` || [ -e ${q(join(verified.gitdir, 'config.worktree'))} ]`
+    : '';
+  return `; HARVEST_OK=1; if [ -z ${q(pinEnv)} ] || [ -z ${q(expectedGitFile)} ] || [ -L ${gitFile} ] || [ ! -f ${gitFile} ] || [ "$(cat ${gitFile} 2>/dev/null)" != ${q(expectedGitFile)} ]${adminCheck}; then HARVEST_OK=''; fi` +
+    `; if [ -n "$HARVEST_OK" ]; then ${pinEnv} ${hg} -C '${config.workDir}' add -A 2>/dev/null` +
+    `; ${pinEnv} ${hg} -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1; fi` +
     `; KEEP_BRANCH=''; HARVEST=none` +
     `; if [ -z "$HARVEST_OK" ]; then KEEP_BRANCH=1; HARVEST=refused; elif [ "$(${hg} -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
     `; if [ "$HARVEST" = refused ]; then echo "harvest REFUSED: worktree .git link no longer matches the one recorded at creation -- no git was run in it; worktree ${config.workDir} and branch ${config.branchName} kept for review (cli#1311)" >> '${config.logFile}'; else` +
