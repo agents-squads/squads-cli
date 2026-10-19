@@ -55,6 +55,8 @@ export function renderEvent(event: ExecEvent): string | null {
       return `${colors.cyan}▶${RESET} ${event.squad}${event.agent ? `/${event.agent}` : ''}${event.title ? ` · ${clean(event.title)}` : ''} ${colors.dim}(${event.mode}${event.model ? `, ${event.model}` : ''}${event.role ? `, ${event.role}` : ''})${RESET}`;
     case 'message':
       return `${colors.dim}${event.role === 'user' ? '›' : '⏺'} ${clean(event.text.split('\n')[0]!).slice(0, 160)}${RESET}`;
+    case 'reasoning':
+      return `${colors.dim}∴ ${clean(event.text.split('\n')[0]!).slice(0, 160)}${RESET}`;
     case 'usage_running':
       return null; // live views read it; the feed shows the terminal token_usage
     case 'context_assembled': {
