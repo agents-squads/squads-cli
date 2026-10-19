@@ -818,3 +818,80 @@ describe('opencode harness reconcile (#1177)', () => {
     expect(String(rec.error)).toContain('without a terminal result');
   });
 });
+
+describe('kimi-code harness reconcile (#1309)', () => {
+  const FIXTURE = readFileSync(join(__dirname, 'fixtures', 'kimi-code', 'tool-run.jsonl'), 'utf8');
+  const SESSION = 'session_d5dd8847-999d-48ba-8983-3f0f559584c3';
+  let prevHome: string | undefined;
+  let home: string;
+
+  beforeEach(() => {
+    // kimiHome() = <HOME>/.kimi-code — point it at a fixture home
+    prevHome = process.env.HOME;
+    home = mkdtempSync(join(tmpdir(), 'kimi-spool-home-'));
+    process.env.HOME = home;
+  });
+  afterEach(() => {
+    process.env.HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeWire(): void {
+    const kimiDir = join(home, '.kimi-code');
+    const sessionDir = join(kimiDir, 'sessions', 's1');
+    mkdirSync(join(sessionDir, 'agents', 'main'), { recursive: true });
+    writeFileSync(join(kimiDir, 'session_index.jsonl'), JSON.stringify({ sessionId: SESSION, sessionDir, workDir: '/repo' }) + '\n');
+    writeFileSync(join(sessionDir, 'agents', 'main', 'wire.jsonl'), [
+      { type: 'usage.record', usage: { inputOther: 40, output: 8, inputCacheRead: 500, inputCacheCreation: 10 }, model: 'k3' },
+      { type: 'context.append_loop_event', event: { type: 'step.end', usage: { inputOther: 40, output: 8 } } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
+
+  it('records wire usage, subscription billing (cost 0), outcomes and events', () => {
+    writeFileSync(join(root, 'run.log'), FIXTURE);
+    writeWire();
+    writeSpoolFile({ execId: 'exec_kimi_1', provider: 'kimi-code', model: 'kimi-code/k3', harness: 'kimi-code' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+
+    const [rec] = readExecutionsJsonl();
+    expect(rec.provider).toBe('kimi-code');
+    expect(rec.status).toBe('completed');
+    expect(rec.model).toBe('k3');
+    expect(rec.input_tokens).toBe(40 + 500 + 10);
+    expect(rec.output_tokens).toBe(8);
+    expect(rec.cache_read_tokens).toBe(500);
+    expect(rec.cost_usd).toBe(0);
+    expect(rec.billing).toBe('subscription');
+    expect(rec.session_id).toBe(SESSION);
+    expect(rec.actions).toBe(3);
+    expect(rec.files_edited).toBe(1);
+
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_kimi_1.jsonl');
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const types = events.map((e) => e.event.type);
+    expect(types).toContain('tool_call');
+    expect(types).toContain('file_write');
+    expect(types).toContain('token_usage');
+    expect(types[types.length - 1]).toBe('run_end');
+  });
+
+  it('with no readable wire the run still completes and tokens are not invented', () => {
+    writeFileSync(join(root, 'run.log'), FIXTURE);
+    writeSpoolFile({ execId: 'exec_kimi_nowire', provider: 'kimi-code', model: 'kimi-code/k3', harness: 'kimi-code' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+    expect(rec.input_tokens).toBe(0);
+    expect(rec.billing).toBe('subscription');
+  });
+
+  it('a run cut off before resume_hint reconciles as failed', () => {
+    const cut = FIXTURE.split('\n').filter((l) => !l.includes('session.resume_hint')).join('\n');
+    writeFileSync(join(root, 'run.log'), cut);
+    writeSpoolFile({ execId: 'exec_kimi_cut', provider: 'kimi-code', model: 'x', harness: 'kimi-code' });
+    expect(reconcileDetachedRuns(root)).toBe(1);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(String(rec.error)).toContain('without a terminal result');
+  });
+});

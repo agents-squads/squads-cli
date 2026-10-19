@@ -10,6 +10,8 @@
 import { execSync } from 'child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
+import { parseKimiUsage } from './kimi-code.js';
+import { kimiSpawnEnv } from './kimi-code-governance.js';
 import { loadProviderRegistry, anthropicCompatEnv, readProviderSecret, type ProviderEntry } from './provider-registry.js';
 
 export interface CLIConfig {
@@ -51,6 +53,19 @@ export interface CLIConfig {
    * Mutually exclusive with `streamJson`.
    */
   opencodeJson?: boolean;
+
+  /**
+   * The CLI is the Kimi Code harness (#1309): OpenAI-chat-shaped stream-json on
+   * stdout, usage in the session wire log (kimi-code.ts), governance from the
+   * OS sandbox rather than kimi's own permissions (kimi-code-governance.ts).
+   */
+  kimiCodeJson?: boolean;
+
+  /**
+   * Spawn with stdin `'ignore'` (#1307): CLIs that read piped stdin hang when
+   * it is inherited from a detached/non-TTY parent.
+   */
+  stdinIgnore?: boolean;
 
   /**
    * Extra environment for the spawned CLI (e.g. pointing the claude CLI at an
@@ -408,6 +423,32 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     },
     opencodeJson: true,
     parseUsage: parseOpencodeUsage,
+  },
+
+  // Kimi Code CLI (#1309): the user's Kimi For Coding SUBSCRIPTION (OAuth login
+  // stored by `kimi`), not a metered key — distinct from the `kimi` provider
+  // above, which routes the claude CLI at Moonshot's metered endpoint.
+  // `-p` cannot be combined with `--auto` and auto-approves every tool, so
+  // permissions are NOT kimi's job: the runner refuses un-honourable grants and
+  // wraps the spawn in the OS sandbox (kimi-code-governance.ts). `--auto` and
+  // kimi's permission modes must never appear here. stdin is 'ignore'd.
+  'kimi-code': {
+    provider: 'kimi-code',
+    displayName: 'Kimi Code (subscription)',
+    command: process.env.SQUADS_KIMI_BIN || 'kimi',
+    install: 'install the Kimi Code CLI (kimi), then run `kimi` once and log in with your Kimi For Coding subscription',
+    buildArgs: (prompt, opts) => {
+      const args = ['-p', prompt, '--output-format', 'stream-json'];
+      // `kimi-code/k3` → `-m k3`; a model that isn't a kimi alias (e.g. a
+      // Claude model leaked from frontmatter) is not passed — kimi uses its default.
+      const model = opts?.model?.replace(/^kimi-code\//, '');
+      if (model && !/^claude/i.test(model)) args.push('-m', model);
+      return args;
+    },
+    kimiCodeJson: true,
+    stdinIgnore: true,
+    parseUsage: parseKimiUsage,
+    env: () => kimiSpawnEnv(),
   },
 
   ollama: {
