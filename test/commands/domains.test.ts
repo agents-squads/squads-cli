@@ -4,26 +4,31 @@
  * Fixture squads on disk + a fake `gh` runner (no network). Covers: grouping
  * by repo with the shared-repo label, overdue goals from due dates,
  * unreachable GitHub → `delivered: null` (never 0), the last-good cache path,
- * and the fixed (batched) call count regardless of repos or items.
+ * and the fixed (batched) call count regardless of repos or items. Also the
+ * window itself (#1300): `--since` counts from an exact moment and states it in
+ * `window`, `--days` keeps its fixed length, and a bad date is refused.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   PAGE,
   buildDomains,
   domainsCachePath,
+  parseSince,
   repoSlug,
   repoShort,
   type GhRunner,
 } from '../../src/lib/domains.js';
 import {
+  domainsCommand,
   goalsCell,
   deliveredCell,
   nowCell,
   relativeAge,
   renderDomainsTable,
+  windowPhrase,
 } from '../../src/commands/domains.js';
 import type { DomainRow, DomainsReport } from '../../src/lib/domains.js';
 import type { DetachedRun } from '../../src/lib/runs-inventory.js';
@@ -265,6 +270,8 @@ describe('buildDomains', () => {
 
     expect(report.v).toBe(1);
     expect(report.days).toBe(7);
+    // the default window is a fixed length back from now, and says so
+    expect(report.window).toEqual({ since: '2026-07-07T12:00:00.000Z', until: '2026-07-14T12:00:00.000Z' });
     expect(typeof report.fetchedAt).toBe('string');
     expect(report.domains.map((d) => d.domain)).toEqual(['new', 'old']);
     expect(report.domains[0].lastActivityAt).toBe('2026-07-13T00:00:00.000Z');
@@ -316,6 +323,7 @@ describe('human rendering', () => {
     try {
       const report: DomainsReport = {
         v: 1, days: 7, fetchedAt: '2026-07-14T12:00:00.000Z', stale: true,
+        window: { since: '2026-07-07T12:00:00.000Z', until: '2026-07-14T12:00:00.000Z' },
         domains: [row({ sharedWith: ['console'] })],
       };
       renderDomainsTable(report);
@@ -326,6 +334,18 @@ describe('human rendering', () => {
     expect(text).toContain('DOMAIN');
     expect(text).toContain('shared: console');
     expect(text).toContain('GitHub was unreachable');
+    // a stale table names the window the figures actually cover
+    expect(text).toContain('2026-07-07T12:00:00.000Z');
+  });
+
+  it('names the window in the footer: a length for whole days, the start otherwise', () => {
+    const report = (days: number, since: string, until: string): DomainsReport => ({
+      v: 1, days, window: { since, until }, fetchedAt: until, stale: false, domains: [],
+    });
+    expect(windowPhrase(report(7, '2026-07-07T12:00:00.000Z', '2026-07-14T12:00:00.000Z'))).toBe('in the last 7 days');
+    expect(windowPhrase(report(1, '2026-07-13T12:00:00.000Z', '2026-07-14T12:00:00.000Z'))).toBe('in the last 1 day');
+    // an exact moment is not a whole number of days: name it
+    expect(windowPhrase(report(2.5, '2026-07-12T00:00:00.000Z', '2026-07-14T12:00:00.000Z'))).toBe('since 2026-07-12T00:00:00.000Z');
   });
 });
 
@@ -415,5 +435,125 @@ describe('buildDomains — goals come from goals.md when the squad has one', () 
     ].join('\n'));
     const report = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh().run, runs: [], inbox: [] });
     expect(report.domains[0].goals).toEqual({ active: 6, done: 1, overdue: 2 });
+  });
+});
+
+describe('parseSince', () => {
+  it('accepts ISO-8601 dates and instants, rejects everything else', () => {
+    expect(parseSince('2026-10-15')).toBe(Date.parse('2026-10-15T00:00:00Z'));
+    expect(parseSince('2026-10-15T11:13:00Z')).toBe(Date.parse('2026-10-15T11:13:00Z'));
+    expect(parseSince('2026-10-15T11:13:00.500Z')).toBe(Date.parse('2026-10-15T11:13:00.500Z'));
+    expect(parseSince('2026-10-15T11:13:00+02:00')).toBe(Date.parse('2026-10-15T11:13:00+02:00'));
+    expect(parseSince(1_700_000_000_000)).toBe(1_700_000_000_000);
+
+    // never a silently different window: unparseable and non-ISO are refused
+    for (const bad of ['', '   ', 'not-a-date', 'Oct 15 2026', '2026/10/15', '2026-13-45', 'yesterday']) {
+      expect(parseSince(bad), bad).toBeNull();
+    }
+    expect(parseSince(Number.NaN)).toBeNull();
+  });
+});
+
+describe('buildDomains — an explicit window start (--since)', () => {
+  const T = '2026-07-12T00:00:00Z';
+
+  it('counts only merges and closes after that moment, and states the window', () => {
+    squad('cli', { repo: 'acme/squads-cli' });
+    const gh = fakeGh({
+      prLines: [
+        line(1, 'before', 'acme/squads-cli', '2026-07-09T00:00:00Z'),
+        line(2, 'exactly at', 'acme/squads-cli', T), // the start is inclusive
+        line(3, 'after', 'acme/squads-cli', '2026-07-13T00:00:00Z'),
+      ],
+      issueLines: [
+        line(8, 'closed before', 'acme/squads-cli', '2026-07-09T12:00:00Z'),
+        line(9, 'closed after', 'acme/squads-cli', '2026-07-14T00:00:00Z'),
+      ],
+    });
+
+    const report = buildDomains({
+      projectRoot: base, squadsDir: squadsDir(), days: 7, since: T, now: NOW,
+      gh: gh.run, runs: [], inbox: [],
+    });
+
+    const cli = report.domains[0];
+    expect(cli.delivered).toMatchObject({ prsMerged: 2, issuesClosed: 1 });
+    expect(cli.delivered!.items.map((i) => i.title)).toEqual(['closed after', 'after', 'exactly at']);
+    // the window is the one asked for, and the counts are of that window
+    expect(report.window).toEqual({ since: '2026-07-12T00:00:00.000Z', until: '2026-07-14T12:00:00.000Z' });
+    // `days` never disagrees with `window`: 2.5 days, not the --days default
+    expect(report.days).toBe(2.5);
+    // gh is asked for the same window the report states
+    expect(gh.calls[0].join(' ')).toContain(`-f since=2026-07-12T00:00:00.000Z`);
+  });
+
+  it('--since overrides --days, and a date-only value starts at midnight', () => {
+    squad('cli', { repo: 'acme/squads-cli' });
+    const gh = fakeGh({ prLines: [line(1, 'midnight', 'acme/squads-cli', '2026-07-12T04:00:00Z')] });
+    const report = buildDomains({
+      projectRoot: base, squadsDir: squadsDir(), days: 90, since: '2026-07-12', now: NOW,
+      gh: gh.run, runs: [], inbox: [],
+    });
+    expect(report.window.since).toBe('2026-07-12T00:00:00.000Z');
+    expect(report.domains[0].delivered).toMatchObject({ prsMerged: 1 });
+  });
+
+  it('refuses an invalid date instead of guessing a window', () => {
+    squad('cli', { repo: 'acme/squads-cli' });
+    for (const bad of ['not-a-date', '2026-13-45', '']) {
+      expect(() =>
+        buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, since: bad, now: NOW, gh: fakeGh().run, runs: [], inbox: [] }),
+      ).toThrow(/Invalid --since/);
+    }
+  });
+
+  it('a --since window is cached and served separately from a --days window', () => {
+    squad('cli', { repo: 'acme/squads-cli' });
+    const good = fakeGh({ prLines: [line(4, 'x', 'acme/squads-cli', '2026-07-13T00:00:00Z')] });
+    buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, since: T, now: NOW, gh: good.run, runs: [], inbox: [] });
+    expect((JSON.parse(readFileSync(domainsCachePath(base), 'utf8')) as { since?: string }).since).toBe('2026-07-12T00:00:00.000Z');
+
+    // the same window, offline: the cached figures, the window they cover
+    const down = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, since: T, now: NOW, gh: fakeGh({ fail: true }).run, runs: [], inbox: [] });
+    expect(down.stale).toBe(true);
+    expect(down.domains[0].delivered).toMatchObject({ prsMerged: 1, stale: true });
+    expect(down.window).toEqual({ since: '2026-07-12T00:00:00.000Z', until: '2026-07-14T12:00:00.000Z' });
+
+    // a different window is a different question: never answered from this cache
+    const other = buildDomains({ projectRoot: base, squadsDir: squadsDir(), days: 7, now: NOW, gh: fakeGh({ fail: true }).run, runs: [], inbox: [] });
+    expect(other.domains[0].delivered).toBeNull();
+    expect(other.stale).toBe(false);
+  });
+});
+
+describe('domainsCommand — bad flags fail loudly, never with a guessed window', () => {
+  /** Capture what the command writes, with the exit code restored after. */
+  async function capture(fn: () => Promise<void>): Promise<{ out: string; exitCode: number | undefined }> {
+    const captured: string[] = [];
+    const origWrite = process.stdout.write;
+    const origExit = process.exitCode;
+    process.stdout.write = ((chunk: unknown) => { captured.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      await fn();
+      return { out: captured.join(''), exitCode: process.exitCode };
+    } finally {
+      process.stdout.write = origWrite;
+      process.exitCode = origExit;
+    }
+  }
+
+  it('rejects an invalid --since before doing any work', async () => {
+    const { out, exitCode } = await capture(() => domainsCommand({ since: 'not-a-date', json: true }));
+    expect(exitCode).toBe(1);
+    const parsed = JSON.parse(out) as { ok: boolean; command: string; error: string };
+    expect(parsed).toMatchObject({ ok: false, command: 'domains' });
+    expect(parsed.error).toContain('Invalid --since "not-a-date"');
+    expect(parsed.error).toContain('ISO-8601');
+  });
+
+  it('says the same thing in the human path', async () => {
+    const { out, exitCode } = await capture(() => domainsCommand({ since: '2026-13-45' }));
+    expect(exitCode).toBe(1);
+    expect(out).toContain('Invalid --since "2026-13-45"');
   });
 });
