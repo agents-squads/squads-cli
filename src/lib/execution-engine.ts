@@ -675,6 +675,20 @@ export type HarvestOutcome =
   | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
 
 /**
+ * Fork point of a lane branch when no base SHA was recorded (salvage of
+ * crashed runs): the merge-base with the integration ref the worktree was
+ * created from (#1083), never the operator's HEAD (#1310). No network here.
+ */
+function forkPoint(projectRoot: string, branchName: string): string {
+  for (const ref of ['origin/develop', 'origin/main', 'HEAD']) {
+    try {
+      return execSync(`git merge-base '${ref}' '${branchName}'`, { cwd: projectRoot, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* ref absent or unrelated — try next */ }
+  }
+  return 'HEAD';
+}
+
+/**
  * Harvest file changes a non-anthropic executor left in its worktree.
  *
  * Claude agents commit and push their own work (per the gh workflow they are
@@ -696,6 +710,11 @@ export async function harvestProviderWork(
   /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
    *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
   excludePaths: string[] = [],
+  /** SHA the worktree was branched from (#1310). Every harvest diff is taken
+   *  against it — never the operator's checked-out HEAD, which can sit on an
+   *  unrelated commit and make its extra files read as lane deletions. Salvage
+   *  callers that never recorded one fall back to the operator-HEAD merge-base. */
+  baseSha?: string,
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
@@ -743,7 +762,7 @@ export async function harvestProviderWork(
   // 2. Anything to integrate?
   let ahead = '0';
   try {
-    ahead = run(`git rev-list --count '${branchName}' '^HEAD'`, projectRoot).trim();
+    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? forkPoint(projectRoot, branchName)}'`, projectRoot).trim();
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
@@ -753,7 +772,7 @@ export async function harvestProviderWork(
   //    Diff against the branch's fork point (projectRoot HEAD may have moved
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
-    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const base = baseSha ?? forkPoint(projectRoot, branchName);
     const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
@@ -804,8 +823,13 @@ export function buildDetachedHarvestShell(config: {
   agentName: string;
   provider: string;
   logFile: string;
+  /** SHA the worktree was branched from (#1310); without it the check falls
+   *  back to the operator HEAD, which keeps no-op branches when HEAD sits on
+   *  an unrelated commit. */
+  baseSha?: string;
 }): string {
   if (config.workDir === config.projectRoot) return '';
+  const aheadOf = config.baseSha && /^[0-9a-f]{7,64}$/.test(config.baseSha) ? config.baseSha : 'HEAD';
   // Author = the user's git identity (same as the TS-side harvest); the
   // repo-scoped fallback identity (#980, single source of truth via
   // gitIdentityArgs) applies ONLY when no git identity is configured.
@@ -814,7 +838,7 @@ export function buildDetachedHarvestShell(config: {
   return `; git -C '${config.workDir}' add -A 2>/dev/null` +
     `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
     `; KEEP_BRANCH=''; HARVEST=none` +
-    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
     `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
     `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
     ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
@@ -1813,12 +1837,16 @@ export async function executeWithProvider(
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
+  let baseSha: string | undefined;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
     const base = resolveIntegrationBase(projectRoot);
     execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
+    try {
+      baseSha = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* harvest falls back to the operator-HEAD merge-base */ }
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
@@ -2033,7 +2061,7 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          }, harnessCopiedPaths);
+          }, harnessCopiedPaths, baseSha);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
@@ -2145,7 +2173,7 @@ export async function executeWithProvider(
   // Sandbox-wrapped lanes (opencode, cli#1306): the wrapper's own argv precedes the lane's.
   const wrapperPrefix = spawnArgs.slice(0, spawnArgs.length - args.length).map(shq).join(' ');
   const cleanupCmd = buildDetachedHarvestShell({
-    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile, baseSha,
   });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.

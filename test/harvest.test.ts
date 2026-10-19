@@ -141,6 +141,33 @@ describe('harvestProviderWork (#823 — executor output must never be lost)', ()
     expect(git(`rev-list --count '${branch}' '^HEAD'`, root)).toBe('1');
   });
 
+  it('diffs against the worktree base, not the operator HEAD — no false mass-deletion when the checkout sits behind (#1310)', async () => {
+    // Operator checkout is parked on a commit that still has a big file; the
+    // integration base (where the worktree branches from) has since dropped it.
+    const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+    writeFileSync(join(root, 'stale.ts'), big);
+    git('add -A', root);
+    git('commit -m add-stale', root);
+    const operatorHead = git('rev-parse HEAD', root);
+    git('rm stale.ts', root);
+    git('commit -m drop-stale', root);
+    const base = git('rev-parse HEAD', root);
+    git(`worktree remove '${workDir}' --force`, root);
+    git(`branch -D '${branch}'`, root);
+    git(`worktree add '${workDir}' -b '${branch}' '${base}'`, root);
+    git(`checkout -q --detach '${operatorHead}'`, root);
+
+    writeFileSync(join(workDir, 'lane.md'), '# lane output\n');
+    const info = { squadName: 'testsquad', agentName: 'testagent', provider: 'opencode' };
+
+    // Operator-HEAD merge-base is what produced the false flag.
+    const legacy = await harvestProviderWork(workDir, root, branch, info);
+    expect(legacy.outcome).toBe('suspect');
+
+    const result = await harvestProviderWork(workDir, root, branch, info, [], base);
+    expect(result.outcome).toBe('branch-preserved');
+  });
+
   it('does NOT flag a large rewrite that adds comparable volume back (refactor, not truncation)', async () => {
     const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
     writeFileSync(join(root, 'big.ts'), big);
