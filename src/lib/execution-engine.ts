@@ -1845,12 +1845,15 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = (options.model || options.allowedTools?.length)
-    ? {
-        ...(options.model ? { model: options.model } : {}),
-        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
-      }
-    : undefined;
+  // The lane's directory travels explicitly: the child inherits the
+  // operator's PWD, and harnesses that resolve their project from PWD/--dir
+  // (opencode) otherwise ran in the operator's checkout, not the worktree.
+  providerEnv.PWD = workDir;
+  const buildOpts = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+    cwd: workDir,
+  };
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
 
   // opencode governance (cli#1306): permission config + OS sandbox instead of

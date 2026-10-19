@@ -218,7 +218,7 @@ export function writeOpencodeConfig(config: OpencodePermissionConfig, dir: strin
  * project config (a worktree-local opencode.json cannot weaken it).
  */
 export function opencodeConfigEnv(config: OpencodePermissionConfig): Record<string, string> {
-  return { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
+  return { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_AUTOUPDATE: '1' };
 }
 
 // ── OS sandbox ───────────────────────────────────────────────────────────────
@@ -243,18 +243,43 @@ export interface OpencodeSandbox {
 
 const sbplStr = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
-/** Dirs opencode itself must write (session db, logs, cache). */
+/**
+ * Dirs opencode itself must write (session db, logs, cache). NOT writable:
+ * `~/.opencode` (the binary) and `~/.config/opencode` (global config +
+ * plugins) — a lane able to write either could plant code that later runs
+ * OUTSIDE the sandbox, in the user's interactive opencode. Self-update is
+ * disabled per spawn (opencodeConfigEnv) so nothing needs to write the binary.
+ */
 function opencodeStateDirs(): string[] {
   const h = homedir();
   return [
     join(h, '.local', 'share', 'opencode'), join(h, '.local', 'state', 'opencode'),
-    join(h, '.cache', 'opencode'), join(h, '.config', 'opencode'), join(h, '.opencode'),
+    join(h, '.cache', 'opencode'),
   ];
 }
 
 function writableRoots(opts: OpencodeSandboxOptions): string[] {
   const roots = [opts.workDir, ...opts.writeDirs, ...opencodeStateDirs(), tmpdir(), '/tmp', '/private/tmp', '/private/var/folders'];
   return [...new Set(roots.flatMap((r) => [r, realOrSame(r)]))];
+}
+
+/**
+ * Git control files inside writable git dirs that must stay read-only: a lane
+ * writing `hooks/` or `config` (core.hooksPath, core.fsmonitor, filters) gets
+ * code executed OUTSIDE the sandbox the next time anyone runs git there —
+ * harvest, the user. Commits only need objects/refs/logs/worktrees.
+ */
+function gitControlPaths(opts: OpencodeSandboxOptions): { dirs: string[]; files: string[] } {
+  const dirs: string[] = [];
+  const files: string[] = [];
+  for (const d of opts.writeDirs) {
+    if (!existsSync(join(d, 'HEAD')) || !existsSync(join(d, 'objects'))) continue;
+    for (const r of new Set([d, realOrSame(d)])) {
+      dirs.push(join(r, 'hooks'));
+      files.push(join(r, 'config'), join(r, 'config.worktree'));
+    }
+  }
+  return { dirs, files };
 }
 
 /** Seatbelt profile: default-allow, writes confined to the lane, credential dirs unreadable. */
@@ -266,9 +291,20 @@ export function buildSeatbeltProfile(opts: OpencodeSandboxOptions): string {
     '(deny file-write*)',
     `(allow file-write* ${writableRoots(opts).map((r) => `(subpath ${sbplStr(r)})`).join(' ')})`,
     '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/(tty|ttys|fd)[0-9]*$"))',
+    ...gitControlDenies(opts),
     ...deny.flatMap((d) => [...new Set([d, realOrSame(d)])].map((r) => `(deny file-read* (subpath ${sbplStr(r)}))`)),
   ];
   return lines.join('\n') + '\n';
+}
+
+/** Last match wins in SBPL: these come after the writable-roots allow. */
+function gitControlDenies(opts: OpencodeSandboxOptions): string[] {
+  const { dirs, files } = gitControlPaths(opts);
+  if (dirs.length === 0) return [];
+  return [`(deny file-write* ${[
+    ...dirs.map((d) => `(subpath ${sbplStr(d)})`),
+    ...files.map((f) => `(literal ${sbplStr(f)})`),
+  ].join(' ')})`];
 }
 
 /** bubblewrap argv prefix: read-only root, writable lane, credential dirs masked. */
@@ -276,6 +312,11 @@ export function buildBwrapArgs(opts: OpencodeSandboxOptions): string[] {
   const args = ['--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc'];
   for (const r of writableRoots(opts)) {
     if (existsSync(r)) args.push('--bind', r, r);
+  }
+  // Later mounts win: re-bind git control files read-only over the writable git dir.
+  const git = gitControlPaths(opts);
+  for (const r of [...git.dirs, ...git.files]) {
+    if (existsSync(r)) args.push('--ro-bind', r, r);
   }
   for (const d of (opts.denyRead ?? OPENCODE_DENY_READ).map(expandHome)) {
     if (existsSync(d)) args.push('--tmpfs', d);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, realpathSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import {
   OpencodeGovernanceError,
@@ -114,6 +114,43 @@ describe('opencode spawn never auto-approves', () => {
 });
 
 describe('opencode OS sandbox wrapper', () => {
+  it('never makes the opencode binary or global config/plugins writable (no sandbox escape via later interactive runs)', () => {
+    const h = homedir();
+    const opts = { workDir: '/w', writeDirs: [] as string[] };
+    const profile = buildSeatbeltProfile(opts);
+    for (const p of [join(h, '.opencode'), join(h, '.config', 'opencode')]) {
+      expect(profile).not.toContain(`(subpath "${p}")`);
+    }
+    const bw = buildBwrapArgs(opts).join(' ');
+    expect(bw).not.toContain(`--bind ${join(h, '.opencode')} `);
+    expect(bw).not.toContain(`--bind ${join(h, '.config', 'opencode')} `);
+  });
+
+  it('keeps git hooks and config read-only inside a writable git dir (no escape via git run outside the sandbox)', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'oc-git-')));
+    try {
+      const git = join(root, 'repo.git');
+      spawnSync('git', ['init', '--bare', '-q', git]);
+      const opts = { workDir: join(root, 'wt'), writeDirs: [git] };
+      const profile = buildSeatbeltProfile(opts);
+      const allowAt = profile.indexOf('(allow file-write* (subpath');
+      const denyAt = profile.indexOf(`(subpath "${join(git, 'hooks')}")`);
+      expect(denyAt).toBeGreaterThan(allowAt);
+      expect(profile).toContain(`(literal "${join(git, 'config')}")`);
+      const bw = buildBwrapArgs(opts);
+      const i = bw.indexOf(join(git, 'hooks'));
+      expect(bw[i - 1]).toBe('--ro-bind');
+      expect(bw.lastIndexOf(git)).toBeLessThan(i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('disables opencode self-update for governed spawns', () => {
+    const env = opencodeConfigEnv({ $schema: 'x', permission: { '*': 'deny' } });
+    expect(env.OPENCODE_DISABLE_AUTOUPDATE).toBe('1');
+  });
+
   const opts = { workDir: WORK, writeDirs: ['/repos/squads-cli/.git'] };
 
   it('seatbelt profile confines writes to the lane and masks credential dirs', () => {
@@ -148,8 +185,12 @@ describe('opencode OS sandbox wrapper', () => {
     ? spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true'])
     : null;
   it.skipIf(!probe || probe.status !== 0)('seatbelt blocks a write outside the worktree + a credential-dir read, allows writes inside', () => {
-    // Under cwd, NOT tmpdir(): the profile (rightly) makes tmp writable.
-    const root = realpathSync(mkdtempSync(join(process.cwd(), '.oc-sbx-')));
+    // Outside every tmp dir: the profile (rightly) makes tmp writable, so a
+    // checkout living under /tmp would make "outside" writable too.
+    const cwd = realpathSync(process.cwd());
+    const underTmp = [tmpdir(), '/tmp', '/private/tmp', '/private/var/folders']
+      .some((d) => cwd.startsWith(realpathSync(d)));
+    const root = realpathSync(mkdtempSync(join(underTmp ? homedir() : cwd, '.oc-sbx-')));
     const work = join(root, 'work');
     const outside = join(root, 'outside');
     try {
