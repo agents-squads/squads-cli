@@ -51,9 +51,11 @@ export type ExecEvent =
    *  this one is for live views, which take the latest per run (#1275). */
   | { type: 'usage_running'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
   | { type: 'context_assembled'; layers: ContextLayerStat[]; totalTokensEst: number; budgetTokens: number }
-  | { type: 'tool_call'; tool: string; inputSummary: string }
-  /** `chars`/`sha256` describe the whole result; `summary` is a redacted excerpt — empty for file-reading tools. */
-  | { type: 'tool_result'; tool: string; ok: boolean; summary: string; chars?: number; sha256?: string }
+  /** `inputSummary`: one kept value, for feeds; `args`: the whole arguments as JSON (#1318). */
+  | { type: 'tool_call'; tool: string; inputSummary: string; args?: string }
+  /** `summary`: a short excerpt for feeds (empty for file-reading tools); `text`: the whole result (#1318);
+   *  `chars`/`sha256` describe the result before redaction. All text is redacted at write time. */
+  | { type: 'tool_result'; tool: string; ok: boolean; summary: string; text?: string; chars?: number; sha256?: string }
   | { type: 'file_read'; path: string }
   | { type: 'file_write'; path: string; bytes: number }
   | { type: 'web_fetch'; url: string }
@@ -105,17 +107,48 @@ const PENDING_TOOL_MAP_MAX = 10_000;
  *  so a secret straddling the cut is masked whole, never left half-shown. */
 const INPUT_SUMMARY_MAX = 8 * 1024;
 
-/** Tools whose result is file content: the event keeps its size and hash, never the text. */
+/** Tools whose result is file content: no feed excerpt (the whole text is in `text`). */
 const CONTENT_TOOLS = new Set(['read', 'grep', 'notebookread']);
 
-/** A tool result as an event: size and hash of the whole, a redactable excerpt. */
-function toolResultEvent(tool: string, ok: boolean, text: string): Extract<ExecEvent, { type: 'tool_result' }> {
+/** Files whose content is never stored, only its size and hash (#1318): env files (not their
+ *  .example/.sample/.template), keys and certificates, credential stores, anything under secrets/. */
+const SECRET_FILE_RE = /(?:^|\/)(?:\.env(?:\.(?!example$|sample$|template$)[^/]*)?|[^/]*\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecdsa|ed25519)|\.?netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(?:\.[^/]*)?|secrets?\.(?:json|ya?ml|toml|env))$|(?:^|\/)\.?secrets\//i;
+
+/** True when a read of `path` must not keep the file's text. */
+export function isSecretFile(path: string | undefined): boolean {
+  return !!path && SECRET_FILE_RE.test(path.replace(/\\/g, '/'));
+}
+
+/** A tool result as an event: the whole text (#1318, founder 10-19: "store the whole"), a feed
+ *  excerpt, and the size and hash of the original. A read of a secret file keeps only size and hash. */
+function toolResultEvent(tool: string, ok: boolean, text: string, readPath?: string): Extract<ExecEvent, { type: 'tool_result' }> {
+  const withheld = isSecretFile(readPath);
   return {
     type: 'tool_result', tool, ok,
-    summary: CONTENT_TOOLS.has(tool.toLowerCase()) ? '' : text.slice(0, INPUT_SUMMARY_MAX),
+    summary: withheld || CONTENT_TOOLS.has(tool.toLowerCase()) ? '' : text.slice(0, INPUT_SUMMARY_MAX),
+    ...(text && !withheld ? { text } : {}),
     chars: text.length,
     sha256: createHash('sha256').update(text).digest('hex'),
   };
+}
+
+/** The file a tool call names (claude file_path/notebook_path, opencode filePath, kimi path). */
+function readPathOf(input: Record<string, unknown> | undefined): string | undefined {
+  if (!input) return undefined;
+  for (const k of ['file_path', 'filePath', 'notebook_path', 'path']) if (typeof input[k] === 'string' && input[k]) return input[k] as string;
+  return undefined;
+}
+
+/** A tool's whole arguments as JSON (#1318), or undefined when there are none. */
+function toolArgs(input: Record<string, unknown> | undefined): string | undefined {
+  if (!input || Object.keys(input).length === 0) return undefined;
+  try { return JSON.stringify(input); } catch { return undefined; }
+}
+
+/** A tool_call event: the feed's kept value and, when there are any, the whole arguments. */
+function toolCallEvent(tool: string, inputSummary: string, input: Record<string, unknown> | undefined): Extract<ExecEvent, { type: 'tool_call' }> {
+  const args = toolArgs(input);
+  return args ? { type: 'tool_call', tool, inputSummary, args } : { type: 'tool_call', tool, inputSummary };
 }
 
 /** Input fields whose values a tool_call keeps (redacted); for anything else only the field names. */
@@ -149,7 +182,7 @@ function eventsFromToolUse(block: ClaudeContentBlock): ExecEvent[] {
   const name = block.name || 'unknown';
   const input = block.input;
   const lower = name.toLowerCase();
-  const events: ExecEvent[] = [{ type: 'tool_call', tool: name, inputSummary: summarizeToolInput(name, input) }];
+  const events: ExecEvent[] = [toolCallEvent(name, summarizeToolInput(name, input), input)];
 
   const str = (k: string) => (input && typeof input[k] === 'string' ? (input[k] as string) : '');
   if (lower === 'read') {
@@ -214,7 +247,7 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
    * when the call was a `gh pr/issue create` (so the RESULT can be mined for
    * the created artifact's URL — the resolvable ref outcome capture needs).
    */
-  const pendingTools = new Map<string, { name: string; artifact?: 'pr' | 'issue' }>();
+  const pendingTools = new Map<string, { name: string; artifact?: 'pr' | 'issue'; path?: string }>();
   /** Usage per API message id: stream-json repeats a message once per content block,
    *  so the running total is the sum of each message's latest usage. */
   const usageById = new Map<string, Record<string, number>>();
@@ -250,7 +283,7 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
               if (/\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) artifact = 'pr';
               else if (/\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) artifact = 'issue';
             }
-            pendingTools.set(block.id, { name: block.name, artifact });
+            pendingTools.set(block.id, { name: block.name, artifact, path: readPathOf(block.input) });
           }
           events.push(...eventsFromToolUse(block));
         }
@@ -282,7 +315,7 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
           pendingTools.delete(block.tool_use_id);
           const ok = block.is_error !== true;
           const fullText = toolResultText(block.content);
-          events.push(toolResultEvent(tool, ok, fullText));
+          events.push(toolResultEvent(tool, ok, fullText, pending?.path));
           if (tool.toLowerCase() === 'agent' || tool.toLowerCase() === 'task') {
             events.push({ type: 'subagent_done', childRunId: block.tool_use_id, agent: tool, ok });
           }
@@ -353,7 +386,7 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
         const outputText = typeof state.output === 'string' ? state.output : '';
         const str = (k: string) => (toolInput && typeof toolInput[k] === 'string' ? (toolInput[k] as string) : '');
 
-        const events: ExecEvent[] = [{ type: 'tool_call', tool, inputSummary: summarizeOpencodeInput(lower, toolInput) }];
+        const events: ExecEvent[] = [toolCallEvent(tool, summarizeOpencodeInput(lower, toolInput), toolInput)];
         if (lower === 'read') {
           if (str('filePath')) events.push({ type: 'file_read', path: str('filePath') });
         } else if (lower === 'write' || lower === 'edit' || lower === 'patch') {
@@ -384,7 +417,7 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
             if (url) events.push({ type: 'artifact', kind: 'issue', ref: url });
           }
         }
-        events.push(toolResultEvent(tool, ok, outputText));
+        events.push(toolResultEvent(tool, ok, outputText, readPathOf(toolInput)));
         if (lower === 'task') {
           events.push({ type: 'subagent_done', childRunId: part.callID || '', agent: tool, ok });
         }
@@ -427,7 +460,7 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
  * fabricated 0). Cost is the subscription's: costEst 0.
  */
 export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
-  const pending = new Map<string, { tool: string; kind?: 'pr' | 'issue' }>();
+  const pending = new Map<string, { tool: string; kind?: 'pr' | 'issue'; path?: string }>();
 
   return {
     parseLine(raw: string): ExecEvent[] {
@@ -449,7 +482,7 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
           if (!summary) {
             try { summary = JSON.stringify(args); } catch { summary = ''; }
           }
-          events.push({ type: 'tool_call', tool, inputSummary: summary.slice(0, INPUT_SUMMARY_MAX) });
+          events.push(toolCallEvent(tool, summary.slice(0, INPUT_SUMMARY_MAX), args));
           let kind: 'pr' | 'issue' | undefined;
           if (lower === 'read') {
             if (str('path')) events.push({ type: 'file_read', path: str('path') });
@@ -461,7 +494,7 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
             if (/\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) kind = 'pr';
             else if (/\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) kind = 'issue';
           }
-          if (call.id) pending.set(call.id, { tool, kind });
+          if (call.id) pending.set(call.id, { tool, kind, path: readPathOf(args) });
         }
         return events;
       }
@@ -471,7 +504,7 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
         if (!entry) return [];
         pending.delete(msg.tool_call_id);
         const text = kimiContentText(msg.content);
-        const events: ExecEvent[] = [{ type: 'tool_result', tool: entry.tool, ok: true, summary: text.slice(0, INPUT_SUMMARY_MAX) }];
+        const events: ExecEvent[] = [toolResultEvent(entry.tool, true, text, entry.path)];
         if (entry.kind) {
           const url = extractArtifactUrl(text, entry.kind);
           if (url) events.push({ type: 'artifact', kind: entry.kind, ref: url });
@@ -499,9 +532,10 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
 
 // ── Persistence ───────────────────────────────────────────────────────
 
-/** Default cap: ~5k events / ~2MB per run, then sample down to terminals. */
+/** Default cap: ~5k events / ~32MB per run, then sample down to terminals. */
 const DEFAULT_MAX_EVENTS = 5000;
-const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+/** Whole tool output and arguments make runs bigger (#1318): a long run stays well under this. */
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Terminal/aggregate events are never dropped by the cap. */
 const UNCAPPED_TYPES = new Set<ExecEvent['type']>(['run_start', 'run_end', 'token_usage', 'truncated', 'context_assembled']);
