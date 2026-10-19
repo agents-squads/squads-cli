@@ -10,6 +10,12 @@
  *   delivered  ← git-derived outcomes: merged PRs + closed issues over --days
  *   now        ← live background runs + inbox items waiting on a human
  *
+ * The delivery window is `--days` long (a fixed length, ending now) unless the
+ * caller names its start with `--since <ISO-8601>` — then it runs from exactly
+ * that moment to now, for a console that opens on "since you were last here".
+ * `window: { since, until }` always states the period the counts actually
+ * cover, so no reader has to infer it from `days`.
+ *
  * The delivery figures come from GitHub, but never one request per repo or per
  * item: ONE search for merged PRs and ONE for closed issues cover every squad
  * repo at once (`repo:a repo:b … is:pr is:merged merged:>=DATE`), paged. A repo
@@ -38,6 +44,22 @@ import { listDetachedRuns, type DetachedRun } from './runs-inventory.js';
 import { buildInbox, type InboxItem } from './inbox.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** ISO-8601 date or instant — the only shapes a window start is accepted in. */
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * A `--since` value as epoch ms, or null when it isn't an ISO-8601 date/instant.
+ * Deliberately stricter than `Date.parse`, which also reads "Oct 15", "2026/10/15"
+ * and locale formats — a window start has to be unambiguous to be trustworthy.
+ */
+export function parseSince(value: string | number): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const v = value.trim();
+  if (!ISO_8601_RE.test(v)) return null;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? null : ms;
+}
 
 // ── Result shapes ────────────────────────────────────────────────────
 
@@ -92,9 +114,23 @@ export interface DomainRow {
   lastActivityAt: string | null;
 }
 
+/** The period the `delivered` figures cover, both ISO-8601 timestamps. */
+export interface DeliveryWindow {
+  /** Window start, inclusive — `--since` when given, else `--days` before `until`. */
+  since: string;
+  /** The instant the figures were read — `fetchedAt`, or the cache's when stale. */
+  until: string;
+}
+
 export interface DomainsReport {
   v: 1;
+  /**
+   * Span of the window in days — the `--days` flag when no `--since` was given,
+   * else the actual (possibly fractional) span. Never contradicts `window`.
+   */
   days: number;
+  /** The window `delivered` covers: `{ since, until }`, ISO-8601. */
+  window: DeliveryWindow;
   fetchedAt: string;
   /** True when delivery figures were served from the last-good cache. */
   stale: boolean;
@@ -200,18 +236,17 @@ export interface DeliveryFetch {
 }
 
 /**
- * Merged PRs + closed issues over `days` for every repo in ONE GraphQL call:
+ * Merged PRs + closed issues since `sinceMs` for every repo in ONE GraphQL call:
  * an alias per repo, owners and names passed as variables (never spliced into
  * the query). GraphQL instead of the search API because search silently
  * skips `repo:`s it can't index — private repos the token can read included —
  * and misbehaves on long `repo:` lists; here a missing repo is an explicit
  * null. gh exits 1 on a partial NOT_FOUND but still prints the data: read it.
  */
-export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now: Date): DeliveryFetch {
+export function fetchDelivery(slugs: string[], sinceMs: number, run: GhRunner): DeliveryFetch {
   const byRepo: Record<string, RepoDelivery> = {};
   const unreachable: string[] = [];
   if (slugs.length === 0) return { byRepo, unreachable };
-  const sinceMs = now.getTime() - days * DAY_MS;
   const since = new Date(sinceMs).toISOString();
   const decl = ['$since:DateTime!'];
   const sel: string[] = [];
@@ -298,8 +333,10 @@ export function fetchDelivery(slugs: string[], days: number, run: GhRunner, now:
 
 export interface DomainsCache {
   fetchedAt: string;
-  /** The window the counts cover — a cache for another window is not used. */
+  /** The `--days` window the counts cover. Ignored when `since` is set. */
   days: number;
+  /** Set when the window came from `--since`: its normalized start (ISO). */
+  since?: string;
   repos: Record<string, RepoDelivery>;
 }
 
@@ -307,12 +344,24 @@ export function domainsCachePath(projectRoot: string): string {
   return join(projectRoot, '.agents', 'observability', 'cache', 'domains.json');
 }
 
-function readCache(projectRoot: string, days: number): DomainsCache | null {
+/**
+ * A cache is reusable only for the *same* window definition: figures filtered
+ * for another window under-count. A `--since` window is keyed on its start
+ * alone (its end is the read instant, which is what a cache exists to pin);
+ * a `--days` window on its length. A pre-`--since` cache has no key and is
+ * refetched once, never served against a window it can't be shown to cover.
+ */
+function cacheMatches(cache: DomainsCache, days: number, since: string | null): boolean {
+  if (since) return cache.since === since;
+  return cache.since === undefined && cache.days === days;
+}
+
+function readCache(projectRoot: string, days: number, since: string | null): DomainsCache | null {
   const path = domainsCachePath(projectRoot);
   if (!existsSync(path)) return null;
   try {
     const c = JSON.parse(readFileSync(path, 'utf8')) as DomainsCache;
-    return c && typeof c.fetchedAt === 'string' && c.repos && c.days === days ? c : null;
+    return c && typeof c.fetchedAt === 'string' && c.repos && cacheMatches(c, days, since) ? c : null;
   } catch {
     return null;
   }
@@ -334,7 +383,14 @@ export interface BuildDomainsOptions {
   projectRoot: string;
   /** Defaults to findSquadsDir(). */
   squadsDir?: string | null;
+  /** Delivery window length in days. Ignored when `since` is given. */
   days: number;
+  /**
+   * Window start (ISO-8601 string, or epoch ms already parsed): an exact
+   * moment instead of `days` back from now. Overrides `days` when set.
+   * Throws — never guesses — on an unparseable value.
+   */
+  since?: string | number;
   /** Injectable for tests. */
   gh?: GhRunner;
   /** Injectable for tests (defaults to the live pid-file inventory). */
@@ -357,6 +413,17 @@ function startOfDay(ms: number): number {
 }
 
 /**
+ * The window's span in days, to 2 decimals. For the default window this is
+ * exactly `--days` (7 → 7), so `days` never disagrees with `window`; for a
+ * `--since` window it's the real, usually fractional, span.
+ */
+function windowDays(window: DeliveryWindow): number {
+  const ms = Date.parse(window.until) - Date.parse(window.since);
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(0, Number((ms / DAY_MS).toFixed(2)));
+}
+
+/**
  * Assemble the per-domain report. Pure over its inputs (network/fs aside), so
  * tests drive it with fixture squads + a fake `gh` runner.
  */
@@ -365,6 +432,16 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
   const now = new Date(nowMs);
   const projectRoot = opts.projectRoot;
   const squadsDir = opts.squadsDir === undefined ? findSquadsDir() : opts.squadsDir;
+
+  // 0. The delivery window: `--since` names its start exactly; `--days` is a
+  //    fixed length ending now. An unparseable start is an error, never a
+  //    silently different window.
+  const sinceMs = opts.since === undefined ? nowMs - opts.days * DAY_MS : parseSince(opts.since);
+  if (sinceMs === null) {
+    throw new Error(`Invalid --since "${String(opts.since)}" — expected an ISO-8601 date or timestamp`);
+  }
+  /** Normalized start, used as the cache key for an explicit window. */
+  const explicitSince = opts.since === undefined ? null : new Date(sinceMs).toISOString();
 
   // 1. Load every squad from disk (unreadable ones are skipped, not fatal).
   const squads: Array<{ name: string; squad: Squad }> = [];
@@ -415,23 +492,36 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
   let deliveryError = 'GitHub unavailable';
   const run = opts.gh ?? defaultGhRunner;
   let unreachableAll: string[] | null = null;
+  // The window the figures end up covering: now, or the cache's age when stale.
+  let windowSinceMs = sinceMs;
+  let windowUntilMs = nowMs;
   try {
-    const fetched = fetchDelivery(allSlugs, opts.days, run, now);
+    const fetched = fetchDelivery(allSlugs, sinceMs, run);
     deliveryByRepo = fetched.byRepo;
     unreachableAll = fetched.unreachable;
     if (allSlugs.length > 0) {
       // Merge per repo: a repo missing from this answer keeps its last-good entry.
-      const prev = readCache(projectRoot, opts.days);
+      const prev = readCache(projectRoot, opts.days, explicitSince);
       if (Object.keys(deliveryByRepo).length > 0) {
-        writeCache(projectRoot, { fetchedAt: now.toISOString(), days: opts.days, repos: { ...(prev?.repos ?? {}), ...deliveryByRepo } });
+        writeCache(projectRoot, {
+          fetchedAt: now.toISOString(),
+          days: opts.days,
+          ...(explicitSince ? { since: explicitSince } : {}),
+          repos: { ...(prev?.repos ?? {}), ...deliveryByRepo },
+        });
       }
     }
   } catch (e) {
     deliveryError = (e instanceof Error ? e.message : String(e)).split('\n')[0].trim().slice(0, 200) || 'GitHub unavailable';
-    const cached = readCache(projectRoot, opts.days);
+    const cached = readCache(projectRoot, opts.days, explicitSince);
     if (cached) {
       deliveryByRepo = cached.repos;
       stale = true;
+      // Say which window these figures cover: the one they were fetched for,
+      // not the one this run asked for.
+      const cachedAt = Date.parse(cached.fetchedAt);
+      windowUntilMs = Number.isNaN(cachedAt) ? nowMs : cachedAt;
+      windowSinceMs = explicitSince === null ? windowUntilMs - cached.days * DAY_MS : sinceMs;
     }
   }
 
@@ -534,9 +624,15 @@ export function buildDomains(opts: BuildDomainsOptions): DomainsReport {
     return tb - ta;
   });
 
+  const window: DeliveryWindow = {
+    since: new Date(windowSinceMs).toISOString(),
+    until: new Date(windowUntilMs).toISOString(),
+  };
+
   return {
     v: 1,
-    days: opts.days,
+    days: windowDays(window),
+    window,
     fetchedAt: now.toISOString(),
     stale,
     domains,

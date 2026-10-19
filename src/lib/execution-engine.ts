@@ -6,7 +6,7 @@
 import { track } from './telemetry.js';
 import { spawn, execSync } from 'child_process';
 import { randomUUID } from 'crypto';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
 import { homedir, tmpdir } from 'os';
@@ -21,7 +21,9 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile, runStartFields } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createKimiStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile, runStartFields } from './exec-events.js';
+import { detectKimiAuthError, parseKimiJson, parseKimiLine, readKimiSessionUsage, extractKimiSessionId, kimiContentText } from './kimi-code.js';
+import { KimiGovernanceError, assessKimiGrants, compileKimiWriteDenies, resolveKimiSandbox } from './kimi-code-governance.js';
 import { compileAllowedTools } from './agent-contract.js';
 import {
   type ExecutionContext,
@@ -55,6 +57,9 @@ import {
 } from './sandbox-settings.js';
 import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
 import {
+  OpencodeGovernanceError, compileOpencodePermission, opencodeConfigEnv, resolveOpencodeSandbox, writeOpencodeConfig,
+} from './opencode-governance.js';
+import {
   colors,
   RESET,
   icons,
@@ -66,6 +71,7 @@ import {
   commandExists,
 } from './llm-clis.js';
 import { gitIdentityArgs, integrationBranch } from './git.js';
+import { hardenedGitFlags, pinnedGitEnv, pinnedGitEnvShell, readWorktreeGitdirLink, verifyWorktreeLink } from './harvest-guard.js';
 import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -145,7 +151,8 @@ export interface ExecuteWithClaudeOptions {
   model?: string; // Model to use (Claude aliases or full model IDs like gemini-2.5-flash)
   /**
    * Executor harness override (#1177). 'opencode' reroutes an anthropic-model
-   * run through `opencode run` instead of the claude CLI. Defaults from
+   * run through `opencode run` instead of the claude CLI; 'kimi-code' (#1309)
+   * runs it on the Kimi For Coding subscription via `kimi -p`. Defaults from
    * SQUADS_HARNESS; independent of this, a missing claude binary auto-falls
    * back to opencode when installed (anti-lock-in).
    */
@@ -669,7 +676,22 @@ export type HarvestOutcome =
   | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
   | { outcome: 'branch-preserved'; branch: string }  // committed to the agent branch — the only landing path (#966)
   | { outcome: 'blocked'; detail: string }           // secret/PII scan refused the commit — worktree kept
-  | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
+  | { outcome: 'suspect'; branch: string; detail: string }  // mass deletion without replacement (#1076) — branch kept, run marked failed
+  | { outcome: 'refused'; branch: string; detail: string };  // worktree gitdir link no longer verifies (#1311) — no git run in it; worktree + branch kept
+
+/**
+ * Fork point of a lane branch when no base SHA was recorded (salvage of
+ * crashed runs): the merge-base with the integration ref the worktree was
+ * created from (#1083), never the operator's HEAD (#1310). No network here.
+ */
+function forkPoint(projectRoot: string, branchName: string): string {
+  for (const ref of ['origin/develop', 'origin/main', 'HEAD']) {
+    try {
+      return execSync(`git merge-base '${ref}' '${branchName}'`, { cwd: projectRoot, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* ref absent or unrelated — try next */ }
+  }
+  return 'HEAD';
+}
 
 /**
  * Harvest file changes a non-anthropic executor left in its worktree.
@@ -693,11 +715,40 @@ export async function harvestProviderWork(
   /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
    *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
   excludePaths: string[] = [],
+  /** SHA the worktree was branched from (#1310). Every harvest diff is taken
+   *  against it — never the operator's checked-out HEAD, which can sit on an
+   *  unrelated commit and make its extra files read as lane deletions. Salvage
+   *  callers that never recorded one fall back to the operator-HEAD merge-base. */
+  baseSha?: string,
+  /** `gitdir:` link recorded when the worktree was created (readWorktreeGitdirLink).
+   *  Absent for orphan salvage, where only the common-dir back-link is checked. */
+  expectedGitdir?: string | null,
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
+  // #1311: the lane controls the worktree's `.git` file. Verify it still points
+  // at git's own admin dir BEFORE any git call runs there — otherwise a decoy
+  // gitdir's config (fsmonitor, hooksPath, filters) would execute as the operator.
+  const link = verifyWorktreeLink(workDir, projectRoot, expectedGitdir);
+  if (!link.ok) {
+    return {
+      outcome: 'refused',
+      branch: branchName,
+      detail: `worktree gitdir link failed verification (${link.reason}) — no git was run in it`,
+    };
+  }
+
+  // Every harvest git call runs with hooks/fsmonitor/ssh/ext-diff/filters
+  // neutralised — only these calls; the operator's own commits keep their hooks.
+  const hardened = `git ${hardenedGitFlags(projectRoot)}`;
+  // Calls in the worktree are pinned to the verified admin + real common dir.
+  const pin = pinnedGitEnv(workDir, link.gitdir, link.commonDir);
+  const envFor = (cwd: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined =>
+    cwd === workDir ? { ...(env ?? process.env), ...pin } : env;
   const run = (cmd: string, cwd: string) =>
-    execSync(cmd, { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync(cmd.replace(/^git /, `${hardened} `), { encoding: 'utf-8', cwd, env: envFor(cwd), stdio: ['pipe', 'pipe', 'pipe'] });
+  const runQuiet = (cmd: string, cwd: string, env?: NodeJS.ProcessEnv) =>
+    execSync(cmd.replace(/^git /, `${hardened} `), { cwd, env: envFor(cwd, env), stdio: 'pipe' });
 
   // Pathspec that hides harness-copied furniture from every work-detection step.
   const excludeSpec = excludePaths
@@ -710,15 +761,15 @@ export async function harvestProviderWork(
   if (dirty) {
     const botEnv = await getBotGitEnv();
     const env = { ...process.env, ...botEnv };
-    execSync(`git add -A${pathspec}`, { cwd: workDir, env, stdio: 'pipe' });
+    runQuiet(`git add -A${pathspec}`, workDir, env);
 
     // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
-    const stagedDiff = execSync('git diff --cached', {
-      encoding: 'utf-8', cwd: workDir, maxBuffer: 32 * 1024 * 1024,
+    const stagedDiff = execSync(`${hardened} diff --cached --no-ext-diff --no-textconv`, {
+      encoding: 'utf-8', cwd: workDir, env: envFor(workDir), maxBuffer: 32 * 1024 * 1024,
     });
     const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
     if (findings.length > 0) {
-      try { execSync('git reset', { cwd: workDir, stdio: 'pipe' }); } catch { /* refuse regardless */ }
+      try { runQuiet('git reset', workDir); } catch { /* refuse regardless */ }
       return {
         outcome: 'blocked',
         detail: `${findings.length} secret/PII finding(s) — ${summarizeFindings(findings)}`,
@@ -729,9 +780,9 @@ export async function harvestProviderWork(
     const msgFile = join(tmpdir(), `squads-harvest-${Date.now()}.txt`);
     writeFileSync(msgFile, `feat(${info.squadName}/${info.agentName}): agent work via ${info.provider}\n\n${coAuthor}\n`);
     // Repo-scoped fallback identity (#980) when no git identity is configured.
-    const identity = gitIdentityArgs(workDir);
+    const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git ${identity} commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
+      runQuiet(`git ${identity} commit --file "${msgFile}"`, workDir, env);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -740,7 +791,7 @@ export async function harvestProviderWork(
   // 2. Anything to integrate?
   let ahead = '0';
   try {
-    ahead = run(`git rev-list --count '${branchName}' '^HEAD'`, projectRoot).trim();
+    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? forkPoint(projectRoot, branchName)}'`, projectRoot).trim();
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
@@ -750,8 +801,8 @@ export async function harvestProviderWork(
   //    Diff against the branch's fork point (projectRoot HEAD may have moved
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
-    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
-    const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
+    const base = baseSha ?? forkPoint(projectRoot, branchName);
+    const numstat = run(`git diff --no-ext-diff --no-textconv --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
       const [addStr, delStr, file] = row.split('\t');
@@ -801,20 +852,43 @@ export function buildDetachedHarvestShell(config: {
   agentName: string;
   provider: string;
   logFile: string;
+  /** SHA the worktree was branched from (#1310); without it the check falls
+   *  back to the operator HEAD, which keeps no-op branches when HEAD sits on
+   *  an unrelated commit. */
+  baseSha?: string;
 }): string {
   if (config.workDir === config.projectRoot) return '';
+  const aheadOf = config.baseSha && /^[0-9a-f]{7,64}$/.test(config.baseSha) ? config.baseSha : 'HEAD';
   // Author = the user's git identity (same as the TS-side harvest); the
   // repo-scoped fallback identity (#980, single source of truth via
   // gitIdentityArgs) applies ONLY when no git identity is configured.
   const harvestMsg = `-m 'feat(${config.squadName}/${config.agentName}): agent work via ${config.provider}' -m '${getCoAuthorTrailer(config.provider)}'`;
   const harvestIdentity = gitIdentityArgs(config.workDir);
-  return `; git -C '${config.workDir}' add -A 2>/dev/null` +
-    `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
+  // #1311: record the creation-time gitdir link NOW (the lane has not started)
+  // and refuse every worktree git call if `.git` no longer says exactly this.
+  // Unreadable at build time → empty expectation, which can never match.
+  const recordedLink = readWorktreeGitdirLink(config.workDir);
+  const expectedGitFile = recordedLink ? `gitdir: ${recordedLink}` : '';
+  const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  const gitFile = q(`${config.workDir}/.git`);
+  const hg = `git ${hardenedGitFlags(config.projectRoot)}`;
+  // Pin worktree git to the creation-time admin dir and the REAL common dir
+  // (resolved now, before the lane runs) — a rewritten `commondir` or `.git`
+  // can't redirect it. Unresolvable → refuse (empty pin never runs git).
+  const verified = recordedLink ? verifyWorktreeLink(config.workDir, config.projectRoot, recordedLink) : null;
+  const pinEnv = verified && verified.ok ? pinnedGitEnvShell(config.workDir, verified.gitdir, verified.commonDir) : '';
+  const adminCheck = verified && verified.ok
+    ? ` || [ -e ${q(join(verified.gitdir, 'config.worktree'))} ]`
+    : '';
+  return `; HARVEST_OK=1; if [ -z ${q(pinEnv)} ] || [ -z ${q(expectedGitFile)} ] || [ -L ${gitFile} ] || [ ! -f ${gitFile} ] || [ "$(cat ${gitFile} 2>/dev/null)" != ${q(expectedGitFile)} ]${adminCheck}; then HARVEST_OK=''; fi` +
+    `; if [ -n "$HARVEST_OK" ]; then ${pinEnv} ${hg} -C '${config.workDir}' add -A 2>/dev/null` +
+    `; ${pinEnv} ${hg} -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1; fi` +
     `; KEEP_BRANCH=''; HARVEST=none` +
-    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
-    `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
+    `; if [ -z "$HARVEST_OK" ]; then KEEP_BRANCH=1; HARVEST=refused; elif [ "$(${hg} -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; if [ "$HARVEST" = refused ]; then echo "harvest REFUSED: worktree .git link no longer matches the one recorded at creation -- no git was run in it; worktree ${config.workDir} and branch ${config.branchName} kept for review (cli#1311)" >> '${config.logFile}'; else` +
+    ` git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
     `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
-    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
+    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi; fi`;
 }
 
 /**
@@ -1277,6 +1351,29 @@ export async function executeWithClaude(
   // task refs may reroute to an also_owns repo, #1092)
   const targetRepoRoot = resolveTargetRepoRoot(projectRoot, squad, options.task);
 
+  // Kimi Code harness (#1309): `--model kimi-code/<alias>` or
+  // SQUADS_HARNESS=kimi-code runs the lane on the user's Kimi For Coding
+  // subscription via `kimi -p`. Explicit only — never an automatic fallback,
+  // and never a metered key. Same provider path as opencode downstream:
+  // worktree, sandbox, spool (harness-stamped), reconcile.
+  if ((options.harness || process.env.SQUADS_HARNESS) === 'kimi-code' || /^kimi-code\//i.test(resolvedModel ?? '')) {
+    const kimiCfg = getCLIConfig('kimi-code');
+    if (!kimiCfg || !commandExists(kimiCfg.command)) {
+      throw new Error(`harness 'kimi-code' requested but the kimi CLI is not installed. Install: ${kimiCfg?.install}`);
+    }
+    return executeWithProvider('kimi-code', prompt, {
+      verbose,
+      foreground: !(background === true) && !watch,
+      cwd: targetRepoRoot,
+      squadName,
+      agentName,
+      model: resolvedModel,
+      trigger,
+      timeoutMinutes,
+      task: options.task,
+    });
+  }
+
   // Delegate to non-Anthropic providers
   if (provider !== 'anthropic' && provider !== 'unknown') {
     if (verbose) {
@@ -1694,6 +1791,107 @@ export function providerCredentialGuard(timestamp: number): Record<string, strin
   };
 }
 
+/**
+ * Governance for an opencode lane (cli#1306): contract grants + guardrail +
+ * worktree guard → a per-spawn permission config (delivered via env, copy on
+ * disk for audit), and the OS sandbox wrapper. Throws OpencodeGovernanceError
+ * (refuse the run) — there is no `--auto` fallback.
+ */
+export function prepareOpencodeGovernance(opts: {
+  projectRoot: string; workDir: string; squadName: string; agentName: string;
+  allowedTools?: string[]; verbose?: boolean;
+}): { env: Record<string, string>; wrap: (command: string, args: string[]) => { command: string; args: string[] } } {
+  const squadsDir = findSquadsDir();
+  const agentPath = squadsDir ? join(squadsDir, opts.squadName, `${opts.agentName}.md`) : '';
+  const tools = opts.allowedTools?.length
+    ? opts.allowedTools
+    : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools;
+  const memDir = findMemoryDir();
+  const config = compileOpencodePermission({
+    tools,
+    guardrailPermissions: readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)),
+    primaryRoot: opts.projectRoot,
+    workDir: opts.workDir,
+    memoryDir: memDir || undefined,
+  });
+  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const configPath = writeOpencodeConfig(config, settingsDir);
+  if (opts.verbose) writeLine(`  ${colors.dim}opencode permissions: ${configPath}${RESET}`);
+
+  let wrap = (command: string, args: string[]) => ({ command, args });
+  if (!sandboxEnabled()) {
+    writeLine(`  ${colors.yellow}SQUADS_SANDBOX=0 — opencode lane runs WITHOUT the OS sandbox (permission config still enforced)${RESET}`);
+  } else {
+    let gitCommon = '';
+    try {
+      gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
+    } catch { /* not a git dir — nothing to commit to */ }
+    const sandbox = resolveOpencodeSandbox(
+      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean) },
+      join(settingsDir, `opencode-sandbox-${Date.now()}.sb`),
+    );
+    if (sandbox) {
+      if (sandbox.profile) writeFileSync(sandbox.args[1], sandbox.profile);
+      wrap = (command, args) => ({ command: sandbox.command, args: [...sandbox.args, command, ...args] });
+    } else if (sandboxStrict()) {
+      throw new OpencodeGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) and SQUADS_SANDBOX_STRICT=1');
+    } else {
+      writeLine(`  ${colors.yellow}OS sandbox unavailable — opencode lane runs with the permission config only${RESET}`);
+    }
+  }
+  return { env: opencodeConfigEnv(config), wrap };
+}
+
+/**
+ * Governance for a kimi-code lane (cli#1309). `kimi -p` auto-approves every
+ * tool and cannot take `--auto`, so there is no permission config to write —
+ * the contract is checked (refuse what kimi cannot honour), the guardrail's
+ * file denies become OS-sandbox write denies, and the spawn is wrapped in the
+ * sandbox. Throws KimiGovernanceError (refuse the run); there is no unsandboxed
+ * fallback unless SQUADS_SANDBOX=0 is set explicitly, loudly.
+ */
+export function prepareKimiGovernance(opts: {
+  projectRoot: string; workDir: string; squadName: string; agentName: string;
+}): { wrap: (command: string, args: string[]) => { command: string; args: string[] } } {
+  const squadsDir = findSquadsDir();
+  const agentPath = squadsDir ? join(squadsDir, opts.squadName, `${opts.agentName}.md`) : '';
+  // Always compile from the agent file: callers pass the already-compiled list
+  // (agent-runner), which loses whether the agent declared explicit grants.
+  const { tools, source } = compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS);
+  const { warnings } = assessKimiGrants(tools, source);
+  for (const w of warnings) writeLine(`  ${colors.yellow}kimi-code: ${w}${RESET}`);
+
+  const denyWriteNames = compileKimiWriteDenies(readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)));
+  const wrapIdentity = (command: string, args: string[]) => ({ command, args });
+  if (!sandboxEnabled()) {
+    if (denyWriteNames.length > 0) {
+      throw new KimiGovernanceError(`guardrail denies writes to ${denyWriteNames.join(', ')} but SQUADS_SANDBOX=0 removes the only mechanism that could enforce it`);
+    }
+    writeLine(`  ${colors.yellow}SQUADS_SANDBOX=0 — kimi-code lane runs WITHOUT the OS sandbox and kimi -p approves every tool${RESET}`);
+    return { wrap: wrapIdentity };
+  }
+
+  const memDir = findMemoryDir();
+  let gitCommon = '';
+  try {
+    gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
+  } catch { /* not a git dir — nothing to commit to */ }
+  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const profilePath = join(settingsDir, `kimi-sandbox-${Date.now()}.sb`);
+  const sandbox = resolveKimiSandbox(
+    { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWriteNames },
+    profilePath,
+  );
+  if (!sandbox) {
+    // kimi -p approves every tool and has no permission surface of its own:
+    // the sandbox is the ONLY control, so its absence refuses the run. Running
+    // unconfined is an explicit SQUADS_SANDBOX=0 decision, never a fallback.
+    throw new KimiGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) — kimi -p has no permission surface of its own; set SQUADS_SANDBOX=0 to run unconfined explicitly');
+  }
+  if (sandbox.profile) writeFileSync(profilePath, sandbox.profile);
+  return { wrap: (command, args) => ({ command: sandbox.command, args: [...sandbox.args, command, ...args] }) };
+}
+
 export async function executeWithProvider(
   provider: string,
   prompt: string,
@@ -1760,12 +1958,18 @@ export async function executeWithProvider(
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
+  let baseSha: string | undefined;
+  let worktreeLink: string | null = null;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
     const base = resolveIntegrationBase(projectRoot);
     execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
+    worktreeLink = readWorktreeGitdirLink(worktreePath); // #1311: recorded before the lane runs
+    try {
+      baseSha = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* harvest falls back to the operator-HEAD merge-base */ }
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
@@ -1792,13 +1996,47 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = (options.model || options.allowedTools?.length)
-    ? {
-        ...(options.model ? { model: options.model } : {}),
-        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
-      }
-    : undefined;
+  // The lane's directory travels explicitly: the child inherits the
+  // operator's PWD, and harnesses that resolve their project from PWD/--dir
+  // (opencode) otherwise ran in the operator's checkout, not the worktree.
+  providerEnv.PWD = workDir;
+  const buildOpts = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+    cwd: workDir,
+  };
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
+
+  // Governed harnesses (cli#1306 opencode, cli#1309 kimi-code): permission
+  // config and/or OS sandbox. Fail closed — a refused run drops the worktree
+  // just created, and `--auto` can never reach spawn.
+  let spawnCommand = cliConfig.command;
+  let spawnArgs = args;
+  if (cliConfig.opencodeJson || cliConfig.kimiCodeJson) {
+    try {
+      if (args.includes('--auto')) {
+        throw cliConfig.opencodeJson
+          ? new OpencodeGovernanceError('--auto is not permitted')
+          : new KimiGovernanceError('--auto is not permitted');
+      }
+      let gov: { wrap: (command: string, args: string[]) => { command: string; args: string[] } };
+      if (cliConfig.opencodeJson) {
+        const og = prepareOpencodeGovernance({
+          projectRoot, workDir, squadName, agentName, allowedTools: options.allowedTools, verbose: options.verbose,
+        });
+        Object.assign(providerEnv, og.env);
+        gov = og;
+      } else {
+        gov = prepareKimiGovernance({ projectRoot, workDir, squadName, agentName });
+      }
+      const wrapped = gov.wrap(cliConfig.command, args);
+      spawnCommand = wrapped.command;
+      spawnArgs = wrapped.args;
+    } catch (e) {
+      if (workDir !== projectRoot) cleanupWorktree(workDir, projectRoot);
+      throw e;
+    }
+  }
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -1835,7 +2073,8 @@ export async function executeWithProvider(
   // foreign providers — glm, deepseek) normalize through the Claude adapter
   // live in foreground; detached lanes get run_start here and the rest at
   // spool reconcile (normalizeDetachedLog resumes the seq counter).
-  const events = (cliConfig.streamJson || cliConfig.opencodeJson)
+  const jsonLane = !!(cliConfig.streamJson || cliConfig.opencodeJson || cliConfig.kimiCodeJson);
+  const events = jsonLane
     ? new ExecEventWriter(execEventsFile(dispatchRoot, executionId), executionId, {
         source: 'squads-cli',
         provider,
@@ -1859,10 +2098,12 @@ export async function executeWithProvider(
       // When the provider prints usage (aider et al), pipe output through so
       // it can be parsed for observability — still streamed live to the user.
       const captureUsage = typeof cliConfig.parseUsage === 'function';
-      const proc = spawn(cliConfig.command, args, {
+      // stdin 'ignore' for CLIs that hang on inherited stdin (#1307, kimi -p).
+      const stdinMode = cliConfig.stdinPrompt ? 'pipe' : cliConfig.stdinIgnore ? 'ignore' : 'inherit';
+      const proc = spawn(spawnCommand, spawnArgs, {
         stdio: captureUsage
-          ? [cliConfig.stdinPrompt ? 'pipe' : 'inherit', 'pipe', 'pipe']
-          : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
+          ? [stdinMode, 'pipe', 'pipe']
+          : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : stdinMode === 'ignore' ? ['ignore', 'inherit', 'inherit'] : 'inherit',
         cwd: workDir,
         env: providerEnv,
       });
@@ -1882,19 +2123,21 @@ export async function executeWithProvider(
       // Tail buffer for usage parsing (cap to keep memory bounded). Stream-json
       // lanes get a larger cap — outcomes accumulate across ALL events, so a
       // tight tail would undercount long runs (#1077).
-      const OUTPUT_TAIL_MAX = (cliConfig.streamJson || cliConfig.opencodeJson) ? 4 * 1024 * 1024 : 256 * 1024;
+      const OUTPUT_TAIL_MAX = jsonLane ? 4 * 1024 * 1024 : 256 * 1024;
       let outputTail = '';
       // Live exec-event normalization (#1159) — one adapter per run, shaped
       // for the harness that emits the stream (#1177).
       const adapter = events
-        ? (cliConfig.opencodeJson ? createOpencodeStreamJsonAdapter() : createClaudeStreamJsonAdapter())
+        ? (cliConfig.opencodeJson ? createOpencodeStreamJsonAdapter()
+          : cliConfig.kimiCodeJson ? createKimiStreamJsonAdapter()
+          : createClaudeStreamJsonAdapter())
         : null;
       let lineBuf = '';
       if (captureUsage) {
         const append = (chunk: Buffer) => {
           outputTail = (outputTail + chunk.toString('utf-8')).slice(-OUTPUT_TAIL_MAX);
         };
-        if (cliConfig.streamJson || cliConfig.opencodeJson) {
+        if (jsonLane) {
           // Render assistant text live instead of echoing raw JSONL (#1077).
           const renderer = cliConfig.streamJson
             ? new StreamJsonAccumulator((text) => process.stdout.write(text + '\n'))
@@ -1913,6 +2156,12 @@ export async function executeWithProvider(
                 if (ev?.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text) {
                   process.stdout.write(ev.part.text + '\n');
                 }
+              }
+              // kimi-code: assistant content renders live from the same line split.
+              if (cliConfig.kimiCodeJson) {
+                const km = parseKimiLine(l);
+                const kt = km?.role === 'assistant' ? kimiContentText(km.content) : '';
+                if (kt) process.stdout.write(kt + '\n');
               }
             }
           });
@@ -1946,7 +2195,15 @@ export async function executeWithProvider(
           : undefined;
         // #936: providers can exit 0 after printing a fatal API error — detect
         // from output so the ledger never credits a failed run as completed.
-        const fatal = detectProviderFatalError(outputTail);
+        // kimi-code (#1309): not-logged-in gets a clear message; a clean exit
+        // with no terminal `session.resume_hint` is an interrupted run, not a
+        // completion (#1131) — there is no is_error signal on this stream.
+        const kimiStream = outputTail && cliConfig.kimiCodeJson ? parseKimiJson(outputTail) : null;
+        const fatal = detectProviderFatalError(outputTail)
+          ?? (cliConfig.kimiCodeJson ? detectKimiAuthError(outputTail) : null)
+          ?? (kimiStream && !kimiStream.sawResult && code === 0
+            ? `kimi stream ended without session.resume_hint — likely interrupted (${kimiStream.outcomes.actions} action(s) logged)`
+            : null);
         if (fatal) {
           writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
         }
@@ -1957,34 +2214,37 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          }, harnessCopiedPaths);
+          }, harnessCopiedPaths, baseSha, worktreeLink);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
-        const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
+        const suspect = harvest.outcome === 'suspect' || harvest.outcome === 'refused' ? harvest.detail : null;
         // Stream-json lanes carry real outcomes in the event stream (#1077) —
         // same omit-when-unknown convention as everywhere else (#1060).
         const streamOutcomes = outputTail && cliConfig.streamJson
           ? parseStreamJson(outputTail).outcomes
           : outputTail && cliConfig.opencodeJson
             ? parseOpencodeJson(outputTail).outcomes
-            : null;
+            : kimiStream ? kimiStream.outcomes : null;
+        const kimiSid = cliConfig.kimiCodeJson ? extractKimiSessionId(outputTail) : undefined;
+        const kimiWire = kimiSid ? readKimiSessionUsage(kimiSid) : null;
         logObservability({
           ts: new Date().toISOString(),
           id: executionId,
           squad: squadName,
           agent: agentName,
           provider,
-          model: streamModel || options.model || undefined,
+          model: streamModel || kimiWire?.model || options.model || undefined,
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
           status: code === 0 && !fatal && !suspect ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
           input_tokens: usage?.input_tokens || 0,
           output_tokens: usage?.output_tokens || 0,
-          cache_read_tokens: 0,
-          cache_write_tokens: 0,
+          cache_read_tokens: kimiWire?.cache_read_tokens || 0,
+          cache_write_tokens: kimiWire?.cache_write_tokens || 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
+          ...(cliConfig.kimiCodeJson ? { billing: 'subscription' as const, ...(kimiSid ? { session_id: kimiSid } : {}) } : {}),
           brief: options.task?.slice(0, BRIEF_MAX_CHARS),
           ...(streamOutcomes && streamOutcomes.actions > 0 ? {
             actions: streamOutcomes.actions,
@@ -1994,7 +2254,7 @@ export async function executeWithProvider(
             issues_created: streamOutcomes.issues_created,
           } : {}),
           error: fatal
-            ?? (suspect ? `suspect harvest: ${suspect}` : undefined)
+            ?? (suspect ? `${harvest.outcome} harvest: ${suspect}` : undefined)
             ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
         });
         if (usage && options.verbose) {
@@ -2009,8 +2269,8 @@ export async function executeWithProvider(
             totalUsage: {
               input: usage?.input_tokens || 0,
               output: usage?.output_tokens || 0,
-              cacheRead: 0,
-              cacheWrite: 0,
+              cacheRead: kimiWire?.cache_read_tokens || 0,
+              cacheWrite: kimiWire?.cache_write_tokens || 0,
               costEst: usage?.cost_usd || 0,
             },
             ...(streamOutcomes && streamOutcomes.actions > 0 ? { outcomes: streamOutcomes } : {}),
@@ -2029,6 +2289,10 @@ export async function executeWithProvider(
             writeLine(`  ${colors.dim}Branch kept for review — do NOT land without inspecting: ${harvest.branch}${RESET}`);
             cleanupWorktree(workDir, projectRoot, { keepBranch: true });
             break;
+          case 'refused':
+            writeLine(`  ${colors.red}Harvest REFUSED (run marked failed): ${harvest.detail}${RESET}`);
+            writeLine(`  ${colors.dim}Worktree and branch kept for review: ${workDir} (${harvest.branch})${RESET}`);
+            break; // keep worktree AND branch — the lane's gitdir link was tampered with
           case 'blocked':
             writeLine(`  ${colors.red}Harvest blocked: ${harvest.detail}${RESET}`);
             writeLine(`  ${colors.dim}Worktree kept for inspection: ${workDir}${RESET}`);
@@ -2064,9 +2328,12 @@ export async function executeWithProvider(
   // second buildArgs call silently dropped buildOpts — background claude-harness
   // lanes spawned with NO --allowedTools, so every Write/Edit was denied in
   // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
+  const shq = (a: string) => `'${a.replace(/'/g, "'\\''")}'`;
   const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+  // Sandbox-wrapped lanes (opencode cli#1306, kimi-code cli#1309): the wrapper's own argv precedes the lane's.
+  const wrapperPrefix = spawnArgs.slice(0, spawnArgs.length - args.length).map(shq).join(' ');
   const cleanupCmd = buildDetachedHarvestShell({
-    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile, baseSha,
   });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.
@@ -2088,12 +2355,12 @@ export async function executeWithProvider(
         // 'native' lanes (#1227): the engine wrote the events file itself, so
         // reconcile must NOT parse the log as a stream — usage comes from the
         // lane's parseUsage over the engine's --json result.
-        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : cliConfig.nativeEvents ? 'native' : '',
+        harness: cliConfig.command === 'claude' ? 'claude' : cliConfig.opencodeJson ? 'opencode' : cliConfig.kimiCodeJson ? 'kimi-code' : cliConfig.nativeEvents ? 'native' : '',
       })
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
-  const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const executorCmd = `${shq(spawnCommand)} ${wrapperPrefix ? `${wrapperPrefix} ` : ''}${providerArgs}${cliConfig.stdinIgnore ? ' < /dev/null' : ''} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   // pid file's second line (when known) is this run's API execution id
   // (#1131) — see buildPidFileWriteCmd.

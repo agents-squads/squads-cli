@@ -25,6 +25,7 @@ import {
 } from './observability.js';
 import { updateExecutionStatus } from './execution-log.js';
 import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
+import { parseKimiJson, extractKimiSessionId, readKimiSessionUsage, detectKimiAuthError } from './kimi-code.js';
 import { normalizeDetachedLog } from './exec-events.js';
 import { reportExecutionComplete } from './api-client.js';
 
@@ -66,7 +67,8 @@ export interface SpoolRecord {
   sessionId?: string;
   /**
    * Executor harness the run went through (#1177): 'claude' (Claude Code —
-   * claude/glm/deepseek/kimi/gpt lanes), 'opencode' (`opencode run`).
+   * claude/glm/deepseek/kimi/gpt lanes), 'opencode' (`opencode run`),
+   * 'kimi-code' (`kimi -p`, subscription login — #1309).
    * Reconcile picks the stream parser + event adapter by THIS, not by
    * provider — the same provider can run through either harness.
    * Empty/absent on legacy spools and non-stream provider CLIs (aider).
@@ -210,7 +212,9 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   // events file itself; their log holds the --json result for parseUsage.
   const harness = spool.harness || '';
   const stream = rawLog && harness !== 'native'
-    ? (harness === 'opencode' ? parseOpencodeJson(rawLog) : parseStreamJson(rawLog))
+    ? (harness === 'opencode' ? parseOpencodeJson(rawLog)
+      : harness === 'kimi-code' ? parseKimiJson(rawLog)
+      : parseStreamJson(rawLog))
     : null;
   const hasStreamEvidence = !!stream && (
     stream.sawResult || stream.outcomes.actions > 0 || stream.text.length > 0 ||
@@ -240,7 +244,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
         fatalError = `${spool.provider || 'claude'} reported is_error on its terminal result (${stream.usage.num_turns} turn(s))`;
       } else if (!stream.sawResult) {
         status = 'failed';
-        fatalError = `stream ended without a terminal result — likely interrupted mid-response (${stream.outcomes.actions} action(s) logged)`;
+        fatalError = (harness === 'kimi-code' ? detectKimiAuthError(rawLog) : null) ?? `stream ended without a terminal result — likely interrupted mid-response (${stream.outcomes.actions} action(s) logged)`;
       } else if (
         stream.openBackgroundSubagents > 0 &&
         stream.outcomes.commits === 0 && stream.outcomes.prs_created === 0 && stream.outcomes.issues_created === 0
@@ -282,6 +286,20 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
       cacheWrite = stream.usage.cache_write_tokens;
       if (stream.usage.model) model = stream.usage.model;
     }
+  } else if (harness === 'kimi-code') {
+    // kimi prints no usage on stdout: tokens come from the session wire log
+    // (#1309). Unreadable wire → tokens stay 0 and the record carries no
+    // fabricated figure. Cost is the subscription's, never a list price.
+    const sid = extractKimiSessionId(rawLog);
+    const wire = sid ? readKimiSessionUsage(sid) : null;
+    if (wire) {
+      input = wire.input_tokens;
+      output = wire.output_tokens;
+      cacheRead = wire.cache_read_tokens;
+      cacheWrite = wire.cache_write_tokens;
+      if (wire.model) model = wire.model;
+    }
+    if (sid) sessionId = sid;
   } else if (hasStreamEvidence && stream && stream.sawResult) {
     // Non-Claude stream-json: canonical usage + cost + backfilled model.
     input = stream.usage.input_tokens;
@@ -333,6 +351,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     cache_write_tokens: cacheWrite,
     cost_usd: cost,
     context_tokens: 0,
+    ...(harness === 'kimi-code' ? { billing: 'subscription' as const } : {}),
     ...(outcomes ? {
       actions: outcomes.actions,
       files_edited: outcomes.files_edited,
