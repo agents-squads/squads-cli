@@ -1,0 +1,8 @@
+{"role":"meta","type":"system.version","version":"2.2.0"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_v3ShUgsQvMvRtp5tbqYOsnck","function":{"name":"Bash","arguments":"{\"command\":\"ls -la\"}"}},{"type":"function","id":"tool_mWjVay769eHUsVApa0DS9je2","function":{"name":"Read","arguments":"{\"path\":\"package.json\"}"}}]}
+{"role":"tool","tool_call_id":"tool_v3ShUgsQvMvRtp5tbqYOsnck","content":"total 16\ndrwxr-xr-x@ 4 user  wheel  128 Oct 19 11:33 .\ndrwxr-xr-x@ 5 user  wheel  160 Oct 19 11:33 ..\n-rw-r--r--@ 1 user  wheel    6 Oct 19 11:33 notes.txt\n-rw-r--r--@ 1 user  wheel   50 Oct 19 11:33 package.json\n"}
+{"role":"tool","tool_call_id":"tool_mWjVay769eHUsVApa0DS9je2","content":"1\t{\n2\t  \"name\": \"fixture-pkg\",\n3\t  \"version\": \"1.0.0\"\n4\t}"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_4dTVYSybRE1mNtp0TYD6yriR","function":{"name":"Write","arguments":"{\"path\":\"out.txt\",\"content\":\"fixture-pkg\\n\"}"}}]}
+{"role":"tool","tool_call_id":"tool_4dTVYSybRE1mNtp0TYD6yriR","content":"Wrote 12 bytes to out.txt"}
+{"role":"assistant","content":"The directory contains two files: `notes.txt` and `package.json`.\n\nThe `name` field in package.json is **`fixture-pkg`**, and I've written it to `out.txt`."}
+{"role":"meta","type":"session.resume_hint","session_id":"session_d5dd8847-999d-48ba-8983-3f0f559584c3","command":"kimi -r session_d5dd8847-999d-48ba-8983-3f0f559584c3","content":"To resume this session: kimi -r session_d5dd8847-999d-48ba-8983-3f0f559584c3"}

@@ -92,6 +92,9 @@ export interface ObservabilityRecord {
   // True when cost_usd is a notional list-price estimate derived from raw
   // token counts (no billing signal), not what execution-log.ts recorded.
   cost_estimated?: boolean;
+  // Billing model when cost_usd is not a metered figure (#1309): 'subscription'
+  // runs (kimi-code) record cost_usd 0 — never a list-price estimate.
+  billing?: 'subscription';
 }
 
 export interface QueryOptions {
