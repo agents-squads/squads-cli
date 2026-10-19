@@ -69,6 +69,7 @@ import {
   commandExists,
 } from './llm-clis.js';
 import { gitIdentityArgs, integrationBranch } from './git.js';
+import { hardenedGitFlags, pinnedGitEnv, pinnedGitEnvShell, readWorktreeGitdirLink, verifyWorktreeLink } from './harvest-guard.js';
 import { reportExecutionStart, reportExecutionComplete } from './api-client.js';
 
 // ── Operational constants (no magic numbers) ──────────────────────────
@@ -672,7 +673,8 @@ export type HarvestOutcome =
   | { outcome: 'nothing' }           // worktree clean, no commits — agent produced no file changes
   | { outcome: 'branch-preserved'; branch: string }  // committed to the agent branch — the only landing path (#966)
   | { outcome: 'blocked'; detail: string }           // secret/PII scan refused the commit — worktree kept
-  | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
+  | { outcome: 'suspect'; branch: string; detail: string }  // mass deletion without replacement (#1076) — branch kept, run marked failed
+  | { outcome: 'refused'; branch: string; detail: string };  // worktree gitdir link no longer verifies (#1311) — no git run in it; worktree + branch kept
 
 /**
  * Fork point of a lane branch when no base SHA was recorded (salvage of
@@ -715,11 +717,35 @@ export async function harvestProviderWork(
    *  unrelated commit and make its extra files read as lane deletions. Salvage
    *  callers that never recorded one fall back to the operator-HEAD merge-base. */
   baseSha?: string,
+  /** `gitdir:` link recorded when the worktree was created (readWorktreeGitdirLink).
+   *  Absent for orphan salvage, where only the common-dir back-link is checked. */
+  expectedGitdir?: string | null,
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
+  // #1311: the lane controls the worktree's `.git` file. Verify it still points
+  // at git's own admin dir BEFORE any git call runs there — otherwise a decoy
+  // gitdir's config (fsmonitor, hooksPath, filters) would execute as the operator.
+  const link = verifyWorktreeLink(workDir, projectRoot, expectedGitdir);
+  if (!link.ok) {
+    return {
+      outcome: 'refused',
+      branch: branchName,
+      detail: `worktree gitdir link failed verification (${link.reason}) — no git was run in it`,
+    };
+  }
+
+  // Every harvest git call runs with hooks/fsmonitor/ssh/ext-diff/filters
+  // neutralised — only these calls; the operator's own commits keep their hooks.
+  const hardened = `git ${hardenedGitFlags(projectRoot)}`;
+  // Calls in the worktree are pinned to the verified admin + real common dir.
+  const pin = pinnedGitEnv(workDir, link.gitdir, link.commonDir);
+  const envFor = (cwd: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined =>
+    cwd === workDir ? { ...(env ?? process.env), ...pin } : env;
   const run = (cmd: string, cwd: string) =>
-    execSync(cmd, { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync(cmd.replace(/^git /, `${hardened} `), { encoding: 'utf-8', cwd, env: envFor(cwd), stdio: ['pipe', 'pipe', 'pipe'] });
+  const runQuiet = (cmd: string, cwd: string, env?: NodeJS.ProcessEnv) =>
+    execSync(cmd.replace(/^git /, `${hardened} `), { cwd, env: envFor(cwd, env), stdio: 'pipe' });
 
   // Pathspec that hides harness-copied furniture from every work-detection step.
   const excludeSpec = excludePaths
@@ -732,15 +758,15 @@ export async function harvestProviderWork(
   if (dirty) {
     const botEnv = await getBotGitEnv();
     const env = { ...process.env, ...botEnv };
-    execSync(`git add -A${pathspec}`, { cwd: workDir, env, stdio: 'pipe' });
+    runQuiet(`git add -A${pathspec}`, workDir, env);
 
     // Same guard as autoCommitAgentWork: never commit a leaked credential/PII
-    const stagedDiff = execSync('git diff --cached', {
-      encoding: 'utf-8', cwd: workDir, maxBuffer: 32 * 1024 * 1024,
+    const stagedDiff = execSync(`${hardened} diff --cached --no-ext-diff --no-textconv`, {
+      encoding: 'utf-8', cwd: workDir, env: envFor(workDir), maxBuffer: 32 * 1024 * 1024,
     });
     const findings = scanDiff(stagedDiff, { forbidden: loadForbiddenStrings(projectRoot) });
     if (findings.length > 0) {
-      try { execSync('git reset', { cwd: workDir, stdio: 'pipe' }); } catch { /* refuse regardless */ }
+      try { runQuiet('git reset', workDir); } catch { /* refuse regardless */ }
       return {
         outcome: 'blocked',
         detail: `${findings.length} secret/PII finding(s) — ${summarizeFindings(findings)}`,
@@ -751,9 +777,9 @@ export async function harvestProviderWork(
     const msgFile = join(tmpdir(), `squads-harvest-${Date.now()}.txt`);
     writeFileSync(msgFile, `feat(${info.squadName}/${info.agentName}): agent work via ${info.provider}\n\n${coAuthor}\n`);
     // Repo-scoped fallback identity (#980) when no git identity is configured.
-    const identity = gitIdentityArgs(workDir);
+    const identity = gitIdentityArgs(projectRoot);
     try {
-      execSync(`git ${identity} commit --file "${msgFile}"`, { cwd: workDir, env, stdio: 'pipe' });
+      runQuiet(`git ${identity} commit --file "${msgFile}"`, workDir, env);
     } finally {
       try { unlinkSync(msgFile); } catch { /* ignore */ }
     }
@@ -773,7 +799,7 @@ export async function harvestProviderWork(
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
     const base = baseSha ?? forkPoint(projectRoot, branchName);
-    const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
+    const numstat = run(`git diff --no-ext-diff --no-textconv --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
       const [addStr, delStr, file] = row.split('\t');
@@ -835,13 +861,31 @@ export function buildDetachedHarvestShell(config: {
   // gitIdentityArgs) applies ONLY when no git identity is configured.
   const harvestMsg = `-m 'feat(${config.squadName}/${config.agentName}): agent work via ${config.provider}' -m '${getCoAuthorTrailer(config.provider)}'`;
   const harvestIdentity = gitIdentityArgs(config.workDir);
-  return `; git -C '${config.workDir}' add -A 2>/dev/null` +
-    `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
+  // #1311: record the creation-time gitdir link NOW (the lane has not started)
+  // and refuse every worktree git call if `.git` no longer says exactly this.
+  // Unreadable at build time → empty expectation, which can never match.
+  const recordedLink = readWorktreeGitdirLink(config.workDir);
+  const expectedGitFile = recordedLink ? `gitdir: ${recordedLink}` : '';
+  const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  const gitFile = q(`${config.workDir}/.git`);
+  const hg = `git ${hardenedGitFlags(config.projectRoot)}`;
+  // Pin worktree git to the creation-time admin dir and the REAL common dir
+  // (resolved now, before the lane runs) — a rewritten `commondir` or `.git`
+  // can't redirect it. Unresolvable → refuse (empty pin never runs git).
+  const verified = recordedLink ? verifyWorktreeLink(config.workDir, config.projectRoot, recordedLink) : null;
+  const pinEnv = verified && verified.ok ? pinnedGitEnvShell(config.workDir, verified.gitdir, verified.commonDir) : '';
+  const adminCheck = verified && verified.ok
+    ? ` || [ -e ${q(join(verified.gitdir, 'config.worktree'))} ]`
+    : '';
+  return `; HARVEST_OK=1; if [ -z ${q(pinEnv)} ] || [ -z ${q(expectedGitFile)} ] || [ -L ${gitFile} ] || [ ! -f ${gitFile} ] || [ "$(cat ${gitFile} 2>/dev/null)" != ${q(expectedGitFile)} ]${adminCheck}; then HARVEST_OK=''; fi` +
+    `; if [ -n "$HARVEST_OK" ]; then ${pinEnv} ${hg} -C '${config.workDir}' add -A 2>/dev/null` +
+    `; ${pinEnv} ${hg} -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1; fi` +
     `; KEEP_BRANCH=''; HARVEST=none` +
-    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
-    `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
+    `; if [ -z "$HARVEST_OK" ]; then KEEP_BRANCH=1; HARVEST=refused; elif [ "$(${hg} -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; if [ "$HARVEST" = refused ]; then echo "harvest REFUSED: worktree .git link no longer matches the one recorded at creation -- no git was run in it; worktree ${config.workDir} and branch ${config.branchName} kept for review (cli#1311)" >> '${config.logFile}'; else` +
+    ` git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
     `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
-    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
+    ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi; fi`;
 }
 
 /**
@@ -1838,12 +1882,14 @@ export async function executeWithProvider(
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
   let baseSha: string | undefined;
+  let worktreeLink: string | null = null;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
     const base = resolveIntegrationBase(projectRoot);
     execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
+    worktreeLink = readWorktreeGitdirLink(worktreePath); // #1311: recorded before the lane runs
     try {
       baseSha = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).trim();
     } catch { /* harvest falls back to the operator-HEAD merge-base */ }
@@ -2061,11 +2107,11 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          }, harnessCopiedPaths, baseSha);
+          }, harnessCopiedPaths, baseSha, worktreeLink);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
-        const suspect = harvest.outcome === 'suspect' ? harvest.detail : null;
+        const suspect = harvest.outcome === 'suspect' || harvest.outcome === 'refused' ? harvest.detail : null;
         // Stream-json lanes carry real outcomes in the event stream (#1077) —
         // same omit-when-unknown convention as everywhere else (#1060).
         const streamOutcomes = outputTail && cliConfig.streamJson
@@ -2098,7 +2144,7 @@ export async function executeWithProvider(
             issues_created: streamOutcomes.issues_created,
           } : {}),
           error: fatal
-            ?? (suspect ? `suspect harvest: ${suspect}` : undefined)
+            ?? (suspect ? `${harvest.outcome} harvest: ${suspect}` : undefined)
             ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
         });
         if (usage && options.verbose) {
@@ -2133,6 +2179,10 @@ export async function executeWithProvider(
             writeLine(`  ${colors.dim}Branch kept for review — do NOT land without inspecting: ${harvest.branch}${RESET}`);
             cleanupWorktree(workDir, projectRoot, { keepBranch: true });
             break;
+          case 'refused':
+            writeLine(`  ${colors.red}Harvest REFUSED (run marked failed): ${harvest.detail}${RESET}`);
+            writeLine(`  ${colors.dim}Worktree and branch kept for review: ${workDir} (${harvest.branch})${RESET}`);
+            break; // keep worktree AND branch — the lane's gitdir link was tampered with
           case 'blocked':
             writeLine(`  ${colors.red}Harvest blocked: ${harvest.detail}${RESET}`);
             writeLine(`  ${colors.dim}Worktree kept for inspection: ${workDir}${RESET}`);
