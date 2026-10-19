@@ -411,7 +411,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
   // env-rate table is needed.
   opencode: {
     provider: 'opencode',
-    displayName: 'OpenCode (fallback harness)',
+    displayName: 'OpenCode',
     command: 'opencode',
     install: 'curl -fsSL https://opencode.ai/install.sh | bash',
     buildArgs: (prompt, opts) => {

@@ -15,7 +15,8 @@ context, and tool use independently — Squads just orchestrates.
 | Anthropic | `claude` | Stable — primary provider |
 | Google | `gemini` | Stable |
 | DeepSeek | `aider` (delegation) | New in 0.8.0 — file-based roles |
-| OpenCode | `opencode` (native) | New — file-based executor |
+| OpenCode | `opencode` | New — governed harness (permission config + OS sandbox) |
+| Kimi Code | `kimi` | New — runs on a Kimi For Coding subscription login, OS sandbox |
 | OpenAI | `codex` | Experimental |
 | Mistral | `vibe` | Experimental |
 | xAI | `grok` | Experimental |
@@ -48,9 +49,9 @@ Precedence: agent frontmatter → `--provider` flag → squad
 
 ## File-based executors
 
-Some providers (DeepSeek via `aider`, and `opencode` directly) run as
-*file-based executors*: they read and edit files and commit the result,
-but don't run shell commands or browse the web. They're a fit for
+Some providers (DeepSeek via `aider`) run as *file-based executors*:
+they read and edit files and commit the result, but don't run shell
+commands or browse the web. They're a fit for
 validators, formatters, and summarizers — agents whose job is read files
 → write files. Squads harvests their output from the isolated execution
 worktree, so completed work is never lost even if the run ends
@@ -59,3 +60,29 @@ abnormally.
 Every provider run is recorded in observability (`squads exec list`,
 `squads usage`) with real token and cost figures parsed from the
 executor's output.
+
+## OpenCode gateway models
+
+A model id that starts with `opencode/` selects the opencode harness by
+itself — on the command line or in an agent's frontmatter:
+
+```bash
+squads run research/scanner --model opencode/glm-5.3-flash-free
+```
+
+```yaml
+model: opencode/glm-5.3-flash-free
+```
+
+The run takes the governed path: a per-run permission config compiled
+from the agent's tool grants, plus the OS sandbox. `--provider opencode`
+works too.
+
+opencode's gateway serves several no-cost models (`opencode/*-free`;
+`opencode models` lists them). Treat them as best-effort: the list
+changes, rate limits aren't published, and endpoints fail transiently.
+Check each model's data terms before sending it anything private.
+
+If every free model fails with `Invalid credential`, a stale gateway key
+is stored locally — the free models work anonymously, so remove it with
+`opencode auth logout`.
