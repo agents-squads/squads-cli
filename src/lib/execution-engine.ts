@@ -693,6 +693,11 @@ export async function harvestProviderWork(
   /** Paths the HARNESS copied into the worktree (e.g. '.agents' for sandboxed
    *  providers) — furniture, not agent work; excluded from the harvest (#1070). */
   excludePaths: string[] = [],
+  /** SHA the worktree was branched from (#1310). Every harvest diff is taken
+   *  against it — never the operator's checked-out HEAD, which can sit on an
+   *  unrelated commit and make its extra files read as lane deletions. Salvage
+   *  callers that never recorded one fall back to the operator-HEAD merge-base. */
+  baseSha?: string,
 ): Promise<HarvestOutcome> {
   if (workDir === projectRoot) return { outcome: 'in-place' };
 
@@ -740,7 +745,7 @@ export async function harvestProviderWork(
   // 2. Anything to integrate?
   let ahead = '0';
   try {
-    ahead = run(`git rev-list --count '${branchName}' '^HEAD'`, projectRoot).trim();
+    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? 'HEAD'}'`, projectRoot).trim();
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
@@ -750,7 +755,7 @@ export async function harvestProviderWork(
   //    Diff against the branch's fork point (projectRoot HEAD may have moved
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
-    const base = run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const base = baseSha ?? run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
     const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
@@ -1759,12 +1764,16 @@ export async function executeWithProvider(
   const branchName = `agent/${squadName}/${agentName}-${timestamp}`;
   const worktreePath = join(projectRoot, '..', '.worktrees', `${squadName}-${agentName}-${timestamp}`);
   let workDir = projectRoot;
+  let baseSha: string | undefined;
   try {
     mkdirSync(join(projectRoot, '..', '.worktrees'), { recursive: true });
     const identity = gitIdentityArgs(projectRoot);
     const base = resolveIntegrationBase(projectRoot);
     execSync(`git ${identity} worktree add '${worktreePath}' -b '${branchName}' '${base}'`, { cwd: projectRoot, stdio: 'pipe' });
     workDir = worktreePath;
+    try {
+      baseSha = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* harvest falls back to the operator-HEAD merge-base */ }
   } catch (e) {
     writeLine(`  ${colors.dim}warn: worktree creation failed, using project root: ${e instanceof Error ? e.message : String(e)}${RESET}`);
   }
@@ -1955,7 +1964,7 @@ export async function executeWithProvider(
         try {
           harvest = await harvestProviderWork(workDir, projectRoot, branchName, {
             squadName, agentName, provider,
-          }, harnessCopiedPaths);
+          }, harnessCopiedPaths, baseSha);
         } catch (e) {
           writeLine(`  ${colors.yellow}warn: harvest failed: ${e instanceof Error ? e.message : String(e)}${RESET}`);
         }
