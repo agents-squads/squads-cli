@@ -25,7 +25,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseOpencodeLine } from './stream-json.js';
 import { redactEvent, type Sensitivity } from './event-redact.js';
-import { extractKimiSessionId, kimiContentText, kimiToolArgs, parseKimiLine, readKimiSessionUsage } from './kimi-code.js';
+import { extractKimiSessionId, kimiContentText, kimiToolArgs, parseKimiLine, readKimiSessionReasoning, readKimiSessionUsage } from './kimi-code.js';
 
 // ── Event schema ──────────────────────────────────────────────────────
 
@@ -45,8 +45,12 @@ export type ExecEvent =
   /** `title`: one line naming the work (the task's first line, or the referenced issue's title);
    *  `task`: the full task, redacted like every event (both additive, #1275). */
   | { type: 'run_start'; squad: string; agent?: string; mode: string; model: string; role: string; startedAt: string; title?: string; task?: string }
-  /** What the agent (or the person) said — full in the local file, cut when flushed to the API (#1275). */
+  /** What the agent (or the person) said, whole in the file and the API copy (#1275, #1316). */
   | { type: 'message'; role: 'assistant' | 'user'; text: string }
+  /** The model's reasoning, where the harness exposes it (#1316): opencode live; kimi at run end from
+   *  its session wire log, with `step` = the session step (the step-th assistant turn). Claude Code
+   *  returns thinking blocks with empty text, so claude runs have none. */
+  | { type: 'reasoning'; text: string; step?: number }
   /** Running totals while a run goes. `token_usage` stays one terminal event per agent (readers sum it);
    *  this one is for live views, which take the latest per run (#1275). */
   | { type: 'usage_running'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
@@ -165,6 +169,7 @@ function keptInput(input: Record<string, unknown> | undefined): string {
 interface ClaudeContentBlock {
   type?: string;
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -267,6 +272,12 @@ export function createClaudeStreamJsonAdapter(): ProviderEventAdapter {
 
       if (ev.type === 'assistant' && Array.isArray(message?.content)) {
         const events: ExecEvent[] = [];
+        // Thinking blocks arrive with empty text from claude -p today; keep any that carry some.
+        for (const b of message.content) {
+          if (b && b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) {
+            events.push({ type: 'reasoning', text: b.thinking });
+          }
+        }
         const text = message.content
           .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
           .map((b) => b.text as string)
@@ -428,6 +439,11 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
         return [{ type: 'message', role: 'assistant', text: part.text }];
       }
 
+      // Emitted only under `--thinking` (llm-clis passes it, #1316).
+      if (ev.type === 'reasoning' && typeof part?.text === 'string' && part.text.trim()) {
+        return [{ type: 'reasoning', text: part.text }];
+      }
+
       if (ev.type === 'step_finish' && part) {
         const t = part.tokens || {};
         input += t.input || 0;
@@ -461,6 +477,8 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
  */
 export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
   const pending = new Map<string, { tool: string; kind?: 'pr' | 'issue'; path?: string }>();
+  // Reasoning seen on stdout: then the wire log's copy is not read at the end (no duplicates).
+  let liveReasoning = false;
 
   return {
     parseLine(raw: string): ExecEvent[] {
@@ -469,6 +487,10 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
 
       if (msg.role === 'assistant') {
         const events: ExecEvent[] = [];
+        if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()) {
+          liveReasoning = true;
+          events.push({ type: 'reasoning', text: msg.reasoning_content });
+        }
         // Assistant text → `message` (#1275 part 2), same as the claude and
         // opencode adapters; kimi puts it in `content`, with or without tool calls.
         const text = kimiContentText(msg.content);
@@ -514,15 +536,21 @@ export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
 
       if (msg.role === 'meta' && msg.type === 'session.resume_hint') {
         const sessionId = extractKimiSessionId(raw);
+        const events: ExecEvent[] = [];
+        // The captured stdout carried no reasoning (kimi-code 2.2.0); the wire log has every step's (#1316).
+        if (sessionId && !liveReasoning) {
+          for (const r of readKimiSessionReasoning(sessionId)) events.push({ type: 'reasoning', text: r.text, step: r.step });
+        }
         const usage = sessionId ? readKimiSessionUsage(sessionId) : null;
         if (usage) {
-          return [{
+          events.push({
             type: 'token_usage',
             input: usage.input_tokens, output: usage.output_tokens,
             cacheRead: usage.cache_read_tokens, cacheWrite: usage.cache_write_tokens,
             costEst: 0, model: usage.model,
-          }];
+          });
         }
+        return events;
       }
 
       return [];
@@ -571,8 +599,9 @@ const FLUSH_INTERVAL_MS = 2000;
 /** usage_running is written at most this often per run. */
 const USAGE_RUNNING_MS = 2_000;
 
-/** Message text sent to the API, at most (the local file keeps it whole). */
-const FLUSH_TEXT_MAX = 200;
+/** A batch is sent once its events reach this many bytes, whatever the count: free text goes to the
+ *  API whole now (#1316), each string already bounded by the redaction input cap. */
+const FLUSH_BATCH_BYTES = 256 * 1024;
 
 /** A run's title: the task's first line, one line, at most 100 characters. */
 export function runTitle(task: string | undefined): string | undefined {
@@ -624,6 +653,7 @@ function ghIssueTitle(repo: string, n: number): string | undefined {
  */
 export class ExecEventFlusher {
   private buf: PersistedExecEvent[] = [];
+  private bufBytes = 0;
   private timer: NodeJS.Timeout | null = null;
   private chain: Promise<void> = Promise.resolve();
 
@@ -631,16 +661,14 @@ export class ExecEventFlusher {
     private readonly runId: string,
     private readonly batchSize = FLUSH_BATCH_SIZE,
     private readonly intervalMs = FLUSH_INTERVAL_MS,
+    private readonly batchBytes = FLUSH_BATCH_BYTES,
   ) {}
 
   push(line: PersistedExecEvent): void {
-    // Message text goes to the API cut; the local file keeps it whole.
-    // Free text goes to the API cut (message text, the run's full task); the local file keeps it whole.
-    const ev = line.event;
-    if (ev.type === 'message' && ev.text.length > FLUSH_TEXT_MAX) line = { ...line, event: { ...ev, text: `${ev.text.slice(0, FLUSH_TEXT_MAX)}…` } };
-    if (ev.type === 'run_start' && ev.task && ev.task.length > FLUSH_TEXT_MAX) line = { ...line, event: { ...ev, task: `${ev.task.slice(0, FLUSH_TEXT_MAX)}…` } };
+    // The API copy is the file's line, text whole (#1316: the store keeps full history).
     this.buf.push(line);
-    if (this.buf.length >= this.batchSize) {
+    this.bufBytes += JSON.stringify(line).length;
+    if (this.buf.length >= this.batchSize || this.bufBytes >= this.batchBytes) {
       void this.flush();
     } else if (!this.timer) {
       this.timer = setTimeout(() => void this.flush(), this.intervalMs);
@@ -657,6 +685,7 @@ export class ExecEventFlusher {
     if (this.buf.length === 0) return this.chain;
     const batch = this.buf;
     this.buf = [];
+    this.bufBytes = 0;
     this.chain = this.chain.then(async () => {
       // Lazy import: no network machinery loaded unless a flush actually runs.
       const { reportExecutionEvents } = await import('./api-client.js');

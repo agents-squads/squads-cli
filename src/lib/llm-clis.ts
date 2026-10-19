@@ -415,7 +415,8 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     command: 'opencode',
     install: 'curl -fsSL https://opencode.ai/install.sh | bash',
     buildArgs: (prompt, opts) => {
-      const args = ['run', '--format', 'json'];
+      // --thinking: reasoning parts on the stream, kept as `reasoning` events (#1316).
+      const args = ['run', '--format', 'json', '--thinking'];
       // opencode wants `provider/model` (e.g. deepseek/deepseek-chat,
       // anthropic/claude-sonnet-5); bare names pass through for its default.
       if (opts?.model) args.push('--model', opts.model);

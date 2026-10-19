@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  parseKimiJson, parseKimiLine, extractKimiSessionId, readKimiSessionUsage, detectKimiAuthError,
+  parseKimiJson, parseKimiLine, extractKimiSessionId, readKimiSessionUsage, readKimiSessionReasoning, detectKimiAuthError,
 } from '../src/lib/kimi-code.js';
 import { LLM_CLIS } from '../src/lib/llm-clis.js';
 import { createKimiStreamJsonAdapter, type ExecEvent } from '../src/lib/exec-events.js';
@@ -188,7 +188,10 @@ describe('kimi-code CLIConfig', () => {
 
   it('spawns with stdin ignored and strips metered keys and ANTHROPIC_* from the env', () => {
     expect(cfg.stdinIgnore).toBe(true);
-    const prev = { ...process.env };
+    // Restore keys in place: reassigning process.env detaches it from the real environment, and
+    // later HOME overrides in this file stop reaching os.homedir().
+    const keys = ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'KIMI_API_KEY'] as const;
+    const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     process.env.ANTHROPIC_API_KEY = 'a'; process.env.ANTHROPIC_BASE_URL = 'b'; process.env.KIMI_API_KEY = 'k';
     try {
       const env = cfg.env!();
@@ -198,7 +201,10 @@ describe('kimi-code CLIConfig', () => {
       expect(env).toHaveProperty('ANTHROPIC_BASE_URL', undefined);
       expect(Object.values(env).every((v) => v === undefined)).toBe(true);
     } finally {
-      process.env = prev;
+      for (const k of keys) {
+        if (prev[k] === undefined) delete process.env[k];
+        else process.env[k] = prev[k];
+      }
     }
   });
 });
@@ -214,5 +220,75 @@ describe('kimi adapter emits message events (#1275 part 2)', () => {
     expect(events.some((e) => e.type === 'tool_call')).toBe(true);
     const both = a.parseLine(JSON.stringify({ role: 'assistant', content: 'checking', tool_calls: [{ type: 'function', id: 'x', function: { name: 'Bash', arguments: '{"command":"ls"}' } }] }));
     expect(both.map((e) => e.type)).toEqual(['message', 'tool_call']);
+  });
+});
+
+// Shapes from a live kimi-code 2.2.0 wire log (2026-10-19): the think part is written once as a
+// loop event and repeated inside agent.message.appended.
+const thinkPart = (step: number, think: string) => ({
+  type: 'context.append_loop_event', agentId: 'main',
+  event: { type: 'content.part', turnId: '0', step, part: { type: 'think', think, reasoningKey: 'reasoning_content' } },
+});
+const appended = (think: string) => ({
+  type: 'agent.message.appended',
+  message: { message: { role: 'assistant', content: [{ type: 'think', think }, { type: 'text', text: 'reading the issue' }] } },
+});
+
+describe('kimi reasoning from the session wire (#1316)', () => {
+  it('reads each step\'s think part once, in order, with its step', () => {
+    writeSession([
+      thinkPart(1, 'Let me start by reading the issue.'), appended('Let me start by reading the issue.'),
+      usageRecord({ inputOther: 1, output: 1 }),
+      thinkPart(2, '   '), // blank: skipped
+      thinkPart(3, 'The fix belongs in the adapter.'), appended('The fix belongs in the adapter.'),
+    ]);
+    expect(readKimiSessionReasoning(SESSION, home)).toEqual([
+      { step: 1, text: 'Let me start by reading the issue.' },
+      { step: 3, text: 'The fix belongs in the adapter.' },
+    ]);
+  });
+
+  it('is empty, never a throw, when the session or the wire is missing or torn', () => {
+    expect(readKimiSessionReasoning(SESSION, home)).toEqual([]);
+    expect(readKimiSessionReasoning('../../etc/passwd', home)).toEqual([]);
+    writeSession([thinkPart(1, 'ok')]);
+    const wire = join(home, 'sessions', 'abc', 'agents', 'main', 'wire.jsonl');
+    writeFileSync(wire, readFileSync(wire, 'utf-8') + '{"type":"context.append_loop_event","event":{"part":{"type":"think"');
+    expect(readKimiSessionReasoning(SESSION, home)).toEqual([{ step: 1, text: 'ok' }]);
+  });
+
+  /** The adapter reads kimiHome() = <HOME>/.kimi-code. */
+  function withKimiHome(wire: unknown[], fn: () => void): void {
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const kimiDir = join(home, '.kimi-code');
+      const sessionDir = join(kimiDir, 'sessions', 's1');
+      mkdirSync(join(sessionDir, 'agents', 'main'), { recursive: true });
+      writeFileSync(join(kimiDir, 'session_index.jsonl'), JSON.stringify({ sessionId: SESSION, sessionDir }) + '\n');
+      writeFileSync(join(sessionDir, 'agents', 'main', 'wire.jsonl'), wire.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      fn();
+    } finally {
+      process.env.HOME = prev;
+    }
+  }
+
+  it('the adapter emits them at resume_hint, ahead of token_usage', () => {
+    withKimiHome([thinkPart(1, 'plan first'), appended('plan first'), usageRecord({ inputOther: 3, output: 2 })], () => {
+      const events = FIXTURE.split('\n').flatMap((l) => createKimiStreamJsonAdapter().parseLine(l));
+      const tail = events.filter((e) => e.type === 'reasoning' || e.type === 'token_usage');
+      expect(tail.map((e) => e.type)).toEqual(['reasoning', 'token_usage']);
+      expect(tail[0]).toEqual({ type: 'reasoning', text: 'plan first', step: 1 });
+    });
+  });
+
+  it('reasoning_content on stdout is emitted live and the wire copy is not read again', () => {
+    withKimiHome([thinkPart(1, 'plan first'), usageRecord({ inputOther: 3, output: 2 })], () => {
+      const a = createKimiStreamJsonAdapter();
+      const live = a.parseLine(JSON.stringify({ role: 'assistant', reasoning_content: 'plan first', content: 'ok' }));
+      expect(live).toEqual([{ type: 'reasoning', text: 'plan first' }, { type: 'message', role: 'assistant', text: 'ok' }]);
+      const end = FIXTURE.split('\n').filter((l) => l.includes('session.resume_hint')).flatMap((l) => a.parseLine(l));
+      expect(end.map((e) => e.type)).toEqual(['token_usage']);
+    });
   });
 });
