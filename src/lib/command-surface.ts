@@ -56,7 +56,8 @@ export const DEPRECATED_COMMANDS: Record<string, string> = {
   services: 'providers',
   catalog: 'providers',
   deploy: 'providers',
-  release: 'providers',
+  // `release` stays hidden but is not deprecated: it owns the maintainer
+  // release train (#1320) as well as the IDP pre-check.
   // scaffolding
   add: 'init',
   'detect-squad': 'status',
