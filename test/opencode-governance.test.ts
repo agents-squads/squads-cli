@@ -214,3 +214,26 @@ describe('opencode OS sandbox wrapper', () => {
     }
   });
 });
+
+describe('worktree admin-dir control files (#1311 review)', () => {
+  it.skipIf(process.platform !== 'darwin')('seatbelt blocks commondir/gitdir/config.worktree, keeps HEAD/index writable', () => {
+    const base = realpathSync(mkdtempSync(join(homedir(), '.oc-adm-')));
+    try {
+      const repo = join(base, 'repo');
+      spawnSync('git', ['init', '-q', '-b', 'main', repo]);
+      spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'b']);
+      const wt = join(base, 'wt');
+      spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', wt, '-b', 'lane']);
+      const admin = join(repo, '.git', 'worktrees', 'wt');
+      const profPath = join(base, 'p.sb');
+      writeFileSync(profPath, buildSeatbeltProfile({ workDir: wt, writeDirs: [join(repo, '.git')] }));
+      const sh = (c: string) => spawnSync('/usr/bin/sandbox-exec', ['-f', profPath, '/bin/sh', '-c', c]).status;
+      expect(sh(`echo /tmp/decoy > '${admin}/commondir'`)).not.toBe(0);
+      expect(sh(`echo x > '${admin}/gitdir'`)).not.toBe(0);
+      expect(sh(`echo x > '${admin}/config.worktree'`)).not.toBe(0);
+      expect(sh(`cat '${admin}/HEAD' > '${admin}/HEAD.tmp' && mv '${admin}/HEAD.tmp' '${admin}/HEAD'`)).toBe(0);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
