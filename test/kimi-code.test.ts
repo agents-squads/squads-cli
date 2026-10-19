@@ -79,7 +79,9 @@ describe('createKimiStreamJsonAdapter', () => {
     const types = events.map((e) => e.type);
     expect(types.filter((t) => t === 'tool_call')).toHaveLength(3);
     expect(types.filter((t) => t === 'tool_result')).toHaveLength(3);
-    expect(events).toContainEqual({ type: 'tool_call', tool: 'Bash', inputSummary: 'ls -la' });
+    expect(events).toContainEqual({ type: 'tool_call', tool: 'Bash', inputSummary: 'ls -la', args: '{"command":"ls -la"}' });
+    // Whole results (#1318): the Write's result text, size and hash.
+    expect(events.filter((e) => e.type === 'tool_result').every((e) => typeof (e as { sha256?: string }).sha256 === 'string')).toBe(true);
     expect(events).toContainEqual({ type: 'file_read', path: 'package.json' });
     expect(events).toContainEqual({ type: 'file_write', path: 'out.txt', bytes: 12 });
   });

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { REDACT_PATTERNS, SUMMARY_MAX, knownSecrets, redactEvent, redactText, resetKnownSecrets } from '../src/lib/event-redact.js';
-import { ExecEventWriter, createClaudeStreamJsonAdapter, type PersistedExecEvent } from '../src/lib/exec-events.js';
+import { REDACT_INPUT_MAX, REDACT_PATTERNS, SUMMARY_MAX, WHOLE_TEXT_MAX, knownSecrets, redactEvent, redactText, resetKnownSecrets } from '../src/lib/event-redact.js';
+import { ExecEventWriter, createClaudeStreamJsonAdapter, isSecretFile, type PersistedExecEvent } from '../src/lib/exec-events.js';
 
 const KNOWN = 'dsk-live-7fQ2xKp9LmN4vR8tY3wZ';
 const GH = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
@@ -141,22 +141,79 @@ describe('the events file and the API flush (the check in #1275)', () => {
     expect(result.event).toMatchObject({ chars: expect.any(Number), sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
 
-  it('file-reading tools keep size and hash, never content; other inputs keep field names only', () => {
+  it('tool output and arguments are stored whole and redacted; feeds keep the short fields (#1318)', () => {
     const file = join(dir, 'events2.jsonl');
     const w = new ExecEventWriter(file, 'run_2');
     const adapter = createClaudeStreamJsonAdapter();
     w.ingestProviderLine(adapter, JSON.stringify({ type: 'assistant', message: { content: [
-      { type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/.env' } },
+      { type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/config/app.conf' } },
       { type: 'tool_use', id: 'm1', name: 'mcp__erp__send_invoice', input: { customer: 'ACME SpA', amount: 1200000 } },
     ] } }));
-    w.ingestProviderLine(adapter, JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'SECRET_THING=plain value here' }] } }));
+    const env = 'PORT=8080\nSECRET_THING=s3cr3t-v4lue-123\nDEBUG=1';
+    w.ingestProviderLine(adapter, JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: env }] } }));
     w.close();
     const lines = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as PersistedExecEvent);
-    const read = lines.find((l) => l.event.type === 'tool_result')!.event as { summary: string; chars: number };
-    expect(read.summary).toBe('');
-    expect(read.chars).toBe('SECRET_THING=plain value here'.length);
+    const readLine = lines.find((l) => l.event.type === 'tool_result')!;
+    const read = readLine.event as { summary: string; text: string; chars: number };
+    expect(read.summary).toBe(''); // feeds never show file content
+    expect(read.text).toContain('PORT=8080');
+    expect(read.text).toContain('DEBUG=1');
+    expect(read.text).not.toContain('s3cr3t-v4lue-123');
+    expect(readLine.sensitivity).toBe('high');
+    expect(read.chars).toBe(env.length);
     const mcp = lines.find((l) => l.event.type === 'tool_call' && (l.event as { tool: string }).tool.startsWith('mcp__'))!;
     expect((mcp.event as { inputSummary: string }).inputSummary).toBe('{customer, amount}');
-    expect(readFileSync(file, 'utf8')).not.toContain('ACME');
+    expect((mcp.event as { args: string }).args).toBe('{"customer":"ACME SpA","amount":1200000}');
+  });
+
+  it('a read of a secret file keeps size and hash only; examples are stored', () => {
+    const file = join(dir, 'events3.jsonl');
+    const w = new ExecEventWriter(file, 'run_3');
+    const adapter = createClaudeStreamJsonAdapter();
+    w.ingestProviderLine(adapter, JSON.stringify({ type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'e1', name: 'Read', input: { file_path: '/repo/.env.production' } },
+      { type: 'tool_use', id: 'e2', name: 'Read', input: { file_path: '/repo/.env.example' } },
+    ] } }));
+    w.ingestProviderLine(adapter, JSON.stringify({ type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'e1', content: 'WEBHOOK=whsec_live_value_here' },
+      { type: 'tool_result', tool_use_id: 'e2', content: 'WEBHOOK=<your webhook secret>' },
+    ] } }));
+    w.close();
+    const results = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as PersistedExecEvent)
+      .filter((l) => l.event.type === 'tool_result').map((l) => l.event as { text?: string; chars: number; sha256: string });
+    expect(results[0]).toMatchObject({ chars: 'WEBHOOK=whsec_live_value_here'.length });
+    expect(results[0].text).toBeUndefined();
+    expect(results[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(results[1].text).toBe('WEBHOOK=<your webhook secret>');
+    expect(readFileSync(file, 'utf8')).not.toContain('whsec_live_value_here');
+  });
+
+  it('secret files: env files, keys, credential stores, secrets dirs — not examples or code', () => {
+    for (const p of ['.env', '/r/.env.local', 'C:\\r\\.env', '/k/server.pem', '/k/tls.key', '/h/.ssh/id_ed25519', '/h/.netrc', '/h/.npmrc',
+      '/h/.aws/credentials', '/h/.config/gcloud/credentials.json', '/h/.squads/secrets/glm-api-key', '/r/config/secrets.yml']) {
+      expect(isSecretFile(p), p).toBe(true);
+    }
+    for (const p of ['/r/.env.example', '/r/.env.sample', '/r/.env.template', '/r/src/env.ts', '/r/keyboard.ts', '/r/docs/secrets-handling.md', '/r/src/credentials-form.tsx', undefined]) {
+      expect(isSecretFile(p), String(p)).toBe(false);
+    }
+  });
+
+  it('env-shape assignments with the credential word anywhere in the name are masked; code is not', () => {
+    const r = redactText('export DB_PASSWORD_PROD=hunter2hunter2\nSECRET_KEY_BASE=abcdef123456\nPORT=8080', []);
+    expect(r.text).not.toContain('hunter2hunter2');
+    expect(r.text).not.toContain('abcdef123456');
+    expect(r.text).toContain('PORT=8080');
+    expect(r.fired).toBe(true);
+    const code = 'const tokenCount = countTokens(text);\nauthor: johnsmith';
+    expect(redactText(code, []).text).toBe(code);
+  });
+
+  it('whole fields stop at WHOLE_TEXT_MAX; other strings at REDACT_INPUT_MAX', () => {
+    const big = 'a'.repeat(WHOLE_TEXT_MAX + 10);
+    const { event } = redactEvent({ type: 'tool_result', tool: 'Bash', ok: true, summary: big, text: big });
+    expect(event.text).toHaveLength(WHOLE_TEXT_MAX + '…[cut]'.length);
+    expect(event.summary.length).toBeLessThanOrEqual(200);
+    const mid = 'b'.repeat(REDACT_INPUT_MAX + 10);
+    expect(redactEvent({ type: 'tool_call', tool: 'X', inputSummary: '', args: mid }).event.args).toBe(mid);
   });
 });

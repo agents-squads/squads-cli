@@ -56,12 +56,22 @@ export const REDACT_PATTERNS: ReadonlyArray<{ kind: string; re: RegExp }> = [
   // key=value / key: value where the key names a credential: the value goes.
   // A reference ($VAR, $(cat …), process.env.X, <placeholder>) is not a secret and stays readable.
   { kind: 'assigned', re: /(?<=\b[A-Za-z0-9_.-]{0,40}(?:password|passwd|pass|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credentials?)["']?\s{0,4}[=:]\s{0,4}["']?)(?![$<{[]|process\.env)[^\s"'&,;}]{6,}/gi },
+  // Env-file / export shape (#1318): an UPPER_SNAKE name with the credential word anywhere in it
+  // (SECRET_KEY_BASE=, DB_PASSWORD_PROD=). Case-sensitive and `=` only, so camelCase code stays readable.
+  { kind: 'assigned', re: /(?<=(?:^|[\s;])(?:export\s{1,4})?[A-Z0-9_]{0,40}(?:PASSWORD|PASSWD|PASS|PWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|AUTH|CREDENTIALS?)[A-Z0-9_]{0,40}=["']?)(?![$<{[])[^\s"'&,;}]{6,}/g },
   // Chilean RUT without dots (the dotted form is in the shared rules).
   { kind: 'chilean-rut', re: /\b\d{7,8}-[\dkK]\b/g },
 ];
 
 /** Longest text redacted as is; the rest is dropped (an event is never this long by design). */
 export const REDACT_INPUT_MAX = 32 * 1024;
+
+/** Longest whole text a trajectory field keeps (#1318: tool output and arguments, message and
+ *  reasoning text, the task — stored whole); past it the text is cut and marked `…[cut]`. */
+export const WHOLE_TEXT_MAX = 256 * 1024;
+
+/** Fields stored whole, up to WHOLE_TEXT_MAX, rather than REDACT_INPUT_MAX. */
+const WHOLE_KEYS = new Set(['text', 'args', 'task']);
 
 /** Credential-named environment variables (their values are known secrets). */
 const SECRET_ENV_RE = /(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY)/i;
@@ -147,8 +157,8 @@ export function resetKnownSecrets(): void {
 }
 
 /** `text` with known values and patterns masked; `fired` when anything was. */
-export function redactText(text: string, known: readonly string[] = knownSecrets()): { text: string; fired: boolean } {
-  let out = text.length > REDACT_INPUT_MAX ? `${text.slice(0, REDACT_INPUT_MAX)}…[cut]` : text;
+export function redactText(text: string, known: readonly string[] = knownSecrets(), max: number = REDACT_INPUT_MAX): { text: string; fired: boolean } {
+  let out = text.length > max ? `${text.slice(0, max)}…[cut]` : text;
   let fired = false;
   for (const v of known) {
     if (out.includes(v)) {
@@ -187,7 +197,7 @@ export function redactEvent<E extends { type: string }>(event: E, known: readonl
     if (typeof v === 'bigint') return String(v);
     if (typeof v === 'string') {
       if (STRUCTURAL.has(key)) return v;
-      const r = redactText(v, known);
+      const r = redactText(v, known, WHOLE_KEYS.has(key) ? WHOLE_TEXT_MAX : REDACT_INPUT_MAX);
       fired = fired || r.fired;
       // run_start.task is the whole brief (kept whole, redacted); a subagent's task is an excerpt.
       const cap = CAPPED.has(key) || (key === 'task' && event.type === 'subagent_spawn');
