@@ -151,9 +151,17 @@ state; a row is **done** when all its issues are closed, **blocked** when a bloc
 still open (or the cell names a human), otherwise **ready**. `next` is the first ready row
 in Order. Issue refs are written as `#1234` (the plan's own repo) or `owner/repo#1234`.
 
+GitHub gives an issue exactly one parent, so a row naming an issue that belongs to another
+epic is absent from this plan's sub-issue graph. Those refs are looked up directly instead,
+and every row reports `"linked": false` with the uncovered refs in `"unlinked"` — the plan
+link to add to the tracking issue. A `#n` in a *Blocked by* cell that names one of the
+table's own rows stays a row reference: it is neither looked up nor reported as unlinked.
+
 Unconfigured is not an error: `{ "configured": false }`, exit 0, and a one-line hint.
-At most two `gh` API calls, 20 s timeout; when GitHub is unreachable the last good roadmap
-is served from `.agents/observability/cache/plan.json` with `"stale": true` + `"error"`.
+Two `gh` API calls, plus one direct issue lookup per ref the sub-issue graph does not cover
+(≤ 8 in flight, 20 s timeout each; a failed lookup leaves its row unchanged and notes why).
+When GitHub is unreachable the last good roadmap is served from
+`.agents/observability/cache/plan.json` with `"stale": true` + `"error"`.
 
 | Command | Key flags |
 |---------|-----------|
