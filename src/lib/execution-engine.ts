@@ -672,6 +672,20 @@ export type HarvestOutcome =
   | { outcome: 'suspect'; branch: string; detail: string };  // mass deletion without replacement (#1076) — branch kept, run marked failed
 
 /**
+ * Fork point of a lane branch when no base SHA was recorded (salvage of
+ * crashed runs): the merge-base with the integration ref the worktree was
+ * created from (#1083), never the operator's HEAD (#1310). No network here.
+ */
+function forkPoint(projectRoot: string, branchName: string): string {
+  for (const ref of ['origin/develop', 'origin/main', 'HEAD']) {
+    try {
+      return execSync(`git merge-base '${ref}' '${branchName}'`, { cwd: projectRoot, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    } catch { /* ref absent or unrelated — try next */ }
+  }
+  return 'HEAD';
+}
+
+/**
  * Harvest file changes a non-anthropic executor left in its worktree.
  *
  * Claude agents commit and push their own work (per the gh workflow they are
@@ -745,7 +759,7 @@ export async function harvestProviderWork(
   // 2. Anything to integrate?
   let ahead = '0';
   try {
-    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? 'HEAD'}'`, projectRoot).trim();
+    ahead = run(`git rev-list --count '${branchName}' '^${baseSha ?? forkPoint(projectRoot, branchName)}'`, projectRoot).trim();
   } catch { /* branch missing — treat as nothing */ }
   if (ahead === '0') return { outcome: 'nothing' };
 
@@ -755,7 +769,7 @@ export async function harvestProviderWork(
   //    Diff against the branch's fork point (projectRoot HEAD may have moved
   //    during the run) and flag; the inbox gate decides, never auto-land.
   try {
-    const base = baseSha ?? run(`git merge-base HEAD '${branchName}'`, projectRoot).trim();
+    const base = baseSha ?? forkPoint(projectRoot, branchName);
     const numstat = run(`git diff --numstat '${base}' '${branchName}'`, projectRoot).trim();
     const gutted: string[] = [];
     for (const row of numstat.split('\n')) {
@@ -806,8 +820,13 @@ export function buildDetachedHarvestShell(config: {
   agentName: string;
   provider: string;
   logFile: string;
+  /** SHA the worktree was branched from (#1310); without it the check falls
+   *  back to the operator HEAD, which keeps no-op branches when HEAD sits on
+   *  an unrelated commit. */
+  baseSha?: string;
 }): string {
   if (config.workDir === config.projectRoot) return '';
+  const aheadOf = config.baseSha && /^[0-9a-f]{7,64}$/.test(config.baseSha) ? config.baseSha : 'HEAD';
   // Author = the user's git identity (same as the TS-side harvest); the
   // repo-scoped fallback identity (#980, single source of truth via
   // gitIdentityArgs) applies ONLY when no git identity is configured.
@@ -816,7 +835,7 @@ export function buildDetachedHarvestShell(config: {
   return `; git -C '${config.workDir}' add -A 2>/dev/null` +
     `; git -C '${config.workDir}' ${harvestIdentity} commit ${harvestMsg} >/dev/null 2>&1` +
     `; KEEP_BRANCH=''; HARVEST=none` +
-    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^HEAD' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
+    `; if [ "$(git -C '${config.projectRoot}' rev-list --count '${config.branchName}' '^${aheadOf}' 2>/dev/null)" != "0" ]; then KEEP_BRANCH=1; HARVEST=preserved; fi` +
     `; git -C '${config.projectRoot}' worktree remove '${config.workDir}' --force 2>/dev/null` +
     `; if [ -n "$KEEP_BRANCH" ]; then echo "agent work preserved on branch ${config.branchName} -- review and land it through the gate: squads inbox" >> '${config.logFile}';` +
     ` else git -C '${config.projectRoot}' branch -D '${config.branchName}' 2>/dev/null; fi`;
@@ -2073,7 +2092,7 @@ export async function executeWithProvider(
   // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
   const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
   const cleanupCmd = buildDetachedHarvestShell({
-    workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
+    workDir, projectRoot, branchName, squadName, agentName, provider, logFile, baseSha,
   });
   // Spool done-file (hq#450 D1): record completion facts for the reconcile
   // sweep — the CLI that spawned this wrapper is long gone when it finishes.
