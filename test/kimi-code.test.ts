@@ -200,3 +200,17 @@ describe('kimi-code CLIConfig', () => {
     }
   });
 });
+
+describe('kimi adapter emits message events (#1275 part 2)', () => {
+  it('turns assistant content into a message event, alongside tool calls', async () => {
+    const { createKimiStreamJsonAdapter } = await import('../src/lib/exec-events.js');
+    const a = createKimiStreamJsonAdapter();
+    const events = FIXTURE.split('\n').filter(Boolean).flatMap((l) => a.parseLine(l));
+    const messages = events.filter((e) => e.type === 'message');
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages.at(-1)).toMatchObject({ type: 'message', role: 'assistant' });
+    expect(events.some((e) => e.type === 'tool_call')).toBe(true);
+    const both = a.parseLine(JSON.stringify({ role: 'assistant', content: 'checking', tool_calls: [{ type: 'function', id: 'x', function: { name: 'Bash', arguments: '{"command":"ls"}' } }] }));
+    expect(both.map((e) => e.type)).toEqual(['message', 'tool_call']);
+  });
+});
