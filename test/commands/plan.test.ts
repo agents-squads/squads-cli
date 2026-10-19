@@ -24,6 +24,7 @@ import { loadProjectConfig, resetConfigCache } from '../../src/lib/config.js';
 import { stripAnsi } from '../../src/lib/terminal.js';
 import {
   GH_TIMEOUT_MS,
+  UNLINKED_FETCH_CONCURRENCY,
   buildRoadmap,
   defaultGhRunner,
   errorMessage,
@@ -34,8 +35,10 @@ import {
   planCachePath,
   planIssueArgs,
   readPlanCache,
+  refIssueArgs,
   resolvePlanRef,
   subIssuesArgs,
+  unlinkedRefs,
   fetchPlanRoadmap,
   writePlanCache,
   type GhRunner,
@@ -722,5 +725,216 @@ describe('squads plan — sub-issue pages', () => {
     expect(r.rows.map(x => x.state)).toEqual(['done']);
     const bad = async (args: string[]) => (args[1]!.includes('/sub_issues') ? '{"message":"Not Found"}' : JSON.stringify({ body: '' }));
     await expect(fetchPlanRoadmap(PLAN, bad)).rejects.toThrow(/sub-issues/);
+  });
+});
+
+// ── Refs the plan's sub-issue graph does not cover (issue #1299) ─────
+
+/**
+ * A `gh` runner that serves the plan issue, its sub-issues, and the direct
+ * per-ref lookups the command falls back to for refs outside the graph. Any
+ * ref missing from `directStates` fails the way `gh` does for a nonexistent
+ * issue, so a test that under-specifies states fails loudly instead of quietly.
+ */
+function directGh(
+  body: string,
+  subIssues: SubIssue[],
+  directStates: Record<string, string>,
+  calls?: string[][],
+): GhRunner {
+  return async (args: string[]) => {
+    calls?.push(args);
+    const path = args[1] ?? '';
+    if (path.includes('/sub_issues')) return JSON.stringify([subIssues]);
+    if (path.endsWith('/issues/1279')) return JSON.stringify({ body, html_url: PLAN_URL });
+    const number = path.match(/\/issues\/(\d+)$/)?.[1];
+    const state = number === undefined ? undefined : directStates[number];
+    if (state === undefined) throw new Error(`Could not resolve to a Issue (${path})`);
+    return JSON.stringify({ number: Number(number), state });
+  };
+}
+
+describe('refs outside the sub-issue graph', () => {
+  // Part 2 of a feature epic: #900 is parented to another issue, so it is never
+  // a sub-issue of the plan and the old code could never mark this row done.
+  const NOT_LINKED = `## Order
+
+| # | Deliverable | Issues | Blocked by | Note |
+|---|-------------|--------|------------|------|
+| 7 | Parented to another epic | #900 | — | part 2/4 |
+`;
+
+  it('reads a closed non-sub-issue, marks the row done and flags the missing plan link', async () => {
+    const calls: string[][] = [];
+    const runner = directGh(NOT_LINKED, subs([800, 'open']), { '900': 'closed' }, calls);
+    const { roadmap } = await loadPlanRoadmap({ plan: PLAN, runner, cachePath: null });
+
+    const row = roadmap.rows[0]!;
+    expect(row.state).toBe('done');
+    expect(row.linked).toBe(false);
+    expect(row.unlinked).toEqual(['agents-squads/squads-cli#900']);
+    expect(row.note).toBe('part 2/4'); // the lookup worked — nothing to explain
+    expect(roadmap.counts).toEqual({ done: 1, ready: 0, blocked: 0, total: 1 });
+
+    expect(calls.map(call => call[1])).toEqual([
+      'repos/agents-squads/squads-cli/issues/1279',
+      'repos/agents-squads/squads-cli/issues/1279/sub_issues?per_page=100',
+      'repos/agents-squads/squads-cli/issues/900',
+    ]);
+  });
+
+  it('blocks on an open ref outside the graph, and releases it once closed', async () => {
+    const body = `## Order
+
+| # | Deliverable | Issues | Blocked by |
+|---|-------------|--------|------------|
+| 1 | First | #900 | — |
+| 2 | Second | #901 | #900 |
+| 3 | Third | #902 | #903 |
+`;
+    const sub = subs([901, 'open'], [902, 'open']);
+
+    const open = await loadPlanRoadmap({
+      plan: PLAN,
+      runner: directGh(body, sub, { '900': 'open', '903': 'open' }),
+      cachePath: null,
+    });
+    const before = new Map(open.roadmap.rows.map(r => [r.n, r]));
+    expect(before.get(1)!.state).toBe('ready'); // its own issue is open ⇒ not done, nothing blocks it
+    expect(before.get(2)!.state).toBe('blocked');
+    expect(before.get(2)!.blockers).toEqual(['agents-squads/squads-cli#900']);
+    expect(before.get(3)!.state).toBe('blocked');
+    expect(before.get(3)!.blockers).toEqual(['agents-squads/squads-cli#903']);
+    expect(before.get(2)!.unlinked).toEqual(['agents-squads/squads-cli#900']);
+
+    const closed = await loadPlanRoadmap({
+      plan: PLAN,
+      runner: directGh(body, subs([901, 'closed'], [902, 'open']), { '900': 'closed', '903': 'open' }),
+      cachePath: null,
+    });
+    const after = new Map(closed.roadmap.rows.map(r => [r.n, r]));
+    expect(after.get(1)!.state).toBe('done');
+    expect(after.get(2)!.state).toBe('done'); // #900 satisfied and its own issue closed
+    expect(after.get(2)!.blockers).toEqual([]);
+    expect(after.get(3)!.state).toBe('blocked'); // #903 is still open
+  });
+
+  it('leaves the row exactly as it was when the lookup fails, with a note and no throw', async () => {
+    const runner = directGh(NOT_LINKED, subs([800, 'open']), {}); // #900 unresolvable
+    const { roadmap } = await loadPlanRoadmap({ plan: PLAN, runner, cachePath: null });
+
+    const row = roadmap.rows[0]!;
+    expect(row.state).toBe('ready'); // unverified ⇒ not done — the pre-#1299 read, unchanged
+    expect(row.linked).toBe(false);
+    expect(row.unlinked).toEqual(['agents-squads/squads-cli#900']);
+    expect(row.note).toBe(
+      'part 2/4 · state of agents-squads/squads-cli#900 unverified — Could not resolve to a Issue (repos/agents-squads/squads-cli/issues/900)',
+    );
+  });
+
+  it('treats an unreadable or stateless lookup response as unknown, never as closed', async () => {
+    // A 404 body is valid JSON with no `state` at all: anything but a definite
+    // "closed" must leave the row alone rather than quietly mark it done.
+    const responses = ['not json at all', '{"message":"Not Found","status":"404"}', '{"state":null}'];
+    for (const response of responses) {
+      const runner: GhRunner = async args => {
+        const path = args[1] ?? '';
+        if (path.includes('/sub_issues')) return JSON.stringify([subs([800, 'open'])]);
+        if (path.endsWith('/issues/1279')) return JSON.stringify({ body: NOT_LINKED, html_url: PLAN_URL });
+        return response;
+      };
+      const { roadmap } = await loadPlanRoadmap({ plan: PLAN, runner, cachePath: null });
+      expect(roadmap.rows[0]!.state, response).toBe('ready');
+      expect(roadmap.rows[0]!.note, response).toContain('unreadable response');
+    }
+  });
+
+  it('spends no extra call when the graph covers every ref, and never fetches a row reference', async () => {
+    const calls: string[][] = [];
+    // `{}` ⇒ any lookup would fail, so a rogue fetch shows up as a wrong state too.
+    const { roadmap } = await loadPlanRoadmap({
+      plan: PLAN,
+      runner: directGh(BODY, SUB_ISSUES, {}, calls),
+      cachePath: null,
+    });
+
+    expect(calls).toHaveLength(2); // the body and the sub-issues, nothing else
+    expect(roadmap.rows.every(row => row.linked)).toBe(true);
+    expect(roadmap.rows.every(row => row.unlinked.length === 0)).toBe(true);
+    // Row 6's `#3` names row 3 by the table's own grammar — not a missing plan link.
+    expect(roadmap.rows[5]!.blockers).toEqual(['agents-squads/squads-cli#3']);
+    expect(roadmap.rows[5]!.note).toBe('blocked by a row'); // the table's own note, nothing appended
+    expect(roadmap.counts).toEqual({ done: 1, ready: 2, blocked: 3, total: 6 });
+  });
+
+  it('collects only the refs the index misses, validated and deduped', () => {
+    const body = `## Order
+
+| # | Deliverable | Issues | Blocked by |
+|---|-------------|--------|------------|
+| 1 | A | #900 | #901 |
+| 9 | B | other/repo#12 | #1 |
+| 10 | C | x/y..#5 | — |
+`;
+    const known = indexSubIssues(subs([901, 'closed']), 'agents-squads/squads-cli');
+    expect(unlinkedRefs(body, PLAN, known).map(ref => ref.slug)).toEqual([
+      'agents-squads/squads-cli#900', // an issue cell is always an issue
+      'other/repo#12',
+    ]); // #901 is covered, #1 is row 1, and x/y..#5 cannot reach a gh API path
+  });
+
+  it('looks refs up in bounded batches and lets one failure leave the rest intact', async () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `| ${i + 1} | D${i + 1} | #${900 + i} | — |`).join('\n');
+    const body = `## Order\n\n| # | Deliverable | Issues | Blocked by |\n|---|---|---|---|\n${lines}\n`;
+    const states: Record<string, string> = {};
+    for (let i = 0; i < 12; i++) if (i !== 4) states[String(900 + i)] = 'closed'; // #904 unresolvable
+    const calls: string[][] = [];
+
+    const { roadmap } = await loadPlanRoadmap({
+      plan: PLAN,
+      runner: directGh(body, subs([800, 'open']), states, calls),
+      cachePath: null,
+    });
+
+    expect(UNLINKED_FETCH_CONCURRENCY).toBe(8); // 12 refs ⇒ two batches, both of them read
+    expect(calls).toHaveLength(14);
+    expect(roadmap.counts).toEqual({ done: 11, ready: 1, blocked: 0, total: 12 });
+    expect(roadmap.rows[4]!.note).toContain('unverified');
+    expect(roadmap.rows.filter(row => row.linked)).toEqual([]); // all 12 sit outside the graph
+  });
+
+  it('carries linked/unlinked through both --json and the cache', async () => {
+    const cachePath = join(cacheDir, 'linked.json');
+    const code = await planCommand(
+      { json: true },
+      {
+        runner: directGh(NOT_LINKED, subs([800, 'open']), { '900': 'closed' }),
+        cachePath,
+        configPlanIssue: PLAN_REF,
+        env: {},
+        now: () => new Date('2026-07-21T12:00:00.000Z'),
+      },
+    );
+    expect(code).toBe(0);
+
+    const row = (stdoutJson().rows as Array<Record<string, unknown>>)[0]!;
+    expect(row).toMatchObject({
+      n: 7,
+      state: 'done',
+      linked: false,
+      unlinked: ['agents-squads/squads-cli#900'],
+    });
+
+    const cached = readPlanCache(cachePath);
+    expect(cached?.rows[0]!.linked).toBe(false);
+    expect(cached?.rows[0]!.unlinked).toEqual(['agents-squads/squads-cli#900']);
+    expect(cached?.rows[0]!.state).toBe('done');
+  });
+
+  it('builds the direct lookup as an argument vector too', () => {
+    expect(refIssueArgs(parsePlanRef('other-org/other-repo#12')!)).toEqual([
+      'api',
+      'repos/other-org/other-repo/issues/12',
+    ]);
   });
 });
