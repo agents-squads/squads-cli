@@ -24,6 +24,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseOpencodeLine } from './stream-json.js';
 import { redactEvent, type Sensitivity } from './event-redact.js';
+import { extractKimiSessionId, kimiContentText, kimiToolArgs, parseKimiLine, readKimiSessionUsage } from './kimi-code.js';
 
 // ── Event schema ──────────────────────────────────────────────────────
 
@@ -374,6 +375,85 @@ export function createOpencodeStreamJsonAdapter(): ProviderEventAdapter {
   };
 }
 
+// ── kimi-code adapter (#1309) ─────────────────────────────────────────
+
+/**
+ * The kimi-code adapter: normalizes `kimi -p --output-format stream-json`
+ * lines (OpenAI-chat-shaped messages) into ExecEvents. Like Claude stream-json,
+ * a tool call and its result are separate messages, correlated by id.
+ *
+ * kimi prints NO usage on stdout. At the terminal `session.resume_hint` the
+ * adapter reads the session wire log (readKimiSessionUsage) and emits the one
+ * cumulative `token_usage` — or none when the wire is unreadable (null, not a
+ * fabricated 0). Cost is the subscription's: costEst 0.
+ */
+export function createKimiStreamJsonAdapter(): ProviderEventAdapter {
+  const pending = new Map<string, { tool: string; kind?: 'pr' | 'issue' }>();
+
+  return {
+    parseLine(raw: string): ExecEvent[] {
+      const msg = parseKimiLine(raw);
+      if (!msg) return [];
+
+      if (msg.role === 'assistant' && msg.tool_calls?.length) {
+        const events: ExecEvent[] = [];
+        for (const call of msg.tool_calls) {
+          const tool = call.function?.name || 'unknown';
+          const lower = tool.toLowerCase();
+          const args = kimiToolArgs(call);
+          const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : '');
+          let summary = lower === 'bash' ? str('command') : str('path');
+          if (!summary) {
+            try { summary = JSON.stringify(args); } catch { summary = ''; }
+          }
+          events.push({ type: 'tool_call', tool, inputSummary: summary.slice(0, INPUT_SUMMARY_MAX) });
+          let kind: 'pr' | 'issue' | undefined;
+          if (lower === 'read') {
+            if (str('path')) events.push({ type: 'file_read', path: str('path') });
+          } else if (lower === 'write' || lower === 'edit') {
+            if (str('path')) events.push({ type: 'file_write', path: str('path'), bytes: str('content').length });
+          } else if (lower === 'bash') {
+            const cmd = str('command');
+            if (/\bgit\b/.test(cmd) && /\bcommit\b/.test(cmd)) events.push({ type: 'artifact', kind: 'commit', ref: cmd.slice(0, INPUT_SUMMARY_MAX) });
+            if (/\bgh\b/.test(cmd) && /\bpr\s+create\b/.test(cmd)) kind = 'pr';
+            else if (/\bgh\b/.test(cmd) && /\bissue\s+create\b/.test(cmd)) kind = 'issue';
+          }
+          if (call.id) pending.set(call.id, { tool, kind });
+        }
+        return events;
+      }
+
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        const entry = pending.get(msg.tool_call_id);
+        if (!entry) return [];
+        pending.delete(msg.tool_call_id);
+        const text = kimiContentText(msg.content);
+        const events: ExecEvent[] = [{ type: 'tool_result', tool: entry.tool, ok: true, summary: text.slice(0, INPUT_SUMMARY_MAX) }];
+        if (entry.kind) {
+          const url = extractArtifactUrl(text, entry.kind);
+          if (url) events.push({ type: 'artifact', kind: entry.kind, ref: url });
+        }
+        return events;
+      }
+
+      if (msg.role === 'meta' && msg.type === 'session.resume_hint') {
+        const sessionId = extractKimiSessionId(raw);
+        const usage = sessionId ? readKimiSessionUsage(sessionId) : null;
+        if (usage) {
+          return [{
+            type: 'token_usage',
+            input: usage.input_tokens, output: usage.output_tokens,
+            cacheRead: usage.cache_read_tokens, cacheWrite: usage.cache_write_tokens,
+            costEst: 0, model: usage.model,
+          }];
+        }
+      }
+
+      return [];
+    },
+  };
+}
+
 // ── Persistence ───────────────────────────────────────────────────────
 
 /** Default cap: ~5k events / ~2MB per run, then sample down to terminals. */
@@ -644,7 +724,9 @@ export function normalizeDetachedLog(
   // `opencode run`), and each harness has its own stream shape.
   const adapter = harness === 'opencode'
     ? createOpencodeStreamJsonAdapter()
-    : createClaudeStreamJsonAdapter();
+    : harness === 'kimi-code'
+      ? createKimiStreamJsonAdapter()
+      : createClaudeStreamJsonAdapter();
   const file = execEventsFile(obsRoot, executionId);
   // provider attribution on every event (cli#1175): the run's model provider
   // (glm/deepseek/anthropic/…) travels with the normalized events so the app
