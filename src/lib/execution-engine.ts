@@ -6,7 +6,7 @@
 import { track } from './telemetry.js';
 import { spawn, execSync } from 'child_process';
 import { randomUUID } from 'crypto';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, unlinkSync } from 'fs';
 import { homedir, tmpdir } from 'os';
@@ -54,6 +54,9 @@ import {
   buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
+import {
+  OpencodeGovernanceError, compileOpencodePermission, opencodeConfigEnv, resolveOpencodeSandbox, writeOpencodeConfig,
+} from './opencode-governance.js';
 import {
   colors,
   RESET,
@@ -1693,6 +1696,57 @@ export function providerCredentialGuard(timestamp: number): Record<string, strin
   };
 }
 
+/**
+ * Governance for an opencode lane (cli#1306): contract grants + guardrail +
+ * worktree guard → a per-spawn permission config (delivered via env, copy on
+ * disk for audit), and the OS sandbox wrapper. Throws OpencodeGovernanceError
+ * (refuse the run) — there is no `--auto` fallback.
+ */
+export function prepareOpencodeGovernance(opts: {
+  projectRoot: string; workDir: string; squadName: string; agentName: string;
+  allowedTools?: string[]; verbose?: boolean;
+}): { env: Record<string, string>; wrap: (command: string, args: string[]) => { command: string; args: string[] } } {
+  const squadsDir = findSquadsDir();
+  const agentPath = squadsDir ? join(squadsDir, opts.squadName, `${opts.agentName}.md`) : '';
+  const tools = opts.allowedTools?.length
+    ? opts.allowedTools
+    : compileAllowedTools(agentPath, DEFAULT_AGENT_TOOLS).tools;
+  const memDir = findMemoryDir();
+  const config = compileOpencodePermission({
+    tools,
+    guardrailPermissions: readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)),
+    primaryRoot: opts.projectRoot,
+    workDir: opts.workDir,
+    memoryDir: memDir || undefined,
+  });
+  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const configPath = writeOpencodeConfig(config, settingsDir);
+  if (opts.verbose) writeLine(`  ${colors.dim}opencode permissions: ${configPath}${RESET}`);
+
+  let wrap = (command: string, args: string[]) => ({ command, args });
+  if (!sandboxEnabled()) {
+    writeLine(`  ${colors.yellow}SQUADS_SANDBOX=0 — opencode lane runs WITHOUT the OS sandbox (permission config still enforced)${RESET}`);
+  } else {
+    let gitCommon = '';
+    try {
+      gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
+    } catch { /* not a git dir — nothing to commit to */ }
+    const sandbox = resolveOpencodeSandbox(
+      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean) },
+      join(settingsDir, `opencode-sandbox-${Date.now()}.sb`),
+    );
+    if (sandbox) {
+      if (sandbox.profile) writeFileSync(sandbox.args[1], sandbox.profile);
+      wrap = (command, args) => ({ command: sandbox.command, args: [...sandbox.args, command, ...args] });
+    } else if (sandboxStrict()) {
+      throw new OpencodeGovernanceError('OS sandbox unavailable (needs sandbox-exec on macOS or bwrap on Linux) and SQUADS_SANDBOX_STRICT=1');
+    } else {
+      writeLine(`  ${colors.yellow}OS sandbox unavailable — opencode lane runs with the permission config only${RESET}`);
+    }
+  }
+  return { env: opencodeConfigEnv(config), wrap };
+}
+
 export async function executeWithProvider(
   provider: string,
   prompt: string,
@@ -1791,13 +1845,37 @@ export async function executeWithProvider(
     effectivePrompt = prompt.replaceAll(projectRoot, workDir);
   }
 
-  const buildOpts = (options.model || options.allowedTools?.length)
-    ? {
-        ...(options.model ? { model: options.model } : {}),
-        ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
-      }
-    : undefined;
+  // The lane's directory travels explicitly: the child inherits the
+  // operator's PWD, and harnesses that resolve their project from PWD/--dir
+  // (opencode) otherwise ran in the operator's checkout, not the worktree.
+  providerEnv.PWD = workDir;
+  const buildOpts = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.allowedTools?.length ? { allowedTools: options.allowedTools } : {}),
+    cwd: workDir,
+  };
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
+
+  // opencode governance (cli#1306): permission config + OS sandbox instead of
+  // --auto. Fail closed — an inexpressible grant refuses the run (and drops
+  // the worktree just created); the legacy --auto flag can never reach spawn.
+  let spawnCommand = cliConfig.command;
+  let spawnArgs = args;
+  if (cliConfig.opencodeJson) {
+    try {
+      if (args.includes('--auto')) throw new OpencodeGovernanceError('--auto is not permitted');
+      const gov = prepareOpencodeGovernance({
+        projectRoot, workDir, squadName, agentName, allowedTools: options.allowedTools, verbose: options.verbose,
+      });
+      Object.assign(providerEnv, gov.env);
+      const wrapped = gov.wrap(cliConfig.command, args);
+      spawnCommand = wrapped.command;
+      spawnArgs = wrapped.args;
+    } catch (e) {
+      if (workDir !== projectRoot) cleanupWorktree(workDir, projectRoot);
+      throw e;
+    }
+  }
 
   if (options.verbose) {
     writeLine(`  ${colors.dim}Provider: ${cliConfig.displayName}${RESET}`);
@@ -1857,7 +1935,7 @@ export async function executeWithProvider(
       // When the provider prints usage (aider et al), pipe output through so
       // it can be parsed for observability — still streamed live to the user.
       const captureUsage = typeof cliConfig.parseUsage === 'function';
-      const proc = spawn(cliConfig.command, args, {
+      const proc = spawn(spawnCommand, spawnArgs, {
         stdio: captureUsage
           ? [cliConfig.stdinPrompt ? 'pipe' : 'inherit', 'pipe', 'pipe']
           : cliConfig.stdinPrompt ? ['pipe', 'inherit', 'inherit'] : 'inherit',
@@ -2062,7 +2140,10 @@ export async function executeWithProvider(
   // second buildArgs call silently dropped buildOpts — background claude-harness
   // lanes spawned with NO --allowedTools, so every Write/Edit was denied in
   // --print mode and the lane was read-only. Quote per-arg for the shell wrapper.
+  const shq = (a: string) => `'${a.replace(/'/g, "'\\''")}'`;
   const providerArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+  // Sandbox-wrapped lanes (opencode, cli#1306): the wrapper's own argv precedes the lane's.
+  const wrapperPrefix = spawnArgs.slice(0, spawnArgs.length - args.length).map(shq).join(' ');
   const cleanupCmd = buildDetachedHarvestShell({
     workDir, projectRoot, branchName, squadName, agentName, provider, logFile,
   });
@@ -2091,7 +2172,7 @@ export async function executeWithProvider(
     : '';
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
-  const executorCmd = `${cliConfig.command} ${providerArgs} > '${logFile}' 2>&1`;
+  const executorCmd = `${spawnCommand} ${wrapperPrefix ? `${wrapperPrefix} ` : ''}${providerArgs} > '${logFile}' 2>&1`;
   const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
   // pid file's second line (when known) is this run's API execution id
   // (#1131) — see buildPidFileWriteCmd.

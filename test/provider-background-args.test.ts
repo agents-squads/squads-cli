@@ -32,3 +32,15 @@ describe('executeWithProvider background argv (#1101)', () => {
     expect(fn).toMatch(/const providerArgs = args\s*\.map\(\s*a\s*=>.*\.replace\(.*\)\s*.*\.join\(' '\)/);
   });
 });
+
+describe('provider lanes run in the worktree, not the operator checkout', () => {
+  it('passes the worktree as cwd (→ opencode --dir) and as PWD', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync(new URL('../src/lib/execution-engine.ts', import.meta.url), 'utf-8');
+    expect(src).toMatch(/providerEnv\.PWD\s*=\s*workDir/);
+    expect(src).toMatch(/cwd:\s*workDir,\s*\n\s*\};\s*\n\s*const args = cliConfig\.buildArgs/);
+    const { getCLIConfig } = await import('../src/lib/llm-clis.js');
+    const args = getCLIConfig('opencode')!.buildArgs('p', { cwd: '/w/lane' });
+    expect(args.slice(args.indexOf('--dir'), args.indexOf('--dir') + 2)).toEqual(['--dir', '/w/lane']);
+  });
+});
