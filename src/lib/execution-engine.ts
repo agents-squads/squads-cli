@@ -54,8 +54,9 @@ import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan
 import { detectProviderFatalError } from './llm-clis.js';
 import { classifyFailedRun, type ProviderError } from './provider-errors.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+  buildSandboxSettings, buildLanePermissions, trustedLaneDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
+import { resolveLaneGuardrail } from './lane-settings.js';
 import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
 import {
   OpencodeGovernanceError, compileOpencodePermission, opencodeConfigEnv, resolveOpencodeSandbox, writeOpencodeConfig,
@@ -117,6 +118,9 @@ export const DEFAULT_AGENT_TOOLS: string[] = [
  *   2. Bundled default: `templates/guardrail.json` alongside the squads-cli package
  *
  * Returns undefined when neither exists (no guardrail applied).
+ *
+ * NOTE: the project file is lane-writable, so spawns must not take hooks from
+ * it — use `resolveLaneGuardrail()` (lane-settings.ts) to build lane settings.
  */
 export function resolveGuardrailSettings(projectRoot: string): string | undefined {
   // 1. Project-level override
@@ -469,8 +473,10 @@ export function buildAgentEnv(
     gitCredentialEnv?: Record<string, string>;
   }
 ): Record<string, string> {
-  // Strip CLAUDECODE to allow spawning claude from within a Claude Code session
-  const { CLAUDECODE: _, ...cleanEnv } = baseEnv;
+  // Strip CLAUDECODE to allow spawning claude from within a Claude Code session,
+  // and SQUADS_RUNTIME_DIR so a lane cannot re-point the host's trusted runtime
+  // dir into its own write root (cli#1337).
+  const { CLAUDECODE: _, SQUADS_RUNTIME_DIR: __, ...cleanEnv } = baseEnv;
   const env: Record<string, string> = {
     ...cleanEnv,
     SQUADS_SQUAD: execContext.squad,
@@ -1543,33 +1549,31 @@ export async function executeWithClaude(
     // P2 (opt-in via SQUADS_SANDBOX=1): additionally run the agent inside Claude Code's OS
     // sandbox (Seatbelt/bubblewrap) — FS isolation (write = worktree + memory) + denyRead
     // of credential dirs + a network domain allowlist — merging the guardrail hooks in.
-    const guardrailPath = resolveGuardrailSettings(targetRepoRoot);
+    // Hooks come from the bundled guardrail only; project overrides add deny rules.
+    const guardrail = resolveLaneGuardrail(targetRepoRoot);
     // Worktree guard (cli#1166/#1153): a per-spawn PreToolUse hook that
     // blocks mutations aimed at the primary checkout. It self-disarms when
     // the session cwd IS the primary root (foreground fallback mode), so
     // injecting it unconditionally is safe.
-    const guardScript = writeWorktreeGuardScript(
-      targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
-    );
+    const guardScript = writeWorktreeGuardScript(targetRepoRoot, trustedLaneDir());
     const guardHooks = buildWorktreeGuardHooks(guardScript);
     if (sandboxEnabled()) {
       const memDir = findMemoryDir();
       const settings = buildSandboxSettings({
         cwd: targetRepoRoot,
         writeScope: memDir ? [memDir] : [],
-        guardrailHooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
-        guardrailPermissions: readGuardrailPermissions(guardrailPath),
+        guardrailHooks: mergeHooks(guardrail.hooks, guardHooks),
+        guardrailPermissions: buildLanePermissions(guardrail.permissions),
         strict: sandboxStrict(),
       });
-      const settingsPath = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+      const settingsPath = writeSandboxSettingsFile(settings, trustedLaneDir());
       claudeArgs.push('--settings', settingsPath);
     } else {
       const settings: Record<string, unknown> = {
-        hooks: mergeHooks(readGuardrailHooks(guardrailPath), guardHooks),
+        hooks: mergeHooks(guardrail.hooks, guardHooks),
+        permissions: buildLanePermissions(guardrail.permissions),
       };
-      const perms = readGuardrailPermissions(guardrailPath);
-      if (perms) settings.permissions = perms;
-      claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git')));
+      claudeArgs.push('--settings', writeSandboxSettingsFile(settings, trustedLaneDir()));
     }
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
     claudeArgs.push('--', prompt);
@@ -1603,33 +1607,30 @@ export async function executeWithClaude(
   // Settings for the detached executor (#780): sandbox (default-on) + guardrail
   // hooks. Detached runs previously received NEITHER — the sandbox flip also
   // brings the governance denylist to the path that needed it most. The file
-  // lives in the repo's .git (shared across a repo's runs — same content).
-  const detachedGuardrail = resolveGuardrailSettings(targetRepoRoot);
+  // lives in the trusted runtime dir, outside the lane's write scope.
+  const detachedGuardrail = resolveLaneGuardrail(targetRepoRoot);
   let detachedSettingsFile: string | undefined;
   // Worktree guard (cli#1166/#1153) — same per-spawn mutation block as
   // foreground; detached lanes are where both escapes actually happened.
-  const detachedGuardScript = writeWorktreeGuardScript(
-    targetRepoRoot, resolveSettingsDir(join(targetRepoRoot, '.git')),
-  );
+  const detachedGuardScript = writeWorktreeGuardScript(targetRepoRoot, trustedLaneDir());
   const detachedGuardHooks = buildWorktreeGuardHooks(detachedGuardScript);
   if (sandboxEnabled()) {
     const memDirDetached = findMemoryDir();
     const settings = buildSandboxSettings({
       cwd: targetRepoRoot,
       writeScope: memDirDetached ? [memDirDetached] : [],
-      guardrailHooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
-      guardrailPermissions: readGuardrailPermissions(detachedGuardrail),
+      guardrailHooks: mergeHooks(detachedGuardrail.hooks, detachedGuardHooks),
+      guardrailPermissions: buildLanePermissions(detachedGuardrail.permissions),
       strict: sandboxStrict(),
     });
-    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+    detachedSettingsFile = writeSandboxSettingsFile(settings, trustedLaneDir());
     agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
   } else {
     const settings: Record<string, unknown> = {
-      hooks: mergeHooks(readGuardrailHooks(detachedGuardrail), detachedGuardHooks),
+      hooks: mergeHooks(detachedGuardrail.hooks, detachedGuardHooks),
+      permissions: buildLanePermissions(detachedGuardrail.permissions),
     };
-    const detachedPerms = readGuardrailPermissions(detachedGuardrail);
-    if (detachedPerms) settings.permissions = detachedPerms;
-    detachedSettingsFile = writeSandboxSettingsFile(settings, join(targetRepoRoot, '.git'));
+    detachedSettingsFile = writeSandboxSettingsFile(settings, trustedLaneDir());
   }
 
   const wrapperScript = buildDetachedShellScript({
@@ -1830,12 +1831,14 @@ export function prepareOpencodeGovernance(opts: {
   const memDir = findMemoryDir();
   const config = compileOpencodePermission({
     tools,
-    guardrailPermissions: readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)),
+    // Bundled deny rules plus project deny-only additions (lane-writable file, never widens).
+    guardrailPermissions: resolveLaneGuardrail(opts.projectRoot).permissions,
     primaryRoot: opts.projectRoot,
     workDir: opts.workDir,
     memoryDir: memDir || undefined,
   });
-  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  // Host-trusted files live outside every lane write root (#1337), not in <repo>/.git.
+  const settingsDir = trustedLaneDir();
   const configPath = writeOpencodeConfig(config, settingsDir);
   if (opts.verbose) writeLine(`  ${colors.dim}opencode permissions: ${configPath}${RESET}`);
 
@@ -1848,7 +1851,7 @@ export function prepareOpencodeGovernance(opts: {
       gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
     } catch { /* not a git dir — nothing to commit to */ }
     const sandbox = resolveOpencodeSandbox(
-      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean) },
+      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWritePaths: [settingsDir] },
       join(settingsDir, `opencode-sandbox-${Date.now()}.sb`),
     );
     if (sandbox) {
@@ -1882,7 +1885,7 @@ export function prepareKimiGovernance(opts: {
   const { warnings } = assessKimiGrants(tools, source);
   for (const w of warnings) writeLine(`  ${colors.yellow}kimi-code: ${w}${RESET}`);
 
-  const denyWriteNames = compileKimiWriteDenies(readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)));
+  const denyWriteNames = compileKimiWriteDenies(resolveLaneGuardrail(opts.projectRoot).permissions);
   const wrapIdentity = (command: string, args: string[]) => ({ command, args });
   if (!sandboxEnabled()) {
     if (denyWriteNames.length > 0) {
@@ -1897,10 +1900,10 @@ export function prepareKimiGovernance(opts: {
   try {
     gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
   } catch { /* not a git dir — nothing to commit to */ }
-  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const settingsDir = trustedLaneDir();
   const profilePath = join(settingsDir, `kimi-sandbox-${Date.now()}.sb`);
   const sandbox = resolveKimiSandbox(
-    { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWriteNames },
+    { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWriteNames, denyWritePaths: [settingsDir] },
     profilePath,
   );
   if (!sandbox) {
@@ -1957,9 +1960,11 @@ export async function executeWithProvider(
   const timestamp = Date.now();
 
   // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
+  // SQUADS_RUNTIME_DIR is the host's trusted-dir override — a lane must not
+  // inherit it (it could re-point the trusted dir into its own write root).
   // Provider env hooks (cliConfig.env) inject endpoint/auth overrides; a key
   // set to undefined removes the inherited variable from the child env.
-  const { CLAUDECODE: _claudeCode, ...cleanEnv } = process.env;
+  const { CLAUDECODE: _claudeCode, SQUADS_RUNTIME_DIR: _runtimeDir, ...cleanEnv } = process.env;
   const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
     ...(cliConfig.env?.() ?? {}),

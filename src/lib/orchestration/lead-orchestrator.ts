@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, watch } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { writeLaneSettings } from '../lane-settings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -123,8 +124,11 @@ export function buildWorkerCommand(config: {
   prompt: string;
   mcpConfigPath: string;
   sessionName: string;
+  /** Sandbox/guardrail settings file for the worker; generated when omitted. */
+  settingsPath?: string;
 }): string {
   const eventsDir = join(config.projectRoot, '.agents', 'events');
+  const settingsPath = config.settingsPath ?? writeLaneSettings(config.projectRoot);
   const escapedPrompt = config.prompt.replace(/'/g, "'\\''");
 
   // Worker command that:
@@ -134,7 +138,7 @@ export function buildWorkerCommand(config: {
   // 4. Kills tmux session
   return `
 cd '${config.projectRoot}' && \\
-unset CLAUDECODE && claude --print --permission-mode acceptEdits --mcp-config '${config.mcpConfigPath}' -- '${escapedPrompt}'; \\
+unset CLAUDECODE && claude --print --permission-mode acceptEdits --settings '${settingsPath}' --mcp-config '${config.mcpConfigPath}' -- '${escapedPrompt}'; \\
 EXIT_CODE=$?; \\
 echo '{"type":"'$([ $EXIT_CODE -eq 0 ] && echo completed || echo failed)'","squad":"${config.squad}","agent":"${config.agent}","executionId":"${config.executionId}","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","exitCode":'$EXIT_CODE'}' > '${eventsDir}/pending/${config.executionId}-${config.agent}.json'; \\
 tmux kill-session -t ${config.sessionName} 2>/dev/null

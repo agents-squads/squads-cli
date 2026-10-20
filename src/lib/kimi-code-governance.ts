@@ -30,6 +30,7 @@ import { existsSync, realpathSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import { CREDENTIAL_DENY_PATHS, bwrapDenyReadArgs } from './sandbox-settings.js';
 
 export class KimiGovernanceError extends Error {
   constructor(message: string) {
@@ -38,10 +39,8 @@ export class KimiGovernanceError extends Error {
   }
 }
 
-/** Credential dirs denied for read — same set as the opencode harness. */
-export const KIMI_DENY_READ = [
-  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.gnupg', '~/.config/gh', '~/.squads/secrets',
-];
+/** Credential dirs denied for read — same shared list as Claude and opencode (cli#1337). */
+export const KIMI_DENY_READ = CREDENTIAL_DENY_PATHS;
 
 const expandHome = (p: string): string => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
 
@@ -142,6 +141,8 @@ export interface KimiSandboxOptions {
   writeDirs: string[];
   /** Basenames whose WRITE is denied anywhere (guardrail goals.md & co.). */
   denyWriteNames?: string[];
+  /** Paths kept read-only even when under a writable root (host-trusted files). */
+  denyWritePaths?: string[];
   denyRead?: string[];
   platform?: NodeJS.Platform;
   /** Injectable for tests. */
@@ -247,6 +248,9 @@ export function buildKimiSeatbeltProfile(opts: KimiSandboxOptions): string {
       ...git.files.map((f) => `(literal ${sbplStr(f)})`),
     ].join(' ')})`);
   }
+  for (const p of opts.denyWritePaths ?? []) {
+    for (const r of new Set([p, realOrSame(p)])) lines.push(`(deny file-write* (subpath ${sbplStr(r)}))`);
+  }
   for (const name of opts.denyWriteNames ?? []) {
     lines.push(`(deny file-write* (regex ${nameRegex(name)}))`);
   }
@@ -270,9 +274,10 @@ export function buildKimiBwrapArgs(opts: KimiSandboxOptions): string[] {
   for (const r of [...git.dirs, ...git.files]) {
     if (existsSync(r)) args.push('--ro-bind', r, r);
   }
-  for (const d of (opts.denyRead ?? KIMI_DENY_READ).map(expandHome)) {
-    if (existsSync(d)) args.push('--tmpfs', d);
+  for (const p of opts.denyWritePaths ?? []) {
+    if (existsSync(p)) args.push('--ro-bind', p, p);
   }
+  args.push(...bwrapDenyReadArgs((opts.denyRead ?? KIMI_DENY_READ).map(expandHome)));
   args.push('--chdir', opts.workDir, '--');
   return args;
 }

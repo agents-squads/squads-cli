@@ -7,6 +7,8 @@ import { prepareKimiGovernance } from '../src/lib/execution-engine.js';
 import { KimiGovernanceError } from '../src/lib/kimi-code-governance.js';
 
 let root: string;
+let runtime: string;
+const runtimeEnv = process.env.SQUADS_RUNTIME_DIR;
 const sandboxEnv = process.env.SQUADS_SANDBOX;
 
 function writeAgent(name: string, frontmatter: string): void {
@@ -19,12 +21,16 @@ beforeEach(() => {
   execSync('git init -q', { cwd: root });
   vi.spyOn(process, 'cwd').mockReturnValue(root);
   delete process.env.SQUADS_SANDBOX;
+  runtime = realpathSync(mkdtempSync(join(tmpdir(), 'kimi-runtime-')));
+  process.env.SQUADS_RUNTIME_DIR = runtime;
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   if (sandboxEnv === undefined) delete process.env.SQUADS_SANDBOX; else process.env.SQUADS_SANDBOX = sandboxEnv;
+  if (runtimeEnv === undefined) delete process.env.SQUADS_RUNTIME_DIR; else process.env.SQUADS_RUNTIME_DIR = runtimeEnv;
   rmSync(root, { recursive: true, force: true });
+  rmSync(runtime, { recursive: true, force: true });
 });
 
 describe('prepareKimiGovernance (cli#1309)', () => {
@@ -64,6 +70,8 @@ describe('prepareKimiGovernance (cli#1309)', () => {
     const profile = readFileSync(wrapped.args[1], 'utf-8');
     expect(profile).toContain('(deny file-write*)');
     expect(profile).toContain('[gG][oO][aA][lL][sS][.][mM][dD]'); // guardrail goals.md deny
-    expect(readdirSync(join(root, '.git')).some((f) => f.startsWith('kimi-sandbox-'))).toBe(true);
+    // The profile is host-trusted: it lives outside the lane's write root (#1337).
+    expect(readdirSync(join(root, '.git')).some((f) => f.startsWith('kimi-sandbox-'))).toBe(false);
+    expect(wrapped.args[1].startsWith(process.env.SQUADS_RUNTIME_DIR as string)).toBe(true);
   });
 });
