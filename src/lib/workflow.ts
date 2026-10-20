@@ -56,6 +56,7 @@ import {
   isRetryableErrorType,
   providerErrorSentinel,
   parseProviderErrorSentinel,
+  redactSecrets,
   describeProviderError,
   type ProviderError,
 } from './provider-errors.js';
@@ -468,15 +469,22 @@ procedures: [followed | deviated: reason]
       // Evidence is structural only: an is_error result's text and stderr — never
       // the answer of a run that reported success. The vendor is the model's, not
       // the harness's (`claude --model glm-4.7` is z.ai).
-      const providerError = (isError || code !== 0)
+      const turnProvider = providerForModel(claudeModel);
+      let providerError: ProviderError | null = (isError || code !== 0)
         ? classifyFailedRun({
-          provider: providerForModel(claudeModel),
+          provider: turnProvider,
           structured: true,
           resultText: text,
           resultIsError: isError,
           stderr,
         })
         : null;
+      // A failed turn whose error text is a login failure ("Not logged in",
+      // "invalid api key") is auth_invalid even when the body carries no code.
+      // Gated on is_error: a successful result's text is the agent's answer.
+      if (!providerError && isError && isAuthFailureMessage(text)) {
+        providerError = { type: 'auth_invalid', retryable: false, message: redactSecrets(text).slice(0, 500), provider: turnProvider };
+      }
       // An auth failure keeps the existing #956 path (journey instrumentation).
       if (providerError && !providerError.retryable && !isAuthFailureMessage(text)) {
         resolve({ text: providerErrorSentinel(providerError, agentName), usage, outcomes, providerError });
@@ -780,50 +788,25 @@ export async function runConversation(
     events.close();
   };
 
-  // Auth-failure fail-fast (#956): a missing/expired login fails every claude
-  // invocation identically — unlike a quota wall it never clears mid-cycle, so
-  // continuing just burns turns until convergence detection prints a cryptic
-  // "no signals" stop at exit 0. Abort loud, nonzero exit, credited as failed
-  // (same family as the #936/#947 exit-0 provider failures).
-  const abortOnAuthFailure = (text: string, agentName: string): ConversationResult | null => {
-    if (!isAuthFailureMessage(text)) return null;
-    void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
-    writeLine(`  ${colors.red}${squad.name}: Claude is not authenticated — run: claude /login${RESET}`);
-    logObservability({
-      ts: new Date().toISOString(),
-      id: executionId,
-      squad: squad.name,
-      agent: agentName,
-      provider: 'anthropic',
-      model: options.model || modelForRole('lead'),
-      trigger: 'scheduled',
-      status: 'failed',
-      duration_ms: Date.now() - cycleStartMs,
-      input_tokens: cycleUsage.input_tokens,
-      output_tokens: cycleUsage.output_tokens,
-      cache_read_tokens: cycleUsage.cache_read_tokens,
-      cache_write_tokens: cycleUsage.cache_write_tokens,
-      cost_usd: cycleUsage.cost_usd,
-      context_tokens: 0,
-      ...outcomeFields(cycleOutcomes),
-      error: 'Claude is not authenticated — run: claude /login',
-      task: options.task,
-    });
-    finishEvents(false);
-    process.exitCode = 1;
-    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Claude is not authenticated — run: claude /login' };
-  };
+  // One ledger-row writer for every provider-failure abort (#956, #1298): the
+  // run ends the moment a failure that will not clear mid-cycle is seen — status
+  // failed, the typed error on the row, the process exit nonzero. The vendor is
+  // the error's (or the model's), never assumed to be Anthropic.
+  const authMessage = (provider: string): string => provider === 'anthropic'
+    ? 'Claude is not authenticated — run: claude /login'
+    : `${provider} credentials rejected — check the ${provider} API key, then re-dispatch`;
 
-  // Non-retryable provider failure (#1298): plan expired / no balance / bad key
-  // fails every turn identically, so the run ends the moment one is classified —
-  // status failed, the typed error on the ledger row, the process exit nonzero.
-  const abortOnProviderError = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
-    const errorType = parseProviderErrorSentinel(text);
-    if (!errorType) return null;
-    const message = text.replace(/^\[PROVIDER_ERROR:[a-z_]+\]\s*/, '');
-    const errProvider = classified?.provider ?? providerForModel(options.model || modelForRole('lead'));
-    const retryable = isRetryableErrorType(errorType);
-    const described = describeProviderError({ type: errorType, retryable, message, provider: errProvider });
+  const abortOnTypedError = (err: ProviderError & { attempts?: number }, agentName: string): ConversationResult => {
+    const model = options.model || modelForRole('lead');
+    const errProvider = err.provider ?? providerForModel(model);
+    const retryable = isRetryableErrorType(err.type);
+    const message = err.message;
+    // Funnel drop instrument (#964): fired from the typed class, so it does not
+    // depend on how the provider worded the login failure.
+    if (err.type === 'auth_invalid') void track('journey.run.blocked', { reason: 'not_logged_in' });
+    const described = err.type === 'auth_invalid'
+      ? authMessage(errProvider)
+      : describeProviderError({ type: err.type, retryable, message, provider: errProvider });
     writeLine(`  ${colors.red}${squad.name}: ${agentName} — ${described}${RESET}`);
     logObservability({
       ts: new Date().toISOString(),
@@ -831,7 +814,7 @@ export async function runConversation(
       squad: squad.name,
       agent: agentName,
       provider: errProvider,
-      model: options.model || modelForRole('lead'),
+      model,
       trigger: 'scheduled',
       status: 'failed',
       duration_ms: Date.now() - cycleStartMs,
@@ -842,12 +825,12 @@ export async function runConversation(
       cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
       ...outcomeFields(cycleOutcomes),
-      error: `${errorType}: ${message}`.slice(0, 500),
+      error: `${err.type}: ${message}`.slice(0, 500),
       provider_error: {
-        type: errorType, retryable, message: message.slice(0, 500), provider: errProvider,
-        ...(classified?.status !== undefined ? { status: classified.status } : {}),
-        ...(classified?.providerCode ? { providerCode: classified.providerCode } : {}),
-        ...(classified?.attempts !== undefined ? { attempts: classified.attempts } : {}),
+        type: err.type, retryable, message: message.slice(0, 500), provider: errProvider,
+        ...(err.status !== undefined ? { status: err.status } : {}),
+        ...(err.providerCode ? { providerCode: err.providerCode } : {}),
+        ...(err.attempts !== undefined ? { attempts: err.attempts } : {}),
       },
       task: options.task,
     });
@@ -856,11 +839,37 @@ export async function runConversation(
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: described };
   };
 
-  // Applied to every turn after review as well, so a balance that runs out
-  // between review and verify is a failed run, not a "completed" one. Provider
-  // sentinel only: the loose auth-text check would trip on a verifier's prose.
+  // Auth-failure fail-fast (#956): a missing/expired login fails every invocation
+  // identically — unlike a quota wall it never clears mid-cycle. Text-based, for
+  // the turns whose body is the CLI's own login message (plan/worker/review).
+  const abortOnAuthFailure = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
+    if (!isAuthFailureMessage(text)) return null;
+    const err = classified?.type === 'auth_invalid'
+      ? classified
+      : { type: 'auth_invalid' as const, retryable: false, message: redactSecrets(text).slice(0, 500) };
+    return abortOnTypedError(err, agentName);
+  };
+
+  // Non-retryable provider failure (#1298), carried through turn text as a sentinel.
+  const abortOnProviderError = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
+    const errorType = parseProviderErrorSentinel(text);
+    if (!errorType) return null;
+    return abortOnTypedError({
+      ...classified,
+      type: errorType,
+      retryable: isRetryableErrorType(errorType),
+      message: text.replace(/^\[PROVIDER_ERROR:[a-z_]+\]\s*/, ''),
+    }, agentName);
+  };
+
+  // Applied to every turn after review as well, so a balance that runs out — or
+  // a key that dies, or a rate limit that outlasts the retry — between review
+  // and verify is a failed run, not a "completed" one. Reads the turn's
+  // structured providerError directly (auth never gets a sentinel, and retryable
+  // classes only reach here once runIndependentAgent has spent its retry), then
+  // the sentinel. Never the loose auth-text check: it would trip on prose.
   const abortOnFatalTurn = (r: AgentRunResult, agentName: string): ConversationResult | null =>
-    abortOnProviderError(r.text, agentName, r.providerError);
+    r.providerError ? abortOnTypedError(r.providerError, agentName) : abortOnProviderError(r.text, agentName);
 
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
@@ -946,7 +955,7 @@ export async function runConversation(
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
-  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
+  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name, planResult.providerError);
   if (planAuthAbort) return planAuthAbort;
   const planProviderAbort = abortOnProviderError(planOutput, lead.name, planResult.providerError);
   if (planProviderAbort) return planProviderAbort;
@@ -1089,7 +1098,7 @@ ${planOutput.slice(0, 3000)}`;
 
     const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
     if (workerAuthFailure) {
-      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
+      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name, workerAuthFailure.providerError);
       if (workerAuthAbort) return workerAuthAbort;
     }
 
@@ -1153,7 +1162,7 @@ Summary: [what was achieved]`;
   cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
-  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
+  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name, reviewResult.providerError);
   if (reviewAuthAbort) return reviewAuthAbort;
   const reviewProviderAbort = abortOnProviderError(reviewOutput, lead.name, reviewResult.providerError);
   if (reviewProviderAbort) return reviewProviderAbort;

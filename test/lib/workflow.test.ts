@@ -76,6 +76,12 @@ vi.mock('../../src/lib/api-client.js', () => ({
   reportExecutionComplete: vi.fn().mockResolvedValue(true),
 }));
 
+// The #956 funnel signal is asserted, never sent.
+vi.mock('../../src/lib/telemetry.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/telemetry.js')>('../../src/lib/telemetry.js');
+  return { ...actual, track: vi.fn().mockResolvedValue(undefined) };
+});
+
 // Mock run-context to avoid file system reads in unit tests
 vi.mock('../../src/lib/run-context.js', () => ({
   gatherSquadContext: vi.fn().mockReturnValue(''),
@@ -115,6 +121,7 @@ import { existsSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
 import { logObservability } from '../../src/lib/observability.js';
+import { track } from '../../src/lib/telemetry.js';
 import { runConversation, saveTranscript, buildAgentRoster } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
 import type { Squad } from '../../src/lib/squad-parser.js';
@@ -469,6 +476,56 @@ describe('runConversation', () => {
     }
   });
 
+  // Review of #1333 round 2, N2: an auth failure on a non-Anthropic lane must
+  // name that vendor's key, not send the operator to `claude /login`.
+  it('an auth failure on a glm lane is attributed to glm and does not tell the operator to run claude /login (N2)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockSpawn.mockImplementation(() => createMockChild('Not logged in · Please run /login', 1, { is_error: true }) as any);
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { model: 'glm-4.7', maxTurns: 100, costCeiling: 999, verbose: false });
+      expect(result.converged).toBe(false);
+      expect(result.reason).toContain('glm');
+      expect(result.reason).not.toContain('claude /login');
+      expect(process.exitCode).toBe(1);
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      const row = rows[rows.length - 1];
+      expect(row.status).toBe('failed');
+      expect(row.provider).toBe('glm');
+      expect(row.provider_error).toMatchObject({ type: 'auth_invalid', retryable: false, provider: 'glm' });
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  // N3: the funnel count must not depend on the provider's wording.
+  it('emits journey.run.blocked for a typed auth_invalid whose body carries no login wording (N3)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    vi.mocked(track).mockClear();
+    mockSpawn.mockImplementation(() => createMockChild(
+      'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"x-api-key header is invalid"}}', 1, { is_error: true }) as any);
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+      expect(result.converged).toBe(false);
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      expect(rows[rows.length - 1].provider_error).toMatchObject({ type: 'auth_invalid' });
+      expect(track).toHaveBeenCalledWith('journey.run.blocked', { reason: 'not_logged_in' });
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('deliver-and-stop gate: stops when a PR already addresses the --task issue, even though turn/cost ceilings alone would not', async () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);
@@ -611,6 +668,54 @@ describe('remediation cycle (#994)', () => {
       expect(row.status).toBe('failed');
       expect(row.provider_error).toMatchObject({ type: 'quota_exhausted', retryable: false });
     } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  // Review of #1333 round 2, N1: auth failures never get a sentinel and
+  // retryable classes only did for non-retryable types, so both slipped through
+  // as "completed" after review. Each must fail the run at every post-review turn.
+  it.each([
+    ['verify', 3],
+    ['remediation lead', 4],
+    ['fix worker', 5],
+    ['re-verify', 6],
+  ].flatMap(([turn, failAt]) => [
+    ['auth_invalid', turn, failAt, 'API Error: 401 invalid api key — please run /login'],
+    ['rate_limited', turn, failAt, 'API Error: 429 rate limit exceeded'],
+  ]))('a %s failure at the %s turn fails the run (N1)', async (expectedType, _turn, failAt, body) => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    process.env.SQUADS_TURN_RETRIES = '0'; // the retry is spent: the failure stands
+    const outputs = [
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (assertion 1 fails)',
+      'fixes\n```plan\nTASKS:\n- worker: builder | task: fix assertion 1\n```',
+      'fixed\n## STATUS: DONE',
+      'rechecked\n## VERDICT: APPROVED (all checks pass)',
+    ];
+    let call = 0;
+    mockSpawn.mockImplementation(() => {
+      const i = call++;
+      return (i === failAt
+        ? createMockChild(body as string, 1, { is_error: true })
+        : createMockChild(outputs[i])) as any;
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+      expect(result.converged).toBe(false);
+      expect(process.exitCode).toBe(1);
+      expect(call).toBe((failAt as number) + 1); // nothing runs after the dead turn
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      const row = rows[rows.length - 1];
+      expect(row.status).toBe('failed');
+      expect(row.provider_error).toMatchObject({ type: expectedType });
+    } finally {
+      delete process.env.SQUADS_TURN_RETRIES;
       process.exitCode = originalExitCode;
     }
   });
