@@ -311,6 +311,69 @@ describe('normalizeDetachedLog', () => {
     expect(written).toBe(0);
     expect(existsSync(execEventsFile(root, 'exec_legacy'))).toBe(false);
   });
+
+  it('does not replay a log already streamed live by a follower (#1353)', () => {
+    const ocLine = (type: string, part: Record<string, unknown>) =>
+      JSON.stringify({ type, timestamp: 1, sessionID: 'ses_x', part });
+
+    // A follower already normalized the lane's log into the events file.
+    const file = execEventsFile(root, 'exec_live_dedup');
+    const follower = new ExecEventWriter(file, 'exec_live_dedup', { source: 'squads-cli', provider: 'deepseek' });
+    follower.emit({ type: 'run_start', squad: 's', mode: 'background', model: 'm', role: '', startedAt: 'now' });
+    const adapter = createOpencodeStreamJsonAdapter();
+    follower.ingestProviderLine(adapter, ocLine('tool_use', {
+      type: 'tool', tool: 'read', callID: 'c1',
+      state: { status: 'completed', input: { filePath: '/x' }, output: 'hi' },
+    }));
+    follower.ingestProviderLine(adapter, ocLine('step_finish', { reason: 'stop', tokens: { input: 5, output: 2 } }));
+    follower.close();
+    expect(readEvents(file).filter((l) => l.event.type === 'tool_call')).toHaveLength(1);
+
+    // Reconcile normalizes the same raw log — must not duplicate the stream.
+    const rawLog = [
+      ocLine('tool_use', { type: 'tool', tool: 'read', callID: 'c1', state: { status: 'completed', input: { filePath: '/x' }, output: 'hi' } }),
+      ocLine('step_finish', { reason: 'stop', tokens: { input: 5, output: 2 } }),
+    ].join('\n');
+    normalizeDetachedLog(rawLog, root, 'exec_live_dedup', 'agent', runEnd, 'deepseek', 'opencode');
+
+    const lines = readEvents(file);
+    expect(lines.filter((l) => l.event.type === 'tool_call')).toHaveLength(1);
+    expect(lines[lines.length - 1].event.type).toBe('run_end');
+  });
+});
+
+// ── Live line-by-line streaming (#1353) ────────────────────────────────────
+
+describe('opencode adapter streams line-by-line', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'squads-live-line-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  const ocLine = (type: string, part: Record<string, unknown>) =>
+    JSON.stringify({ type, timestamp: 1, sessionID: 'ses_x', part });
+
+  it('appends events after each line, not buffered at exit', () => {
+    const file = execEventsFile(root, 'exec_live_line');
+    const writer = new ExecEventWriter(file, 'exec_live_line');
+    const adapter = createOpencodeStreamJsonAdapter();
+    const count = () => (existsSync(file) ? readEvents(file).length : 0);
+
+    expect(count()).toBe(0);
+    writer.ingestProviderLine(adapter, ocLine('step_start', { id: 'p1' }));
+    expect(count()).toBe(0); // step_start is not an exec-event
+
+    writer.ingestProviderLine(adapter, ocLine('tool_use', {
+      type: 'tool', tool: 'bash', callID: 'c1',
+      state: { status: 'completed', input: { command: 'ls' }, output: 'ok' },
+    }));
+    expect(count()).toBe(2); // tool_call + tool_result, written immediately
+
+    writer.ingestProviderLine(adapter, ocLine('step_finish', { reason: 'tool-calls', tokens: { input: 5, output: 2 } }));
+    const afterStep = count();
+    expect(afterStep).toBe(3); // + usage_running, written immediately
+
+    writer.close();
+  });
 });
 
 // ── ExecEventFlusher (#1158) ───────────────────────────────────────────────

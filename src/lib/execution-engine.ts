@@ -899,6 +899,42 @@ export function buildDetachedHarvestShell(config: {
 }
 
 /**
+ * Detached-lane live exec-event stream (#1353): shell snippet that spawns a
+ * follower which tails the lane's raw JSONL log and normalizes each line into
+ * the run's events file as it lands, then a finish snippet that signals the
+ * follower and waits for it to drain before the spool is written.
+ *
+ * The follower is re-invoked from this same CLI (`node <argv[1]> _stream-events`)
+ * because the adapter is TypeScript — the wrapper shell cannot run it inline.
+ * The events file path, run id, provider and agent are baked in at build time;
+ * only paths are interpolated, each single-quoted against shell splitting.
+ */
+export function buildLiveStreamShell(fields: {
+  harness: string;
+  eventsFile: string;
+  runId: string;
+  provider: string;
+  agent: string;
+  logFile: string;
+  doneFile: string;
+}): { spawn: string; finish: string } {
+  const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  const argv = [
+    '_stream-events',
+    '--harness', fields.harness,
+    '--file', fields.eventsFile,
+    '--run-id', fields.runId,
+    '--provider', fields.provider,
+    '--agent', fields.agent,
+    '--log', fields.logFile,
+    '--done', fields.doneFile,
+  ].map(q).join(' ');
+  const spawn = `${q(process.execPath)} ${q(process.argv[1] ?? '')} ${argv} >/dev/null 2>&1 & STREAM_PID=$!;`;
+  const finish = `touch ${q(fields.doneFile)}; wait $STREAM_PID 2>/dev/null; rm -f ${q(fields.doneFile)};`;
+  return { spawn, finish };
+}
+
+/**
  * Shell snippet writing a detached wrapper's pid file. Line 1 is always the
  * wrapper's pid (unchanged format — `squads runs`/liveness checks read only
  * this line). Line 2, when an executionId is known, is this run's API
@@ -2424,7 +2460,22 @@ export async function executeWithProvider(
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${shq(spawnCommand)} ${wrapperPrefix ? `${wrapperPrefix} ` : ''}${providerArgs}${cliConfig.stdinIgnore ? ' < /dev/null' : ''} > '${logFile}' 2>&1`;
-  const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
+  // Live exec-event stream (#1353): opencode and kimi-code lanes stream their
+  // harness stdout into the events file as it happens — a detached lane used to
+  // show only run_start until the spool reconcile fired at exit. The follower
+  // tails the raw log and normalizes each line through the harness adapter.
+  const liveStream = (cliConfig.opencodeJson || cliConfig.kimiCodeJson)
+    ? buildLiveStreamShell({
+        harness: cliConfig.opencodeJson ? 'opencode' : 'kimi-code',
+        eventsFile: execEventsFile(dispatchRoot, executionId),
+        runId: executionId,
+        provider,
+        agent: agentName,
+        logFile,
+        doneFile: `${logFile}.live-done`,
+      })
+    : { spawn: '', finish: '' };
+  const shellScript = `cd '${workDir}' || exit 1; ${liveStream.spawn}${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${liveStream.finish}${cleanupCmd}${spoolCmd}`;
   // pid file's second line (when known) is this run's API execution id
   // (#1131) — see buildPidFileWriteCmd.
   const wrapperScript = `${buildPidFileWriteCmd(pidFile, options.executionId)}; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;

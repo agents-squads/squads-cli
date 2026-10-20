@@ -368,6 +368,23 @@ program.command('list').description('List squads (alias for: squads status)').ac
   return statusCommand();
 });
 
+// Hidden helper: stream a detached lane's harness log into the run's events file
+// as it grows (#1353). Spawned by the detached wrapper via buildLiveStreamShell.
+program
+  .command('_stream-events', { hidden: true })
+  .description('[internal]')
+  .option('--harness <harness>', 'opencode | kimi-code | claude')
+  .option('--file <path>', 'events file path')
+  .option('--run-id <id>', 'run execution id')
+  .option('--provider <provider>', 'provider attribution')
+  .option('--agent <agent>', 'agent attribution')
+  .option('--log <path>', 'raw harness log to follow')
+  .option('--done <path>', 'done sentinel file')
+  .action(async (options) => {
+    const { streamEventsCommand } = await import('./commands/stream-events.js');
+    return streamEventsCommand(options);
+  });
+
 // Domains command — per-domain (squad) business scorecard (#1280): goals set,
 // delivered (git-derived merged PRs + closed issues), and what's in flight.
 program
