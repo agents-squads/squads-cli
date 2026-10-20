@@ -1,0 +1,654 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/agents-squads/squads-cli/blob/main/schemas/exec-event.v1.schema.json",
+  "title": "squads-cli execution event line, schema_version 1",
+  "description": "One line of .agents/observability/events/<run>.jsonl, and one element of an API events batch. Additive changes (a new optional field, a new event type) keep schema_version 1, so consumers must ignore unknown fields. Rules: docs/exec-events.md.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "v",
+    "runId",
+    "seq",
+    "ts",
+    "event"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Contract version. Consumers check this before reading anything else."
+    },
+    "v": {
+      "enum": [
+        1,
+        2
+      ],
+      "description": "Envelope revision: 2 adds source/provider/session_id."
+    },
+    "runId": {
+      "type": "string"
+    },
+    "root": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ts": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "sensitivity": {
+      "enum": [
+        "low",
+        "moderate",
+        "high"
+      ]
+    },
+    "event": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/run_start"
+        },
+        {
+          "$ref": "#/$defs/message"
+        },
+        {
+          "$ref": "#/$defs/reasoning"
+        },
+        {
+          "$ref": "#/$defs/usage_running"
+        },
+        {
+          "$ref": "#/$defs/context_assembled"
+        },
+        {
+          "$ref": "#/$defs/tool_call"
+        },
+        {
+          "$ref": "#/$defs/tool_result"
+        },
+        {
+          "$ref": "#/$defs/file_read"
+        },
+        {
+          "$ref": "#/$defs/file_write"
+        },
+        {
+          "$ref": "#/$defs/web_fetch"
+        },
+        {
+          "$ref": "#/$defs/subagent_spawn"
+        },
+        {
+          "$ref": "#/$defs/subagent_done"
+        },
+        {
+          "$ref": "#/$defs/token_usage"
+        },
+        {
+          "$ref": "#/$defs/artifact"
+        },
+        {
+          "$ref": "#/$defs/run_end"
+        },
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "$ref": "#/$defs/truncated"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "run_start": {
+      "type": "object",
+      "required": [
+        "type",
+        "squad",
+        "mode",
+        "model",
+        "role",
+        "startedAt"
+      ],
+      "properties": {
+        "type": {
+          "const": "run_start"
+        },
+        "squad": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "type",
+        "role",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "message"
+        },
+        "role": {
+          "enum": [
+            "assistant",
+            "user"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "reasoning": {
+      "type": "object",
+      "required": [
+        "type",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "reasoning"
+        },
+        "text": {
+          "type": "string"
+        },
+        "step": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "usage_running": {
+      "type": "object",
+      "required": [
+        "type",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "costEst",
+        "model"
+      ],
+      "properties": {
+        "type": {
+          "const": "usage_running"
+        },
+        "input": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "costEst": {
+          "type": "number",
+          "minimum": 0
+        },
+        "model": {
+          "type": "string"
+        }
+      }
+    },
+    "context_assembled": {
+      "type": "object",
+      "required": [
+        "type",
+        "layers",
+        "totalTokensEst",
+        "budgetTokens"
+      ],
+      "properties": {
+        "type": {
+          "const": "context_assembled"
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "layer",
+              "name",
+              "chars",
+              "tokensEst",
+              "evicted"
+            ],
+            "properties": {
+              "layer": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string"
+              },
+              "chars": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tokensEst": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "evicted": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "totalTokensEst": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budgetTokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "required": [
+        "type",
+        "tool",
+        "inputSummary"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_call"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "inputSummary": {
+          "type": "string"
+        },
+        "args": {
+          "type": "string"
+        }
+      }
+    },
+    "tool_result": {
+      "type": "object",
+      "required": [
+        "type",
+        "tool",
+        "ok",
+        "summary"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_result"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "file_read": {
+      "type": "object",
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "const": "file_read"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "file_write": {
+      "type": "object",
+      "required": [
+        "type",
+        "path",
+        "bytes"
+      ],
+      "properties": {
+        "type": {
+          "const": "file_write"
+        },
+        "path": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "web_fetch": {
+      "type": "object",
+      "required": [
+        "type",
+        "url"
+      ],
+      "properties": {
+        "type": {
+          "const": "web_fetch"
+        },
+        "url": {
+          "type": "string"
+        }
+      }
+    },
+    "subagent_spawn": {
+      "type": "object",
+      "required": [
+        "type",
+        "childRunId",
+        "squad",
+        "agent",
+        "task"
+      ],
+      "properties": {
+        "type": {
+          "const": "subagent_spawn"
+        },
+        "childRunId": {
+          "type": "string"
+        },
+        "squad": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      }
+    },
+    "subagent_done": {
+      "type": "object",
+      "required": [
+        "type",
+        "childRunId",
+        "agent",
+        "ok"
+      ],
+      "properties": {
+        "type": {
+          "const": "subagent_done"
+        },
+        "childRunId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "token_usage": {
+      "type": "object",
+      "required": [
+        "type",
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "costEst",
+        "model"
+      ],
+      "properties": {
+        "type": {
+          "const": "token_usage"
+        },
+        "input": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "costEst": {
+          "type": "number",
+          "minimum": 0
+        },
+        "model": {
+          "type": "string"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "type",
+        "kind",
+        "ref"
+      ],
+      "properties": {
+        "type": {
+          "const": "artifact"
+        },
+        "kind": {
+          "enum": [
+            "commit",
+            "pr",
+            "issue",
+            "file"
+          ]
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "run_end": {
+      "type": "object",
+      "required": [
+        "type",
+        "ok",
+        "durationMs",
+        "totalUsage"
+      ],
+      "properties": {
+        "type": {
+          "const": "run_end"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "totalUsage": {
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite",
+            "costEst"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheRead": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheWrite": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "costEst": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "outcomes": {
+          "type": "object",
+          "required": [
+            "actions",
+            "files_edited",
+            "commits",
+            "prs_created",
+            "issues_created"
+          ],
+          "properties": {
+            "actions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "files_edited": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "commits": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prs_created": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "issues_created": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "type",
+        "errorType",
+        "retryable",
+        "message"
+      ],
+      "properties": {
+        "type": {
+          "const": "error"
+        },
+        "errorType": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerCode": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "truncated": {
+      "type": "object",
+      "required": [
+        "type",
+        "droppedCount",
+        "reason"
+      ],
+      "properties": {
+        "type": {
+          "const": "truncated"
+        },
+        "droppedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

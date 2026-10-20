@@ -74,8 +74,26 @@ export type ExecEvent =
   | { type: 'error'; errorType: string; retryable: boolean; message: string; provider?: string; status?: number; providerCode?: string; attempt?: number }
   | { type: 'truncated'; droppedCount: number; reason: string };
 
+/** Version of the event contract (docs/exec-events.md "Versioning", schemas/exec-event.v1.schema.json).
+ *  Additive changes keep it; removing or renaming a field, or changing a type, bumps it with a changelog
+ *  entry. Distinct from the envelope revision `v` below, which only says which optional fields to expect. */
+export const EXEC_EVENT_SCHEMA_VERSION = 1;
+
+/** Every `ExecEvent['type']`. The contract test checks the exported schema describes each one; the
+ *  type below fails the build when this list and the union drift apart. */
+export const EXEC_EVENT_TYPES = [
+  'run_start', 'message', 'reasoning', 'usage_running', 'context_assembled', 'tool_call', 'tool_result',
+  'file_read', 'file_write', 'web_fetch', 'subagent_spawn', 'subagent_done', 'token_usage', 'artifact',
+  'run_end', 'error', 'truncated',
+] as const;
+type MissingFromEventTypes = Exclude<ExecEvent['type'], (typeof EXEC_EVENT_TYPES)[number]>;
+const eventTypesCoverUnion: [MissingFromEventTypes] extends [never] ? true : never = true;
+void eventTypesCoverUnion;
+
 /** Envelope stamped on every persisted line. */
 export interface PersistedExecEvent {
+  /** Contract version of the line (see EXEC_EVENT_SCHEMA_VERSION). Consumers check it first. */
+  schema_version: number;
   /** v2 (#1158) adds the optional source/provider/session_id fields below;
    *  v1 lines remain valid — readers treat every v2 field as optional. */
   v: 1 | 2;
@@ -801,6 +819,7 @@ export class ExecEventWriter {
       sensitivity = 'high';
     }
     const line: PersistedExecEvent = {
+      schema_version: EXEC_EVENT_SCHEMA_VERSION,
       v: v2 ? 2 : 1,
       runId: this.runId,
       ...(root && root !== this.runId ? { root } : {}),
@@ -922,7 +941,9 @@ export async function replayEventsFile(file: string, executionId: string): Promi
   try {
     const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
       .map((l) => { try { return JSON.parse(l) as PersistedExecEvent; } catch { return null; } })
-      .filter((e): e is PersistedExecEvent => e !== null);
+      .filter((e): e is PersistedExecEvent => e !== null)
+      // Lines written before versioning are the v1 shape: stamp them so the API never sees an unversioned one.
+      .map((e) => (e.schema_version === undefined ? { ...e, schema_version: EXEC_EVENT_SCHEMA_VERSION } : e));
     if (!lines.length) return;
     const { reportExecutionEvents } = await import('./api-client.js');
     for (let i = 0; i < lines.length; i += 500) {

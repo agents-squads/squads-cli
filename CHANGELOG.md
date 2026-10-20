@@ -5,6 +5,11 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [Unreleased]
+
+### Added
+- **Run events carry `schema_version`** (#1341). Every line in `.agents/observability/events/<run>.jsonl` and in API event batches has `schema_version: 1`, and the v1 shape is exported as `schemas/exec-event.v1.schema.json`. Additive changes keep the version; removing or renaming a field or changing a type bumps it, with a changelog entry. See `docs/exec-events.md` → "Versioning and the exported schema".
+
 ## [0.10.0] — 2026-10-14
 
 Run agents on Claude and Anthropic-compatible providers, keep their work out of your checkout, and record what each run actually did.

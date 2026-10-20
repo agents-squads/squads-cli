@@ -82,3 +82,34 @@ Every persisted line carries `sensitivity`. The field is additive, so older read
     the task.
   - `task` is the full task, redacted.
   - Both fields are additive. `run_start` is `low` without a task and `moderate` with one.
+
+## Versioning and the exported schema (contract v1)
+
+Run events are a contract between the CLI (producer) and its consumers: the interactive mode and the Platform
+API. Every line, in the events file and in the API flush, carries `schema_version` (integer, currently `1`;
+`EXEC_EVENT_SCHEMA_VERSION` in `src/lib/exec-events.ts`). Consumers check it before reading anything else. It is
+not the envelope revision `v`, which only says whether the optional `source`/`provider`/`session_id` fields can
+be present.
+
+The v1 shape is the one in this file and in `src/lib/exec-events.ts`, exported as JSON Schema at
+`schemas/exec-event.v1.schema.json` (shipped in the npm package), so a consumer validates without importing CLI
+code. The schema allows unknown fields: a consumer ignores what it doesn't know.
+
+Rules:
+
+- **Additive changes keep the version**: a new optional field, a new event type. The schema file grows with them.
+- **Breaking changes bump it**: removing or renaming a field, changing a field's type, making an optional field
+  required. A bump adds `schemas/exec-event.v<N>.schema.json`; the old file stays for consumers still on it.
+- **A bump needs a changelog entry** in `CHANGELOG.md`, in the "Behavior changes" list of the release that
+  carries it.
+- A line from before versioning is the v1 shape. Replay to the API (`replayEventsFile`) stamps it
+  `schema_version: 1`; the file on disk is left as written.
+
+`test/exec-event-schema.test.ts` is the contract test: fixtures for the Claude, opencode and kimi-code harnesses
+plus the runner's own events go through the real writer, and every line must carry `schema_version: 1` and
+validate. It also fails if an event type exists in the CLI but not in the schema, and if a fixture event with a
+removed required field or a changed type still validates. Changing `ExecEvent` without touching the schema fails
+here.
+
+Not covered: a native-harness lane (`nativeEvents`) writes its own events file outside this CLI; its lines are
+held to the same contract by that harness, not by this test.
