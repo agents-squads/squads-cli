@@ -168,31 +168,40 @@ function hasValidVerification(item: FeatureItem, repoDir: string, shaExists: Sha
   );
 }
 
-/** Read and validate one features.json. Never throws. */
-export function loadFeatureFile(
+function unreadableFile(
   path: string,
-  display: string = path,
-  shaExists: ShaExists = gitShaExists,
+  repoDir: string,
+  display: string,
+  error: unknown,
 ): LoadedFeatureFile {
-  const repoDir = dirname(dirname(path));
+  return {
+    path,
+    repoDir,
+    list: null,
+    problems: [
+      {
+        code: 'unreadable',
+        file: display,
+        message: `cannot read: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    ],
+  };
+}
+
+/** Validate already-parsed feature data. Never throws. */
+function validateFeatureData(
+  data: unknown,
+  path: string,
+  repoDir: string,
+  display: string,
+  shaExists: ShaExists,
+): LoadedFeatureFile {
   const problem = (code: ProblemCode, message: string, item?: string): FeatureProblem => ({
     code,
     file: display,
     message,
     ...(item ? { item } : {}),
   });
-
-  let data: unknown;
-  try {
-    data = JSON.parse(readFileSync(path, 'utf-8'));
-  } catch (e) {
-    return {
-      path,
-      repoDir,
-      list: null,
-      problems: [problem('unreadable', `cannot read: ${e instanceof Error ? e.message : String(e)}`)],
-    };
-  }
 
   const errors = shapeErrors(data);
   if (errors.length > 0) {
@@ -220,6 +229,49 @@ export function loadFeatureFile(
     }
   }
   return { path, repoDir, list, problems };
+}
+
+/**
+ * Validate a features.json given as text, for callers that read it from a git
+ * ref rather than the working tree (the release gate). `repoDir` is the repo
+ * the content belongs to, used for sha-existence checks.
+ */
+export function parseFeatureList(
+  raw: string,
+  repoDir: string,
+  display: string = FEATURES_FILE,
+  shaExists: ShaExists = gitShaExists,
+): LoadedFeatureFile {
+  const path = join(repoDir, FEATURES_FILE);
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return unreadableFile(path, repoDir, display, e);
+  }
+  return validateFeatureData(data, path, repoDir, display, shaExists);
+}
+
+/** Read and validate one features.json. Never throws. */
+export function loadFeatureFile(
+  path: string,
+  display: string = path,
+  shaExists: ShaExists = gitShaExists,
+): LoadedFeatureFile {
+  const repoDir = dirname(dirname(path));
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (e) {
+    return unreadableFile(path, repoDir, display, e);
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return unreadableFile(path, repoDir, display, e);
+  }
+  return validateFeatureData(data, path, repoDir, display, shaExists);
 }
 
 /** The root itself plus each non-hidden direct child directory. */

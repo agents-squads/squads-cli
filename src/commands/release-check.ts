@@ -20,9 +20,25 @@ async function checkHealth(url: string, expect: number): Promise<{ ok: boolean; 
 
 export function registerReleaseCommands(program: Command): void {
   const release = program
-    .command('release')
-    .description('Release management — pre-deploy checks and status')
+    .command('release', { hidden: true })
+    .description('Release management — weekly train and pre-deploy checks')
     .action(() => { release.outputHelp(); });
+
+  release
+    .command('train')
+    .description('Prepare the release PR for a roadmap outcome')
+    .option('--outcome <id>', 'Roadmap outcome that defines this release (required unless --patch)')
+    .option('--patch', 'Security-patch path: skip the outcome gate, accept only security/fix PRs')
+    .option('--dry-run', 'Print the release plan; change nothing')
+    .option('--source <ref>', 'Source ref for merged work', 'origin/develop')
+    .option('--target <branch>', 'PR base branch', 'main')
+    .option('--tag <tag>', 'Last released tag (default: highest merged version tag)')
+    .option('--fetch', 'Run git fetch origin --tags before planning')
+    .option('-j, --json', 'Output as JSON')
+    .action(async (opts) => {
+      const { releaseTrainCommand } = await import('./release-train.js');
+      await releaseTrainCommand(opts);
+    });
 
   release
     .command('pre-check <service>')

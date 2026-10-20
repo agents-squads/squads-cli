@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "commits": [
+    {
+      "sha": "8b891fd",
+      "reason": "predates PR attribution; reviewed 2026-10-20"
+    },
+    {
+      "sha": "c847596",
+      "reason": "predates PR attribution; reviewed 2026-10-20"
+    },
+    {
+      "sha": "426f222",
+      "reason": "predates PR attribution; reviewed 2026-10-20"
+    }
+  ]
+}
