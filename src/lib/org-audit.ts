@@ -349,6 +349,8 @@ const DOC_SKIP_FILE_RE = /^(LICENSE|CHANGELOG|CODE_OF_CONDUCT)/i;
 const DOC_MAX_BYTES = 1024 * 1024;
 const DOC_SHINGLE_WORDS = 5;
 const DOC_DUPLICATE_SIMILARITY = 0.6;
+/** Below this, two dated files are a series (periodic reports), not copies of one document. */
+const DOC_DATED_COPY_SIMILARITY = 0.3;
 /** 3+ files with the same basename in sibling directories (NN/prompt.md) are data, not docs. */
 const DOC_TEMPLATE_FAMILY_MIN = 3;
 const DOC_FINDINGS_CAP = 10;
@@ -490,23 +492,75 @@ function isDatedCopy(a: string, b: string): boolean {
   return na.replace(DATE_STAMP_RE, '<date>') === nb.replace(DATE_STAMP_RE, '<date>');
 }
 
-/** Findings for dated copies and near-duplicate markdown pairs, with both paths and the similarity. */
+/** Family key for a dated file: same directory + basename with the date stamp stripped. */
+function datedFamilyKey(path: string): string | null {
+  const name = basename(path);
+  if (!DATE_STAMP_RE.test(name)) return null;
+  return join(dirname(path), name.replace(DATE_STAMP_RE, '<date>'));
+}
+
+interface ShingledDoc {
+  path: string;
+  shingles: Set<string>;
+}
+
+/**
+ * One finding per dated family (same name with the date stripped, same directory).
+ * A family whose members are textually disjoint is a time series (periodic
+ * reports), not copies of one document: only members that overlap at or above
+ * DOC_DATED_COPY_SIMILARITY are reported.
+ */
+function datedCopyFindings(docs: ShingledDoc[]): Finding[] {
+  const families = new Map<string, ShingledDoc[]>();
+  for (const doc of docs) {
+    const key = datedFamilyKey(doc.path);
+    if (!key) continue;
+    const family = families.get(key) ?? [];
+    family.push(doc);
+    families.set(key, family);
+  }
+  const findings: Finding[] = [];
+  for (const [key, family] of families) {
+    if (family.length < 2) continue;
+    const overlapping = new Set<string>();
+    let maxSimilarity = 0;
+    for (let i = 0; i < family.length; i++) {
+      for (let j = i + 1; j < family.length; j++) {
+        const similarity = jaccard(family[i].shingles, family[j].shingles);
+        if (similarity < DOC_DATED_COPY_SIMILARITY) continue;
+        overlapping.add(family[i].path);
+        overlapping.add(family[j].path);
+        maxSimilarity = Math.max(maxSimilarity, similarity);
+      }
+    }
+    if (overlapping.size < 2) continue;
+    const members = family.filter((doc) => overlapping.has(doc.path)).map((doc) => `"${doc.path}"`);
+    findings.push({
+      check: 'docs-facts',
+      code: 'duplicate-doc',
+      message: `dated copies: family "${key}" has ${family.length} file(s), ${members.length} overlapping: ${members.join(', ')} (similarity ${maxSimilarity.toFixed(2)}) — one file per kind of text`,
+    });
+  }
+  return findings;
+}
+
+/** Findings for dated-copy families and near-duplicate markdown pairs, with paths and similarity. */
 function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[] {
   const collected = collectMarkdownDocs(dir, hardened);
   const templated = templatedFamilyPaths(collected);
   const docs = collected.map((doc) => ({ path: doc.path, shingles: docShingles(doc.text) }));
-  const findings: Finding[] = [];
+  const findings = datedCopyFindings(docs);
   for (let i = 0; i < docs.length; i++) {
     for (let j = i + 1; j < docs.length; j++) {
+      // Dated pairs are handled per family above; non-dated pairs are reported one by one.
+      if (isDatedCopy(docs[i].path, docs[j].path)) continue;
+      if (templated.has(docs[i].path) || templated.has(docs[j].path)) continue;
       const similarity = jaccard(docs[i].shingles, docs[j].shingles);
-      const dated = isDatedCopy(docs[i].path, docs[j].path);
-      // Dated copies stay flagged even inside a templated family (the name is the finding).
-      if (!dated && (templated.has(docs[i].path) || templated.has(docs[j].path))) continue;
-      if (!dated && similarity < DOC_DUPLICATE_SIMILARITY) continue;
+      if (similarity < DOC_DUPLICATE_SIMILARITY) continue;
       findings.push({
         check: 'docs-facts',
         code: 'duplicate-doc',
-        message: `${dated ? 'dated copies' : 'near-duplicate docs'}: "${docs[i].path}" and "${docs[j].path}" (similarity ${similarity.toFixed(2)}) — one file per kind of text`,
+        message: `near-duplicate docs: "${docs[i].path}" and "${docs[j].path}" (similarity ${similarity.toFixed(2)}) — one file per kind of text`,
       });
     }
   }

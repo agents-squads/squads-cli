@@ -487,11 +487,11 @@ describe('duplicate docs — one file per kind of text', () => {
     return auditUnitOnly(name, { runMetrics: true }).findings.filter((f) => f.code === 'duplicate-doc');
   }
 
-  it('flags a tracked dated pair in the same directory', () => {
+  it('flags a tracked dated pair whose text overlaps at similarity >= 0.3 as one family', () => {
     const dir = docsUnit('dated');
     mkdirSync(join(dir, 'docs'));
-    writeFileSync(join(dir, 'docs', 'plan-2026-10-14.md'), '# Plan A\n\nfirst take\n');
-    writeFileSync(join(dir, 'docs', 'plan-2026-10-19.md'), '# Plan B\n\nsecond take\n');
+    writeFileSync(join(dir, 'docs', 'plan-2026-10-14.md'), BASE);
+    writeFileSync(join(dir, 'docs', 'plan-2026-10-19.md'), BASE.replace('platform', 'product').replace('publish', 'ship'));
     commitDocs(dir);
 
     const found = duplicateFindings('dated');
@@ -499,7 +499,42 @@ describe('duplicate docs — one file per kind of text', () => {
     expect(found[0].check).toBe('docs-facts');
     expect(found[0].message).toContain('docs/plan-2026-10-14.md');
     expect(found[0].message).toContain('docs/plan-2026-10-19.md');
+    expect(found[0].message).toContain('2 file(s)');
+    expect(found[0].message).toContain('2 overlapping');
     expect(found[0].message).toMatch(/similarity \d+\.\d{2}/);
+  });
+
+  it('does not flag a dated series with disjoint content', () => {
+    const dir = docsUnit('series');
+    mkdirSync(join(dir, 'docs'));
+    for (let i = 1; i <= 5; i++) {
+      writeFileSync(
+        join(dir, 'docs', `2026-01-0${i}-report.md`),
+        `# Report ${i}\n\nalpha${i} beta${i} gamma${i} delta${i} epsilon${i} zeta${i} eta${i} theta${i}\n`,
+      );
+    }
+    commitDocs(dir);
+
+    expect(duplicateFindings('series')).toEqual([]);
+  });
+
+  it('reports one finding per family, listing only the overlapping members', () => {
+    const dir = docsUnit('family');
+    mkdirSync(join(dir, 'docs'));
+    for (let i = 1; i <= 3; i++) {
+      writeFileSync(join(dir, 'docs', `plan-2026-10-0${i}.md`), BASE.replace('platform', `product${i}`));
+    }
+    writeFileSync(join(dir, 'docs', 'plan-2026-10-04.md'), '# Unrelated\n\nA wholly different note about security disclosure windows.\n');
+    commitDocs(dir);
+
+    const found = duplicateFindings('family');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('4 file(s)');
+    expect(found[0].message).toContain('3 overlapping');
+    expect(found[0].message).toContain('docs/plan-2026-10-01.md');
+    expect(found[0].message).toContain('docs/plan-2026-10-02.md');
+    expect(found[0].message).toContain('docs/plan-2026-10-03.md');
+    expect(found[0].message).not.toContain('docs/plan-2026-10-04.md');
   });
 
   it('does not flag two unrelated docs', () => {
