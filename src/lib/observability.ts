@@ -11,6 +11,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statS
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
 import { deriveRootRunId } from './exec-events.js';
+import type { ProviderError } from './provider-errors.js';
 import {
   parseOutcomes,
   parseBashCandidates,
@@ -95,6 +96,11 @@ export interface ObservabilityRecord {
   // Billing model when cost_usd is not a metered figure (#1309): 'subscription'
   // runs (kimi-code) record cost_usd 0 — never a list-price estimate.
   billing?: 'subscription';
+  // Typed provider failure (#1298): why a run died on the provider's side —
+  // plan_expired / quota_exhausted / auth_invalid / rate_limited / … Additive:
+  // `error` keeps the human string; this is what consoles and the inbox switch
+  // on. `attempts` counts tries when a retryable class was backed off.
+  provider_error?: Pick<ProviderError, 'type' | 'retryable' | 'message' | 'provider' | 'status' | 'providerCode'> & { attempts?: number };
 }
 
 export interface QueryOptions {
