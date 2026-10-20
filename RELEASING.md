@@ -26,24 +26,59 @@ versions, tags, or workflows.
 ## Release train
 
 A release is defined by an **outcome**, not by a count of merged PRs. The
-routine path is one command, run against a clean checkout:
+routine path is one command:
 
 ```bash
 squads release train --outcome O1 --dry-run   # print the plan; changes nothing
 squads release train --outcome O1             # prepare the branch and open the PR
 ```
 
-It reads the HQ repo's `.agents/roadmap.json` (found through the org root) for
-the outcome's items that belong to this repo, and this repo's
-`.agents/features.json` for their state. It **refuses** — naming each blocking
-item and why — unless every item is `passing` with a verification whose
-`model` differs from `builder_model` and whose `sha` is an ancestor of the
-release source. The changelog lists one line per item (title + issue), then
-**Also included** for the other merged PRs, dropping `chore` / `deps` lines.
+The gate reads its data from the **release source ref** (default
+`origin/develop`), never from the operator's working tree: the HQ repo's
+`.agents/roadmap.json` (found through the org root), or this repo's own
+roadmap when it has one, and this repo's `.agents/features.json` as they exist
+at the source. It **refuses** — naming each blocking item and why — unless
+every item is `passing` with a verification whose `model` differs from
+`builder_model` and whose `sha` is an ancestor of the release source. An
+outcome release always takes the **minor** slot (see
+[Versioning](#versioning)). The changelog lists one line per item (title +
+issue), then **Also included** for the other merged PRs, dropping `chore` /
+`deps` lines. Items owned by sibling repos are reported in the release body as
+**Cross-repo items (not gated by this repo)** with their status; they do not
+block this release.
+
+### Commit gate and the allowlist
+
+Before anything is prepared, every commit in the release range
+`<merge-base(target, source)>..source` must be attributable to a PR — a
+subject ending in `(#N)` or a `Merge pull request #N` subject. Release
+housekeeping, back-merge subjects, and merges of already-known refs are
+exempt. A commit with no PR reference **refuses the release**.
+
+Commits that predate PR attribution are exempted explicitly, one reviewed
+entry at a time, in `.agents/release-allowlist.json` (read from the release
+source ref, so the entry must be merged before it can exempt anything):
+
+```json
+{
+  "commits": [
+    { "sha": "8b891fd", "reason": "predates PR attribution; reviewed 2026-10-20" }
+  ]
+}
+```
+
+`sha` is a full 40-character sha or a 7+ character prefix; `reason` is
+required and non-empty. The plan (human, and `--json` as
+`allowlisted_commits`) and the release PR body list every allowlisted commit
+with its reason. A malformed allowlist refuses the release rather than
+silently disabling the gate. Add an entry only after reviewing the commit; the
+three seeded entries are 2026 history that predates attribution.
 
 Security patches take a separate path. `--patch` skips the outcome gate but
 accepts only PR titles that start with `security` or `fix`; anything else
-refuses the release.
+refuses the release. In patch mode the attributed PR set must also equal the
+admitted security/fix set exactly: an extra `feat` pushed straight to
+`develop`, or an admitted PR with no commit in the range, refuses the release.
 
 The train then:
 
@@ -84,6 +119,9 @@ release tags, merge to `main`, or dispatch `publish.yml`.
 - History note: `0.1.x`–`0.7.0` were consumed by early churn and are
   deprecated on npm. The active line restarted at `0.3.1`; the next minor
   after the `0.3.x` line is therefore `0.8.0`.
+- An **outcome release always takes the minor slot** on a 0.x line
+  (`0.10.0` → `0.11.0`), even when every merged PR in the batch is a fix or
+  the commits landed without PRs. `--patch` releases take the patch slot.
 - Pre-releases use a `-rc.N` suffix and publish to the `@next` dist-tag.
 
 ## Pre-push validation
