@@ -26,6 +26,7 @@ import {
   isReleaseHousekeeping,
   latestVersionTag,
   parseCommitSubject,
+  parseReleaseAllowlist,
   proposeVersion,
   pullRequestsFromCommitSubjects,
   readPackageLockVersion,
@@ -291,9 +292,12 @@ describe('outcome gate', () => {
 });
 
 describe('commit gate', () => {
+  const HEX = '0123456789abcdef0123456789abcdef01234567';
+  const commit = (sha: string, subject: string) => ({ sha, subject });
+
   it('refuses a direct commit with no PR reference (F3)', () => {
     const gate = evaluateCommitGate(
-      ['fix(x): a real fix (#5)', 'feat: pushed straight to develop'],
+      [commit(HEX, 'fix(x): a real fix (#5)'), commit(HEX, 'feat: pushed straight to develop')],
       [{ number: 5, title: 'fix(x): a real fix' }],
       'patch',
     );
@@ -301,21 +305,98 @@ describe('commit gate', () => {
     expect(gate.blockers[0].subject).toContain('feat: pushed straight');
   });
 
+  it('accepts an allowlisted unattributed commit and reports its reason (N1)', () => {
+    const sha = '8b891fd0000000000000000000000000000000000';
+    const gate = evaluateCommitGate(
+      [commit(sha, 'fix(lint): remove unused dirname import in org-cycle.ts')],
+      [],
+      'outcome',
+      [{ sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' }],
+    );
+    expect(gate.ok).toBe(true);
+    expect(gate.allowlisted).toEqual([
+      {
+        sha,
+        subject: 'fix(lint): remove unused dirname import in org-cycle.ts',
+        reason: 'predates PR attribution; reviewed 2026-10-20',
+      },
+    ]);
+  });
+
+  it('matches allowlist entries by full sha as well as a 7+ character prefix (N1)', () => {
+    const full = '426f222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const entries = [
+      { sha: full, reason: 'full sha entry' },
+      { sha: 'c847596', reason: 'prefixed entry' },
+    ];
+    expect(
+      evaluateCommitGate([commit(full, 'ci(release): support @next dist-tag')], [], 'outcome', entries)
+        .ok,
+    ).toBe(true);
+    expect(
+      evaluateCommitGate([commit('c847596aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'merge: resolve conflicts')], [], 'outcome', entries)
+        .ok,
+    ).toBe(true);
+  });
+
+  it('still refuses an unattributed commit that is not allowlisted (N1)', () => {
+    const gate = evaluateCommitGate(
+      [commit('deadbeef00000000000000000000000000000000', 'feat: pushed straight to develop')],
+      [],
+      'outcome',
+      [{ sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' }],
+    );
+    expect(gate.ok).toBe(false);
+    expect(gate.blockers[0].subject).toContain('feat: pushed straight');
+    expect(gate.allowlisted).toEqual([]);
+  });
+
   it('requires the patch set to match the admitted PRs exactly (F3)', () => {
     const admitted = [{ number: 5, title: 'fix(x): a real fix' }];
-    expect(evaluateCommitGate(['fix(x): a real fix (#5)'], admitted, 'patch').ok).toBe(true);
+    expect(evaluateCommitGate([commit(HEX, 'fix(x): a real fix (#5)')], admitted, 'patch').ok).toBe(true);
 
     const extra = evaluateCommitGate(
-      ['fix(x): a real fix (#5)', 'feat(x): sneaky (#9)'],
+      [commit(HEX, 'fix(x): a real fix (#5)'), commit(HEX, 'feat(x): sneaky (#9)')],
       admitted,
       'patch',
     );
     expect(extra.ok).toBe(false);
     expect(extra.blockers[0].subject).toBe('#9');
 
-    const missing = evaluateCommitGate(['security(x): other (#6)'], admitted, 'patch');
+    const missing = evaluateCommitGate([commit(HEX, 'security(x): other (#6)')], admitted, 'patch');
     expect(missing.ok).toBe(false);
     expect(missing.blockers.map((blocker) => blocker.subject)).toContain('#5');
+  });
+
+  it('does not let an allowlisted commit satisfy an admitted patch PR (N1)', () => {
+    const sha = '8b891fd0000000000000000000000000000000000';
+    const gate = evaluateCommitGate(
+      [commit(sha, 'fix(x): a real fix (#5)')],
+      [{ number: 5, title: 'fix(x): a real fix' }],
+      'patch',
+      [{ sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' }],
+    );
+    expect(gate.ok).toBe(false);
+    expect(gate.blockers.map((blocker) => blocker.subject)).toContain('#5');
+  });
+});
+
+describe('release allowlist parser', () => {
+  it('parses object and bare-array files', () => {
+    const entry = { sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' };
+    expect(parseReleaseAllowlist(JSON.stringify({ commits: [entry] }))).toEqual([entry]);
+    expect(parseReleaseAllowlist(JSON.stringify([entry]))).toEqual([entry]);
+  });
+
+  it('refuses malformed JSON and invalid entries with a clear error', () => {
+    expect(() => parseReleaseAllowlist('{not json')).toThrow(/not valid JSON/i);
+    expect(() => parseReleaseAllowlist(JSON.stringify({ commits: {} }))).toThrow(/needs a "commits" array/i);
+    expect(() => parseReleaseAllowlist(JSON.stringify({ commits: [{ sha: 'abc', reason: 'x' }] }))).toThrow(
+      /sha must be a full or 7\+ character hex sha/i,
+    );
+    expect(() =>
+      parseReleaseAllowlist(JSON.stringify({ commits: [{ sha: '8b891fd', reason: '' }] })),
+    ).toThrow(/reason must be a non-empty string/i);
   });
 });
 
@@ -500,6 +581,31 @@ describe('release body', () => {
     });
     expect(patchBody).toContain('## Security patch release');
   });
+
+  it('lists every allowlisted commit with its reason (N1)', () => {
+    const body = renderReleaseBody({
+      tag: 'v0.10.0',
+      previousVersion: '0.10.0',
+      proposal: { version: '0.11.0', bump: 'minor', reason: 'outcome O0' },
+      prs: [],
+      changelog: buildChangelog([], { version: '0.11.0', date: DATE }),
+      checks: [],
+      source: 'origin/develop',
+      sourceSha: 'abcdef1234567890',
+      allowlisted: [
+        {
+          sha: '8b891fd0000000000000000000000000000000000',
+          subject: 'fix(lint): remove unused dirname import in org-cycle.ts',
+          reason: 'predates PR attribution; reviewed 2026-10-20',
+        },
+      ],
+    });
+
+    expect(body).toContain('### Allowlisted commits (no PR attribution)');
+    expect(body).toContain(
+      '- `8b891fd00000` — fix(lint): remove unused dirname import in org-cycle.ts (predates PR attribution; reviewed 2026-10-20)',
+    );
+  });
 });
 
 describe('latest version tag', () => {
@@ -587,10 +693,22 @@ describe('releaseTrainCommand --dry-run', () => {
 
   function fixtureRunner(
     prs: PullRequest[] = PATCH_PRS,
-    source: { features?: string; roadmap?: string; subjects?: string[] } = {},
+    source: {
+      features?: string;
+      roadmap?: string;
+      subjects?: string[];
+      commits?: Array<{ sha: string; subject: string }>;
+      allowlist?: string;
+    } = {},
   ): Runner {
     const subjects =
       source.subjects ?? prs.map((pr) => `${pr.title} (#${pr.number})`);
+    const commits =
+      source.commits ??
+      subjects.map((subject, index) => ({
+        sha: `${String(index).padStart(7, '0')}${'0'.repeat(33)}`,
+        subject,
+      }));
     return async (file, args) => {
       const key = `${file} ${args.join(' ')}`;
       if (key === 'git tag --sort=-v:refname --list v[0-9]*') {
@@ -608,8 +726,8 @@ describe('releaseTrainCommand --dry-run', () => {
       }
       if (key === 'git rev-parse origin/develop') return 'abcdef1234567890\n';
       if (key === 'git merge-base origin/main origin/develop') return `${FIXTURE_BASE}\n`;
-      if (key === `git log --format=%s ${FIXTURE_BASE}..origin/develop`) {
-        return subjects.join('\n');
+      if (key === `git log --format=%H%x1f%s ${FIXTURE_BASE}..origin/develop`) {
+        return commits.map((commit) => `${commit.sha}\x1f${commit.subject}`).join('\n');
       }
       if (key === 'git show origin/develop:.agents/features.json') {
         if (source.features === undefined) throw new Error('no features at source');
@@ -618,6 +736,10 @@ describe('releaseTrainCommand --dry-run', () => {
       if (key === 'git show origin/develop:.agents/roadmap.json') {
         if (source.roadmap === undefined) throw new Error('no roadmap at source');
         return source.roadmap;
+      }
+      if (key === 'git show origin/develop:.agents/release-allowlist.json') {
+        if (source.allowlist === undefined) throw new Error('no allowlist at source');
+        return source.allowlist;
       }
       throw new Error(`unexpected command: ${key}`);
     };
@@ -715,8 +837,8 @@ describe('releaseTrainCommand --dry-run', () => {
       }
       if (key === 'git rev-parse origin/develop') return 'abcdef1234567890\n';
       if (key === 'git merge-base origin/main origin/develop') return `${FIXTURE_BASE}\n`;
-      if (key === `git log --format=%s ${FIXTURE_BASE}..origin/develop`) {
-        return 'fix(events): new work (#1304)';
+      if (key === `git log --format=%H%x1f%s ${FIXTURE_BASE}..origin/develop`) {
+        return `1304aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1ffix(events): new work (#1304)`;
       }
       throw new Error(`unexpected command: ${key}`);
     };
@@ -752,7 +874,7 @@ describe('releaseTrainCommand --dry-run', () => {
       }
       if (key === 'git rev-parse origin/develop') return 'abcdef1234567890\n';
       if (key === 'git merge-base origin/main origin/develop') return `${FIXTURE_BASE}\n`;
-      if (key === `git log --format=%s ${FIXTURE_BASE}..origin/develop`) return '';
+      if (key === `git log --format=%H%x1f%s ${FIXTURE_BASE}..origin/develop`) return '';
       throw new Error(`unexpected command: ${key}`);
     };
 
@@ -967,6 +1089,122 @@ describe('releaseTrainCommand --dry-run', () => {
     expect(code).toBe(1);
     const payload = JSON.parse(out.join(''));
     expect(payload.unattributed_commits.map((blocker: { subject: string }) => blocker.subject)).toContain('#1400');
+  });
+
+  const ALLOWLIST_SHA = '8b891fd0000000000000000000000000000000000';
+
+  function patchCommitsWithUnattributed() {
+    return [
+      ...PATCH_PRS.map((pr, index) => ({
+        sha: `${String(pr.number).padStart(4, '0')}${String(index).padStart(36, '0')}`,
+        subject: `${pr.title} (#${pr.number})`,
+      })),
+      { sha: ALLOWLIST_SHA, subject: 'fix(lint): remove unused dirname import in org-cycle.ts' },
+    ];
+  }
+
+  it('accepts an allowlisted unattributed commit and reports it in the plan (N1)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-allowlisted-'));
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, patch: true },
+      {
+        runner: fixtureRunner(PATCH_PRS, {
+          commits: patchCommitsWithUnattributed(),
+          allowlist: JSON.stringify({
+            commits: [
+              { sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' },
+            ],
+          }),
+        }),
+        root,
+        today: DATE,
+      },
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.refused).toBeUndefined();
+    expect(payload.allowlisted_commits).toEqual([
+      {
+        sha: ALLOWLIST_SHA,
+        subject: 'fix(lint): remove unused dirname import in org-cycle.ts',
+        reason: 'predates PR attribution; reviewed 2026-10-20',
+      },
+    ]);
+  });
+
+  it('prints every allowlisted commit with its reason in the human plan (N1)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-allowlisted-human-'));
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, patch: true },
+      {
+        runner: fixtureRunner(PATCH_PRS, {
+          commits: patchCommitsWithUnattributed(),
+          allowlist: JSON.stringify({
+            commits: [
+              { sha: '8b891fd', reason: 'predates PR attribution; reviewed 2026-10-20' },
+            ],
+          }),
+        }),
+        root,
+        today: DATE,
+      },
+    );
+
+    expect(code).toBe(0);
+    const text = out.join('');
+    expect(text).toContain('Allowlisted commits');
+    expect(text).toContain('8b891fd0000');
+    expect(text).toContain('fix(lint): remove unused dirname import in org-cycle.ts');
+    expect(text).toContain('predates PR attribution; reviewed 2026-10-20');
+  });
+
+  it('still refuses an unattributed commit that is not allowlisted (N1)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-not-allowlisted-'));
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, patch: true },
+      {
+        runner: fixtureRunner(PATCH_PRS, {
+          commits: patchCommitsWithUnattributed(),
+          allowlist: JSON.stringify({
+            commits: [
+              { sha: 'c847596', reason: 'predates PR attribution; reviewed 2026-10-20' },
+            ],
+          }),
+        }),
+        root,
+        today: DATE,
+      },
+    );
+
+    expect(code).toBe(1);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.unattributed_commits[0].subject).toContain('fix(lint): remove unused dirname');
+  });
+
+  it('refuses a malformed allowlist with a clear error (N1)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-bad-allowlist-'));
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, patch: true },
+      {
+        runner: fixtureRunner(PATCH_PRS, { allowlist: '{not json' }),
+        root,
+        today: DATE,
+      },
+    );
+
+    expect(code).toBe(1);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.refused).toBe(true);
+    expect(payload.allowlist_error).toContain('not valid JSON');
   });
 });
 

@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
 import {
   CHANGELOG_PATH,
+  RELEASE_ALLOWLIST_PATH,
   buildChangelog,
   buildOutcomeChangelog,
   changelogPullRequests,
@@ -27,6 +28,7 @@ import {
   insertChangelogEntry,
   isReleaseHousekeeping,
   latestVersionTag,
+  parseReleaseAllowlist,
   parseRoadmapOutcomes,
   proposeOutcomeVersion,
   proposeVersion,
@@ -36,6 +38,8 @@ import {
   readSkillReferenceVersion,
   renderReleaseBody,
   repoLabels,
+  type AllowlistEntry,
+  type AllowlistedCommit,
   type CommitBlocker,
   type OutcomeBlocker,
   type OutcomeGate,
@@ -44,6 +48,7 @@ import {
   type PreparedReleaseFacts,
   type PullRequest,
   type ReleaseCheck,
+  type ReleaseCommit,
   type ReleaseOutcome,
   type SiblingStatus,
 } from '../lib/release-train.js';
@@ -429,15 +434,16 @@ async function collectPullRequests(
 }
 
 /**
- * Commit subjects that will actually ship: `<merge-base(target, source)>..source`.
- * Used to prove every shipped commit is attributable to a PR (review F3).
+ * Commits that will actually ship: `<merge-base(target, source)>..source`, with
+ * their shas. Used to prove every shipped commit is attributable to a PR or
+ * explicitly allowlisted (reviews F3/N1).
  */
 async function collectReleaseCommitSubjects(
   runner: Runner,
   root: string,
   target: string,
   source: string,
-): Promise<string[]> {
+): Promise<ReleaseCommit[]> {
   const targetRef = target.includes('/') ? target : `origin/${target}`;
   const base = (
     await runner('git', ['merge-base', targetRef, source], {
@@ -445,11 +451,33 @@ async function collectReleaseCommitSubjects(
       timeout: GIT_TIMEOUT_MS,
     })
   ).trim();
-  const output = await runner('git', ['log', '--format=%s', `${base}..${source}`], {
+  const output = await runner('git', ['log', '--format=%H%x1f%s', `${base}..${source}`], {
     cwd: root,
     timeout: GIT_TIMEOUT_MS,
   });
-  return output.split('\n');
+  return output
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const separator = line.indexOf('\x1f');
+      if (separator === -1) return { sha: '', subject: line };
+      return { sha: line.slice(0, separator), subject: line.slice(separator + 1) };
+    });
+}
+
+/**
+ * Read the commit-gate allowlist from the release source ref. A missing file
+ * means "no exemptions". A malformed file throws so the caller refuses loudly
+ * rather than shipping with a gate it could not interpret (review N1).
+ */
+async function resolveReleaseAllowlist(
+  runner: Runner,
+  root: string,
+  source: string,
+): Promise<AllowlistEntry[]> {
+  const raw = await readFileAtSource(runner, root, source, RELEASE_ALLOWLIST_PATH);
+  if (raw === null) return [];
+  return parseReleaseAllowlist(raw);
 }
 
 function printHumanPlan(input: {
@@ -461,6 +489,7 @@ function printHumanPlan(input: {
   reason: string;
   prs: PullRequest[];
   changelog: string;
+  allowlisted: AllowlistedCommit[];
   dryRun: boolean;
 }): void {
   writeLine();
@@ -475,6 +504,15 @@ function printHumanPlan(input: {
     writeLine(`  ${line}`);
   }
   writeLine();
+  if (input.allowlisted.length > 0) {
+    writeLine(`  ${bold}Allowlisted commits${RESET} ${colors.dim}(no PR attribution)${RESET}`);
+    for (const commit of input.allowlisted) {
+      writeLine(
+        `    ${colors.dim}${commit.sha.slice(0, 12)}${RESET}  ${commit.subject} — ${commit.reason}`,
+      );
+    }
+    writeLine();
+  }
   if (input.dryRun) {
     writeLine(`  ${colors.dim}release-check: not run (dry run — no files changed)${RESET}`);
     writeLine(`  ${colors.dim}Run without --dry-run to prepare the branch and gate it on release-check.${RESET}`);
@@ -728,7 +766,25 @@ export async function releaseTrainCommand(
   }
 
   const commitSubjects = await collectReleaseCommitSubjects(runner, root, target, source);
-  const commitGate = evaluateCommitGate(commitSubjects, prs, mode);
+
+  let allowlist: AllowlistEntry[];
+  try {
+    allowlist = await resolveReleaseAllowlist(runner, root, source);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (options.json) {
+      writeLine(JSON.stringify({ refused: true, allowlist_error: message }, null, 2));
+    } else {
+      writeLine();
+      writeLine(`  ${colors.red}Release train refused${RESET} — ${message}`);
+      writeLine();
+      writeLine(`  ${colors.dim}No branch, commit, push, or PR was created.${RESET}`);
+      writeLine();
+    }
+    return 1;
+  }
+
+  const commitGate = evaluateCommitGate(commitSubjects, prs, mode, allowlist);
   if (!commitGate.ok) {
     if (options.json) {
       writeLine(
@@ -801,6 +857,7 @@ export async function releaseTrainCommand(
             source_sha: sourceSha,
             prs,
             other_prs: otherPrs,
+            allowlisted_commits: commitGate.allowlisted,
             ...(outcome
               ? {
                   outcome: { id: outcome.id, name: outcome.name },
@@ -830,6 +887,7 @@ export async function releaseTrainCommand(
         reason: proposal.reason,
         prs: otherPrs,
         changelog,
+        allowlisted: commitGate.allowlisted,
         dryRun: true,
       });
     }
@@ -879,6 +937,7 @@ export async function releaseTrainCommand(
       checks,
       source,
       sourceSha,
+      ...(commitGate.allowlisted.length > 0 ? { allowlisted: commitGate.allowlisted } : {}),
       ...(outcome
         ? {
             outcome: { id: outcome.id, name: outcome.name, items: items.length },
@@ -934,6 +993,7 @@ export async function releaseTrainCommand(
             bump: proposal.bump,
             branch,
             url,
+            allowlisted_commits: commitGate.allowlisted,
             ...(outcome ? { outcome: { id: outcome.id, name: outcome.name }, items: items.length } : { patch: true }),
             checks,
           },

@@ -89,6 +89,8 @@ export interface ReleaseBodyInput {
   outcome?: { id: string; name: string; items: number };
   /** Outcome items owned by sibling repos; not gated by this release. */
   siblingItems?: SiblingItem[];
+  /** Unattributed commits accepted by `.agents/release-allowlist.json`. */
+  allowlisted?: AllowlistedCommit[];
   /** Set for the security-patch path (`--patch`). */
   patch?: boolean;
 }
@@ -140,6 +142,8 @@ export interface PatchGate {
 }
 
 export const CHANGELOG_PATH = 'CHANGELOG.md';
+/** Explicit exemptions from the commit gate; read from the release source ref. */
+export const RELEASE_ALLOWLIST_PATH = join('.agents', 'release-allowlist.json');
 export const SKILL_REFERENCE_PATH = join(
   'templates',
   'seed',
@@ -584,32 +588,113 @@ export interface CommitBlocker {
   reason: string;
 }
 
+/** A commit in the release range, as `git log` reports it. */
+export interface ReleaseCommit {
+  sha: string;
+  subject: string;
+}
+
+/** One `.agents/release-allowlist.json` entry. */
+export interface AllowlistEntry {
+  sha: string;
+  reason: string;
+}
+
+/** A commit the commit gate accepted through the allowlist. */
+export interface AllowlistedCommit {
+  sha: string;
+  subject: string;
+  reason: string;
+}
+
 export interface CommitGate {
   blockers: CommitBlocker[];
+  allowlisted: AllowlistedCommit[];
   ok: boolean;
+}
+
+const ALLOWLIST_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * Parse `.agents/release-allowlist.json`. The file is an explicit, reviewed
+ * list of commits that predate PR attribution: each entry names a sha (full or
+ * a 7+ character prefix) and why it is exempt. Any shape the gate cannot reason
+ * about throws, so a malformed allowlist refuses the release instead of
+ * silently disabling (or widening) the exemption.
+ */
+export function parseReleaseAllowlist(raw: string): AllowlistEntry[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${RELEASE_ALLOWLIST_PATH} is not valid JSON: ${message}`);
+  }
+
+  const list = Array.isArray(data) ? data : isRecord(data) ? data.commits : undefined;
+  if (!Array.isArray(list)) {
+    throw new Error(`${RELEASE_ALLOWLIST_PATH} needs a "commits" array of { sha, reason } entries`);
+  }
+
+  return list.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new Error(`${RELEASE_ALLOWLIST_PATH} commits[${index}] must be an object with sha and reason`);
+    }
+    const { sha, reason } = entry;
+    if (typeof sha !== 'string' || !ALLOWLIST_SHA_RE.test(sha.trim())) {
+      throw new Error(
+        `${RELEASE_ALLOWLIST_PATH} commits[${index}].sha must be a full or 7+ character hex sha`,
+      );
+    }
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+      throw new Error(
+        `${RELEASE_ALLOWLIST_PATH} commits[${index}].reason must be a non-empty string`,
+      );
+    }
+    return { sha: sha.trim().toLowerCase(), reason: reason.trim() };
+  });
+}
+
+/** The allowlist entry covering `sha`, by exact or 7+ character prefix match. */
+export function allowlistEntryFor(
+  sha: string,
+  allowlist: AllowlistEntry[],
+): AllowlistEntry | null {
+  const normalized = sha.trim().toLowerCase();
+  if (!normalized) return null;
+  return allowlist.find((entry) => normalized.startsWith(entry.sha)) ?? null;
 }
 
 /** A merge of an already-known ref adds no unreviewed content by itself. */
 const UNATTRIBUTED_MERGE_RE = /^Merge (branch|remote-tracking branch|tag) /i;
 
 /**
- * Every commit in the release range must be attributable to a PR. A direct
- * commit has no `(#N)` subject and would otherwise ship with no outcome check
- * and no changelog line. The patch path additionally requires the attributed
- * set to equal the admitted security/fix set: a `feat` pushed straight to
- * develop must not ride a patch.
+ * Every commit in the release range must be attributable to a PR, or named in
+ * the explicit allowlist. A direct commit has no `(#N)` subject and would
+ * otherwise ship with no outcome check and no changelog line. Allowlisted
+ * commits are reported with their reason so the plan and the release PR show
+ * exactly which history was exempted. The patch path additionally requires the
+ * attributed set to equal the admitted security/fix set: a `feat` pushed
+ * straight to develop must not ride a patch.
  */
 export function evaluateCommitGate(
-  subjects: string[],
+  commits: ReleaseCommit[],
   admitted: PullRequest[],
   mode: 'outcome' | 'patch',
+  allowlist: AllowlistEntry[] = [],
 ): CommitGate {
   const attributed = new Set<number>();
   const blockers: CommitBlocker[] = [];
+  const allowlisted: AllowlistedCommit[] = [];
 
-  for (const subject of subjects) {
-    const trimmed = subject.trim();
+  for (const commit of commits) {
+    const trimmed = commit.subject.trim();
     if (!trimmed || isReleaseHousekeeping(trimmed) || UNATTRIBUTED_MERGE_RE.test(trimmed)) {
+      continue;
+    }
+    const exemption = allowlistEntryFor(commit.sha, allowlist);
+    if (exemption) {
+      allowlisted.push({ sha: commit.sha, subject: trimmed, reason: exemption.reason });
       continue;
     }
     const pr = parseCommitSubject(trimmed);
@@ -643,7 +728,7 @@ export function evaluateCommitGate(
     }
   }
 
-  return { blockers, ok: blockers.length === 0 };
+  return { blockers, allowlisted, ok: blockers.length === 0 };
 }
 
 // ── Outcome changelog ────────────────────────────────────────────────
@@ -792,6 +877,17 @@ export function renderReleaseBody(input: ReleaseBodyInput): string {
             .join('; ')}`,
         ]
       : [];
+  const allowlistLines =
+    input.allowlisted && input.allowlisted.length > 0
+      ? [
+          '',
+          '### Allowlisted commits (no PR attribution)',
+          '',
+          ...input.allowlisted.map(
+            (commit) => `- \`${commit.sha.slice(0, 12)}\` — ${commit.subject} (${commit.reason})`,
+          ),
+        ]
+      : [];
 
   return `${[
     title,
@@ -803,6 +899,7 @@ export function renderReleaseBody(input: ReleaseBodyInput): string {
     `- **Source:** \`${input.source}\` @ \`${input.sourceSha.slice(0, 12)}\``,
     ...outcomeLines,
     ...siblingLines,
+    ...allowlistLines,
     `- **PRs:** ${input.prs.length}`,
     '',
     '### Changelog',
