@@ -44,11 +44,12 @@ providers:
 
   it('does NOT set the cap on anthropic or non-claude harnesses', () => {
     delete process.env[RETRY_KEY];
-    expect(getCLIConfig('anthropic')!.env?.[RETRY_KEY]).toBeUndefined();
-    expect(getCLIConfig('opencode')!.env?.[RETRY_KEY]).toBeUndefined();
-    expect(getCLIConfig('aider')!.env?.[RETRY_KEY]).toBeUndefined();
-    expect(getCLIConfig('google')!.env?.[RETRY_KEY]).toBeUndefined();
-    expect(getCLIConfig('openai')!.env?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('anthropic')!.env?.()?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('opencode')!.env?.()?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('aider')!.env?.()?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('kimi-code')!.env?.()?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('google')!.env?.()?.[RETRY_KEY]).toBeUndefined();
+    expect(getCLIConfig('openai')!.env?.()?.[RETRY_KEY]).toBeUndefined();
   });
 
   it('an operator-set value always wins', () => {
