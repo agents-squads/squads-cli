@@ -20,6 +20,7 @@
 | `squads board` | Day-scoped execution board: tiles, live runs, executions, incoming queue |
 | `squads usage` | Show local cost/token usage (today, rolling window, by squad) |
 | `squads report` | Generate an evidence pack from local observability (default: auditor) |
+| `squads audit` | Audit the org root: classify every unit (git, self-description, metric, delivery, activity, docs facts, names). Read-only. |
 | `squads doctor` | Check local tools, auth, and project readiness |
 | `squads plan` | Roadmap from the plan-of-record issue: done / ready / blocked, with blockers |
 | `squads goal set <squad> <description>` | Set a goal for a squad |
