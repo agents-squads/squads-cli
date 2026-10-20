@@ -75,14 +75,24 @@ export interface TerminalClassification {
  */
 const HARNESS_ERROR_LINE = /^\s*(?:error|fatal|panic)\b\s*[:-]?/i;
 
-export function lastHarnessErrorLine(text: string): string | null {
+export function lastHarnessErrorLine(text: string, windowLines = 20): string | null {
   if (!text) return null;
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const floor = Math.max(0, lines.length - 20);
+  const floor = Math.max(0, lines.length - windowLines);
   for (let i = lines.length - 1; i >= floor; i--) {
     if (HARNESS_ERROR_LINE.test(lines[i])) return lines[i].slice(0, 300);
   }
   return null;
+}
+
+/**
+ * Drop the partial first line of a byte-capped tail. When a read starts in the
+ * middle of a line, the fragment is not a line: a structured log whose tail
+ * starts mid-JSON must not be misread as plain text (#1321 review F3).
+ */
+export function dropPartialFirstLine(text: string): string {
+  const newline = text.indexOf('\n');
+  return newline === -1 ? '' : text.slice(newline + 1);
 }
 
 /** True when the first meaningful line is a JSON object (stream / event log). */
@@ -109,7 +119,8 @@ export function looksStructuredLog(text: string): boolean {
  *      when the run is already known failed),
  *   3. terminal result with `is_error: true`,
  *   4. stream ended without a terminal result → interrupted,
- *   5. a terminal harness error line → typed provider cause or harness_error,
+ *   5. a terminal harness error line (last 1–2 lines; wider when the process
+ *      is gone) → typed provider cause or harness_error,
  *   6. non-zero exit → nonzero_exit,
  *   7. dead process with no cause anywhere → orphaned.
  */
@@ -156,7 +167,13 @@ export function classifyTerminalStatus(evidence: TerminalEvidence): TerminalClas
     };
   }
 
-  const harnessLine = lastHarnessErrorLine(evidence.rawTail ?? '');
+  // Only a *terminal* harness line may flip a run that exited cleanly: the
+  // last 1–2 lines. An error the agent printed then recovered from is activity,
+  // not a cause (review F2). A dead process keeps the wider window so a lane
+  // that died spanning a few lines still gets its real cause.
+  const harnessLine = evidence.processGone
+    ? lastHarnessErrorLine(evidence.rawTail ?? '')
+    : lastHarnessErrorLine(evidence.rawTail ?? '', 2);
   if (harnessLine) {
     const typed = extractProviderError(evidence.provider, harnessLine);
     if (typed) {

@@ -30,6 +30,7 @@
 
 import { execSync } from 'child_process';
 import { queryExecutions, type ObservabilityRecord } from '../lib/observability.js';
+import { describeFailureCause } from '../lib/run-status.js';
 import { deriveClaudeHarnessRows, deriveOpenCodeRows } from '../lib/claude-sessions.js';
 import { listDetachedRuns } from '../lib/runs-inventory.js';
 import { formatDuration } from '../lib/executions.js';
@@ -476,6 +477,12 @@ function renderBoard(
         `${outStr ? colors.green : colors.dim}${padEnd(outStr || '—', w.out)}${RESET}` +
         `${colors.purple}${box.vertical}${RESET}`,
       );
+      // #1321: the typed cause is persisted on the row — show it, otherwise
+      // the ledger knows why a run failed and the operator does not.
+      if (r.failure_cause) {
+        const hint = describeFailureCause(r.failure_cause);
+        writeLine(`  ${colors.purple}${box.vertical}${RESET} ${colors.dim}└ ${r.failure_cause}${hint !== r.failure_cause ? ` — ${hint}` : ''}${RESET}`);
+      }
     }
     writeLine(`  ${colors.purple}${box.bottomLeft}${colors.dim}${box.horizontal.repeat(tableWidth)}${colors.purple}${box.bottomRight}${RESET}`);
     if (records.some((r) => r.cost_estimated)) {

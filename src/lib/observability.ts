@@ -12,7 +12,12 @@ import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
 import { deriveRootRunId } from './exec-events.js';
 import type { ProviderError } from './provider-errors.js';
-import { classifyTerminalStatus, looksStructuredLog, type FailureCause } from './run-status.js';
+import {
+  classifyTerminalStatus,
+  dropPartialFirstLine,
+  looksStructuredLog,
+  type FailureCause,
+} from './run-status.js';
 import {
   parseOutcomes,
   parseBashCandidates,
@@ -686,16 +691,43 @@ const ORPHAN_PIDLESS_AFTER_MS = 3 * 60 * 60 * 1000;
 function readLogTail(path: string, capBytes = 256 * 1024): string {
   try {
     const content = readFileSync(path, 'utf-8');
-    return content.length > capBytes ? content.slice(-capBytes) : content;
+    if (content.length <= capBytes) return content;
+    // Drop the partial first line of the slice so a structured log is still
+    // recognised (review F3) — a JSON fragment must never be read as prose.
+    return dropPartialFirstLine(content.slice(-capBytes));
   } catch {
     return '';
   }
 }
 
 /**
+ * Identify a run log by the start timestamp in its name
+ * (`.agents/logs/<squad>/<agent>-<epoch-ms>.log`). Returns null when the name
+ * does not carry one.
+ */
+function logStartFromName(file: string, agent: string): number | null {
+  const prefix = `${agent}-`;
+  if (!file.startsWith(prefix) || !file.endsWith('.log')) return null;
+  const raw = file.slice(prefix.length, -'.log'.length);
+  if (!/^\d+$/.test(raw)) return null;
+  return Number(raw);
+}
+
+/**
+ * A log may only be attributed to a row when its start timestamp is this close
+ * to the row's — two same-agent runs seconds apart must never share a cause.
+ */
+const MAX_LOG_START_SKEW_MS = 60_000;
+
+/**
  * Find the raw log for a running ledger row. New rows carry `log_file`; for
  * legacy rows, match the run's pid against pid-file line 1 (#1131), then fall
- * back to the log whose mtime is closest to the start row for that agent.
+ * back to a log named for this run's start.
+ *
+ * The fallback is deliberately conservative (review F1): the candidate must
+ * start within a minute of the row AND be unambiguous. If the run's own log is
+ * gone while a neighbouring run's remains, the row becomes an honest
+ * `orphaned` instead of inheriting a cause its own log never carried.
  */
 function findRunLogFile(rec: ObservabilityRecord): string | null {
   if (rec.log_file && existsSync(rec.log_file)) return rec.log_file;
@@ -725,16 +757,34 @@ function findRunLogFile(rec: ObservabilityRecord): string | null {
   }
 
   const started = new Date(rec.ts).getTime();
-  let best: { path: string; distance: number } | null = null;
+  if (!Number.isFinite(started)) return null;
+
+  const candidates: Array<{ path: string; distance: number }> = [];
   for (const f of files) {
-    if (!f.startsWith(`${rec.agent}-`) || !f.endsWith('.log')) continue;
+    if (!f.endsWith('.log')) continue;
     const path = join(dir, f);
-    try {
-      const distance = Math.abs(statSync(path).mtimeMs - started);
-      if (!best || distance < best.distance) best = { path, distance };
-    } catch { /* next */ }
+    const fromName = logStartFromName(f, rec.agent);
+    let distance: number;
+    if (fromName !== null) {
+      distance = Math.abs(fromName - started);
+    } else {
+      // A log whose name carries no start can only be matched by write time.
+      try { distance = Math.abs(statSync(path).mtimeMs - started); } catch { continue; }
+    }
+    if (distance <= MAX_LOG_START_SKEW_MS) candidates.push({ path, distance });
   }
-  return best?.path ?? null;
+  // Zero candidates → no log for this run. More than one → ambiguous; picking
+  // a neighbour would write a cause this run never produced. Either way null.
+  return candidates.length === 1 ? candidates[0].path : null;
+}
+
+/** True while a finished run's spool done-file is still waiting to be ingested. */
+function hasPendingSpool(execId: string): boolean {
+  const root = findProjectRoot();
+  if (!root) return false;
+  const dir = join(root, '.agents', 'observability', 'spool');
+  const safeId = execId.replace(/[^A-Za-z0-9_-]/g, '');
+  return existsSync(join(dir, `${safeId}.json`)) || existsSync(join(dir, `.processing-${safeId}.json`));
 }
 
 /**
@@ -755,6 +805,11 @@ export function reconcileOrphanedRuns(): ObservabilityRecord[] {
       ? !pidAlive(rec.pid)
       : now - new Date(rec.ts).getTime() > ORPHAN_PIDLESS_AFTER_MS;
     if (!dead) continue;
+    // A finished lane whose spool has not been ingested yet is not orphaned:
+    // its own wrapper reported the terminal facts, and a second terminal row
+    // written here would fight the spool's cause for the same id (review F6).
+    // The next reconcile pass ingests the spool; leave the row running now.
+    if (hasPendingSpool(rec.id)) continue;
 
     const logFile = findRunLogFile(rec);
     const logTail = logFile ? readLogTail(logFile) : '';

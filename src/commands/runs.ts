@@ -348,14 +348,24 @@ export async function outcomeRun(execId: string, projectRoot: string, json?: boo
   writeLine();
 }
 
+/**
+ * Reconcile is best-effort so a read path never dies on a ledger write, but a
+ * swallowed failure hides a broken ledger (review F4). DEBUG makes it visible
+ * on stderr, which keeps `--json` on stdout parseable.
+ */
+function debugReconcileFailure(step: string, err: unknown): void {
+  if (!process.env.DEBUG) return;
+  console.error(`[runs] ${step} failed:`, err instanceof Error ? err.message : err);
+}
+
 export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string; report?: string; outcome?: string; wait?: string | boolean }): Promise<void> {
   const projectRoot = getProjectRoot();
 
   // Reconcile before reading anything (#1321): ingest finished spools and
   // resolve dead-pid rows from their logs, so `squads runs` never reports a
   // run as running after its process is gone.
-  try { reconcileDetachedRuns(projectRoot); } catch { /* read paths stay best-effort */ }
-  try { reconcileOrphanedRuns(); } catch { /* read paths stay best-effort */ }
+  try { reconcileDetachedRuns(projectRoot); } catch (err) { debugReconcileFailure('spool reconcile', err); }
+  try { reconcileOrphanedRuns(); } catch (err) { debugReconcileFailure('orphaned-run reconcile', err); }
 
   if (options.replay) {
     replayRun(options.replay, projectRoot);

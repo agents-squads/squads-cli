@@ -338,6 +338,27 @@ describe('boardCommand', () => {
     expect(out).toContain('SQUADS_GLM_COST_PER_MTOK_IN/OUT');
   });
 
+  it('renders the typed failure cause for a failed execution (#1321 F5)', async () => {
+    const b = dayBounds()!;
+    mockQueryExecutions.mockReturnValue([
+      rec({ id: 'quota', status: 'failed', failure_cause: 'quota_exhausted', ts: new Date(b.start + 3600_000).toISOString() }),
+      rec({ id: 'timed', status: 'timeout', failure_cause: 'timeout', ts: new Date(b.start + 7200_000).toISOString() }),
+    ]);
+
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => {
+      writes.push(String(s));
+      return true;
+    });
+    await boardCommand({});
+    spy.mockRestore();
+    const out = writes.join('').replace(/\x1b\[[0-9;]*m/g, '');
+
+    // The ledger records the cause; the table must not hide it.
+    expect(out).toContain('quota_exhausted');
+    expect(out).toContain('reaped at its deadline');
+  });
+
   // ── Claude-harness merge (#1119) ────────────────────────────────────
 
   it('--json merges Claude-harness rows in, each carrying its source', async () => {

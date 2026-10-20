@@ -26,7 +26,12 @@ import { findSquadsDir, listSquads, loadSquad } from './squad-parser.js';
 import { resolveOwnedRepoRoots, harvestProviderWork } from './execution-engine.js';
 import { logObservability, type ObservabilityRecord } from './observability.js';
 import { reportExecutionComplete } from './api-client.js';
-import { classifyTerminalStatus, looksStructuredLog, type FailureCause } from './run-status.js';
+import {
+  classifyTerminalStatus,
+  dropPartialFirstLine,
+  looksStructuredLog,
+  type FailureCause,
+} from './run-status.js';
 
 export interface DetachedRun {
   squad: string;
@@ -130,7 +135,10 @@ function readLogTail(path: string, capBytes = 256 * 1024): string {
   try {
     if (!existsSync(path)) return '';
     const content = readFileSync(path, 'utf8');
-    return content.length > capBytes ? content.slice(-capBytes) : content;
+    if (content.length <= capBytes) return content;
+    // Drop the partial first line of the slice so a structured log is still
+    // recognised (review F3) — a JSON fragment must never be read as prose.
+    return dropPartialFirstLine(content.slice(-capBytes));
   } catch {
     return '';
   }

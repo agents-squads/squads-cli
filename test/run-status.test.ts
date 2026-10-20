@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyTerminalStatus,
+  dropPartialFirstLine,
   lastHarnessErrorLine,
   looksStructuredLog,
 } from '../src/lib/run-status.js';
@@ -100,6 +101,30 @@ describe('classifyTerminalStatus — boundaries', () => {
     })).toBeNull();
   });
 
+  it('does not flip a clean exit-0 plain-text run whose harness error was recovered from (F2)', () => {
+    // The error line is followed by real activity — an agent that recovered,
+    // not a harness that died. A completed run must stay completed.
+    const recovered = [
+      'reading schema',
+      'error: schema file not found, falling back to defaults',
+      'using default schema',
+      'finished 12 tasks',
+      'done',
+    ].join('\n');
+    expect(classifyTerminalStatus({
+      provider: 'aider', structured: false, rawTail: recovered, exitCode: 0,
+    })).toBeNull();
+  });
+
+  it('still fails a clean-exit run whose harness error line is terminal', () => {
+    const terminal = ['working', 'fatal: wrapper died before reporting'].join('\n');
+    const result = classifyTerminalStatus({
+      provider: 'aider', structured: false, rawTail: terminal, exitCode: 0,
+    });
+    expect(result?.status).toBe('failed');
+    expect(result?.cause).toBe('harness_error');
+  });
+
   it('never reads agent prose from a structured stream as an error', () => {
     const prose = JSON.stringify({
       type: 'result', subtype: 'success', is_error: false,
@@ -132,5 +157,12 @@ describe('terminal log helpers', () => {
     expect(looksStructuredLog('{"type":"result"}\n')).toBe(true);
     expect(looksStructuredLog('plain provider text\n')).toBe(false);
     expect(looksStructuredLog('')).toBe(false);
+  });
+
+  it('drops the partial first line of a capped tail so structure survives (F3)', () => {
+    const trimmed = dropPartialFirstLine('artial json fragment..."\n{"type":"result"}\n');
+    expect(trimmed).toBe('{"type":"result"}\n');
+    expect(looksStructuredLog(trimmed)).toBe(true);
+    expect(dropPartialFirstLine('no newline at all')).toBe('');
   });
 });
