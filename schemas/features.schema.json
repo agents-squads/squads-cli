@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/agents-squads/squads-cli/blob/main/schemas/features.schema.json",
+  "title": ".agents/features.json",
+  "description": "A repo's feature list as data. Same format for every repo kind. Beyond this schema, `squads contract validate` enforces: ids unique per file; `status: passing` needs a verification whose model differs from builder_model and whose sha exists in the repo.",
+  "type": "object",
+  "required": ["schema", "repo", "items"],
+  "properties": {
+    "schema": { "enum": [1] },
+    "repo": { "type": "string", "minLength": 1, "description": "<owner>/<repo>" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "outcome", "title", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "outcome": { "type": "string" },
+          "title": { "type": "string", "minLength": 1 },
+          "issue": { "type": "string" },
+          "spec": { "type": "string" },
+          "check": {
+            "type": "object",
+            "properties": {
+              "ci": { "type": "string", "description": "Replayable command + expected result." },
+              "live": { "type": "string", "description": "Smoke run." }
+            }
+          },
+          "consumers": { "type": "array", "items": { "type": "string" } },
+          "status": { "enum": ["failing", "passing"] },
+          "note": { "type": "string" },
+          "verifications": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["model", "builder_model", "sha", "at"],
+              "properties": {
+                "model": { "type": "string", "minLength": 1 },
+                "builder_model": { "type": "string", "minLength": 1 },
+                "sha": { "type": "string", "minLength": 1 },
+                "at": { "type": "string", "description": "ISO-8601" },
+                "run_id": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
