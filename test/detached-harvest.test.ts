@@ -110,6 +110,33 @@ describe('buildDetachedHarvestShell (cli#1126 — detached lane must never merge
     expect(git(`rev-list --count '${branch}' '^HEAD'`, root)).toBe('1');
   });
 
+  it('deletes a no-op branch even when the operator HEAD sits on an unrelated commit (#1310)', () => {
+    const baseSha = git('rev-parse HEAD', workDir);
+    // Operator checkout parked on a side commit the lane's base doesn't contain.
+    git('checkout -q -b side', root);
+    writeFileSync(join(root, 'side-only.md'), 'operator-side work\n');
+    git('add -A', root);
+    git('commit -q -m side', root);
+
+    const script = buildDetachedHarvestShell({
+      workDir, projectRoot: root, branchName: branch,
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek', logFile, baseSha,
+    });
+    execSync(`true ${script}`, { shell: '/bin/sh', cwd: root });
+
+    expect(git('branch --list ' + branch, root)).toBe('');
+  });
+
+  it('rejects a non-SHA baseSha (shell-quoted context) and falls back to HEAD', () => {
+    const script = buildDetachedHarvestShell({
+      workDir, projectRoot: root, branchName: branch,
+      squadName: 'testsquad', agentName: 'testagent', provider: 'deepseek', logFile,
+      baseSha: "x'; touch /tmp/pwned-1310; '",
+    });
+    expect(script).not.toContain('pwned');
+    expect(script).toContain("'^HEAD'");
+  });
+
   it('deletes the branch when the executor produced no changes — nothing to strand', () => {
     const trunkBefore = git('rev-parse HEAD', root);
 

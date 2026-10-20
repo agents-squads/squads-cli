@@ -1,6 +1,6 @@
 {
   "name": "squads-cli",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Run squads of AI agents from your terminal — defined in markdown, tracked in git.",
   "type": "module",
   "bin": {

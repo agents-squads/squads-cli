@@ -5,6 +5,18 @@ All notable changes to `squads-cli` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 Releases are also published as [GitHub Releases](https://github.com/agents-squads/squads-cli/releases).
 
+## [0.10.1] — 2026-10-19
+
+Security patch. No new features.
+
+### Security
+- **Secrets no longer reach event logs.** Run events are redacted at the single write point, before the events file and the API flush (private keys, token formats, URL credentials, `Authorization` headers, values from the local secret store and credential-named env vars), and every event carries a `sensitivity` level. Before this, a secret in a tool result was stored raw in the events file and flushed to the connected API. (#1303)
+- **The opencode harness runs under the same governance as the Claude harness.** It no longer runs with `--auto`: tool grants become an opencode permission config (default deny), the guardrail deny rules are mapped, and the run is wrapped in the OS sandbox (`sandbox-exec` / `bwrap`). A grant or rule that can't be expressed refuses the run. (#1308)
+- **Harvesting an agent's worktree can't run code from that worktree.** The worktree's `.git` link is checked against the one recorded at creation (harvest is refused on mismatch), and harvest git runs with hooks, fsmonitor, external diff and textconv filters disabled. (#1314)
+
+### Fixed
+- Harvest diffs against the commit the worktree was branched from, not the operator's current HEAD, so unrelated files no longer read as mass deletions and fail the run. #1314 builds on this. (#1312)
+
 ## [0.10.0] — 2026-10-14
 
 Run agents on Claude and Anthropic-compatible providers, keep their work out of your checkout, and record what each run actually did.

@@ -31,8 +31,9 @@ interface Rule {
   re: RegExp;
 }
 
-// High-confidence credential shapes (low false-positive).
-const RULES: Rule[] = [
+// High-confidence credential shapes (low false-positive). Shared with event
+// redaction (event-redact.ts), so a shape is added in one place.
+export const SECRET_RULES: readonly Rule[] = [
   { id: 'anthropic-key', type: 'secret', re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
   { id: 'openai-key', type: 'secret', re: /sk-(?:proj-)?[A-Za-z0-9]{20,}/g },
   { id: 'github-token', type: 'secret', re: /gh[pousr]_[A-Za-z0-9]{36,}/g },
@@ -63,7 +64,7 @@ export interface ScanOptions {
 /** Scan arbitrary text for secrets/PII. */
 export function scanText(text: string, opts: ScanOptions = {}): SecretFinding[] {
   const out: SecretFinding[] = [];
-  for (const rule of RULES) {
+  for (const rule of SECRET_RULES) {
     rule.re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = rule.re.exec(text)) !== null) {

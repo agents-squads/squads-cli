@@ -388,8 +388,10 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
   // opencode is the FALLBACK HARNESS (#1177, anti-lock-in): a second
   // multi-provider agentic executor so the fleet survives a broken/locked-out
   // claude CLI. `--format json` emits a structured event stream (normalized by
-  // createOpencodeStreamJsonAdapter); `--auto` approves permissions — lanes
-  // run in isolated worktrees, same containment as every other lane. Cost in
+  // createOpencodeStreamJsonAdapter). Permissions are NOT auto-approved: the
+  // runner writes a per-spawn permission config from the agent contract and
+  // wraps the spawn in the OS sandbox (opencode-governance.ts, cli#1306) —
+  // `--auto` must never come back. Cost in
   // its step_finish events is REAL provider pricing (models.dev rates), so no
   // env-rate table is needed.
   opencode: {
@@ -398,7 +400,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
     command: 'opencode',
     install: 'curl -fsSL https://opencode.ai/install.sh | bash',
     buildArgs: (prompt, opts) => {
-      const args = ['run', '--format', 'json', '--auto'];
+      const args = ['run', '--format', 'json'];
       // opencode wants `provider/model` (e.g. deepseek/deepseek-chat,
       // anthropic/claude-sonnet-5); bare names pass through for its default.
       if (opts?.model) args.push('--model', opts.model);
