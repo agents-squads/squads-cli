@@ -23,6 +23,7 @@ function isAlive(pid: number): boolean {
   }
 }
 import { reconcileDetachedRuns } from '../lib/spool.js';
+import { reconcileOrphanedRuns } from '../lib/observability.js';
 import { execEventsFile, type PersistedExecEvent } from '../lib/exec-events.js';
 import { renderPersistedEvent, parsePersistedLine } from '../lib/event-render.js';
 import { buildContextReport, renderContextReport } from '../lib/context-report.js';
@@ -349,6 +350,12 @@ export async function outcomeRun(execId: string, projectRoot: string, json?: boo
 
 export async function runsCommand(options: { json?: boolean; clean?: boolean; replay?: string; report?: string; outcome?: string; wait?: string | boolean }): Promise<void> {
   const projectRoot = getProjectRoot();
+
+  // Reconcile before reading anything (#1321): ingest finished spools and
+  // resolve dead-pid rows from their logs, so `squads runs` never reports a
+  // run as running after its process is gone.
+  try { reconcileDetachedRuns(projectRoot); } catch { /* read paths stay best-effort */ }
+  try { reconcileOrphanedRuns(); } catch { /* read paths stay best-effort */ }
 
   if (options.replay) {
     replayRun(options.replay, projectRoot);

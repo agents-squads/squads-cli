@@ -26,6 +26,7 @@ import { findSquadsDir, listSquads, loadSquad } from './squad-parser.js';
 import { resolveOwnedRepoRoots, harvestProviderWork } from './execution-engine.js';
 import { logObservability, type ObservabilityRecord } from './observability.js';
 import { reportExecutionComplete } from './api-client.js';
+import { classifyTerminalStatus, looksStructuredLog, type FailureCause } from './run-status.js';
 
 export interface DetachedRun {
   squad: string;
@@ -124,6 +125,41 @@ export interface StaleCleanupResult {
   salvaged: Array<{ squad: string; agent: string; outcome: string }>;
 }
 
+/** Tail of a run log — enough to see the terminal error line. */
+function readLogTail(path: string, capBytes = 256 * 1024): string {
+  try {
+    if (!existsSync(path)) return '';
+    const content = readFileSync(path, 'utf8');
+    return content.length > capBytes ? content.slice(-capBytes) : content;
+  } catch {
+    return '';
+  }
+}
+
+function synthesizeStaleRecord(
+  run: DetachedRun,
+  status: ObservabilityRecord['status'],
+  cause: FailureCause,
+  error: string,
+): void {
+  const record: ObservabilityRecord = {
+    ts: new Date().toISOString(),
+    id: `orphan_${run.squad}_${run.agent}_${run.startedAt}`,
+    squad: run.squad,
+    agent: run.agent,
+    provider: 'unknown',
+    model: 'unknown',
+    trigger: 'manual',
+    status,
+    duration_ms: Math.max(0, Date.now() - run.startedAt),
+    input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+    cost_usd: 0, context_tokens: 0,
+    failure_cause: cause,
+    error,
+  };
+  try { logObservability(record); } catch { /* best effort */ }
+}
+
 /**
  * Clean stale pid files; salvage crashed-in-flight runs.
  *
@@ -140,6 +176,19 @@ export async function cleanStaleRuns(projectRoot: string): Promise<StaleCleanupR
     if (run.alive) continue;
     const worktree = join(run.repoRoot, '..', '.worktrees', `${run.squad}-${run.agent}-${run.startedAt}`);
     const branch = `agent/${run.squad}/${run.agent}-${run.startedAt}`;
+    // Terminal state comes from the run's own log (#1321): a dead lane whose
+    // log carries an error line is failed with the typed cause, even if it
+    // died within seconds. Only a log with no cause at all is orphaned.
+    const logTail = readLogTail(run.logFile);
+    const failure = classifyTerminalStatus({
+      structured: looksStructuredLog(logTail),
+      resultIsError: /"is_error"\s*:\s*true/.test(logTail),
+      rawTail: logTail,
+      processGone: true,
+    });
+    const failureCause: FailureCause = failure?.cause ?? 'orphaned';
+    const failureMessage = failure?.message ?? 'orphaned: wrapper died without a terminal report';
+
     if (existsSync(worktree)) {
       let outcome = 'salvage-failed';
       try {
@@ -148,22 +197,8 @@ export async function cleanStaleRuns(projectRoot: string): Promise<StaleCleanupR
         });
         outcome = harvest.outcome;
       } catch { /* recorded below either way */ }
-      const errorMsg = `orphaned: wrapper died before reporting; worktree salvage: ${outcome}`;
-      const record: ObservabilityRecord = {
-        ts: new Date().toISOString(),
-        id: `orphan_${run.squad}_${run.agent}_${run.startedAt}`,
-        squad: run.squad,
-        agent: run.agent,
-        provider: 'unknown',
-        model: 'unknown',
-        trigger: 'manual',
-        status: 'failed',
-        duration_ms: 0,
-        input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
-        cost_usd: 0, context_tokens: 0,
-        error: errorMsg,
-      };
-      try { logObservability(record); } catch { /* best effort */ }
+      const errorMsg = `${failureMessage}; worktree salvage: ${outcome}`;
+      synthesizeStaleRecord(run, 'failed', failureCause, errorMsg);
       // Backstop (#1131): the wrapper died before it ever reached the spool
       // writer, so this is the ONLY chance the API's execution row hears
       // about it — without this it sits at 'running' forever. Only fires
@@ -173,6 +208,13 @@ export async function cleanStaleRuns(projectRoot: string): Promise<StaleCleanupR
         void reportExecutionComplete(run.executionId, 'failed', { error: errorMsg });
       }
       result.salvaged.push({ squad: run.squad, agent: run.agent, outcome });
+    } else if (run.executionId) {
+      // No worktree to salvage, but the wrapper recorded this run's API id:
+      // resolve the row from evidence instead of leaving it running forever.
+      const status: ObservabilityRecord['status'] = failureCause === 'orphaned' ? 'orphaned' : 'failed';
+      const errorMsg = `${failureMessage}; no worktree left to salvage`;
+      synthesizeStaleRecord(run, status, failureCause, errorMsg);
+      void reportExecutionComplete(run.executionId, status === 'failed' ? 'failed' : 'orphaned', { error: errorMsg });
     }
     try {
       unlinkSync(run.pidFile);

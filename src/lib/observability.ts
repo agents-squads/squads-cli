@@ -12,6 +12,7 @@ import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
 import { deriveRootRunId } from './exec-events.js';
 import type { ProviderError } from './provider-errors.js';
+import { classifyTerminalStatus, looksStructuredLog, type FailureCause } from './run-status.js';
 import {
   parseOutcomes,
   parseBashCandidates,
@@ -54,6 +55,17 @@ export interface ObservabilityRecord {
   // OS pid of the run's process (start events) — what the orphan reaper
   // checks liveness against. Absent on rows predating the ledger.
   pid?: number;
+  // Raw executor log for a background lane (start events). The orphan reaper
+  // reads it to classify a dead-pid row from evidence before calling it
+  // orphaned (#1321). Absent on foreground rows and pre-#1321 rows; the reaper
+  // falls back to scanning `.agents/logs/<squad>/`.
+  log_file?: string;
+  // Typed terminal cause when the run failed (#1321) — a provider class
+  // (plan_expired, quota_exhausted, auth_invalid, rate_limited, overloaded,
+  // bad_request, network) when its evidence names one, else harness_error,
+  // interrupted, nonzero_exit, timeout, or orphaned. Absent on completed and
+  // legacy rows.
+  failure_cause?: FailureCause;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -614,6 +626,8 @@ export function logRunStarted(rec: {
   pid?: number;
   task?: string;
   brief?: string;
+  /** Background lane's raw executor log — read by the reaper on a dead pid. */
+  logFile?: string;
 }): void {
   logObservability({
     ts: new Date().toISOString(),
@@ -625,6 +639,7 @@ export function logRunStarted(rec: {
     trigger: rec.trigger,
     status: 'running',
     pid: rec.pid,
+    log_file: rec.logFile,
     task: rec.task,
     brief: rec.brief,
     duration_ms: 0,
@@ -667,9 +682,67 @@ function pidAlive(pid: number): boolean {
 // the API-side sweeper gives (longest legitimate run observed ~85min).
 const ORPHAN_PIDLESS_AFTER_MS = 3 * 60 * 60 * 1000;
 
+/** Tail of a log file (cap matches the spool's executor-tail read). */
+function readLogTail(path: string, capBytes = 256 * 1024): string {
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return content.length > capBytes ? content.slice(-capBytes) : content;
+  } catch {
+    return '';
+  }
+}
+
 /**
- * Reap running rows whose process is gone: append an 'orphaned' terminal
- * event locally and report it to the API (fire-and-forget). Returns the
+ * Find the raw log for a running ledger row. New rows carry `log_file`; for
+ * legacy rows, match the run's pid against pid-file line 1 (#1131), then fall
+ * back to the log whose mtime is closest to the start row for that agent.
+ */
+function findRunLogFile(rec: ObservabilityRecord): string | null {
+  if (rec.log_file && existsSync(rec.log_file)) return rec.log_file;
+  const root = findProjectRoot();
+  if (!root) return null;
+  const dir = join(root, '.agents', 'logs', rec.squad);
+  if (!existsSync(dir)) return null;
+
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return null;
+  }
+
+  if (rec.pid) {
+    for (const f of files) {
+      if (!f.endsWith('.pid')) continue;
+      try {
+        const pid = parseInt(readFileSync(join(dir, f), 'utf-8').split('\n')[0].trim(), 10);
+        if (pid === rec.pid) {
+          const log = join(dir, f.replace(/\.pid$/, '.log'));
+          if (existsSync(log)) return log;
+        }
+      } catch { /* torn pid file — try the next one */ }
+    }
+  }
+
+  const started = new Date(rec.ts).getTime();
+  let best: { path: string; distance: number } | null = null;
+  for (const f of files) {
+    if (!f.startsWith(`${rec.agent}-`) || !f.endsWith('.log')) continue;
+    const path = join(dir, f);
+    try {
+      const distance = Math.abs(statSync(path).mtimeMs - started);
+      if (!best || distance < best.distance) best = { path, distance };
+    } catch { /* next */ }
+  }
+  return best?.path ?? null;
+}
+
+/**
+ * Reap running rows whose process is gone. The terminal state comes from the
+ * row's OWN log (#1321): a dead lane whose log shows a provider/harness error
+ * is `failed` with the typed cause — even when it died within seconds — and
+ * only a log with no cause at all becomes `orphaned`. Appends the terminal
+ * event locally and mirrors it to the API (fire-and-forget). Returns the
  * folded, post-reap view so callers render truth in the same pass.
  */
 export function reconcileOrphanedRuns(): ObservabilityRecord[] {
@@ -683,22 +756,39 @@ export function reconcileOrphanedRuns(): ObservabilityRecord[] {
       : now - new Date(rec.ts).getTime() > ORPHAN_PIDLESS_AFTER_MS;
     if (!dead) continue;
 
-    const orphanRow: ObservabilityRecord = {
+    const logFile = findRunLogFile(rec);
+    const logTail = logFile ? readLogTail(logFile) : '';
+    const terminal = classifyTerminalStatus({
+      provider: rec.provider,
+      structured: looksStructuredLog(logTail),
+      resultIsError: /"is_error"\s*:\s*true/.test(logTail),
+      rawTail: logTail,
+      processGone: true,
+    });
+    const status: ObservabilityRecord['status'] = terminal?.status === 'failed' ? 'failed' : 'orphaned';
+    const failureCause: FailureCause = terminal?.cause ?? 'orphaned';
+    const error = terminal?.message ?? (rec.pid
+      ? `orphaned: pid ${rec.pid} gone without a terminal report`
+      : 'orphaned: no pid and no terminal report within 3h');
+
+    const terminalRow: ObservabilityRecord = {
       ...rec,
       ts: new Date().toISOString(),
-      status: 'orphaned',
+      status,
       duration_ms: Math.max(0, now - new Date(rec.ts).getTime()),
-      error: rec.pid
-        ? `orphaned: pid ${rec.pid} gone without a terminal report`
-        : 'orphaned: no pid and no terminal report within 3h',
+      failure_cause: failureCause,
+      error,
     };
-    logObservability(orphanRow);
-    rec.status = orphanRow.status;
-    rec.error = orphanRow.error;
+    logObservability(terminalRow);
+    rec.status = terminalRow.status;
+    rec.error = terminalRow.error;
+    rec.failure_cause = terminalRow.failure_cause;
     // Mirror to the API so Postgres converges without waiting for its own
     // 3h sweep. Lazy import avoids a cycle (api-client → auth → …).
     void import('./api-client.js')
-      .then(m => m.reportExecutionComplete(rec.id, 'orphaned', { error: orphanRow.error, squad: rec.squad, agent: rec.agent }))
+      .then(m => m.reportExecutionComplete(rec.id, status === 'failed' ? 'failed' : 'orphaned', {
+        error, squad: rec.squad, agent: rec.agent,
+      }))
       .catch(() => {});
   }
 
