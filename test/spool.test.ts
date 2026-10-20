@@ -861,7 +861,8 @@ describe('kimi-code harness reconcile (#1309)', () => {
     expect(rec.output_tokens).toBe(8);
     expect(rec.cache_read_tokens).toBe(500);
     expect(rec.cost_usd).toBe(0);
-    expect(rec.billing).toBe('subscription');
+    expect(rec.billing?.kind).toBe('subscription');
+    expect(rec.billing?.usd).toBe(0);
     expect(rec.session_id).toBe(SESSION);
     expect(rec.actions).toBe(3);
     expect(rec.files_edited).toBe(1);
@@ -882,7 +883,7 @@ describe('kimi-code harness reconcile (#1309)', () => {
     const [rec] = readExecutionsJsonl();
     expect(rec.status).toBe('completed');
     expect(rec.input_tokens).toBe(0);
-    expect(rec.billing).toBe('subscription');
+    expect(rec.billing?.kind).toBe('subscription');
   });
 
   it('a run cut off before resume_hint reconciles as failed', () => {

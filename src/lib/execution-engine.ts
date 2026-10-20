@@ -21,7 +21,7 @@ import {
   type Squad,
 } from './squad-parser.js';
 import { parseAgentFrontmatter, type ContextStats } from './run-context.js';
-import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createKimiStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, execEventsFile, runStartFields } from './exec-events.js';
+import { ExecEventFlusher, ExecEventWriter, createClaudeStreamJsonAdapter, createKimiStreamJsonAdapter, createOpencodeStreamJsonAdapter, deriveRootRunId, deriveLifecycleTimingsForRun, execEventsFile, runStartFields } from './exec-events.js';
 import { detectKimiAuthError, parseKimiJson, parseKimiLine, readKimiSessionUsage, extractKimiSessionId, kimiContentText } from './kimi-code.js';
 import { KimiGovernanceError, assessKimiGrants, compileKimiWriteDenies, resolveKimiSandbox } from './kimi-code-governance.js';
 import { compileAllowedTools } from './agent-contract.js';
@@ -52,6 +52,7 @@ import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
+import { computeBilling } from './billing.js';
 import { classifyFailedRun, type ProviderError } from './provider-errors.js';
 import {
   buildSandboxSettings, buildLanePermissions, trustedLaneDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
@@ -2271,6 +2272,21 @@ export async function executeWithProvider(
             : kimiStream ? kimiStream.outcomes : null;
         const kimiSid = cliConfig.kimiCodeJson ? extractKimiSessionId(outputTail) : undefined;
         const kimiWire = kimiSid ? readKimiSessionUsage(kimiSid) : null;
+        // Billing + lifecycle timings (#1355): billing is provider-correct and
+        // data-driven; the lifecycle timestamps come from the run's events file
+        // (written live above) with `endedAt` set here — run_end lands after this
+        // terminal row.
+        const billing = computeBilling({
+          provider,
+          model: streamModel || kimiWire?.model || options.model || undefined,
+          harness: cliConfig.kimiCodeJson ? 'kimi-code' : cliConfig.opencodeJson ? 'opencode' : 'claude',
+          input_tokens: usage?.input_tokens || 0,
+          output_tokens: usage?.output_tokens || 0,
+          cache_read_tokens: kimiWire?.cache_read_tokens || 0,
+          cache_write_tokens: kimiWire?.cache_write_tokens || 0,
+        });
+        const lifecycle = deriveLifecycleTimingsForRun(execEventsFile(dispatchRoot, executionId));
+        lifecycle.endedAt = new Date().toISOString();
         logObservability({
           ts: new Date().toISOString(),
           id: executionId,
@@ -2287,7 +2303,9 @@ export async function executeWithProvider(
           cache_write_tokens: kimiWire?.cache_write_tokens || 0,
           cost_usd: usage?.cost_usd || 0,
           context_tokens: 0,
-          ...(cliConfig.kimiCodeJson ? { billing: 'subscription' as const, ...(kimiSid ? { session_id: kimiSid } : {}) } : {}),
+          billing,
+          ...lifecycle,
+          ...(kimiSid ? { session_id: kimiSid } : {}),
           brief: options.task?.slice(0, BRIEF_MAX_CHARS),
           ...(streamOutcomes && streamOutcomes.actions > 0 ? {
             actions: streamOutcomes.actions,
