@@ -13,6 +13,7 @@
 | `squads domains` | Per-domain scorecard: goals, delivered (merged PRs + closed issues), in flight |
 | `squads pause <squad>` | Pause a squad — run/org/cron dispatch will refuse until resumed |
 | `squads resume <squad>` | Resume a paused squad |
+| `squads env` | View what a squad run uses: tool integrations (MCP), skills, model, and cost budget |
 | `squads env show <squad>` | Show execution environment for a squad |
 | `squads env prompt <squad>` | Output ready-to-use prompt for Claude Code execution |
 | `squads dashboard [name]` | Show dashboards. Use "squads dash" for overview, "squads dash <name>" for specific dashboard, "squads dash --list" to see all. |
@@ -23,13 +24,16 @@
 | `squads audit` | Audit the org root: classify every unit (git, self-description, metric, delivery, activity, docs facts, names). Read-only. |
 | `squads doctor` | Check local tools, auth, and project readiness |
 | `squads plan` | Roadmap from the plan-of-record issue: done / ready / blocked, with blockers |
+| `squads goal` | Manage squad goals |
 | `squads goal set <squad> <description>` | Set a goal for a squad |
 | `squads goal list [squad]` | List goals for squad(s) |
 | `squads goal complete <squad> <index>` | Mark a goal as completed |
 | `squads goal progress <squad> <index> <progress>` | Update goal progress |
+| `squads feedback` | Record and view execution feedback |
 | `squads feedback add <squad> <rating> <feedback>` | Add feedback for last execution (rating 1-5) |
 | `squads feedback show <squad>` | Show feedback history |
 | `squads feedback stats` | Show feedback summary across all squads |
+| `squads memory` | Query and manage squad memory |
 | `squads memory query <query>` | Search across all squad memory |
 | `squads memory read <squad>` | Show memory for a squad |
 | `squads memory write <squad> <content>` | Add to squad memory |
@@ -41,12 +45,14 @@
 | `squads whoami` | Show current logged in user |
 | `squads contract validate` | Derive + validate every agent contract; non-zero exit on any violation |
 | `squads brief` | Morning catch-up: delivered work, pending approvals, active agents |
+| `squads config` | View and switch environment configuration (local, staging, prod) |
 | `squads config use <env>` | Switch to a named environment (local, staging, prod) |
 | `squads config show` | Show current environment config and resolved URLs |
 | `squads providers` | Show available LLM CLI providers (claude, gemini, codex, etc.) |
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
 | `squads runs` | List live background agent runs (pid-file inventory) |
+| `squads runs annotate` | Attach gate result or review verdict to the run that produced a commit |
 | `squads inbox [action] [id]` | Everything waiting on a human decision — list, or approve/reject/defer <id> |
 | `squads propose` | Draft one extra deliverable on a proposal branch you review before it lands — scoped, and never leaves your machine |
 | `squads scoreboard` | Compare models and executors by quality per cost, with the source of every number shown (read-only) |

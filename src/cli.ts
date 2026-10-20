@@ -69,6 +69,7 @@ import { registerGoalsCommand } from './commands/goals.js';
 import { registerCredentialsCommand } from './commands/credentials.js';
 import { registerReviewCommand } from './commands/review.js';
 import { registerBriefCommand } from './commands/brief.js';
+import { registerRunsCommand } from './commands/runs-register.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1368,19 +1369,7 @@ program
 // Detached-run inventory + control (containment D4): list live background
 // runs from pid files, stop one gracefully (executor first, wrapper survives
 // to harvest + report), clean stale/orphaned leftovers.
-program
-  .command('runs')
-  .description('List live background agent runs (pid-file inventory)')
-  .option('--json', 'Output as JSON')
-  .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
-  .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
-  .option('--report <execId>', 'Context-economy report for a finished run (per-agent cost, cache hits, per-layer)')
-  .option('--outcome <execId>', 'Did the run\'s output land? Resolve its PRs/issues live: merged/open/closed')
-  .option('--wait [runId]', 'Block until a background run ends, then print a summary (default: newest live run)')
-  .action(async (options) => {
-    const { runsCommand } = await import('./commands/runs.js');
-    return runsCommand(options);
-  });
+registerRunsCommand(program);
 
 // Review queue (#924 list, #933 decision verbs): everything waiting on a
 // human, one screen — and the three things a human can say to each item.

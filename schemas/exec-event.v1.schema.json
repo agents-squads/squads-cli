@@ -108,6 +108,12 @@
         },
         {
           "$ref": "#/$defs/truncated"
+        },
+        {
+          "$ref": "#/$defs/gate_result"
+        },
+        {
+          "$ref": "#/$defs/review_verdict"
         }
       ]
     }
@@ -646,6 +652,77 @@
           "minimum": 0
         },
         "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "gate_result": {
+      "type": "object",
+      "required": [
+        "type",
+        "ok",
+        "newFailures",
+        "tests",
+        "sha"
+      ],
+      "properties": {
+        "type": {
+          "const": "gate_result"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "newFailures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tests": {
+          "type": "string",
+          "description": "Passed/total test count, e.g. '3104/3109'"
+        },
+        "prUrl": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        }
+      }
+    },
+    "review_verdict": {
+      "type": "object",
+      "required": [
+        "type",
+        "pr",
+        "verdict",
+        "findings",
+        "sha"
+      ],
+      "properties": {
+        "type": {
+          "const": "review_verdict"
+        },
+        "pr": {
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "findings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "severity": {
+          "type": "string"
+        },
+        "reviewerRunId": {
+          "type": "string"
+        },
+        "sha": {
           "type": "string"
         }
       }

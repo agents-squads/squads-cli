@@ -3,7 +3,7 @@
  * (hq#450 D4). Completes the containment loop: spool records what happened,
  * the watchdog bounds it, this surfaces it.
  */
-import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
+import { readdirSync, readFileSync, existsSync, statSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { getProjectRoot } from '../lib/run-utils.js';
 import {
@@ -457,5 +457,216 @@ export async function killCommand(target: string | undefined, options: { all?: b
       ? 'executor stopped — wrapper will harvest + report'
       : res.method === 'wrapper-term' ? 'wrapper stopped' : 'was not running';
     writeLine(`  ${colors.yellow}kill${RESET} ${run.squad}/${run.agent} ${colors.dim}pid ${run.pid} — ${how}${RESET}`);
+  }
+}
+
+interface AnnotateOptions {
+  commit: string;
+  gate?: 'pass' | 'fail';
+  tests?: string;
+  newFailures?: string;
+  pr?: string;
+  verdict?: string;
+  findings?: string;
+  severity?: string;
+  reviewerRunId?: string;
+  json?: boolean;
+}
+
+/**
+ * `squads runs annotate` — attach gate result or review verdict to the run
+ * that produced a given commit. The event is appended to the run's events file.
+ */
+export async function annotateRunCommand(options: AnnotateOptions): Promise<void> {
+  const projectRoot = getProjectRoot();
+  const eventsDir = join(projectRoot, '.agents', 'observability', 'events');
+
+  if (!existsSync(eventsDir)) {
+    const msg = `No events directory found at ${eventsDir}`;
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  // Find the run whose artifact event has kind: commit, ref: <sha>
+  let targetRunId: string | null = null;
+
+  try {
+    const files = readdirSync(eventsDir).filter((f) => f.endsWith('.jsonl'));
+    for (const file of files) {
+      const runId = file.replace(/\.jsonl$/, '');
+      const filePath = join(eventsDir, file);
+      const lines = readFileSync(filePath, 'utf8').split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line) as PersistedExecEvent;
+          if (ev.event && ev.event.type === 'artifact') {
+            const artifact = ev.event as { kind?: string; ref?: string };
+            if (artifact.kind === 'commit' && artifact.ref?.includes(options.commit)) {
+              targetRunId = runId;
+              break;
+            }
+          }
+        } catch { /* malformed line, skip */ }
+      }
+      if (targetRunId) break;
+    }
+  } catch {
+    const msg = `Failed to read events directory`;
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  if (!targetRunId) {
+    const msg = `No run found that produced commit ${options.commit}`;
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  // Validate mutually exclusive options
+  const hasGate = !!options.gate;
+  const hasVerdict = !!options.verdict;
+  if (hasGate && hasVerdict) {
+    const msg = 'Cannot specify both --gate and --verdict; choose one';
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
+  }
+  if (!hasGate && !hasVerdict) {
+    const msg = 'Must specify either --gate (pass|fail) or --verdict (PASS|FAIL)';
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
+  }
+
+  // `--verdict` is free-form at the CLI; only PASS/FAIL are meaningful to the
+  // review_verdict event schema. Upper-case the input so `--verdict pass` is
+  // accepted, and reject anything that isn't one of the two values.
+  let verdict: 'PASS' | 'FAIL' | undefined;
+  if (hasVerdict) {
+    const normalized = (options.verdict ?? '').toUpperCase();
+    if (normalized === 'PASS' || normalized === 'FAIL') {
+      verdict = normalized;
+    } else {
+      const msg = `--verdict must be PASS or FAIL (got "${options.verdict}")`;
+      if (options.json) {
+        writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+      }
+      process.exit(1);
+    }
+  }
+
+  // Build the event
+  let newEvent: PersistedExecEvent['event'];
+  const now = new Date().toISOString();
+
+  if (hasGate) {
+    if (!options.tests) {
+      const msg = '--gate requires --tests (e.g. 3104/3109)';
+      if (options.json) {
+        writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+      }
+      process.exit(1);
+    }
+    const newFailures = options.newFailures ? options.newFailures.split(',').map(s => s.trim()).filter(Boolean) : [];
+    newEvent = {
+      type: 'gate_result',
+      ok: options.gate === 'pass',
+      newFailures,
+      tests: options.tests,
+      ...(options.pr ? { prUrl: options.pr } : {}),
+      sha: options.commit,
+    };
+  } else {
+    if (!options.findings) {
+      const msg = '--verdict requires --findings (number of findings)';
+      if (options.json) {
+        writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+      }
+      process.exit(1);
+    }
+    const findings = parseInt(options.findings, 10);
+    if (isNaN(findings) || findings < 0) {
+      const msg = '--findings must be a non-negative integer';
+      if (options.json) {
+        writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+      }
+      process.exit(1);
+    }
+    newEvent = {
+      type: 'review_verdict',
+      pr: options.pr || '',
+      verdict: verdict!, // validated + normalized above
+      findings,
+      ...(options.severity ? { severity: options.severity } : {}),
+      ...(options.reviewerRunId ? { reviewerRunId: options.reviewerRunId } : {}),
+      sha: options.commit,
+    };
+  }
+
+  // Append to the run's events file
+  const filePath = execEventsFile(projectRoot, targetRunId);
+  try {
+    // Read existing events to get the next seq
+    let seq = 0;
+    if (existsSync(filePath)) {
+      const existing = readFileSync(filePath, 'utf8');
+      for (let i = 0; i < existing.length; i++) {
+        if (existing.charCodeAt(i) === 10) seq++;
+      }
+    }
+
+    const line: PersistedExecEvent = {
+      schema_version: 1,
+      v: 2,
+      runId: targetRunId,
+      seq,
+      ts: now,
+      event: newEvent,
+    };
+
+    const serialized = JSON.stringify(line) + '\n';
+    appendFileSync(filePath, serialized);
+
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: true, runId: targetRunId, event: newEvent }, null, 2));
+    } else {
+      const eventType = newEvent.type === 'gate_result' ? 'gate_result' : 'review_verdict';
+      writeLine(`  ${colors.green}Appended ${eventType} to run ${targetRunId}${RESET}`);
+    }
+  } catch (err) {
+    const msg = `Failed to write event: ${err instanceof Error ? err.message : String(err)}`;
+    if (options.json) {
+      writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+    } else {
+      writeLine(`  ${colors.red}${msg}${RESET}`);
+    }
+    process.exit(1);
   }
 }
