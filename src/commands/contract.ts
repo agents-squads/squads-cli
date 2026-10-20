@@ -13,7 +13,8 @@ import type { Command } from 'commander';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
-import { findSquadsDir, listSquads, loadSquad } from '../lib/squad-parser.js';
+import { findProjectRoot, findSquadsDir, listSquads, loadSquad } from '../lib/squad-parser.js';
+import { analyzeFeatures, resolveOrgRoot } from '../lib/features.js';
 import {
   contractFromAgentFile,
   validateContract,
@@ -38,8 +39,23 @@ export function registerContractCommand(program: Command): void {
     .command('validate')
     .description('Derive + validate every agent contract; non-zero exit on any violation')
     .option('--squad <name>', 'validate a single squad')
+    .option('--features [root]', 'validate .agents/features.json files (and the roadmap) under an org root instead of agent contracts')
     .option('--json', 'machine-readable output')
-    .action((opts: { squad?: string; json?: boolean }) => {
+    .action((opts: { squad?: string; json?: boolean; features?: string | boolean }) => {
+      if (opts.features !== undefined) {
+        const root = resolveOrgRoot(typeof opts.features === 'string' ? opts.features : undefined, findProjectRoot(), process.cwd());
+        const view = analyzeFeatures(root);
+        if (opts.json) {
+          console.log(JSON.stringify({ root: view.root, files: view.files, problems: view.problems }, null, 2));
+        } else if (!view.configured) {
+          console.log(view.hint);
+        } else {
+          for (const p of view.problems) console.log(`✗ ${p.file}: ${p.message}`);
+          console.log(`\n${view.totals.valid_files}/${view.totals.files} feature lists valid${view.problems.length ? ` — ${view.problems.length} problem(s)` : ''}.`);
+        }
+        process.exitCode = view.problems.length > 0 ? 1 : 0;
+        return;
+      }
       const squadsDir = findSquadsDir();
       if (!squadsDir) {
         console.error('No .agents/squads directory found — run from a squads project.');

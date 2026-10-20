@@ -895,3 +895,177 @@ describe('kimi-code harness reconcile (#1309)', () => {
     expect(String(rec.error)).toContain('without a terminal result');
   });
 });
+
+// ── #1298: typed provider errors on runs ────────────────────────────────────
+// A GLM lane that died on an expired coding plan used to be recorded as
+// `detached run exited with code 1`. The class now rides the ledger row and the
+// events file so consoles and the inbox can switch on it.
+describe('typed provider errors on detached runs (#1298)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const GLM_1309 = 'API Error: 429 {"error":{"code":"1309","message":"Your Coding Plan package has expired, please renew."}}';
+
+  function writeErrorStreamLog(resultText: string): void {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'starting' }], model: 'glm-4.7' } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: resultText, is_error: true, total_cost_usd: 0,
+        num_turns: 1, model: 'glm-4.7', usage: { input_tokens: 0, output_tokens: 0 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+  }
+
+  it('records plan_expired in the ledger and an error event, not just exit 1', () => {
+    writeErrorStreamLog(GLM_1309);
+    writeSpoolFile({ execId: 'exec_glm_1309', provider: 'glm', model: 'glm-4.7', exitCode: 1 });
+    reconcileDetachedRuns(root);
+
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toMatchObject({
+      type: 'plan_expired', retryable: false, provider: 'glm', status: 429, providerCode: '1309',
+    });
+    expect(String(rec.error)).toContain('plan_expired');
+    expect(String(rec.error)).not.toBe('detached run exited with code 1');
+
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_glm_1309.jsonl');
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const err = events.find((e) => e.event.type === 'error');
+    expect(err?.event).toMatchObject({ errorType: 'plan_expired', retryable: false, provider: 'glm' });
+    expect(events[events.length - 1].event.type).toBe('run_end');
+  });
+
+  it('classifies a plain-text provider log (non-stream) that exits 1', () => {
+    writeFileSync(join(root, 'run.log'),
+      'litellm.AuthenticationError: {"error":{"message":"Authentication Fails","type":"authentication_error"}} status 401\n');
+    writeSpoolFile({ execId: 'exec_plain_401', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.provider_error).toMatchObject({ type: 'auth_invalid', retryable: false });
+  });
+
+  it('adds no provider_error to a failed run with no provider evidence', () => {
+    writeFileSync(join(root, 'run.log'), 'plain output, then it just died\n');
+    writeSpoolFile({ execId: 'exec_no_evidence', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toBeUndefined();
+    expect(rec.error).toBe('detached run exited with code 1');
+  });
+
+  it('does not classify a failed non-stream log whose prose merely mentions HTTP 401 (review of #1333)', () => {
+    writeFileSync(join(root, 'run.log'), 'Documented HTTP 401 handling: the request was unauthorized. Then it died.\n');
+    writeSpoolFile({ execId: 'exec_prose_401', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toBeUndefined();
+  });
+
+  it('never classifies a completed run, even when its prose mentions rate limits', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2,
+        result: 'Documented the 429 rate limit handling and the plan expiry runbook.',
+        model: 'glm-4.7', usage: { input_tokens: 10, output_tokens: 5 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_prose', provider: 'glm', model: 'glm-4.7', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+    expect(rec.provider_error).toBeUndefined();
+  });
+});
+
+// ── #1321: terminal status from evidence, typed failure causes ─────────────
+describe('terminal status from evidence (#1321)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    // Hermetic HOME so session usage can't muddy the fixture's status.
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('fixture 1: stream-json result success + is_error true + terminal_reason api_error → failed/provider cause', () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }], model: 'claude-sonnet-5' } }),
+      JSON.stringify({
+        type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error',
+        result: 'API Error: Your account plan has expired', num_turns: 2,
+        model: 'claude-sonnet-5', usage: { input_tokens: 100, output_tokens: 20 },
+      }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_1321_api', provider: 'anthropic', model: 'sonnet', harness: 'claude', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.failure_cause).toBe('plan_expired');
+    expect(rec.provider_error?.type).toBe('plan_expired');
+    expect(String(rec.error)).toMatch(/plan_expired|plan has expired/i);
+  });
+
+  it('fixture 2: Kimi 429 on its first second → failed/quota_exhausted even at exit 0', () => {
+    writeFileSync(join(root, 'run.log'),
+      'error: failed to run prompt: provider.api_error: 429 exceeded your current quota, please check your plan\n');
+    writeSpoolFile({ execId: 'exec_1321_kimi', provider: 'kimi-code', model: 'kimi-k3', harness: 'kimi-code', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.failure_cause).toBe('quota_exhausted');
+    expect(rec.provider_error?.type).toBe('quota_exhausted');
+    expect(String(rec.error)).toContain('429');
+  });
+
+  it('fixture 3: opencode step_finish with no terminal stop and no harvest line → failed/interrupted', () => {
+    const oc = (type: string, part: Record<string, unknown>) =>
+      JSON.stringify({ type, timestamp: 1, sessionID: 'ses_cut', part });
+    writeFileSync(join(root, 'run.log'), [
+      oc('step_start', { id: 'p1', type: 'step-start' }),
+      oc('tool_use', { type: 'tool', tool: 'read', callID: 'c1', state: {
+        status: 'completed', input: { filePath: '/repo/a.ts' }, output: 'x', title: 't', time: { start: 1, end: 2 } } }),
+      oc('step_finish', { id: 'p2', reason: 'tool-calls', type: 'step-finish',
+        tokens: { input: 100, output: 5, reasoning: 0, cache: { write: 0, read: 0 } }, cost: 0 }),
+    ].join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_1321_oc', provider: 'opencode', model: 'x', harness: 'opencode', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.failure_cause).toBe('interrupted');
+    expect(String(rec.error)).toContain('without a terminal result');
+  });
+
+  it('a clean result with is_error: false stays completed (no invented failure)', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done',
+        total_cost_usd: 0.01, num_turns: 1, model: 'claude-haiku-4-5',
+        usage: { input_tokens: 10, output_tokens: 2 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_1321_ok', provider: 'anthropic', model: 'haiku', harness: 'claude', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+    expect(rec.failure_cause).toBeUndefined();
+  });
+});

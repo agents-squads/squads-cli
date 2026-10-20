@@ -17,6 +17,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync, renameSync } from 'fs';
 import { join } from 'path';
 import { getCLIConfig, detectProviderFatalError } from './llm-clis.js';
+import { classifyFailedRun, type ProviderError } from './provider-errors.js';
+import { classifyTerminalStatus, type FailureCause } from './run-status.js';
 import {
   logObservability,
   captureSessionUsage,
@@ -186,6 +188,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     ? 'timeout'
     : spool.exitCode === 0 ? 'completed' : 'failed';
   let fatalError: string | undefined;
+  let failureCause: FailureCause | undefined;
   /** Agent's final message, when the stream carried one (#1131 result.summary). */
   let resultSummary: string | undefined;
 
@@ -309,7 +312,8 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     cacheWrite = stream.usage.cache_write_tokens;
     if (stream.usage.model) model = stream.usage.model;
   } else if (nonAnthropic) {
-    // Legacy non-stream-json provider log (aider/plain-text) — usage only.
+    // Legacy non-stream-json provider log (aider/plain-text) — usage only,
+    // plus the #936 fatal-signature scan for a run that still exited 0.
     const tail = rawLog || (spool.logFile ? readLogTail(spool.logFile) : '');
     const fatal = tail ? detectProviderFatalError(tail) : null;
     if (fatal && status === 'completed') { status = 'failed'; fatalError = fatal; }
@@ -318,6 +322,53 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
       const usage = parse(tail);
       if (usage) { input = usage.input_tokens; output = usage.output_tokens; cost = usage.cost_usd; }
     }
+  }
+
+  // ── (2b) Terminal state from evidence, typed (#1321 / #1298) ──────────────
+  // The exit code alone is not status. This reads provider evidence (result
+  // is_error, fatal line, stderr, plain-text tail when the run is known failed)
+  // and also names the non-provider endings: interrupted stream, harness error
+  // line, non-zero exit, dead process.
+  const terminal = classifyTerminalStatus({
+    provider: spool.provider || 'anthropic',
+    structured: hasStreamEvidence,
+    resultText: stream?.sawResult ? stream.text : undefined,
+    resultIsError: !!(stream?.sawResult && stream.isError),
+    fatal: fatalError,
+    rawTail: rawLog,
+    missingTerminalResult: !!hasStreamEvidence && !!stream && !stream.sawResult,
+    exitCode: spool.exitCode,
+    timedOut: spool.timedOut,
+    knownFailed: status === 'failed',
+  });
+
+  const providerError: ProviderError | null = terminal?.providerError ?? (status === 'failed'
+    ? classifyFailedRun({
+      provider: spool.provider || 'anthropic',
+      structured: hasStreamEvidence,
+      resultText: stream?.sawResult ? stream.text : undefined,
+      resultIsError: !!(stream?.sawResult && stream.isError),
+      fatal: fatalError,
+      rawTail: rawLog,
+    })
+    : null);
+
+  if (terminal) {
+    if (status !== 'timeout') {
+      status = terminal.status === 'orphaned' ? 'failed' : terminal.status;
+      // Keep the legacy `detached run exited with code N` line for a plain
+      // non-zero exit; it is what operators already grep for.
+      if (terminal.cause !== 'nonzero_exit' || fatalError) fatalError = terminal.message;
+    }
+    failureCause = terminal.cause;
+  }
+  if (providerError && !failureCause) failureCause = providerError.type as FailureCause;
+  if (status === 'failed' && !failureCause) {
+    failureCause = stream && !stream.sawResult
+      ? 'interrupted'
+      : stream?.sawResult && stream.isError
+        ? 'harness_error'
+        : spool.exitCode !== 0 ? 'nonzero_exit' : 'harness_error';
   }
 
   // ── (3) Event normalization — any provider whose log is stream-json ───────
@@ -330,7 +381,15 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
         durationMs,
         totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
         outcomes,
-      }, spool.provider, harness);
+      }, spool.provider, harness, providerError ? {
+        type: 'error',
+        errorType: providerError.type,
+        retryable: providerError.retryable,
+        message: providerError.message,
+        provider: providerError.provider,
+        ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+        ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+      } : undefined);
     } catch { /* events are best-effort; the obs record below is the source of truth */ }
   }
 
@@ -352,6 +411,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     cost_usd: cost,
     context_tokens: 0,
     ...(harness === 'kimi-code' ? { billing: 'subscription' as const } : {}),
+    ...(failureCause ? { failure_cause: failureCause } : {}),
     ...(outcomes ? {
       actions: outcomes.actions,
       files_edited: outcomes.files_edited,
@@ -361,7 +421,17 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     } : {}),
     error: spool.timedOut
       ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
-      : fatalError ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
+      : fatalError
+        ?? (providerError ? `${providerError.type}: ${providerError.message}` : undefined)
+        ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
+    ...(providerError ? { provider_error: {
+      type: providerError.type,
+      retryable: providerError.retryable,
+      message: providerError.message,
+      provider: providerError.provider,
+      ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+      ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+    } } : {}),
   };
   return { record, resultSummary };
 }

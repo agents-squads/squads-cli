@@ -52,6 +52,7 @@ import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
+import { classifyFailedRun, type ProviderError } from './provider-errors.js';
 import {
   buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
@@ -1670,6 +1671,7 @@ export async function executeWithClaude(
     trigger: trigger as ObservabilityRecord['trigger'],
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
     brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+    logFile,
   });
 
   if (runInWatch) {
@@ -2226,6 +2228,23 @@ export async function executeWithProvider(
         if (fatal) {
           writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
         }
+        // Typed provider failure (#1298) — only for a run already failed, and only
+        // from structural evidence (see classifyFailedRun): never the agent's prose.
+        let providerError: ProviderError | null = null;
+        if (code !== 0 || fatal) {
+          const streamErr = outputTail && cliConfig.streamJson ? parseStreamJson(outputTail) : null;
+          providerError = classifyFailedRun({
+            provider,
+            structured: !!(cliConfig.streamJson || cliConfig.opencodeJson || cliConfig.kimiCodeJson),
+            resultText: streamErr?.sawResult ? streamErr.text : undefined,
+            resultIsError: !!(streamErr?.sawResult && streamErr.isError),
+            fatal,
+            rawTail: outputTail,
+          });
+          if (providerError) {
+            writeLine(`  ${colors.red}${providerError.type}${providerError.retryable ? ' (retryable)' : ''}: ${providerError.message}${RESET}`);
+          }
+        }
         // Harvest BEFORE the ledger write so a suspect harvest (#1076) can mark
         // the run failed — and regardless of exit code: partial work from a
         // failed run must not evaporate either.
@@ -2274,13 +2293,33 @@ export async function executeWithProvider(
           } : {}),
           error: fatal
             ?? (suspect ? `${harvest.outcome} harvest: ${suspect}` : undefined)
+            ?? (providerError ? `${providerError.type}: ${providerError.message}` : undefined)
             ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
+          ...(providerError ? { provider_error: {
+            type: providerError.type,
+            retryable: providerError.retryable,
+            message: providerError.message,
+            provider: providerError.provider,
+            ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+            ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+          } } : {}),
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
         }
         if (events) {
           if (lineBuf.trim() && adapter) events.ingestProviderLine(adapter, lineBuf, agentName);
+          if (providerError) {
+            events.emit({
+              type: 'error',
+              errorType: providerError.type,
+              retryable: providerError.retryable,
+              message: providerError.message,
+              provider: providerError.provider,
+              ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+              ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+            }, agentName);
+          }
           events.emit({
             type: 'run_end',
             ok: code === 0 && !fatal && !suspect,
@@ -2447,6 +2486,7 @@ export async function executeWithProvider(
     pid: child.pid,
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
     brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+    logFile,
   });
 
   if (options.verbose) {

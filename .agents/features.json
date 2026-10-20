@@ -1,0 +1,220 @@
+{
+  "schema": 1,
+  "repo": "agents-squads/squads-cli",
+  "items": [
+    {
+      "id": "Z3",
+      "outcome": "O0",
+      "title": "squads audit: inventory the org root — not in git, undeclared, unmeasured, untrue docs, retired names, duplicate documents",
+      "issue": "#1327",
+      "check": {
+        "ci": "fixture org root → exactly the expected finding classes",
+        "live": "fresh squads init project → no crash; every unit unclassified with a hint"
+      },
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/deepseek-v4.1-flash-free",
+          "builder_model": "kimi-code/k3 + claude-opus-5.5 + claude-sonnet-5.5",
+          "sha": "2cc0fec1634d447928bc41c9d819bc3478df69db",
+          "at": "2026-10-20T04:12:36Z",
+          "run_id": "exec_mvg5p1x2_g7b3ef",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1331#issuecomment-6283198750"
+        }
+      ]
+    },
+    {
+      "id": "Z5",
+      "outcome": "O0",
+      "title": "Feature lists as code: .agents/features.json schema; squads plan aggregates every repo's file",
+      "check": {
+        "ci": "schema validates fixtures; squads plan --json totals equal the sum of the files",
+        "live": "squads plan over a real org root lists every repo's items"
+      },
+      "consumers": [
+        "interactive mode"
+      ],
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/glm-5.3-flash-free",
+          "builder_model": "claude-sonnet-5.5",
+          "sha": "3fa4e46543e0dc75c0e97fea20ec386baad6bb56",
+          "at": "2026-10-20T04:44:50Z",
+          "run_id": "exec_mvg5kb1v_zty3m3",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1332#issuecomment-6283579357"
+        }
+      ]
+    },
+    {
+      "id": "R1",
+      "outcome": "O0",
+      "title": "Release train ships an outcome: refuses unless every item for the release passes with a verification by a model other than the builder's",
+      "issue": "#1320",
+      "check": {
+        "ci": "fixture features.json with one failing item → train refuses; all passing with valid verifications → release PR opens"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "T1",
+      "outcome": "O1",
+      "title": "Provider errors are caught and named: plan expired, quota, auth fail fast; rate limit and overload back off",
+      "issue": "#1298",
+      "check": {
+        "ci": "recorded real provider error bodies → type + retry decision",
+        "live": "an invalid credential ends the run in < 10 s with the typed reason in the run record"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "T2",
+      "outcome": "O1",
+      "title": "Run status is true: no run left running, no success on an error",
+      "issue": "#1321",
+      "check": {
+        "ci": "fixture results → correct terminal status",
+        "live": "reconcile the last 7 days of runs → 0 status mismatches"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "T3",
+      "outcome": "O1",
+      "title": "Run events carry schema_version; reasoning and whole tool calls are recorded for every harness",
+      "issue": "#1316",
+      "check": {
+        "ci": "contract tests: each consumer validates events from the release candidate",
+        "live": "one run per harness → reasoning, tool_call.args, tool_result.text whole and redacted"
+      },
+      "consumers": [
+        "interactive mode",
+        "Platform API"
+      ],
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "T4",
+      "outcome": "O1",
+      "title": "Non-Claude lanes are contained: writes outside the worktree and credential-directory reads are blocked and recorded",
+      "issue": "#1306",
+      "check": {
+        "ci": "sandbox profile tests (macOS seatbelt, Linux bwrap)",
+        "live": "a lane that tries both is blocked twice and the blocks show in its events"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "A1",
+      "outcome": "O2",
+      "title": "Credential contract: each provider declares its modes (subscription login, API key, free), validated at dispatch",
+      "issue": "#1155",
+      "check": {
+        "ci": "no credentials → exits before spawn with a typed error naming what is missing",
+        "live": "a key or a login → the run starts"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "A2",
+      "outcome": "O2",
+      "title": "squads providers: mode in use, account, plan or balance, last error per provider",
+      "issue": "#1298",
+      "check": {
+        "ci": "fixture matrix (key only / login only / both / neither) matches the output"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "A3",
+      "outcome": "O2",
+      "title": "Lanes run on the user's choice of account: free models, subscriptions, API keys",
+      "issue": "#1307",
+      "check": {
+        "ci": "per-lane unit tests on routing and env",
+        "live": "one live run per lane: worktree, harness recorded, reconciled outcome, cost recorded"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "A4",
+      "outcome": "O2",
+      "title": "Works without GitHub: GitHub-only commands degrade with a clear message",
+      "check": {
+        "ci": "no gh on PATH + non-GitHub remote → runs work; GitHub-only commands explain and exit 0"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "A5",
+      "outcome": "O2",
+      "title": "Adoption measured per version",
+      "check": {
+        "ci": "a command prints weekly active installs per version"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "H1",
+      "outcome": "O3",
+      "title": "An agent's setup is a typed tree of 8 components (system prompt, guardrails, memory, tool guidance, subagents, skills, scripts, plugins); edits are diffs where omitted means inherited",
+      "spec": "method: Harness² (google-research/harness2), own implementation",
+      "check": {
+        "ci": "round-trip read → validate → write on every agent in a fixture org; a one-component proposal changes only that component"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "H2",
+      "outcome": "O3",
+      "title": "Propose–Probe–Compose: variants of one agent run on the same task and are composed from behavioural contrasts, without a grader",
+      "check": {
+        "ci": "fixture task: proposals, probes and composition are recorded with their evidence",
+        "live": "on held-out tasks a third model's blind choice prefers the composed agent at a pre-registered rate"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "H3",
+      "outcome": "O3",
+      "title": "Experience library per squad: each adopted setup (whole tree), why it won, the lesson",
+      "check": {
+        "ci": "after an H2 step the library holds tree + note; the next step starts from it"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "H4",
+      "outcome": "O3",
+      "title": "Anti-gaming: grader output and answer keys never reach the proposer; selection is blind to which model built what",
+      "check": {
+        "ci": "a context containing a planted verdict or answer key is refused; the selector sees anonymised outputs only"
+      },
+      "status": "failing",
+      "verifications": []
+    },
+    {
+      "id": "H5",
+      "outcome": "O3",
+      "title": "Budget ledger: expected runs per improvement step, hard stop on overrun",
+      "check": {
+        "ci": "a step that exceeds its ledger aborts; usage is checked first"
+      },
+      "status": "failing",
+      "verifications": []
+    }
+  ]
+}

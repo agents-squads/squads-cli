@@ -50,6 +50,16 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
+import {
+  classifyFailedRun,
+  providerForModel,
+  isRetryableErrorType,
+  providerErrorSentinel,
+  parseProviderErrorSentinel,
+  redactSecrets,
+  describeProviderError,
+  type ProviderError,
+} from './provider-errors.js';
 import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
@@ -162,6 +172,8 @@ export interface AgentRunResult {
   text: string;
   usage: StreamUsage;
   outcomes: RunOutcomes;
+  /** Provider failure classified at this turn's boundary (#1298). `attempts` counts spawns when retried. */
+  providerError?: ProviderError & { attempts?: number };
 }
 
 /** Spread the accumulated outcomes into an ObservabilityRecord. */
@@ -205,11 +217,28 @@ async function runIndependentAgent(config: AgentRunConfig): Promise<AgentRunResu
   const maxRetries = process.env.SQUADS_TURN_RETRIES === '0' ? 0 : 1;
   const backoffMs = parseInt(process.env.SQUADS_TURN_RETRY_BACKOFF_MS ?? '5000', 10);
   let result = await runIndependentAgentOnce(config);
-  for (let attempt = 1; attempt <= maxRetries && isTransientTurnError(result.text); attempt++) {
+  let attempts = 1;
+  const emitError = () => {
+    const e = result.providerError;
+    if (!e) return;
+    config.events?.emit({
+      type: 'error', errorType: e.type, retryable: e.retryable, message: e.message,
+      provider: e.provider, ...(e.status !== undefined ? { status: e.status } : {}),
+      ...(e.providerCode ? { providerCode: e.providerCode } : {}), attempt: attempts,
+    }, config.agentName);
+  };
+  emitError();
+  // A classified non-retryable error (expired plan, no balance, bad key) is
+  // never re-spawned: it fails the same way every time (#1298).
+  const worthRetry = (r: AgentRunResult) => r.providerError ? r.providerError.retryable : isTransientTurnError(r.text);
+  for (let attempt = 1; attempt <= maxRetries && worthRetry(result); attempt++) {
     writeLine(`  ${colors.yellow}${config.agentName}: transient API error — retrying turn (${attempt}/${maxRetries})${RESET}`);
     await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    attempts++;
     result = await runIndependentAgentOnce(config);
+    emitError();
   }
+  if (result.providerError) result = { ...result, providerError: { ...result.providerError, attempts } };
   return result;
 }
 
@@ -434,14 +463,43 @@ procedures: [followed | deviated: reason]
         return;
       }
 
+      // Typed provider failure (#1298): classify at the harness boundary. A
+      // non-retryable class ends the turn NOW with a sentinel the conversation
+      // loop aborts on — the old path read an expired plan as a rate limit.
+      // Evidence is structural only: an is_error result's text and stderr — never
+      // the answer of a run that reported success. The vendor is the model's, not
+      // the harness's (`claude --model glm-4.7` is z.ai).
+      const turnProvider = providerForModel(claudeModel);
+      let providerError: ProviderError | null = (isError || code !== 0)
+        ? classifyFailedRun({
+          provider: turnProvider,
+          structured: true,
+          resultText: text,
+          resultIsError: isError,
+          stderr,
+        })
+        : null;
+      // A failed turn whose error text is a login failure ("Not logged in",
+      // "invalid api key") is auth_invalid even when the body carries no code.
+      // Gated on is_error: a successful result's text is the agent's answer.
+      if (!providerError && isError && isAuthFailureMessage(text)) {
+        providerError = { type: 'auth_invalid', retryable: false, message: redactSecrets(text).slice(0, 500), provider: turnProvider };
+      }
+      // An auth failure keeps the existing #956 path (journey instrumentation).
+      if (providerError && !providerError.retryable && !isAuthFailureMessage(text)) {
+        resolve({ text: providerErrorSentinel(providerError, agentName), usage, outcomes, providerError });
+        return;
+      }
+      const withErr = providerError ? { providerError } : {};
+
       // Preserve the contract: still RETURN the agent's response text (now from
       // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
       // downstream plan/convergence parsing depends on.
       if (isQuotaMessage(text)) {
-        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes });
+        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes, ...withErr });
       } else if (isError && text.length > 0) {
         // is_error:true — return the error text as before, but keep real usage.
-        resolve({ text, usage, outcomes });
+        resolve({ text, usage, outcomes, ...withErr });
       } else if (text.length > 0) {
         resolve({ text: text.trim(), usage, outcomes });
       } else if (code !== 0) {
@@ -730,22 +788,33 @@ export async function runConversation(
     events.close();
   };
 
-  // Auth-failure fail-fast (#956): a missing/expired login fails every claude
-  // invocation identically — unlike a quota wall it never clears mid-cycle, so
-  // continuing just burns turns until convergence detection prints a cryptic
-  // "no signals" stop at exit 0. Abort loud, nonzero exit, credited as failed
-  // (same family as the #936/#947 exit-0 provider failures).
-  const abortOnAuthFailure = (text: string, agentName: string): ConversationResult | null => {
-    if (!isAuthFailureMessage(text)) return null;
-    void track('journey.run.blocked', { reason: 'not_logged_in' }); // funnel drop instrument (#964)
-    writeLine(`  ${colors.red}${squad.name}: Claude is not authenticated — run: claude /login${RESET}`);
+  // One ledger-row writer for every provider-failure abort (#956, #1298): the
+  // run ends the moment a failure that will not clear mid-cycle is seen — status
+  // failed, the typed error on the row, the process exit nonzero. The vendor is
+  // the error's (or the model's), never assumed to be Anthropic.
+  const authMessage = (provider: string): string => provider === 'anthropic'
+    ? 'Claude is not authenticated — run: claude /login'
+    : `${provider} credentials rejected — check the ${provider} API key, then re-dispatch`;
+
+  const abortOnTypedError = (err: ProviderError & { attempts?: number }, agentName: string): ConversationResult => {
+    const model = options.model || modelForRole('lead');
+    const errProvider = err.provider ?? providerForModel(model);
+    const retryable = isRetryableErrorType(err.type);
+    const message = err.message;
+    // Funnel drop instrument (#964): fired from the typed class, so it does not
+    // depend on how the provider worded the login failure.
+    if (err.type === 'auth_invalid') void track('journey.run.blocked', { reason: 'not_logged_in' });
+    const described = err.type === 'auth_invalid'
+      ? authMessage(errProvider)
+      : describeProviderError({ type: err.type, retryable, message, provider: errProvider });
+    writeLine(`  ${colors.red}${squad.name}: ${agentName} — ${described}${RESET}`);
     logObservability({
       ts: new Date().toISOString(),
       id: executionId,
       squad: squad.name,
       agent: agentName,
-      provider: 'anthropic',
-      model: options.model || modelForRole('lead'),
+      provider: errProvider,
+      model,
       trigger: 'scheduled',
       status: 'failed',
       duration_ms: Date.now() - cycleStartMs,
@@ -756,13 +825,51 @@ export async function runConversation(
       cost_usd: cycleUsage.cost_usd,
       context_tokens: 0,
       ...outcomeFields(cycleOutcomes),
-      error: 'Claude is not authenticated — run: claude /login',
+      error: `${err.type}: ${message}`.slice(0, 500),
+      provider_error: {
+        type: err.type, retryable, message: message.slice(0, 500), provider: errProvider,
+        ...(err.status !== undefined ? { status: err.status } : {}),
+        ...(err.providerCode ? { providerCode: err.providerCode } : {}),
+        ...(err.attempts !== undefined ? { attempts: err.attempts } : {}),
+      },
       task: options.task,
     });
     finishEvents(false);
     process.exitCode = 1;
-    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Claude is not authenticated — run: claude /login' };
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: described };
   };
+
+  // Auth-failure fail-fast (#956): a missing/expired login fails every invocation
+  // identically — unlike a quota wall it never clears mid-cycle. Text-based, for
+  // the turns whose body is the CLI's own login message (plan/worker/review).
+  const abortOnAuthFailure = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
+    if (!isAuthFailureMessage(text)) return null;
+    const err = classified?.type === 'auth_invalid'
+      ? classified
+      : { type: 'auth_invalid' as const, retryable: false, message: redactSecrets(text).slice(0, 500) };
+    return abortOnTypedError(err, agentName);
+  };
+
+  // Non-retryable provider failure (#1298), carried through turn text as a sentinel.
+  const abortOnProviderError = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
+    const errorType = parseProviderErrorSentinel(text);
+    if (!errorType) return null;
+    return abortOnTypedError({
+      ...classified,
+      type: errorType,
+      retryable: isRetryableErrorType(errorType),
+      message: text.replace(/^\[PROVIDER_ERROR:[a-z_]+\]\s*/, ''),
+    }, agentName);
+  };
+
+  // Applied to every turn after review as well, so a balance that runs out — or
+  // a key that dies, or a rate limit that outlasts the retry — between review
+  // and verify is a failed run, not a "completed" one. Reads the turn's
+  // structured providerError directly (auth never gets a sentinel, and retryable
+  // classes only reach here once runIndependentAgent has spent its retry), then
+  // the sentinel. Never the loose auth-text check: it would trip on prose.
+  const abortOnFatalTurn = (r: AgentRunResult, agentName: string): ConversationResult | null =>
+    r.providerError ? abortOnTypedError(r.providerError, agentName) : abortOnProviderError(r.text, agentName);
 
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
@@ -848,8 +955,10 @@ export async function runConversation(
   cycleOutcomes = addOutcomes(cycleOutcomes, planResult.outcomes);
   addTurn(transcript, lead.name, 'lead', planOutput, estimateTurnCost(options.model || 'sonnet'));
 
-  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
+  const planAuthAbort = abortOnAuthFailure(planOutput, lead.name, planResult.providerError);
   if (planAuthAbort) return planAuthAbort;
+  const planProviderAbort = abortOnProviderError(planOutput, lead.name, planResult.providerError);
+  if (planProviderAbort) return planProviderAbort;
 
   // Quota detection — if plan hit the API limit, stop immediately
   if (isQuotaMessage(planOutput)) {
@@ -958,7 +1067,7 @@ ${planOutput.slice(0, 3000)}`;
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
         task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
-      }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes }));
+      }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes, providerError: result.providerError }));
     });
 
     const workerResults = await Promise.all(workerPromises);
@@ -981,9 +1090,15 @@ ${planOutput.slice(0, 3000)}`;
       }
     }
 
+    const workerProviderFailure = workerResults.find(r => parseProviderErrorSentinel(r.output));
+    if (workerProviderFailure) {
+      const workerProviderAbort = abortOnProviderError(workerProviderFailure.output, workerProviderFailure.agent.name, workerProviderFailure.providerError);
+      if (workerProviderAbort) return workerProviderAbort;
+    }
+
     const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
     if (workerAuthFailure) {
-      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
+      const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name, workerAuthFailure.providerError);
       if (workerAuthAbort) return workerAuthAbort;
     }
 
@@ -1047,8 +1162,10 @@ Summary: [what was achieved]`;
   cycleOutcomes = addOutcomes(cycleOutcomes, reviewResult.outcomes);
   addTurn(transcript, lead.name, 'lead', reviewOutput, estimateTurnCost(options.model || 'sonnet'));
 
-  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
+  const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name, reviewResult.providerError);
   if (reviewAuthAbort) return reviewAuthAbort;
+  const reviewProviderAbort = abortOnProviderError(reviewOutput, lead.name, reviewResult.providerError);
+  if (reviewProviderAbort) return reviewProviderAbort;
 
   // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
   if (isQuotaMessage(reviewOutput)) {
@@ -1123,6 +1240,8 @@ or
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, verifyResult.outcomes);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
+    const verifyAbort = abortOnFatalTurn(verifyResult, verifier.name);
+    if (verifyAbort) return verifyAbort;
 
     // ── #994: bounded remediation — ONE fix round when the verifier rejects.
     // Missions production data: every milestone needed 2-4 validation rounds;
@@ -1152,6 +1271,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
       cycleUsage = addUsage(cycleUsage, remediationResult.usage);
       cycleOutcomes = addOutcomes(cycleOutcomes, remediationResult.outcomes);
       addTurn(transcript, lead.name, 'lead', remediationResult.text, estimateTurnCost(options.model || 'sonnet'));
+      const remediationAbort = abortOnFatalTurn(remediationResult, lead.name);
+      if (remediationAbort) return remediationAbort;
 
       const fixAssignments = parseTaskAssignments(remediationResult.text, workers).slice(0, 2);
       if (fixAssignments.length > 0 && !isQuotaMessage(remediationResult.text)) {
@@ -1166,6 +1287,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
           cycleUsage = addUsage(cycleUsage, fixResult.usage);
           cycleOutcomes = addOutcomes(cycleOutcomes, fixResult.outcomes);
           addTurn(transcript, agent.name, agent.role, fixResult.text, estimateTurnCost(options.model || 'sonnet'));
+          const fixAbort = abortOnFatalTurn(fixResult, agent.name);
+          if (fixAbort) return fixAbort;
         }
 
         log(`  re-verify: ${verifier.name}...`);
@@ -1178,6 +1301,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
         cycleUsage = addUsage(cycleUsage, reverifyResult.usage);
         cycleOutcomes = addOutcomes(cycleOutcomes, reverifyResult.outcomes);
         addTurn(transcript, verifier.name, 'verifier', reverifyResult.text, estimateTurnCost(options.model || 'haiku'));
+        const reverifyAbort = abortOnFatalTurn(reverifyResult, verifier.name);
+        if (reverifyAbort) return reverifyAbort;
       }
     }
   }

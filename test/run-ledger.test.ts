@@ -116,3 +116,126 @@ describe('reconcileOrphanedRuns', () => {
     expect(readFileSync(LOG(), 'utf-8')).toBe(before);
   });
 });
+
+// ── #1321: reconcile terminal state from the row's OWN log ────────────────
+
+describe('reconcileOrphanedRuns — evidence from the log (#1321)', () => {
+  const DEAD_PID = 2 ** 24; // safely dead on macOS and Linux
+
+  function writeRunLog(ts: number, content: string): void {
+    const dir = join(state.root, '.agents', 'logs', 'cli');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `solver-${ts}.log`), content);
+  }
+
+  it('a dead pid whose log shows a provider error becomes failed with the typed cause', async () => {
+    const ts = Date.now();
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_quota', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(ts, 'error: failed to run prompt: provider.api_error: 429 exceeded your current quota\n');
+
+    const folded = reconcileOrphanedRuns();
+    const rec = folded.find(r => r.id === 'exec_1321_quota')!;
+    expect(rec.status).toBe('failed');
+    expect(rec.failure_cause).toBe('quota_exhausted');
+    expect(String(rec.error)).toContain('429');
+
+    const refolded = foldExecutions(queryExecutions()).find(r => r.id === 'exec_1321_quota')!;
+    expect(refolded.status).toBe('failed');
+    expect(refolded.failure_cause).toBe('quota_exhausted');
+    // The API mirror is fire-and-forget via a lazy import.
+    await vi.waitFor(() => {
+      expect(reportExecutionComplete).toHaveBeenCalledWith('exec_1321_quota', 'failed', expect.any(Object));
+    });
+  });
+
+  it('a process that dies within seconds on an error line is failed, never orphaned', () => {
+    const ts = Date.now() - 2_000;
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_fast', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(ts, 'error: failed to run prompt: provider.api_error: 429 exceeded your current quota (fast death)\n');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_fast')!;
+    expect(rec.status).toBe('failed');
+    expect(rec.failure_cause).toBe('quota_exhausted');
+  });
+
+  it('a live pid stays running even when its log already carries an error line', () => {
+    const ts = Date.now();
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_live', status: 'running', pid: process.pid }]);
+    writeRunLog(ts, 'error: failed to run prompt: provider.api_error: 429 transient\n');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_live')!;
+    expect(rec.status).toBe('running');
+    expect(reportExecutionComplete).not.toHaveBeenCalledWith('exec_1321_live', expect.anything(), expect.anything());
+  });
+
+  it('orphans a dead row only when its log shows no cause', () => {
+    const ts = Date.now();
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_silent', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(ts, 'ordinary output, then the process vanished\n');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_silent')!;
+    expect(rec.status).toBe('orphaned');
+    expect(rec.failure_cause).toBe('orphaned');
+  });
+
+  it('never borrows a neighbouring run\'s log when its start is far away (F1)', () => {
+    // A legacy row from 15 minutes ago whose own log is gone; the only log on
+    // disk belongs to a newer run. Inheriting that run's cause is a lie.
+    const rowTs = Date.now() - 15 * 60_000;
+    writeRows([{ ts: new Date(rowTs).toISOString(), id: 'exec_1321_legacy_far', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(Date.now(), 'error: failed to run prompt: provider.api_error: 429 exceeded your current quota (newer run)\n');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_legacy_far')!;
+    expect(rec.status).toBe('orphaned');
+    expect(rec.failure_cause).toBe('orphaned');
+  });
+
+  it('refuses to pick among ambiguous neighbouring logs (F1)', () => {
+    // Two same-agent runs seconds apart and the row's own log is missing:
+    // there is no honest answer, so the row is orphaned rather than guessed.
+    const rowTs = Date.now() - 10_000;
+    writeRows([{ ts: new Date(rowTs).toISOString(), id: 'exec_1321_legacy_ambiguous', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(rowTs + 1_000, 'error: failed to run prompt: provider.api_error: 429 exceeded your current quota\n');
+    writeRunLog(rowTs + 3_000, 'error: litellm.AuthenticationError status 401 invalid api key\n');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_legacy_ambiguous')!;
+    expect(rec.status).toBe('orphaned');
+    expect(rec.failure_cause).toBe('orphaned');
+  });
+
+  it('reads a >cap structured log whose tail starts mid-line as structured (F3)', () => {
+    const ts = Date.now();
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_bigtail', status: 'running', pid: DEAD_PID }]);
+    // 300 KB single line: the 256 KB tail slice begins inside it.
+    const hugeLine = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] },
+    });
+    const resultLine = JSON.stringify({
+      type: 'system', subtype: 'note',
+      error: { type: 'insufficient_quota', message: 'exceeded your current quota' },
+    });
+    writeRunLog(ts, `${hugeLine}\n${resultLine}\n`);
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_bigtail')!;
+    // Structured logs never have their tail read as prose — the agent's own
+    // words must not become a typed cause.
+    expect(rec.status).toBe('orphaned');
+    expect(rec.failure_cause).toBe('orphaned');
+  });
+
+  it('leaves a dead row alone while its spool done-file awaits ingestion (F6)', () => {
+    const ts = Date.now();
+    writeRows([{ ts: new Date(ts).toISOString(), id: 'exec_1321_spool', status: 'running', pid: DEAD_PID }]);
+    writeRunLog(ts, 'error: failed to run prompt: provider.api_error: 429 exceeded your current quota\n');
+    const spoolDir = join(state.root, '.agents', 'observability', 'spool');
+    mkdirSync(spoolDir, { recursive: true });
+    writeFileSync(join(spoolDir, 'exec_1321_spool.json'), '{"execId":"exec_1321_spool"}');
+
+    const rec = reconcileOrphanedRuns().find(r => r.id === 'exec_1321_spool')!;
+    // The wrapper already wrote the terminal facts; the reaper must not race
+    // it with a second terminal row for the same id.
+    expect(rec.status).toBe('running');
+    expect(rec.failure_cause).toBeUndefined();
+  });
+});
