@@ -742,6 +742,8 @@ program
 program
   .command('plan')
   .description('Roadmap from the plan-of-record issue: done / ready / blocked, with blockers')
+  .option('--features', "Show every repo's .agents/features.json grouped by roadmap outcome")
+  .option('--root <dir>', "Org root to scan with --features (default: the project's parent)")
   .option('-j, --json', 'Output as JSON')
   .action(async (options) => {
     const { planCommand } = await import('./commands/plan.js');

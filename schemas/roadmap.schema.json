@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/agents-squads/squads-cli/blob/main/schemas/roadmap.schema.json",
+  "title": ".agents/roadmap.json",
+  "description": "Org roadmap in the HQ repo: outcomes that group feature items across repos. Every `items` entry is `<repo>:<id>` and must exist in exactly one repo's features.json (a repo label claimed by two files is ambiguous). Documentation-only: the validator checks `outcomes[].id` (unique), `outcomes[].items` and that refs resolve; `target` and its minItems are NOT enforced.",
+  "type": "object",
+  "required": ["outcomes"],
+  "properties": {
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "items"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string" },
+          "target": { "type": "array", "items": { "type": "string" }, "minItems": 2 },
+          "items": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

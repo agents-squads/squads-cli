@@ -17,6 +17,8 @@
  */
 
 import { loadProjectConfig } from '../lib/config.js';
+import { analyzeFeatures, resolveOrgRoot, type FeaturesView } from '../lib/features.js';
+import { findProjectRoot } from '../lib/squad-parser.js';
 import {
   PLAN_HINT,
   PLAN_ROADMAP_VERSION,
@@ -35,6 +37,10 @@ import { RESET, bold, colors, dim, padEnd, truncate, writeLine } from '../lib/te
 
 export interface PlanCommandOptions {
   json?: boolean;
+  /** Show the org's feature lists (.agents/features.json) instead of the plan issue. */
+  features?: boolean;
+  /** Org root to scan for feature lists (default: the project's parent). */
+  root?: string;
 }
 
 export interface PlanCommandDeps {
@@ -124,6 +130,56 @@ function emitUnconfigured(json: boolean, error?: string): void {
   writeLine(`  ${dim}${PLAN_HINT}${RESET}\n`);
 }
 
+// ── Features view ────────────────────────────────────────────────────
+
+export function renderFeaturesHuman(view: FeaturesView): void {
+  writeLine('');
+  if (!view.configured) {
+    writeLine(`  ${dim}${view.hint ?? 'No feature lists yet.'}${RESET}\n`);
+    return;
+  }
+  const { totals } = view;
+  writeLine(`  ${bold}FEATURES${RESET}  ${dim}${view.root}${RESET}`);
+  writeLine(
+    `  ${' '.repeat(LABEL_WIDTH + 1)}${dim}${totals.items} items in ${totals.valid_files}/${totals.files} valid files · ${totals.passing} passing · ${totals.failing} failing${RESET}`,
+  );
+  for (const o of view.outcomes) {
+    writeLine('');
+    const title = o.name === o.id ? o.id : `${o.id}  ${o.name}`;
+    writeLine(`  ${bold}${title}${RESET}  ${dim}${o.counts.passing}/${o.counts.total} passing${RESET}`);
+    for (const status of ['failing', 'passing'] as const) {
+      const color = status === 'passing' ? colors.green : colors.yellow;
+      o.items
+        .filter(i => i.status === status)
+        .forEach((i, n) => {
+          const head = n === 0 ? `${color}${bold}${padEnd(status.toUpperCase(), LABEL_WIDTH)}${RESET}` : ' '.repeat(LABEL_WIDTH);
+          writeLine(`    ${head} ${padEnd(i.ref, 28)} ${truncate(i.title, TITLE_WIDTH)}`);
+        });
+    }
+    for (const ref of o.missing) {
+      writeLine(`    ${colors.red}${bold}MISSING${RESET} ${ref}  ${dim}not in any features.json${RESET}`);
+    }
+  }
+  if (view.unreferenced.length > 0) {
+    writeLine(`\n  ${dim}${view.unreferenced.length} item(s) not referenced by the roadmap (--json).${RESET}`);
+  }
+  if (view.problems.length > 0) {
+    writeLine('');
+    for (const p of view.problems) writeLine(`  ${colors.red}✗${RESET} ${p.file}: ${p.message}`);
+    writeLine(`  ${dim}Run: squads contract validate --features${RESET}`);
+  }
+  writeLine('');
+}
+
+/** Read-only. Exit 0 whenever the scan ran — invalid files are reported, not fatal. */
+export function featuresCommand(options: PlanCommandOptions = {}): number {
+  const root = resolveOrgRoot(options.root, findProjectRoot(), process.cwd());
+  const view = analyzeFeatures(root);
+  if (options.json) writeLine(JSON.stringify(view, null, 2));
+  else renderFeaturesHuman(view);
+  return 0;
+}
+
 // ── Command ──────────────────────────────────────────────────────────
 
 /**
@@ -136,6 +192,7 @@ export async function planCommand(
   options: PlanCommandOptions = {},
   deps: PlanCommandDeps = {},
 ): Promise<number> {
+  if (options.features) return featuresCommand(options);
   const json = options.json === true;
   const env = deps.env ?? process.env;
   const configPlanIssue =
