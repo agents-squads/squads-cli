@@ -35,6 +35,11 @@ describe('findOrgRoot', () => {
     expect(org!.source).toBe('env');
   });
 
+  it('L12: throws when SQUADS_ORG_ROOT is set but is not a directory', () => {
+    process.env.SQUADS_ORG_ROOT = join(root, 'typo');
+    expect(() => findOrgRoot(root)).toThrow(/SQUADS_ORG_ROOT/);
+  });
+
   it('walks up to the directory containing the control repo (default hq)', () => {
     const ws = join(root, 'workspace');
     mkdirSync(join(ws, 'hq'), { recursive: true });

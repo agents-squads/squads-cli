@@ -679,7 +679,8 @@ program
   .option('--propose', 'Draft one issue per gap (draft only, never filed)')
   .option('--stale-days <n>', 'Days before metric data counts as stale (default 14)')
   .option('--idle-days <n>', 'Days before an active unit counts as idle (default 30)')
-  .option('--run-metrics', 'Execute each unit\'s declared ## Metric command (runs code from those repos; off by default)')
+  .option('--run-metrics', 'Execute each active unit\'s declared ## Metric command (runs code from those repos, so NOT read-only; off by default)')
+  .option('--yes', 'Confirm --run-metrics after reviewing the commands it lists on stderr')
   .addHelpText('after', `
 Org root discovery:
   1. SQUADS_ORG_ROOT env override
@@ -693,8 +694,11 @@ Self-description contract (per-unit AGENTS.md frontmatter):
   "YYYY-MM-DD <value>" lines (or a single current value).
 
 Notes:
-  Read-only: writes nothing. Declared metric commands run only with --run-metrics.
-  Parked and archived units are listed but don't count as gaps.
+  Read-only by default: writes nothing and runs no repo code.
+  --run-metrics --yes executes each active unit's declared metric command (scrubbed env); parked/archived units are skipped.
+  Parked and archived units are listed but don't count as gaps (parked needs reason + revisit).
+  Exit code 2: no org root / invalid SQUADS_ORG_ROOT, or --run-metrics without --yes.
+  Scope: docs facts cover versions and org-level repo lists (not yet visibility/commands).
 `)
   .action(async (options) => {
     const { auditCommand } = await import('./commands/audit.js');

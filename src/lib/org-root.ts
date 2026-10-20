@@ -13,7 +13,7 @@
  * No absolute paths are ever assumed; everything is discovered at runtime.
  */
 
-import { existsSync, readdirSync, realpathSync, statSync } from 'fs';
+import { readdirSync, realpathSync, statSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 
 export type OrgRootSource = 'env' | 'control-repo' | 'squads-project';
@@ -43,10 +43,6 @@ function controlRepoName(): string {
   return name || DEFAULT_CONTROL_REPO;
 }
 
-/**
- * Discover the org root. Returns null when no workspace structure is found
- * (no env override, no control repo above, no squads project above).
- */
 /** Canonical path (resolves symlinks such as macOS /var → /private/var) so callers compare like with like. */
 function canonical(p: string): string {
   try {
@@ -56,10 +52,17 @@ function canonical(p: string): string {
   }
 }
 
+/**
+ * Discover the org root. Returns null when no workspace structure is found
+ * (no env override, no control repo above, no squads project above).
+ * Throws when SQUADS_ORG_ROOT is set but does not point at a directory.
+ */
 export function findOrgRoot(startDir: string = process.cwd()): OrgRoot | null {
   const envRoot = process.env.SQUADS_ORG_ROOT?.trim();
   const control = controlRepoName();
-  if (envRoot && isDir(envRoot)) {
+  if (envRoot) {
+    // Explicit wins, even when wrong: silently walking up from cwd would audit a different tree.
+    if (!isDir(envRoot)) throw new Error(`SQUADS_ORG_ROOT is set but is not a directory: ${envRoot}`);
     return { root: canonical(envRoot), source: 'env', controlRepo: control };
   }
 

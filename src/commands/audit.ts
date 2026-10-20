@@ -1,7 +1,7 @@
 /**
  * squads audit - Inventory the org root: what isn't in git, declared, measured, or true (#1327)
  *
- * Read-only. Walks the org root (see org-root.ts) and classifies every unit:
+ * Read-only by default (--run-metrics executes repo code and needs --yes). Walks the org root (see org-root.ts) and classifies every unit:
  * git state, self-description, runnable metric, delivery basics, activity vs
  * lifecycle, docs facts, retired names. Prints a dated report; --propose
  * drafts one issue per gap (draft only, never filed).
@@ -16,6 +16,8 @@ interface AuditCommandOptions {
   propose?: boolean;
   staleDays?: string;
   runMetrics?: boolean;
+  /** Confirm --run-metrics: run the listed commands without a prompt. */
+  yes?: boolean;
   idleDays?: string;
 }
 
@@ -94,29 +96,54 @@ function printReport(report: OrgAuditReport): void {
   writeLine();
 }
 
-export async function auditCommand(options: AuditCommandOptions = {}): Promise<void> {
-  const org = findOrgRoot();
+/** Print a structured error (JSON or text) and exit non-zero so CI wrappers can tell "nothing audited" from success. */
+function fail(options: AuditCommandOptions, error: string, hint: string): void {
+  if (options.json) {
+    writeLine(JSON.stringify({ error, hint }, null, 2));
+  } else {
+    writeLine(hint);
+  }
+  process.exitCode = 2;
+}
 
-  if (!org) {
-    const empty = {
-      error: 'no-org-root',
-      hint: 'No org root found. Set SQUADS_ORG_ROOT, run from a workspace containing the control repo (default: hq), or from a squads project.',
-    };
-    if (options.json) {
-      writeLine(JSON.stringify(empty, null, 2));
-    } else {
-      writeLine(empty.hint);
-    }
+export async function auditCommand(options: AuditCommandOptions = {}): Promise<void> {
+  let org: ReturnType<typeof findOrgRoot>;
+  try {
+    org = findOrgRoot();
+  } catch (e) {
+    fail(options, 'invalid-org-root', e instanceof Error ? e.message : String(e));
     return;
   }
 
-  const report = auditOrg(org.root, {
+  if (!org) {
+    fail(options, 'no-org-root', 'No org root found. Set SQUADS_ORG_ROOT, run from a workspace containing the control repo (default: hq), or from a squads project.');
+    return;
+  }
+
+  const baseOptions = {
     staleDays: parseDays(options.staleDays, 14),
     idleDays: parseDays(options.idleDays, 30),
     propose: options.propose,
-    runMetrics: options.runMetrics === true,
     controlRepo: org.controlRepo,
-  });
+  };
+
+  let runMetrics = false;
+  if (options.runMetrics) {
+    // Metric commands are code from the audited repos: show exactly what would run, and require --yes.
+    const preview = auditOrg(org.root, baseOptions);
+    const pending = preview.units.filter((u) => u.metricCommand && u.metric === 'declared' && u.lifecycle !== 'parked' && u.lifecycle !== 'archived');
+    for (const u of pending) {
+      process.stderr.write(`metric to run [${u.name}]: ${u.metricCommand}\n`);
+    }
+    if (pending.length > 0 && !options.yes) {
+      process.stderr.write('--run-metrics executes the commands above with a scrubbed environment. Re-run with --yes to confirm.\n');
+      process.exitCode = 2;
+      return;
+    }
+    runMetrics = true;
+  }
+
+  const report = auditOrg(org.root, { ...baseOptions, runMetrics });
 
   if (options.json) {
     writeLine(JSON.stringify(report, null, 2));

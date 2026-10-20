@@ -128,7 +128,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
     expect(report.summary.units).toBe(5);
   });
 
-  it('is read-only: no writes anywhere in the org root', () => {
+  it('is read-only with the default (no --run-metrics) audit: no writes anywhere in the org root', () => {
     const snapshot = (base: string): Map<string, number> => {
       const map = new Map<string, number>();
       const walk = (dir: string) => {
@@ -143,7 +143,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
       return map;
     };
     const before = snapshot(root);
-    auditOrg(root, { now: NOW, propose: true, runMetrics: true });
+    auditOrg(root, { now: NOW, propose: true });
     const after = snapshot(root);
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     for (const [p, mtime] of before) {
@@ -305,3 +305,159 @@ describe('auditOrg — safety', () => {
   });
 });
 
+// --- Review of PR #1331 -------------------------------------------------------
+
+function plainUnit(name: string, fm: Record<string, string>, body = '', opts: { remote?: string; commitDate?: string } = {}): string {
+  const dir = join(root, name);
+  initRepo(dir, { remote: opts.remote ?? `git@example.com:org/${name}.git`, commitDate: opts.commitDate ?? RECENT });
+  agentsMd(dir, fm, body);
+  return dir;
+}
+
+function auditUnitOnly(name: string, opts: Parameters<typeof auditOrg>[1] = {}) {
+  const u = auditOrg(root, { now: NOW, ...opts }).units.find((x) => x.name === name);
+  if (!u) throw new Error(`unit ${name} not audited`);
+  return u;
+}
+
+describe('review #1331 — S1/L8: --run-metrics blast radius', () => {
+  const SECRET = 'SQUADS_AUDIT_TEST_SECRET';
+  afterEach(() => {
+    delete process.env[SECRET];
+  });
+
+  it('S1: metric commands do not inherit the operator environment', () => {
+    process.env[SECRET] = 'hunter2';
+    plainUnit('envleak', { kind: 'domain', lifecycle: 'active' }, metricBody(`test -z "$${SECRET}" && printf '2026-10-18 1\\n'`));
+    // Scrubbed env: the secret is empty -> the command prints data -> ok. Leaked env -> no-data.
+    expect(auditUnitOnly('envleak', { runMetrics: true }).metric).toBe('ok');
+  });
+
+  it('L8: parked and archived units never execute their metric command', () => {
+    const marker = join(root, 'dormant-ran.marker');
+    for (const lifecycle of ['parked', 'archived']) {
+      plainUnit(`dormant-${lifecycle}`, { kind: 'lab', lifecycle, parked_reason: 'x', revisit: '2027-01-01' }, metricBody(`touch '${marker}'; printf '2026-10-18 1\\n'`), { commitDate: OLD });
+    }
+    auditOrg(root, { now: NOW, runMetrics: true });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('S1: the declared command is surfaced on the unit so callers can show it before running', () => {
+    plainUnit('shown', { kind: 'domain', lifecycle: 'active' }, metricBody("printf '2026-10-18 1\\n'"));
+    expect(auditUnitOnly('shown').metricCommand).toBe("printf '2026-10-18 1\\n'");
+  });
+});
+
+describe('review #1331 — M2: unreadable unit does not abort the audit', () => {
+  it.skipIf(process.getuid?.() === 0)('reports an audit-error for a directory without read permission and audits the rest', () => {
+    const locked = join(root, 'locked');
+    mkdirSync(locked);
+    writeFileSync(join(locked, 'x.txt'), 'x');
+    plainUnit('fine', { kind: 'domain', lifecycle: 'active' }, metricBody("printf '2026-10-18 1\\n'"));
+    chmodSync(locked, 0o311);
+    try {
+      const report = auditOrg(root, { now: NOW });
+      expect(report.units.map((u) => u.name)).toEqual(['fine', 'locked']);
+      expect(report.units.find((u) => u.name === 'locked')!.findings.map((f) => f.code)).toContain('audit-error');
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+});
+
+describe('review #1331 — M3: malformed AGENTS.md is not reported as missing', () => {
+  it('emits invalid-agents-md with the parse error and no "create AGENTS.md" hint', () => {
+    const dir = plainUnit('badyaml', { kind: 'domain' });
+    writeFileSync(join(dir, 'AGENTS.md'), '---\nkind: [unclosed\n---\n\n# x\n');
+    const u = auditUnitOnly('badyaml');
+    const codes = u.findings.map((f) => f.code);
+    expect(codes).toContain('invalid-agents-md');
+    expect(codes).not.toContain('unclassified');
+    expect(u.hints).toEqual([]);
+    expect(u.findings.find((f) => f.code === 'invalid-agents-md')!.message).toContain('AGENTS.md');
+  });
+});
+
+describe('review #1331 — M4: only a declared version is a doc fact', () => {
+  it('a historical vX.Y.Z mention in prose is not a stale-doc-fact', () => {
+    const dir = plainUnit('changelogy', { kind: 'domain', lifecycle: 'active' }, `${metricBody("printf '2026-10-18 1\\n'")}\n\nAdded in v0.9.0. Requires version 0.8.1 of the tool.\n`);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'c', version: '0.10.0' }));
+    expect(auditUnitOnly('changelogy', { runMetrics: true }).findings.map((f) => f.code)).toEqual([]);
+  });
+});
+
+describe('review #1331 — M5: remote credentials are redacted', () => {
+  it('strips userinfo from remote URLs in the report and in proposals', () => {
+    plainUnit('leaky', { kind: 'domain' }, '# x\n', { remote: 'https://x-access-token:ghp_SUPERSECRET@github.com/org/leaky.git' });
+    const report = auditOrg(root, { now: NOW, propose: true });
+    const json = JSON.stringify(report);
+    expect(json).not.toContain('ghp_SUPERSECRET');
+    expect(report.units[0].remoteUrl).toBe('https://github.com/org/leaky.git');
+  });
+});
+
+describe('review #1331 — M6: parked-incomplete is a counted, proposed gap', () => {
+  it('counts and proposes a parked unit missing reason/revisit; a complete parked unit stays uncounted', () => {
+    plainUnit('badpark2', { kind: 'lab', lifecycle: 'parked' }, '', { commitDate: OLD });
+    plainUnit('goodpark', { kind: 'lab', lifecycle: 'parked', parked_reason: 'paused', revisit: '2027-01-15' }, '', { commitDate: OLD });
+    const report = auditOrg(root, { now: NOW, propose: true });
+    expect(report.units.find((u) => u.name === 'badpark2')!.countsAsGap).toBe(true);
+    expect(report.units.find((u) => u.name === 'goodpark')!.countsAsGap).toBe(false);
+    expect(report.summary.gaps).toBe(1);
+    expect(report.proposals!.map((p) => p.repo)).toEqual(['badpark2']);
+  });
+});
+
+describe('review #1331 — M7: multi-line metric commands run whole', () => {
+  it('executes a backslash-continued command, not just its first line', () => {
+    plainUnit('multiline', { kind: 'domain', lifecycle: 'active' }, metricBody("true && \\\n  printf '2026-10-18 1\\n'"));
+    expect(auditUnitOnly('multiline', { runMetrics: true }).metric).toBe('ok');
+  });
+});
+
+describe('review #1331 — L10: unparseable inputs are findings, not silence', () => {
+  it('reports an invalid names table at org level', () => {
+    mkdirSync(join(root, 'hq'));
+    writeFileSync(join(root, 'hq', 'names.yml'), 'retired: [unclosed\n');
+    const report = auditOrg(root, { now: NOW });
+    expect(report.orgFindings.map((f) => f.code)).toContain('invalid-names-table');
+  });
+
+  it('reports an invalid package.json on the unit', () => {
+    const dir = plainUnit('badpkg', { kind: 'domain', lifecycle: 'active' }, metricBody("printf '2026-10-18 1\\n'"));
+    writeFileSync(join(dir, 'package.json'), '{ not json');
+    expect(auditUnitOnly('badpkg', { runMetrics: true }).findings.map((f) => f.code)).toEqual(['invalid-package-json']);
+  });
+});
+
+describe('review #1331 — L11: broken git is not "no remote"', () => {
+  it('a corrupt .git reports git-error, never no-remote', () => {
+    const dir = join(root, 'brokengit');
+    mkdirSync(dir);
+    writeFileSync(join(dir, '.git'), 'gitdir: /nonexistent/nowhere\n');
+    writeFileSync(join(dir, 'f.txt'), 'x');
+    const codes = auditUnitOnly('brokengit').findings.map((f) => f.code);
+    expect(codes).toContain('git-error');
+    expect(codes).not.toContain('no-remote');
+  });
+
+  it('a repo with no commits yet is not a git-error', () => {
+    const dir = join(root, 'fresh');
+    mkdirSync(dir);
+    git(dir, ['init', '-q']);
+    git(dir, ['remote', 'add', 'origin', 'git@example.com:org/fresh.git']);
+    expect(auditUnitOnly('fresh').findings.map((f) => f.code)).not.toContain('git-error');
+  });
+});
+
+describe('review #1331 — fresh squads init tree (Check bullet 2)', () => {
+  it('the init AGENTS.md template yields an unclassified unit with a hint and no crash', () => {
+    const dir = join(root, 'fresh-project');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'AGENTS.md'), readFileSync(join(__dirname, '..', 'templates', 'core', 'AGENTS.md.template'), 'utf8'));
+    const u = auditUnitOnly('fresh-project');
+    expect(u.unclassified).toBe(true);
+    expect(u.findings.map((f) => f.code)).toContain('unclassified');
+    expect(u.hints.length).toBeGreaterThan(0);
+  });
+});

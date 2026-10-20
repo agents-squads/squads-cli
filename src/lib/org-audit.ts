@@ -7,9 +7,10 @@
  * delivery basics for products, activity matching lifecycle, docs facts that
  * match derivable truth, and no retired names.
  *
- * Read-only: the audit never writes to the org root. Metric commands declared
- * in AGENTS.md `## Metric` blocks are executed only with `runMetrics` (opt-in):
- * an org root can hold repos the operator doesn't control.
+ * Read-only by default: the audit never writes to the org root. Metric commands
+ * declared in AGENTS.md `## Metric` blocks are executed only with `runMetrics`
+ * (opt-in) — that executes code from the audited repos, so it is NOT read-only:
+ * commands run with a scrubbed environment and never for parked/archived units.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
@@ -45,10 +46,12 @@ export interface UnitAudit {
   lifecycle: string | null;
   unclassified: boolean;
   metric: MetricStatus;
+  /** The declared `## Metric` command (shown to the operator before --run-metrics executes it). */
+  metricCommand: string | null;
   lastCommitAt: string | null;
   findings: Finding[];
   hints: string[];
-  /** Parked and archived units are listed but never count as gaps. */
+  /** Archived units, and parked units with a reason + revisit date, are listed but never count as gaps. */
   countsAsGap: boolean;
 }
 
@@ -87,7 +90,8 @@ export interface AuditOptions {
   /**
    * Execute each unit's declared `## Metric` command. Off by default: an org
    * root can hold repos the operator doesn't control, and running their
-   * commands would run their code.
+   * commands would run their code. Skipped for parked/archived units; the
+   * commands get a scrubbed environment (no tokens/credentials).
    */
   runMetrics?: boolean;
 }
@@ -104,7 +108,14 @@ function isDir(p: string): boolean {
   }
 }
 
-function runGit(dir: string, args: string[], hardened: string[]): string | null {
+interface GitResult {
+  ok: boolean;
+  stdout: string;
+  /** Why it failed: spawn error/timeout message or git's stderr. */
+  error: string;
+}
+
+function runGit(dir: string, args: string[], hardened: string[]): GitResult {
   // Same hardening as harvest: a unit's own git config must not get hooks,
   // fsmonitor or filter drivers executed by an audit. `hardened` is computed
   // once per unit (it reads the unit's config).
@@ -114,8 +125,22 @@ function runGit(dir: string, args: string[], hardened: string[]): string | null 
     timeout: GIT_TIMEOUT_MS,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
-  if (r.error || r.status !== 0) return null;
-  return (r.stdout ?? '').trim();
+  if (r.error) return { ok: false, stdout: '', error: r.error.message };
+  if (r.status !== 0) return { ok: false, stdout: '', error: (r.stderr ?? '').trim() || `git exited ${r.status}` };
+  return { ok: true, stdout: (r.stdout ?? '').trim(), error: '' };
+}
+
+function safeReaddir(dir: string): string[] | null {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return null;
+  }
+}
+
+/** Drop credentials (`user:token@`) from a remote URL: reports get saved and shared. */
+function redactRemote(url: string): string {
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, '$1');
 }
 
 /** A unit counts as its own git repo when it carries a .git entry (dir or worktree file). */
@@ -134,14 +159,21 @@ interface UnitFrontmatter {
   parked_revisit?: string;
 }
 
-function readAgentsMd(dir: string): { data: UnitFrontmatter; body: string } | null {
+interface AgentsMd {
+  data: UnitFrontmatter;
+  body: string;
+  /** Parse/read failure: the file exists but could not be understood. */
+  error?: string;
+}
+
+function readAgentsMd(dir: string): AgentsMd | null {
   const p = join(dir, 'AGENTS.md');
   if (!existsSync(p)) return null;
   try {
     const parsed = matter(readFileSync(p, 'utf8'));
     return { data: (parsed.data ?? {}) as UnitFrontmatter, body: parsed.content ?? '' };
-  } catch {
-    return { data: {}, body: '' };
+  } catch (e) {
+    return { data: {}, body: '', error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -155,12 +187,26 @@ function extractSection(markdown: string, title: string): string | null {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
-/** First shell command declared in a fenced code block inside a markdown section. */
+/** The command declared in a fenced code block inside a markdown section: the whole block, comment lines dropped. */
 function extractCommand(section: string): string | null {
   const m = /```[^\n]*\n([\s\S]*?)```/.exec(section);
   if (!m) return null;
-  const line = m[1].split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
-  return line ?? null;
+  const command = m[1]
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .join('\n')
+    .trim();
+  return command || null;
+}
+
+/** Environment a metric command gets: enough to run tools, none of the operator's credentials. */
+function scrubbedEnv(): NodeJS.ProcessEnv {
+  const keep = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'TMPDIR', 'LANG', 'TZ'];
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (keep.includes(k) || k.startsWith('LC_')) env[k] = v;
+  }
+  return env;
 }
 
 interface MetricPoint {
@@ -185,10 +231,12 @@ function parseMetricOutput(stdout: string): MetricPoint[] {
   return points;
 }
 
-function runMetric(dir: string, body: string, staleDays: number, now: Date, execute: boolean): MetricStatus {
+function declaredMetricCommand(body: string): string | null {
   const section = extractSection(body, 'Metric');
-  if (!section) return 'undeclared';
-  const command = extractCommand(section);
+  return section ? extractCommand(section) : null;
+}
+
+function runMetric(dir: string, command: string | null, staleDays: number, now: Date, execute: boolean): MetricStatus {
   if (!command) return 'undeclared';
   if (!execute) return 'declared';
 
@@ -197,6 +245,7 @@ function runMetric(dir: string, body: string, staleDays: number, now: Date, exec
     shell: true,
     encoding: 'utf8',
     timeout: METRIC_TIMEOUT_MS,
+    env: scrubbedEnv(),
   });
   if (r.error || r.status !== 0) return 'no-data';
 
@@ -217,12 +266,12 @@ function hasCi(dir: string): boolean {
   if (existsSync(join(dir, '.circleci', 'config.yml'))) return true;
   if (existsSync(join(dir, 'Jenkinsfile'))) return true;
   const wf = join(dir, '.github', 'workflows');
-  return isDir(wf) && readdirSync(wf).some((f) => /\.ya?ml$/.test(f));
+  return isDir(wf) && (safeReaddir(wf) ?? []).some((f) => /\.ya?ml$/.test(f));
 }
 
 function hasContract(dir: string, body: string): boolean {
   for (const candidate of ['openapi', 'schemas', 'schema', 'proto']) {
-    if (isDir(join(dir, candidate)) && readdirSync(join(dir, candidate)).length > 0) return true;
+    if (isDir(join(dir, candidate)) && (safeReaddir(join(dir, candidate)) ?? []).length > 0) return true;
   }
   for (const file of ['openapi.json', 'openapi.yaml', 'openapi.yml', 'asyncapi.json', 'asyncapi.yaml']) {
     if (existsSync(join(dir, file))) return true;
@@ -230,26 +279,29 @@ function hasContract(dir: string, body: string): boolean {
   return extractSection(body, 'Contract') !== null;
 }
 
-function packageVersion(dir: string): string | null {
+function packageVersion(dir: string): { version: string | null; error?: string } {
   const p = join(dir, 'package.json');
-  if (!existsSync(p)) return null;
+  if (!existsSync(p)) return { version: null };
   try {
     const v = (JSON.parse(readFileSync(p, 'utf8')) as { version?: unknown }).version;
-    return typeof v === 'string' ? v : null;
-  } catch {
-    return null;
+    return { version: typeof v === 'string' ? v : null };
+  } catch (e) {
+    return { version: null, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/** Version the docs claim: frontmatter `version:` first, then a `version X.Y.Z` / `vX.Y.Z` mention. */
-function documentedVersion(fm: UnitFrontmatter, body: string): string | null {
-  if (fm.version && /^\d+\.\d+\.\d+$/.test(fm.version)) return fm.version;
-  const m = /\bversion[:\s]+v?(\d+\.\d+\.\d+)\b/i.exec(body) ?? /\bv(\d+\.\d+\.\d+)\b/.exec(body);
-  return m ? m[1] : null;
+/**
+ * Version the docs claim: the frontmatter `version:` only. Prose mentions
+ * ("added in v0.9.0") are history, not claims about the current version.
+ */
+function documentedVersion(fm: UnitFrontmatter): string | null {
+  const v = typeof fm.version === 'string' ? fm.version : String(fm.version ?? '');
+  return /^\d+\.\d+\.\d+$/.test(v) ? v : null;
 }
 
 /** Retired terms declared by the org: names.{yml,yaml,json} in the control repo or org root. */
-function loadRetiredNames(orgRoot: string, controlRepo: string): string[] {
+function loadRetiredNames(orgRoot: string, controlRepo: string): { terms: string[]; findings: Finding[] } {
+  const findings: Finding[] = [];
   for (const base of [join(orgRoot, controlRepo), orgRoot]) {
     for (const file of ['names.yml', 'names.yaml', 'names.json']) {
       const p = join(base, file);
@@ -260,13 +312,13 @@ function loadRetiredNames(orgRoot: string, controlRepo: string): string[] {
         const list = Array.isArray(parsed)
           ? parsed
           : (parsed as { retired?: unknown })?.retired;
-        if (Array.isArray(list)) return list.filter((t): t is string => typeof t === 'string');
-      } catch {
-        // Unparseable names table — treated as absent, never a crash.
+        if (Array.isArray(list)) return { terms: list.filter((t): t is string => typeof t === 'string'), findings };
+      } catch (e) {
+        findings.push({ check: 'names', code: 'invalid-names-table', message: `${file} could not be parsed (${e instanceof Error ? e.message.split('\n')[0] : String(e)}) — retired names were not checked` });
       }
     }
   }
-  return [];
+  return { terms: [], findings };
 }
 
 function retiredTermsIn(dir: string, retired: string[]): string[] {
@@ -301,18 +353,31 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   let lastCommitAt: string | null = null;
   if (inGit) {
     const hardened = hardenedGitArgs(dir);
+    const gitError = (what: string, error: string) =>
+      findings.push({ check: 'git', code: 'git-error', message: `git ${what} failed: ${error} — git state could not be audited` });
     const remotes = runGit(dir, ['remote'], hardened);
-    hasRemote = !!remotes;
-    if (hasRemote) {
-      const first = remotes!.split('\n')[0].trim();
-      remoteUrl = runGit(dir, ['remote', 'get-url', first], hardened);
+    if (!remotes.ok) {
+      gitError('remote', remotes.error);
+    } else if (remotes.stdout) {
+      hasRemote = true;
+      const first = remotes.stdout.split('\n')[0].trim();
+      const url = runGit(dir, ['remote', 'get-url', first], hardened);
+      if (url.ok) remoteUrl = redactRemote(url.stdout);
+      else gitError('remote get-url', url.error);
     } else {
       findings.push({ check: 'git', code: 'no-remote', message: 'git repo without a remote — work is not backed up or visible' });
     }
-    lastCommitAt = runGit(dir, ['log', '-1', '--format=%cI'], hardened);
+    if (remotes.ok) {
+      const log = runGit(dir, ['log', '-1', '--format=%cI'], hardened);
+      if (log.ok) lastCommitAt = log.stdout || null;
+      // A repo with no commits yet has nothing to report; any other failure is a real error.
+      else if (!/does not have any commits/i.test(log.error)) gitError('log', log.error);
+    }
   } else {
-    const hasFiles = readdirSync(dir).some((f) => !f.startsWith('.'));
-    if (hasFiles) {
+    const entries = safeReaddir(dir);
+    if (entries === null) {
+      findings.push({ check: 'git', code: 'audit-error', message: 'directory is not readable — unit could not be audited' });
+    } else if (entries.some((f) => !f.startsWith('.'))) {
       findings.push({ check: 'git', code: 'not-in-git', message: 'directory holds work but is not a git repo' });
     }
   }
@@ -325,7 +390,9 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   const lifecycle = fm.lifecycle?.trim().toLowerCase() ?? null;
   const unclassified = !kind;
 
-  if (unclassified) {
+  if (agents?.error) {
+    findings.push({ check: 'self-description', code: 'invalid-agents-md', message: `AGENTS.md exists but could not be parsed (${agents.error.split('\n')[0]}) — fix its frontmatter` });
+  } else if (unclassified) {
     findings.push({ check: 'self-description', code: 'unclassified', message: 'no AGENTS.md self-description (kind/lifecycle)' });
     hints.push(`declare this unit: add AGENTS.md with frontmatter — kind: ${VALID_KINDS.join('|')}, lifecycle: ${VALID_LIFECYCLES.join('|')}`);
   } else if (RETIRED_KINDS[kind]) {
@@ -336,16 +403,21 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   if (lifecycle && !VALID_LIFECYCLES.includes(lifecycle as (typeof VALID_LIFECYCLES)[number])) {
     findings.push({ check: 'self-description', code: 'unknown-lifecycle', message: `AGENTS.md lifecycle "${lifecycle}" is not one of ${VALID_LIFECYCLES.join(', ')}` });
   }
+  let parkedComplete = true;
   if (lifecycle === 'parked') {
     const reason = fm.parked_reason ?? fm.reason;
     const revisit = fm.parked_revisit ?? fm.revisit ?? fm.revisit_date;
     if (!reason || !revisit) {
+      parkedComplete = false;
       findings.push({ check: 'self-description', code: 'parked-incomplete', message: 'parked units need a reason and a revisit date in AGENTS.md frontmatter' });
     }
   }
 
   // --- metric ---------------------------------------------------------------
-  const metric = agents ? runMetric(dir, body, opts.staleDays, opts.now, opts.runMetrics) : 'undeclared';
+  const metricCommand = agents ? declaredMetricCommand(body) : null;
+  // Parked/archived units are dormant: their metric code is never worth running.
+  const dormant = lifecycle === 'parked' || lifecycle === 'archived';
+  const metric = runMetric(dir, metricCommand, opts.staleDays, opts.now, opts.runMetrics && !dormant);
   if (!unclassified && lifecycle !== 'parked' && lifecycle !== 'archived') {
     if (metric === 'undeclared') {
       findings.push({ check: 'metric', code: 'metric-undeclared', message: 'no runnable ## Metric section in AGENTS.md' });
@@ -380,10 +452,12 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   }
 
   // --- docs facts --------------------------------------------------------------
-  const actualVersion = packageVersion(dir);
-  const claimedVersion = documentedVersion(fm, body);
-  if (actualVersion && claimedVersion && actualVersion !== claimedVersion) {
-    findings.push({ check: 'docs-facts', code: 'stale-doc-fact', message: `AGENTS.md says version ${claimedVersion} but package.json says ${actualVersion}` });
+  const pkg = packageVersion(dir);
+  const claimedVersion = documentedVersion(fm);
+  if (pkg.error) {
+    findings.push({ check: 'docs-facts', code: 'invalid-package-json', message: `package.json could not be parsed (${pkg.error.split('\n')[0]}) — version was not checked` });
+  } else if (pkg.version && claimedVersion && pkg.version !== claimedVersion) {
+    findings.push({ check: 'docs-facts', code: 'stale-doc-fact', message: `AGENTS.md says version ${claimedVersion} but package.json says ${pkg.version}` });
   }
 
   // --- names ---------------------------------------------------------------------
@@ -392,7 +466,8 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
     findings.push({ check: 'names', code: 'retired-name', message: `docs use retired term(s): ${retiredHits.join(', ')}` });
   }
 
-  const countsAsGap = lifecycle !== 'parked' && lifecycle !== 'archived';
+  // A parked unit only stays out of the gap count once its reason + revisit date are declared.
+  const countsAsGap = lifecycle !== 'archived' && !(lifecycle === 'parked' && parkedComplete);
   return {
     name,
     inGit,
@@ -402,10 +477,30 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
     lifecycle,
     unclassified,
     metric,
+    metricCommand,
     lastCommitAt,
     findings,
     hints,
     countsAsGap,
+  };
+}
+
+/** A unit that threw mid-audit (e.g. EACCES) is reported, never allowed to abort the whole run. */
+function unauditableUnit(name: string, e: unknown): UnitAudit {
+  return {
+    name,
+    inGit: false,
+    hasRemote: false,
+    remoteUrl: null,
+    kind: null,
+    lifecycle: null,
+    unclassified: true,
+    metric: 'undeclared',
+    metricCommand: null,
+    lastCommitAt: null,
+    findings: [{ check: 'git', code: 'audit-error', message: `unit could not be audited: ${e instanceof Error ? e.message : String(e)}` }],
+    hints: [],
+    countsAsGap: true,
   };
 }
 
@@ -448,6 +543,12 @@ const PROPOSAL_TITLES: Record<string, (unit: string) => string> = {
   'active-but-idle': (u) => `fix: reconcile idle ${u} with its active lifecycle`,
   'archived-but-active': (u) => `fix: reconcile archived ${u} with recent pushes`,
   'stale-doc-fact': (u) => `fix: stale doc fact in ${u}`,
+  'git-error': (u) => `fix: git state of ${u} could not be read`,
+  'audit-error': (u) => `fix: ${u} could not be audited`,
+  'invalid-agents-md': (u) => `fix: AGENTS.md in ${u} does not parse`,
+  'invalid-package-json': (u) => `fix: package.json in ${u} does not parse`,
+  'parked-incomplete': (u) => `fix: add parked reason + revisit date to ${u}`,
+  'retired-kind': (u) => `fix: replace retired AGENTS.md kind in ${u}`,
   'retired-name': (u) => `fix: retired name used in ${u} docs`,
 };
 
@@ -473,7 +574,8 @@ function buildProposals(units: UnitAudit[], date: string): Proposal[] {
 }
 
 /**
- * Audit an org root. Read-only; declared metric commands run only with `runMetrics`.
+ * Audit an org root. Read-only by default; declared metric commands (which run
+ * repo code, scrubbed env, active units only) run only with `runMetrics`.
  */
 export function auditOrg(orgRoot: string, options: AuditOptions = {}): OrgAuditReport {
   const now = options.now ?? new Date();
@@ -484,8 +586,14 @@ export function auditOrg(orgRoot: string, options: AuditOptions = {}): OrgAuditR
   const unitNames = listOrgUnits(orgRoot);
   const retired = loadRetiredNames(orgRoot, controlRepo);
   const runMetrics = options.runMetrics === true;
-  const units = unitNames.map((name) => auditUnit(orgRoot, name, retired, { staleDays, idleDays, now, runMetrics }));
-  const orgFindings = auditOrgDocs(orgRoot, unitNames);
+  const units = unitNames.map((name) => {
+    try {
+      return auditUnit(orgRoot, name, retired.terms, { staleDays, idleDays, now, runMetrics });
+    } catch (e) {
+      return unauditableUnit(name, e);
+    }
+  });
+  const orgFindings = [...retired.findings, ...auditOrgDocs(orgRoot, unitNames)];
 
   const gaps =
     units.filter((u) => u.countsAsGap).reduce((n, u) => n + u.findings.length, 0) + orgFindings.length;
