@@ -54,8 +54,17 @@
       "check": {
         "ci": "fixture features.json with one failing item → train refuses; all passing with valid verifications → release PR opens"
       },
-      "status": "failing",
-      "verifications": []
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/glm-5.3-flash-free",
+          "builder_model": "opencode/deepseek-v4.1-flash-free + claude-opus-5.5",
+          "sha": "accfa38f3e848ccf80f6f282625be76ce7b1d156",
+          "at": "2026-10-20T10:01:45Z",
+          "run_id": "exec_mvghwrtb_ld5c26",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1324#issuecomment-6288409492; live: dry run against the real roadmap refused O0 naming the one failing item"
+        }
+      ]
     },
     {
       "id": "T1",
