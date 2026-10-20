@@ -13,8 +13,8 @@
  * commands run with a scrubbed environment and never for parked/archived units.
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
-import { join } from 'path';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
+import { basename, dirname, join, relative } from 'path';
 import { spawnSync } from 'child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
@@ -341,6 +341,292 @@ function daysBetween(a: Date, b: Date): number {
   return Math.floor((b.getTime() - a.getTime()) / MS_PER_DAY);
 }
 
+// --- duplicate docs ---------------------------------------------------------
+
+const DOC_SKIP_DIRS = new Set(['node_modules', '.venv', 'venv', 'site-packages', 'vendor', 'dist', 'build', '.git']);
+/** Licenses, changelogs and conduct files are boilerplate, not product docs to reconcile. */
+const DOC_SKIP_FILE_RE = /^(LICENSE|CHANGELOG|CODE_OF_CONDUCT)/i;
+const DOC_MAX_BYTES = 1024 * 1024;
+const DOC_SHINGLE_WORDS = 5;
+const DOC_DUPLICATE_SIMILARITY = 0.6;
+/** Below this, two dated files are a series (periodic reports), not copies of one document. */
+const DOC_DATED_COPY_SIMILARITY = 0.3;
+/** 3+ files with the same basename in sibling directories (NN/prompt.md) are data, not docs. */
+const DOC_TEMPLATE_FAMILY_MIN = 3;
+const DOC_FINDINGS_CAP = 10;
+/** Hard bound on pairs considered per unit: the audit must never go quadratic unannounced. */
+const DOC_MAX_PAIRWISE_COMPARISONS = 5000;
+const DATE_STAMP_RE = /\d{4}[-_]\d{2}[-_]\d{2}/;
+
+interface MarkdownDoc {
+  /** Path relative to the unit directory. */
+  path: string;
+  text: string;
+}
+
+function isSkippedDocFile(name: string): boolean {
+  return !/\.md$/i.test(name) || DOC_SKIP_FILE_RE.test(name);
+}
+
+/** A tracked path inside node_modules/vendor/venv/... is generated, not the unit's own docs. */
+function isInSkippedDir(relPath: string): boolean {
+  return relPath.split(/[\\/]/).some((part) => DOC_SKIP_DIRS.has(part));
+}
+
+/** Tracked markdown only: an untracked scratch copy is not part of the unit's docs. */
+function collectTrackedMarkdownDocs(dir: string, hardened: string[]): MarkdownDoc[] {
+  const listed = runGit(dir, ['ls-files', '-z', '--', '*.md'], hardened);
+  if (!listed.ok) return [];
+  const docs: MarkdownDoc[] = [];
+  for (const relPath of listed.stdout.split('\0')) {
+    if (!relPath) continue;
+    if (isSkippedDocFile(basename(relPath))) continue;
+    // Tracked vendored/generated trees are boilerplate too: skip by path component.
+    if (isInSkippedDir(relPath)) continue;
+    const p = join(dir, relPath);
+    let st;
+    try {
+      st = lstatSync(p);
+    } catch {
+      continue;
+    }
+    // lstat: never follow symlinks out of the unit (or into a cycle).
+    if (!st.isFile() || st.size > DOC_MAX_BYTES) continue;
+    try {
+      docs.push({ path: relPath, text: readFileSync(p, 'utf8') });
+    } catch {
+      // An unreadable doc cannot be compared; the rest of the audit still runs.
+    }
+  }
+  return docs;
+}
+
+/** Outside git, walk the unit but never descend into generated/vendored trees. */
+function collectWalkedMarkdownDocs(dir: string): MarkdownDoc[] {
+  const docs: MarkdownDoc[] = [];
+  const walk = (current: string): void => {
+    const entries = safeReaddir(current);
+    if (!entries) return;
+    for (const entry of entries) {
+      const p = join(current, entry);
+      let st;
+      try {
+        // lstat: never follow symlinks out of the unit (or into a cycle).
+        st = lstatSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        if (!DOC_SKIP_DIRS.has(entry)) walk(p);
+        continue;
+      }
+      if (!st.isFile() || isSkippedDocFile(entry) || st.size > DOC_MAX_BYTES) continue;
+      try {
+        docs.push({ path: relative(dir, p), text: readFileSync(p, 'utf8') });
+      } catch {
+        // An unreadable doc cannot be compared; the rest of the audit still runs.
+      }
+    }
+  };
+  walk(dir);
+  return docs;
+}
+
+/** `hardened` is null outside git; inside git only tracked files are considered. */
+function collectMarkdownDocs(dir: string, hardened: string[] | null): MarkdownDoc[] {
+  return hardened ? collectTrackedMarkdownDocs(dir, hardened) : collectWalkedMarkdownDocs(dir);
+}
+
+/**
+ * Paths belonging to a templated family: the same basename in 3+ sibling
+ * directories (e.g. tasks/tier1/01/prompt.md … 05/prompt.md). Those files are
+ * generated data, so they must not be reported as duplicate prose.
+ */
+function templatedFamilyPaths(docs: MarkdownDoc[]): Set<string> {
+  const families = new Map<string, Map<string, MarkdownDoc[]>>();
+  for (const doc of docs) {
+    const name = basename(doc.path);
+    const parent = dirname(doc.path);
+    const grandparent = dirname(parent);
+    let byGrandparent = families.get(name);
+    if (!byGrandparent) {
+      byGrandparent = new Map();
+      families.set(name, byGrandparent);
+    }
+    const siblings = byGrandparent.get(grandparent) ?? [];
+    siblings.push(doc);
+    byGrandparent.set(grandparent, siblings);
+  }
+  const templated = new Set<string>();
+  for (const byGrandparent of families.values()) {
+    for (const siblings of byGrandparent.values()) {
+      if (siblings.length < DOC_TEMPLATE_FAMILY_MIN) continue;
+      for (const doc of siblings) templated.add(doc.path);
+    }
+  }
+  return templated;
+}
+
+/** Lowercase, collapse whitespace, keep heading text: the rule's normalization. */
+function normalizeDocText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** Jaccard similarity over 5-word shingles of the normalized text. */
+function docShingles(text: string): Set<string> {
+  const words = normalizeDocText(text).split(' ').filter(Boolean);
+  if (words.length === 0) return new Set();
+  if (words.length <= DOC_SHINGLE_WORDS) return new Set([words.join(' ')]);
+  const set = new Set<string>();
+  for (let i = 0; i + DOC_SHINGLE_WORDS <= words.length; i++) {
+    set.add(words.slice(i, i + DOC_SHINGLE_WORDS).join(' '));
+  }
+  return set;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const s of a) if (b.has(s)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+/**
+ * Jaccard can never exceed min(|A|,|B|)/max(|A|,|B|) (the intersection is at
+ * most the smaller set and the union at least the larger one), so pairs whose
+ * shingle-set sizes are too different cannot reach `floor` and need no compare.
+ */
+function canReachSimilarity(a: Set<string>, b: Set<string>, floor: number): boolean {
+  const small = Math.min(a.size, b.size);
+  const large = Math.max(a.size, b.size);
+  if (large === 0) return false;
+  return small / large >= floor;
+}
+
+interface PairwiseBudget {
+  remaining: number;
+  exhausted: boolean;
+}
+
+/** Counts every pair the analysis considers; returns false once the per-unit bound is hit. */
+function takeComparison(budget: PairwiseBudget): boolean {
+  if (budget.remaining <= 0) {
+    budget.exhausted = true;
+    return false;
+  }
+  budget.remaining--;
+  return true;
+}
+
+/** True when two files sit in the same directory and differ only by a YYYY-MM-DD (or YYYY_MM_DD) stamp. */
+function isDatedCopy(a: string, b: string): boolean {
+  if (dirname(a) !== dirname(b)) return false;
+  const na = basename(a);
+  const nb = basename(b);
+  if (!DATE_STAMP_RE.test(na) && !DATE_STAMP_RE.test(nb)) return false;
+  return na.replace(DATE_STAMP_RE, '<date>') === nb.replace(DATE_STAMP_RE, '<date>');
+}
+
+/** Family key for a dated file: same directory + basename with the date stamp stripped. */
+function datedFamilyKey(path: string): string | null {
+  const name = basename(path);
+  if (!DATE_STAMP_RE.test(name)) return null;
+  return join(dirname(path), name.replace(DATE_STAMP_RE, '<date>'));
+}
+
+interface ShingledDoc {
+  path: string;
+  shingles: Set<string>;
+}
+
+/**
+ * One finding per dated family (same name with the date stripped, same directory).
+ * A family whose members are textually disjoint is a time series (periodic
+ * reports), not copies of one document: only members that overlap at or above
+ * DOC_DATED_COPY_SIMILARITY are reported.
+ */
+function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding[] {
+  const families = new Map<string, ShingledDoc[]>();
+  for (const doc of docs) {
+    const key = datedFamilyKey(doc.path);
+    if (!key) continue;
+    const family = families.get(key) ?? [];
+    family.push(doc);
+    families.set(key, family);
+  }
+  const findings: Finding[] = [];
+  for (const [key, family] of families) {
+    if (family.length < 2) continue;
+    const overlapping = new Set<string>();
+    let maxSimilarity = 0;
+    for (let i = 0; i < family.length; i++) {
+      for (let j = i + 1; j < family.length; j++) {
+        if (!takeComparison(budget)) break;
+        if (!canReachSimilarity(family[i].shingles, family[j].shingles, DOC_DATED_COPY_SIMILARITY)) continue;
+        const similarity = jaccard(family[i].shingles, family[j].shingles);
+        if (similarity < DOC_DATED_COPY_SIMILARITY) continue;
+        overlapping.add(family[i].path);
+        overlapping.add(family[j].path);
+        maxSimilarity = Math.max(maxSimilarity, similarity);
+      }
+      if (budget.exhausted) break;
+    }
+    if (overlapping.size < 2) continue;
+    const members = family.filter((doc) => overlapping.has(doc.path)).map((doc) => `"${doc.path}"`);
+    findings.push({
+      check: 'docs-facts',
+      code: 'duplicate-doc',
+      message: `dated copies: family "${key}" has ${family.length} file(s), ${members.length} overlapping: ${members.join(', ')} (similarity ${maxSimilarity.toFixed(2)}) — one file per kind of text`,
+    });
+    if (budget.exhausted) break;
+  }
+  return findings;
+}
+
+/** Findings for dated-copy families and near-duplicate markdown pairs, with paths and similarity. */
+function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[] {
+  const collected = collectMarkdownDocs(dir, hardened);
+  const templated = templatedFamilyPaths(collected);
+  const docs = collected.map((doc) => ({ path: doc.path, shingles: docShingles(doc.text) }));
+  const budget: PairwiseBudget = { remaining: DOC_MAX_PAIRWISE_COMPARISONS, exhausted: false };
+  const findings = datedCopyFindings(docs, budget);
+  for (let i = 0; i < docs.length; i++) {
+    for (let j = i + 1; j < docs.length; j++) {
+      if (!takeComparison(budget)) break;
+      // Dated pairs are handled per family above; non-dated pairs are reported one by one.
+      if (isDatedCopy(docs[i].path, docs[j].path)) continue;
+      if (templated.has(docs[i].path) || templated.has(docs[j].path)) continue;
+      if (!canReachSimilarity(docs[i].shingles, docs[j].shingles, DOC_DUPLICATE_SIMILARITY)) continue;
+      const similarity = jaccard(docs[i].shingles, docs[j].shingles);
+      if (similarity < DOC_DUPLICATE_SIMILARITY) continue;
+      findings.push({
+        check: 'docs-facts',
+        code: 'duplicate-doc',
+        message: `near-duplicate docs: "${docs[i].path}" and "${docs[j].path}" (similarity ${similarity.toFixed(2)}) — one file per kind of text`,
+      });
+    }
+    if (budget.exhausted) break;
+  }
+  if (budget.exhausted) {
+    findings.push({
+      check: 'docs-facts',
+      code: 'duplicate-doc',
+      message: `duplicate-doc analysis stopped after ${DOC_MAX_PAIRWISE_COMPARISONS} pairwise comparisons — later pairs were not compared`,
+    });
+  }
+  if (findings.length > DOC_FINDINGS_CAP) {
+    const suppressed = findings.length - DOC_FINDINGS_CAP;
+    findings.length = DOC_FINDINGS_CAP;
+    findings.push({
+      check: 'docs-facts',
+      code: 'duplicate-doc',
+      message: `${suppressed} duplicate-doc finding(s) suppressed — cap is ${DOC_FINDINGS_CAP} per unit`,
+    });
+  }
+  return findings;
+}
+
 function auditUnit(orgRoot: string, name: string, retired: string[], opts: Required<Pick<AuditOptions, 'staleDays' | 'idleDays' | 'runMetrics'>> & { now: Date }): UnitAudit {
   const dir = join(orgRoot, name);
   const findings: Finding[] = [];
@@ -351,8 +637,9 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   let hasRemote = false;
   let remoteUrl: string | null = null;
   let lastCommitAt: string | null = null;
-  if (inGit) {
-    const hardened = hardenedGitArgs(dir);
+  // Computed once per unit (it reads the unit's config); null outside git.
+  const hardened = inGit ? hardenedGitArgs(dir) : null;
+  if (inGit && hardened) {
     const gitError = (what: string, error: string) =>
       findings.push({ check: 'git', code: 'git-error', message: `git ${what} failed: ${error} — git state could not be audited` });
     const remotes = runGit(dir, ['remote'], hardened);
@@ -459,6 +746,7 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   } else if (pkg.version && claimedVersion && pkg.version !== claimedVersion) {
     findings.push({ check: 'docs-facts', code: 'stale-doc-fact', message: `AGENTS.md says version ${claimedVersion} but package.json says ${pkg.version}` });
   }
+  findings.push(...duplicateDocFindings(dir, hardened));
 
   // --- names ---------------------------------------------------------------------
   const retiredHits = retiredTermsIn(dir, retired);
@@ -543,6 +831,7 @@ const PROPOSAL_TITLES: Record<string, (unit: string) => string> = {
   'active-but-idle': (u) => `fix: reconcile idle ${u} with its active lifecycle`,
   'archived-but-active': (u) => `fix: reconcile archived ${u} with recent pushes`,
   'stale-doc-fact': (u) => `fix: stale doc fact in ${u}`,
+  'duplicate-doc': (u) => `fix: consolidate duplicate docs in ${u}`,
   'git-error': (u) => `fix: git state of ${u} could not be read`,
   'audit-error': (u) => `fix: ${u} could not be audited`,
   'invalid-agents-md': (u) => `fix: AGENTS.md in ${u} does not parse`,
