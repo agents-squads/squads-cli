@@ -46,7 +46,7 @@
 | `squads providers` | Show available LLM CLI providers (claude, gemini, codex, etc.) |
 | `squads update` | Check for and install updates |
 | `squads version` | Show version information |
-| `squads runs` | List live background agent runs (pid-file inventory) |
+| `squads runs annotate` | Attach gate result or review verdict to the run that produced a commit |
 | `squads inbox [action] [id]` | Everything waiting on a human decision — list, or approve/reject/defer <id> |
 | `squads propose` | Draft one extra deliverable on a proposal branch you review before it lands — scoped, and never leaves your machine |
 | `squads scoreboard` | Compare models and executors by quality per cost, with the source of every number shown (read-only) |
