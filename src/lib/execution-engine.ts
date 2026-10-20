@@ -904,12 +904,24 @@ export function buildDetachedHarvestShell(config: {
  * the run's events file as it lands, then a finish snippet that signals the
  * follower and waits for it to drain before the spool is written.
  *
- * The follower is re-invoked from this same CLI (`node <argv[1]> _stream-events`)
+ * The follower is re-invoked from this same CLI (`node <cli> _stream-events`)
  * because the adapter is TypeScript — the wrapper shell cannot run it inline.
- * The events file path, run id, provider and agent are baked in at build time;
- * only paths are interpolated, each single-quoted against shell splitting.
+ * `<cli>` must be the compiled CLI entrypath resolved BY THE CALLER from
+ * import.meta.url; the caller only builds this snippet when it is actually
+ * running inside the dist/cli.js bundle (otherwise the re-invocation would
+ * spawn a phantom process in whatever host imported the engine — under vitest
+ * that phantom waits on a worker channel forever, wedging everything after
+ * it). The events file path, run id, provider and agent are baked in at build
+ * time; only paths are interpolated, each single-quoted against shell
+ * splitting.
+ *
+ * The finish snippet waits on a drain sentinel (`<done>.flushed`, touched by
+ * the follower after flush) with a bounded poll instead of a bare `wait`, so a
+ * follower that dies before flushing or wedges can never hold the lane before
+ * the spool — reconcile dedupes either way.
  */
 export function buildLiveStreamShell(fields: {
+  cli: string;
   harness: string;
   eventsFile: string;
   runId: string;
@@ -919,6 +931,7 @@ export function buildLiveStreamShell(fields: {
   doneFile: string;
 }): { spawn: string; finish: string } {
   const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  const finishFile = `${fields.doneFile}.flushed`;
   const argv = [
     '_stream-events',
     '--harness', fields.harness,
@@ -928,9 +941,11 @@ export function buildLiveStreamShell(fields: {
     '--agent', fields.agent,
     '--log', fields.logFile,
     '--done', fields.doneFile,
+    '--finish', finishFile,
   ].map(q).join(' ');
-  const spawn = `${q(process.execPath)} ${q(process.argv[1] ?? '')} ${argv} >/dev/null 2>&1 & STREAM_PID=$!;`;
-  const finish = `touch ${q(fields.doneFile)}; wait $STREAM_PID 2>/dev/null; rm -f ${q(fields.doneFile)};`;
+  const spawn = `${q(process.execPath)} ${q(fields.cli)} ${argv} >/dev/null 2>&1 & STREAM_PID=$!;`;
+  // Bounded drain: resolve when the follower flushed, cap at 5 s otherwise.
+  const finish = `FIN=${q(finishFile)}; touch ${q(fields.doneFile)}; n=0; while [ ! -f "$FIN" ] && [ "$n" -lt 20 ]; do sleep 0.25; n=$((n+1)); done; rm -f ${q(fields.doneFile)} "$FIN";`;
   return { spawn, finish };
 }
 
@@ -2464,8 +2479,19 @@ export async function executeWithProvider(
   // harness stdout into the events file as it happens — a detached lane used to
   // show only run_start until the spool reconcile fired at exit. The follower
   // tails the raw log and normalizes each line through the harness adapter.
-  const liveStream = (cliConfig.opencodeJson || cliConfig.kimiCodeJson)
+  // It is re-invoked as `node <cli> _stream-events ...`, so <cli> must be the
+  // compiled CLI entry. tsup bundles this engine into dist chunks, and the
+  // entries sit beside them — resolving cli.js as a sibling of the module file
+  // is true for every real bundle (dist/chunk-*.js, dist/cli.js, dist/index.js)
+  // and false for non-bundle hosts (tests exercising executeWithProvider
+  // directly import src/lib/execution-engine.ts, where src/cli.js does not
+  // exist). A phantom `node <argv[1]>` sibling would otherwise wedge the
+  // wrapper's finish wait before the spool ever runs; when the sibling is
+  // missing we degrade gracefully to the exit-reconcile path, which dedupes.
+  const cliEntry = join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
+  const liveStream = (cliConfig.opencodeJson || cliConfig.kimiCodeJson) && existsSync(cliEntry)
     ? buildLiveStreamShell({
+        cli: cliEntry,
         harness: cliConfig.opencodeJson ? 'opencode' : 'kimi-code',
         eventsFile: execEventsFile(dispatchRoot, executionId),
         runId: executionId,

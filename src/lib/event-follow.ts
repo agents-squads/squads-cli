@@ -11,7 +11,7 @@
  * when the pid file is gone and no bytes remain unread, the run is over.
  */
 
-import { existsSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'fs';
 import { createClaudeStreamJsonAdapter, createKimiStreamJsonAdapter, createOpencodeStreamJsonAdapter, ExecEventWriter } from './exec-events.js';
 import { renderEvent } from './event-render.js';
 import { writeLine } from './terminal.js';
@@ -135,6 +135,9 @@ export interface StreamEventsOptions {
   logFile: string;
   /** Sentinel: once it exists and the log is drained, the follower exits. */
   doneFile: string;
+  /** Touched after the events file is fully flushed (the detached wrapper
+   *  waits on this with a bounded poll, then resumes — see buildLiveStreamShell). */
+  finishFile?: string;
   pollMs?: number;
 }
 
@@ -147,7 +150,8 @@ export interface StreamEventsOptions {
  * unchanged.
  *
  * Exits when `doneFile` appears AND the log is fully drained (the wrapper
- * touches it once the executor has exited, then `wait`s on this process).
+ * touches it once the executor has exited, then polls `finishFile` with a
+ * bounded wait so a wedged follower can never hold back the spool).
  */
 export function streamEventsFromLog(opts: StreamEventsOptions): Promise<void> {
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
@@ -211,6 +215,9 @@ export function streamEventsFromLog(opts: StreamEventsOptions): Promise<void> {
         feed(line);
       }
       writer.close();
+      if (opts.finishFile) {
+        try { writeFileSync(opts.finishFile, ''); } catch { /* best effort — wrapper's bounded poll covers this */ }
+      }
       resolve();
     };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { streamEventsFromLog } from '../src/lib/event-follow.js';
@@ -17,6 +17,7 @@ describe('streamEventsFromLog (#1353)', () => {
       const logFile = join(dir, 'lane.jsonl');
       const eventsFile = join(dir, 'events.jsonl');
       const doneFile = join(dir, 'lane.jsonl.live-done');
+      const finishFile = join(dir, 'lane.jsonl.live-done.flushed');
 
       const done = streamEventsFromLog({
         harness: 'opencode',
@@ -26,6 +27,7 @@ describe('streamEventsFromLog (#1353)', () => {
         agent: 'builder',
         logFile,
         doneFile,
+        finishFile,
         pollMs: 10,
       });
 
@@ -46,6 +48,7 @@ describe('streamEventsFromLog (#1353)', () => {
       await done;
 
       expect(readTypes(eventsFile)).toEqual(['tool_call', 'tool_result', 'usage_running', 'token_usage']);
+      expect(existsSync(finishFile)).toBe(true); // drained sentinel for the wrapper's bounded wait
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -53,9 +56,10 @@ describe('streamEventsFromLog (#1353)', () => {
 });
 
 describe('buildLiveStreamShell (#1353)', () => {
-  it('embeds the harness, paths and identity into spawn + finish snippets', async () => {
+  it('embeds the cli, harness, paths and identity into spawn + finish snippets', async () => {
     const { buildLiveStreamShell } = await import('../src/lib/execution-engine.js');
     const { spawn: spawnCmd, finish: finishCmd } = buildLiveStreamShell({
+      cli: '/usr/local/lib/node_modules/squads-cli/dist/cli.js',
       harness: 'opencode',
       eventsFile: '/obs/.agents/observability/events/exec_1.jsonl',
       runId: 'exec_1',
@@ -66,16 +70,19 @@ describe('buildLiveStreamShell (#1353)', () => {
     });
 
     expect(spawnCmd).toContain('_stream-events');
+    expect(spawnCmd).toContain("'/usr/local/lib/node_modules/squads-cli/dist/cli.js'"); // resolved CLI entry, never argv[1]
     expect(spawnCmd).toContain("'--harness' 'opencode'");
     expect(spawnCmd).toContain('exec_1.jsonl');
     expect(spawnCmd).toContain("'--run-id' 'exec_1'");
     expect(spawnCmd).toContain("'--provider' 'deepseek'");
     expect(spawnCmd).toContain("'--agent' 'builder'");
+    expect(spawnCmd).toContain("'--finish' '/obs/.agents/logs/eng/builder-1.log.live-done.flushed'");
     expect(spawnCmd).toContain('STREAM_PID=$!');
 
     expect(finishCmd).toContain('touch');
     expect(finishCmd).toContain('.live-done');
-    expect(finishCmd).toContain('wait $STREAM_PID');
+    expect(finishCmd).toContain('[ ! -f "$FIN" ]'); // bounded poll on the drain sentinel
+    expect(finishCmd).toContain('rm -f');
   });
 });
 

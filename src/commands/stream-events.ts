@@ -19,6 +19,7 @@ export async function streamEventsCommand(options: {
   agent?: string;
   log?: string;
   done?: string;
+  finish?: string;
   pollMs?: number;
 }): Promise<void> {
   const harness = options.harness as StreamEventsHarness | undefined;
@@ -36,6 +37,7 @@ export async function streamEventsCommand(options: {
     agent: options.agent,
     logFile: options.log,
     doneFile: options.done,
+    ...(options.finish ? { finishFile: options.finish } : {}),
     ...(typeof options.pollMs === 'number' && options.pollMs > 0 ? { pollMs: options.pollMs } : {}),
   });
 }

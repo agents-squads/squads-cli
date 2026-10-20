@@ -380,6 +380,7 @@ program
   .option('--agent <agent>', 'agent attribution')
   .option('--log <path>', 'raw harness log to follow')
   .option('--done <path>', 'done sentinel file')
+  .option('--finish <path>', 'drain sentinel file touched after flush')
   .action(async (options) => {
     const { streamEventsCommand } = await import('./commands/stream-events.js');
     return streamEventsCommand(options);
