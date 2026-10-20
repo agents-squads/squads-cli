@@ -466,7 +466,7 @@ interface AnnotateOptions {
   tests?: string;
   newFailures?: string;
   pr?: string;
-  verdict?: 'PASS' | 'FAIL';
+  verdict?: string;
   findings?: string;
   severity?: string;
   reviewerRunId?: string;
@@ -557,6 +557,25 @@ export async function annotateRunCommand(options: AnnotateOptions): Promise<void
     process.exit(1);
   }
 
+  // `--verdict` is free-form at the CLI; only PASS/FAIL are meaningful to the
+  // review_verdict event schema. Upper-case the input so `--verdict pass` is
+  // accepted, and reject anything that isn't one of the two values.
+  let verdict: 'PASS' | 'FAIL' | undefined;
+  if (hasVerdict) {
+    const normalized = (options.verdict ?? '').toUpperCase();
+    if (normalized === 'PASS' || normalized === 'FAIL') {
+      verdict = normalized;
+    } else {
+      const msg = `--verdict must be PASS or FAIL (got "${options.verdict}")`;
+      if (options.json) {
+        writeLine(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        writeLine(`  ${colors.red}${msg}${RESET}`);
+      }
+      process.exit(1);
+    }
+  }
+
   // Build the event
   let newEvent: PersistedExecEvent['event'];
   const now = new Date().toISOString();
@@ -600,11 +619,10 @@ export async function annotateRunCommand(options: AnnotateOptions): Promise<void
       }
       process.exit(1);
     }
-    const verdict = options.verdict!; // validated above
     newEvent = {
       type: 'review_verdict',
       pr: options.pr || '',
-      verdict,
+      verdict: verdict!, // validated + normalized above
       findings,
       ...(options.severity ? { severity: options.severity } : {}),
       ...(options.reviewerRunId ? { reviewerRunId: options.reviewerRunId } : {}),

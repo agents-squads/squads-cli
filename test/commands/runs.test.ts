@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -20,7 +20,7 @@ vi.mock('../../src/lib/spool.js', async (importOriginal) => {
   return { ...actual, reconcileDetachedRuns: vi.fn(actual.reconcileDetachedRuns) };
 });
 
-import { runsCommand } from '../../src/commands/runs.js';
+import { runsCommand, annotateRunCommand } from '../../src/commands/runs.js';
 import { listDetachedRuns } from '../../src/lib/runs-inventory.js';
 import { reconcileDetachedRuns } from '../../src/lib/spool.js';
 
@@ -268,5 +268,86 @@ describe('runsCommand --wait', () => {
     expect(parsed.denials).toBe(0);
 
     writeSpy.mockRestore();
+  });
+});
+
+describe('annotateRunCommand --verdict validation (cli#1354 review F1)', () => {
+  const COMMIT = 'abc123def456';
+
+  function writeArtifactCommitEvent(runId: string): void {
+    const dir = join(root, '.agents', 'observability', 'events');
+    mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({
+      schema_version: 1,
+      v: 2,
+      runId,
+      seq: 0,
+      ts: '2026-10-20T00:00:00.000Z',
+      event: { type: 'artifact', kind: 'commit', ref: `commit ${COMMIT}` },
+    });
+    writeFileSync(join(dir, `${runId}.jsonl`), `${line}\n`);
+  }
+
+  function exitError(): never {
+    throw new Error('process.exit');
+  }
+
+  function capturedStdout(spy: ReturnType<typeof vi.spyOn>): string {
+    return spy.mock.calls.map((c) => String(c[0])).join('');
+  }
+
+  it('rejects a non-PASS/FAIL verdict with a JSON error and exit 1', async () => {
+    writeArtifactCommitEvent('run1');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(exitError);
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        annotateRunCommand({ commit: COMMIT, verdict: 'MAYBE', findings: '1', json: true })
+      ).rejects.toThrow('process.exit');
+      const out = capturedStdout(outSpy);
+      expect(out).toContain('"ok": false');
+      expect(out).toContain('--verdict must be PASS or FAIL');
+      expect(out).toContain('MAYBE');
+    } finally {
+      exitSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+  });
+
+  it('rejects a non-PASS/FAIL verdict with a clear text error and exit 1', async () => {
+    writeArtifactCommitEvent('run1');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(exitError);
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        annotateRunCommand({ commit: COMMIT, verdict: 'yes', findings: '1' })
+      ).rejects.toThrow('process.exit');
+      const out = capturedStdout(outSpy);
+      expect(out).toContain('--verdict must be PASS or FAIL');
+      expect(out).toContain('yes');
+    } finally {
+      exitSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+  });
+
+  it('upper-cases an accepted lower-case verdict when appending the event', async () => {
+    writeArtifactCommitEvent('run1');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(exitError);
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await annotateRunCommand({ commit: COMMIT, verdict: 'pass', findings: '2', json: true });
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      const file = readFileSync(join(root, '.agents', 'observability', 'events', 'run1.jsonl'), 'utf8');
+      const lines = file.trim().split('\n');
+      expect(lines.length).toBe(2);
+      const appended = JSON.parse(lines[1]);
+      expect(appended.event.type).toBe('review_verdict');
+      expect(appended.event.verdict).toBe('PASS');
+    } finally {
+      exitSpy.mockRestore();
+      outSpy.mockRestore();
+    }
   });
 });
