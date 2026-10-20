@@ -87,6 +87,8 @@ export interface ReleaseBodyInput {
   sourceSha: string;
   /** Set when the release is defined by a roadmap outcome. */
   outcome?: { id: string; name: string; items: number };
+  /** Outcome items owned by sibling repos; not gated by this release. */
+  siblingItems?: SiblingItem[];
   /** Set for the security-patch path (`--patch`). */
   patch?: boolean;
 }
@@ -421,6 +423,16 @@ export interface OutcomeItems {
   items: OutcomeItem[];
   /** `<repo>:<id>` refs for this repo that name no item in its features.json. */
   missing: string[];
+  /** Refs that are not `<repo>:<id>` at all; never silently skipped. */
+  malformed: string[];
+}
+
+/** A roadmap item that belongs to another repo: reported, never gated here. */
+export type SiblingStatus = 'passing' | 'failing' | 'unknown';
+
+export interface SiblingItem {
+  ref: string;
+  status: SiblingStatus;
 }
 
 /**
@@ -434,6 +446,7 @@ export function outcomeItemsForRepo(
 ): OutcomeItems {
   const items: OutcomeItem[] = [];
   const missing: string[] = [];
+  const malformed: string[] = [];
   const seen = new Set<string>();
 
   for (const ref of outcome.items) {
@@ -441,8 +454,12 @@ export function outcomeItemsForRepo(
     seen.add(ref);
     const sep = ref.lastIndexOf(':');
     const label = sep > 0 ? ref.slice(0, sep) : '';
+    const id = sep > 0 ? ref.slice(sep + 1) : '';
+    if (!label || !id) {
+      malformed.push(ref);
+      continue;
+    }
     if (!labels.has(label)) continue;
-    const id = sep > 0 ? ref.slice(sep + 1) : ref;
     const item = list.items.find((candidate) => candidate.id === id);
     if (!item) {
       missing.push(ref);
@@ -458,7 +475,7 @@ export function outcomeItemsForRepo(
     });
   }
 
-  return { items, missing };
+  return { items, missing, malformed };
 }
 
 export interface OutcomeGateInput {
@@ -477,17 +494,25 @@ export interface OutcomeGateInput {
  * of the release source. Every blocking item is reported with its reason.
  */
 export function evaluateOutcomeGate(input: OutcomeGateInput): OutcomeGate {
-  const { items, missing } = outcomeItemsForRepo(
+  const { items, missing, malformed } = outcomeItemsForRepo(
     input.outcome,
     input.list,
     repoLabels(input.list, input.repoDir),
   );
-  const blockers: OutcomeBlocker[] = missing.map((ref) => ({
-    ref,
-    id: ref.slice(ref.lastIndexOf(':') + 1),
-    title: ref,
-    reason: "not listed in this repo's .agents/features.json",
-  }));
+  const blockers: OutcomeBlocker[] = [
+    ...malformed.map((ref) => ({
+      ref,
+      id: ref,
+      title: ref,
+      reason: 'not a <repo>:<id> reference — the roadmap item cannot be checked',
+    })),
+    ...missing.map((ref) => ({
+      ref,
+      id: ref.slice(ref.lastIndexOf(':') + 1),
+      title: ref,
+      reason: "not listed in this repo's .agents/features.json",
+    })),
+  ];
 
   for (const item of items) {
     if (item.status !== 'passing') {
@@ -551,6 +576,73 @@ export function evaluatePatchGate(prs: PullRequest[]): PatchGate {
       title: pr.title,
       reason: 'title does not start with "security" or "fix"',
     }));
+  return { blockers, ok: blockers.length === 0 };
+}
+
+export interface CommitBlocker {
+  subject: string;
+  reason: string;
+}
+
+export interface CommitGate {
+  blockers: CommitBlocker[];
+  ok: boolean;
+}
+
+/** A merge of an already-known ref adds no unreviewed content by itself. */
+const UNATTRIBUTED_MERGE_RE = /^Merge (branch|remote-tracking branch|tag) /i;
+
+/**
+ * Every commit in the release range must be attributable to a PR. A direct
+ * commit has no `(#N)` subject and would otherwise ship with no outcome check
+ * and no changelog line. The patch path additionally requires the attributed
+ * set to equal the admitted security/fix set: a `feat` pushed straight to
+ * develop must not ride a patch.
+ */
+export function evaluateCommitGate(
+  subjects: string[],
+  admitted: PullRequest[],
+  mode: 'outcome' | 'patch',
+): CommitGate {
+  const attributed = new Set<number>();
+  const blockers: CommitBlocker[] = [];
+
+  for (const subject of subjects) {
+    const trimmed = subject.trim();
+    if (!trimmed || isReleaseHousekeeping(trimmed) || UNATTRIBUTED_MERGE_RE.test(trimmed)) {
+      continue;
+    }
+    const pr = parseCommitSubject(trimmed);
+    if (!pr) {
+      blockers.push({
+        subject: trimmed,
+        reason: 'no PR reference (#<number>) — unattributed commit',
+      });
+      continue;
+    }
+    attributed.add(pr.number);
+  }
+
+  if (mode === 'patch') {
+    const expected = new Set(admitted.map((pr) => pr.number));
+    for (const number of attributed) {
+      if (!expected.has(number)) {
+        blockers.push({
+          subject: `#${number}`,
+          reason: 'attributed PR is not in the admitted security/fix set',
+        });
+      }
+    }
+    for (const number of expected) {
+      if (!attributed.has(number)) {
+        blockers.push({
+          subject: `#${number}`,
+          reason: 'admitted PR has no commit in the release range',
+        });
+      }
+    }
+  }
+
   return { blockers, ok: blockers.length === 0 };
 }
 
@@ -692,6 +784,14 @@ export function renderReleaseBody(input: ReleaseBodyInput): string {
   const outcomeLines = input.outcome
     ? [`- **Outcome:** \`${input.outcome.id}\` — ${input.outcome.name} (${input.outcome.items} item${input.outcome.items === 1 ? '' : 's'})`]
     : [];
+  const siblingLines =
+    input.outcome && input.siblingItems && input.siblingItems.length > 0
+      ? [
+          `- **Cross-repo items (not gated by this repo):** ${input.siblingItems
+            .map((item) => `\`${item.ref}\` — ${item.status}`)
+            .join('; ')}`,
+        ]
+      : [];
 
   return `${[
     title,
@@ -702,6 +802,7 @@ export function renderReleaseBody(input: ReleaseBodyInput): string {
     `- **To:** v${input.proposal.version} (\`${input.proposal.bump}\` — ${input.proposal.reason})`,
     `- **Source:** \`${input.source}\` @ \`${input.sourceSha.slice(0, 12)}\``,
     ...outcomeLines,
+    ...siblingLines,
     `- **PRs:** ${input.prs.length}`,
     '',
     '### Changelog',

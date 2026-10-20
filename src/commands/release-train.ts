@@ -20,6 +20,7 @@ import {
   buildChangelog,
   buildOutcomeChangelog,
   changelogPullRequests,
+  evaluateCommitGate,
   evaluateOutcomeGate,
   evaluatePatchGate,
   evaluateReleaseChecks,
@@ -32,9 +33,10 @@ import {
   pullRequestsFromCommitSubjects,
   readPackageLockVersion,
   readPackageVersion,
-  readRoadmapOutcome,
   readSkillReferenceVersion,
   renderReleaseBody,
+  repoLabels,
+  type CommitBlocker,
   type OutcomeBlocker,
   type OutcomeGate,
   type OutcomeItem,
@@ -43,12 +45,15 @@ import {
   type PullRequest,
   type ReleaseCheck,
   type ReleaseOutcome,
+  type SiblingStatus,
 } from '../lib/release-train.js';
 import {
   FEATURES_FILE,
   ROADMAP_FILE,
+  findFeatureFiles,
   gitShaExists,
   loadFeatureFile,
+  parseFeatureList,
   type FeatureList,
   type ShaExists,
 } from '../lib/features.js';
@@ -146,11 +151,32 @@ async function shaIsAncestor(
   }
 }
 
+/** Read `ref:path` from git; null when the ref or path does not exist. */
+async function readFileAtSource(
+  runner: Runner,
+  root: string,
+  source: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    return await runner('git', ['show', `${source}:${path}`], {
+      cwd: root,
+      timeout: GIT_TIMEOUT_MS,
+    });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve an outcome against the HQ roadmap and this repo's feature list, and
  * check every item's verification ancestry. Throws for configuration errors
  * (no org root, no roadmap, unknown outcome, invalid features file); item-level
  * failures come back as blockers so the refusal can name each one.
+ *
+ * The gate reads both files from the release source ref, never the operator's
+ * working tree: a doctored checkout must not satisfy a gate for data the
+ * release does not ship (review F2).
  */
 async function resolveOutcomeGate(input: {
   runner: Runner;
@@ -160,11 +186,13 @@ async function resolveOutcomeGate(input: {
   deps: ReleaseTrainDeps;
 }): Promise<OutcomeGate> {
   const { runner, root, source, outcomeId, deps } = input;
-  // The project may itself hold the roadmap (features.resolveOrgRoot does the
-  // same); otherwise find the org root that contains the HQ repo.
-  const ownRoadmap = join(root, ROADMAP_FILE);
-  let roadmap = ownRoadmap;
-  if (!existsSync(ownRoadmap)) {
+
+  // When the project itself holds the roadmap, it must be the roadmap on the
+  // release source. Otherwise look for the HQ repo in the org root (that file
+  // is outside this release's tree).
+  let roadmapText: string | null = await readFileAtSource(runner, root, source, ROADMAP_FILE);
+  let roadmapLabel = `${source}:${ROADMAP_FILE}`;
+  if (roadmapText === null) {
     const org = deps.orgRoot
       ? { root: deps.orgRoot, controlRepo: 'hq' }
       : findOrgRoot(root);
@@ -173,27 +201,32 @@ async function resolveOutcomeGate(input: {
         'Could not find the org root (set SQUADS_ORG_ROOT, or keep the repos under one parent directory).',
       );
     }
-    roadmap = roadmapPathFor(org.root, org.controlRepo);
-  }
-  if (!existsSync(roadmap)) {
-    throw new Error(`No roadmap found at ${roadmap}.`);
+    const roadmap = roadmapPathFor(org.root, org.controlRepo);
+    if (!existsSync(roadmap)) {
+      throw new Error(`No roadmap found at ${roadmap}.`);
+    }
+    roadmapText = readFileSync(roadmap, 'utf8');
+    roadmapLabel = roadmap;
   }
 
-  const outcomes = parseRoadmapOutcomes(readFileSync(roadmap, 'utf8'));
-  const outcome = readRoadmapOutcome(roadmap, outcomeId);
+  const outcomes = parseRoadmapOutcomes(roadmapText);
+  const outcome = outcomes.find((candidate) => candidate.id === outcomeId);
   if (!outcome) {
     throw new Error(
-      `Outcome "${outcomeId}" not found in ${roadmap} (known: ${outcomes.map((o) => o.id).join(', ') || 'none'}).`,
+      `Outcome "${outcomeId}" not found in ${roadmapLabel} (known: ${outcomes.map((o) => o.id).join(', ') || 'none'}).`,
     );
   }
 
-  const featuresPath = join(root, FEATURES_FILE);
-  if (!existsSync(featuresPath)) {
-    throw new Error(`No ${FEATURES_FILE} in ${root}; the outcome gate has nothing to verify.`);
+  const featuresRaw = await readFileAtSource(runner, root, source, FEATURES_FILE);
+  if (featuresRaw === null) {
+    throw new Error(
+      `No ${FEATURES_FILE} at ${source}; the outcome gate has nothing to verify.`,
+    );
   }
-  const loaded = loadFeatureFile(
-    featuresPath,
-    FEATURES_FILE,
+  const loaded = parseFeatureList(
+    featuresRaw,
+    root,
+    `${source}:${FEATURES_FILE}`,
     deps.shaExists ?? gitShaExists,
   );
   // `passing-without-verification` is re-evaluated below with the stricter
@@ -201,7 +234,7 @@ async function resolveOutcomeGate(input: {
   const fatal = loaded.problems.filter((p) => p.code !== 'passing-without-verification');
   if (!loaded.list || fatal.length > 0) {
     throw new Error(
-      `Invalid ${FEATURES_FILE}: ${(fatal.length > 0 ? fatal : loaded.problems)
+      `Invalid ${FEATURES_FILE} at ${source}: ${(fatal.length > 0 ? fatal : loaded.problems)
         .map((p) => p.message)
         .join('; ')}`,
     );
@@ -231,6 +264,57 @@ async function resolveOutcomeGate(input: {
     source,
     isAncestor: (sha) => ancestor.get(sha) === true,
   });
+}
+
+/**
+ * Outcome items owned by sibling repos. They are not part of this repo's gate;
+ * report their status in the release body so the PR never overstates the claim.
+ */
+function siblingOutcomeItems(
+  outcome: ReleaseOutcome,
+  thisRepoRefs: Set<string>,
+  root: string,
+  deps: ReleaseTrainDeps,
+): Array<{ ref: string; status: SiblingStatus }> {
+  const refs = [...new Set(outcome.items)].filter((ref) => {
+    if (thisRepoRefs.has(ref)) return false;
+    const sep = ref.lastIndexOf(':');
+    return sep > 0 && ref.slice(sep + 1).length > 0;
+  });
+  if (refs.length === 0) return [];
+
+  const orgRoot = deps.orgRoot ?? findOrgRoot(root)?.root ?? null;
+  if (!orgRoot) return refs.map((ref) => ({ ref, status: 'unknown' as const }));
+
+  const statuses = new Map<string, SiblingStatus>();
+  for (const file of findFeatureFiles(orgRoot)) {
+    const loaded = loadFeatureFile(file, file, deps.shaExists ?? gitShaExists);
+    if (!loaded.list || loaded.problems.length > 0) continue;
+    const labels = repoLabels(loaded.list, loaded.repoDir);
+    for (const ref of refs) {
+      const sep = ref.lastIndexOf(':');
+      const label = ref.slice(0, sep);
+      const id = ref.slice(sep + 1);
+      if (!labels.has(label)) continue;
+      const item = loaded.list.items.find((candidate) => candidate.id === id);
+      if (item) statuses.set(ref, item.status);
+    }
+  }
+  return refs.map((ref) => ({ ref, status: statuses.get(ref) ?? 'unknown' }));
+}
+
+function printCommitRefusal(blockers: CommitBlocker[]): number {
+  writeLine();
+  writeLine(
+    `  ${colors.red}Release train refused${RESET} — the release range contains commits that no PR accounts for.`,
+  );
+  for (const blocker of blockers) {
+    writeLine(`    ${colors.red}blocked${RESET}  ${blocker.subject}: ${blocker.reason}`);
+  }
+  writeLine();
+  writeLine(`  ${colors.dim}No branch, commit, push, or PR was created.${RESET}`);
+  writeLine();
+  return 1;
 }
 
 function printOutcomeRefusal(outcome: ReleaseOutcome, blockers: OutcomeBlocker[]): number {
@@ -342,6 +426,30 @@ async function collectPullRequests(
     );
     return pullRequestsFromCommitSubjects(subjects.split('\n'));
   }
+}
+
+/**
+ * Commit subjects that will actually ship: `<merge-base(target, source)>..source`.
+ * Used to prove every shipped commit is attributable to a PR (review F3).
+ */
+async function collectReleaseCommitSubjects(
+  runner: Runner,
+  root: string,
+  target: string,
+  source: string,
+): Promise<string[]> {
+  const targetRef = target.includes('/') ? target : `origin/${target}`;
+  const base = (
+    await runner('git', ['merge-base', targetRef, source], {
+      cwd: root,
+      timeout: GIT_TIMEOUT_MS,
+    })
+  ).trim();
+  const output = await runner('git', ['log', '--format=%s', `${base}..${source}`], {
+    cwd: root,
+    timeout: GIT_TIMEOUT_MS,
+  });
+  return output.split('\n');
 }
 
 function printHumanPlan(input: {
@@ -619,6 +727,23 @@ export async function releaseTrainCommand(
     }
   }
 
+  const commitSubjects = await collectReleaseCommitSubjects(runner, root, target, source);
+  const commitGate = evaluateCommitGate(commitSubjects, prs, mode);
+  if (!commitGate.ok) {
+    if (options.json) {
+      writeLine(
+        JSON.stringify(
+          { refused: true, unattributed_commits: commitGate.blockers },
+          null,
+          2,
+        ),
+      );
+    } else {
+      printCommitRefusal(commitGate.blockers);
+    }
+    return 1;
+  }
+
   if (prs.length === 0 && items.length === 0) {
     if (options.json) {
       writeLine(
@@ -638,10 +763,14 @@ export async function releaseTrainCommand(
 
   const proposal =
     mode === 'outcome'
-      ? proposeVersion(prs, current.version) ??
-        proposeOutcomeVersion(current.version, outcome?.id ?? 'outcome')
+      ? proposeOutcomeVersion(current.version, outcome?.id ?? 'outcome')
       : proposeVersion(prs, current.version);
   if (!proposal) return 0;
+
+  const siblingItems =
+    outcome !== null
+      ? siblingOutcomeItems(outcome, new Set(items.map((item) => item.ref)), root, deps)
+      : [];
 
   const changelog =
     mode === 'outcome' && outcome
@@ -682,6 +811,7 @@ export async function releaseTrainCommand(
                     issue: item.issue ?? null,
                     status: item.status,
                   })),
+                  sibling_items: siblingItems,
                 }
               : { patch: true }),
             changelog,
@@ -750,7 +880,10 @@ export async function releaseTrainCommand(
       source,
       sourceSha,
       ...(outcome
-        ? { outcome: { id: outcome.id, name: outcome.name, items: items.length } }
+        ? {
+            outcome: { id: outcome.id, name: outcome.name, items: items.length },
+            ...(siblingItems.length > 0 ? { siblingItems } : {}),
+          }
         : { patch: true }),
     });
 
