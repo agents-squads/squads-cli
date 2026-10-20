@@ -228,6 +228,8 @@ export interface OpencodeSandboxOptions {
   /** Extra writable dirs: git common dir (commits), memory dir. */
   writeDirs: string[];
   denyRead?: string[];
+  /** Paths kept read-only even when under a writable root (host-trusted files). */
+  denyWritePaths?: string[];
   platform?: NodeJS.Platform;
   /** Injectable for tests. */
   hasCommand?: (cmd: string) => boolean;
@@ -300,6 +302,7 @@ export function buildSeatbeltProfile(opts: OpencodeSandboxOptions): string {
     `(allow file-write* ${writableRoots(opts).map((r) => `(subpath ${sbplStr(r)})`).join(' ')})`,
     '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/(tty|ttys|fd)[0-9]*$"))',
     ...gitControlDenies(opts),
+    ...(opts.denyWritePaths ?? []).flatMap((p) => [...new Set([p, realOrSame(p)])].map((r) => `(deny file-write* (subpath ${sbplStr(r)}))`)),
     ...deny.flatMap((d) => [...new Set([d, realOrSame(d)])].map((r) => `(deny file-read* (subpath ${sbplStr(r)}))`)),
   ];
   return lines.join('\n') + '\n';
@@ -325,6 +328,9 @@ export function buildBwrapArgs(opts: OpencodeSandboxOptions): string[] {
   const git = gitControlPaths(opts);
   for (const r of [...git.dirs, ...git.files]) {
     if (existsSync(r)) args.push('--ro-bind', r, r);
+  }
+  for (const p of opts.denyWritePaths ?? []) {
+    if (existsSync(p)) args.push('--ro-bind', p, p);
   }
   for (const d of (opts.denyRead ?? OPENCODE_DENY_READ).map(expandHome)) {
     if (existsSync(d)) args.push('--tmpfs', d);

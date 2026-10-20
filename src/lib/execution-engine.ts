@@ -1829,12 +1829,14 @@ export function prepareOpencodeGovernance(opts: {
   const memDir = findMemoryDir();
   const config = compileOpencodePermission({
     tools,
-    guardrailPermissions: readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)),
+    // Bundled deny rules plus project deny-only additions (lane-writable file, never widens).
+    guardrailPermissions: resolveLaneGuardrail(opts.projectRoot).permissions,
     primaryRoot: opts.projectRoot,
     workDir: opts.workDir,
     memoryDir: memDir || undefined,
   });
-  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  // Host-trusted files live outside every lane write root (#1337), not in <repo>/.git.
+  const settingsDir = trustedLaneDir();
   const configPath = writeOpencodeConfig(config, settingsDir);
   if (opts.verbose) writeLine(`  ${colors.dim}opencode permissions: ${configPath}${RESET}`);
 
@@ -1847,7 +1849,7 @@ export function prepareOpencodeGovernance(opts: {
       gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
     } catch { /* not a git dir — nothing to commit to */ }
     const sandbox = resolveOpencodeSandbox(
-      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean) },
+      { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWritePaths: [settingsDir] },
       join(settingsDir, `opencode-sandbox-${Date.now()}.sb`),
     );
     if (sandbox) {
@@ -1881,7 +1883,7 @@ export function prepareKimiGovernance(opts: {
   const { warnings } = assessKimiGrants(tools, source);
   for (const w of warnings) writeLine(`  ${colors.yellow}kimi-code: ${w}${RESET}`);
 
-  const denyWriteNames = compileKimiWriteDenies(readGuardrailPermissions(resolveGuardrailSettings(opts.projectRoot)));
+  const denyWriteNames = compileKimiWriteDenies(resolveLaneGuardrail(opts.projectRoot).permissions);
   const wrapIdentity = (command: string, args: string[]) => ({ command, args });
   if (!sandboxEnabled()) {
     if (denyWriteNames.length > 0) {
@@ -1896,10 +1898,10 @@ export function prepareKimiGovernance(opts: {
   try {
     gitCommon = resolve(opts.workDir, execSync('git rev-parse --git-common-dir', { cwd: opts.workDir, stdio: 'pipe' }).toString().trim());
   } catch { /* not a git dir — nothing to commit to */ }
-  const settingsDir = resolveSettingsDir(join(opts.projectRoot, '.git'));
+  const settingsDir = trustedLaneDir();
   const profilePath = join(settingsDir, `kimi-sandbox-${Date.now()}.sb`);
   const sandbox = resolveKimiSandbox(
-    { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWriteNames },
+    { workDir: opts.workDir, writeDirs: [gitCommon, memDir || ''].filter(Boolean), denyWriteNames, denyWritePaths: [settingsDir] },
     profilePath,
   );
   if (!sandbox) {

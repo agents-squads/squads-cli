@@ -142,6 +142,8 @@ export interface KimiSandboxOptions {
   writeDirs: string[];
   /** Basenames whose WRITE is denied anywhere (guardrail goals.md & co.). */
   denyWriteNames?: string[];
+  /** Paths kept read-only even when under a writable root (host-trusted files). */
+  denyWritePaths?: string[];
   denyRead?: string[];
   platform?: NodeJS.Platform;
   /** Injectable for tests. */
@@ -247,6 +249,9 @@ export function buildKimiSeatbeltProfile(opts: KimiSandboxOptions): string {
       ...git.files.map((f) => `(literal ${sbplStr(f)})`),
     ].join(' ')})`);
   }
+  for (const p of opts.denyWritePaths ?? []) {
+    for (const r of new Set([p, realOrSame(p)])) lines.push(`(deny file-write* (subpath ${sbplStr(r)}))`);
+  }
   for (const name of opts.denyWriteNames ?? []) {
     lines.push(`(deny file-write* (regex ${nameRegex(name)}))`);
   }
@@ -269,6 +274,9 @@ export function buildKimiBwrapArgs(opts: KimiSandboxOptions): string[] {
   const git = gitControlPaths(opts);
   for (const r of [...git.dirs, ...git.files]) {
     if (existsSync(r)) args.push('--ro-bind', r, r);
+  }
+  for (const p of opts.denyWritePaths ?? []) {
+    if (existsSync(p)) args.push('--ro-bind', p, p);
   }
   for (const d of (opts.denyRead ?? KIMI_DENY_READ).map(expandHome)) {
     if (existsSync(d)) args.push('--tmpfs', d);
