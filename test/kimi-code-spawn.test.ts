@@ -89,7 +89,8 @@ describe.skipIf(!darwin || !existsSyncSandboxExec())('executeWithProvider kimi-c
     const done = ledger.filter((e) => e.status === 'completed' || e.status === 'failed').pop();
     expect(done.provider).toBe('kimi-code');
     expect(done.status).toBe('completed');
-    expect(done.billing).toBe('subscription');
+    expect(done.billing?.kind).toBe('subscription');
+    expect(done.billing?.usd).toBe(0);
     expect(done.cost_usd).toBe(0);
     expect(done.actions).toBe(3);
     expect(done.files_edited).toBe(1);
@@ -122,7 +123,7 @@ describe.skipIf(!darwin || !existsSyncSandboxExec())('executeWithProvider kimi-c
       .trim().split('\n').map((l) => JSON.parse(l));
     const rec = ledger.filter((e) => e.id === 'exec_kimi_bg').pop();
     expect(rec.status).toBe('completed');
-    expect(rec.billing).toBe('subscription');
+    expect(rec.billing?.kind).toBe('subscription');
     expect(rec.actions).toBe(3);
   });
 

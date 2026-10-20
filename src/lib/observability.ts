@@ -11,6 +11,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync, statS
 import { join, dirname } from 'path';
 import { findProjectRoot } from './squad-parser.js';
 import { deriveRootRunId } from './exec-events.js';
+import type { Billing } from './billing.js';
 import type { ProviderError } from './provider-errors.js';
 import {
   classifyTerminalStatus,
@@ -75,6 +76,9 @@ export interface ObservabilityRecord {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** @deprecated Kept for compatibility — prefer `billing.usd`, which is
+   *  provider-correct (metered at that provider's own price, 0 for free and
+   *  subscription runs) and never a notional list-price proxy. */
   cost_usd: number;
   context_tokens: number;
   // Run brief/title — short human-readable summary of what the run was for (#1165).
@@ -110,9 +114,20 @@ export interface ObservabilityRecord {
   // True when cost_usd is a notional list-price estimate derived from raw
   // token counts (no billing signal), not what execution-log.ts recorded.
   cost_estimated?: boolean;
-  // Billing model when cost_usd is not a metered figure (#1309): 'subscription'
-  // runs (kimi-code) record cost_usd 0 — never a list-price estimate.
-  billing?: 'subscription';
+  // Provider-correct billing (#1355): the KIND (metered/subscription/free),
+  // the marginal `usd` (null when metered but unpriced), and the data `source`
+  // it came from. Replaces the old `billing?: 'subscription'` string marker.
+  billing?: Billing;
+  // Run lifecycle timings (#1355), derived from the run's exec events.
+  // dispatchedAt/firstCommitAt/endedAt come from run_start / artifact(commit) /
+  // run_end; gatedAt/prOpenedAt/verdictAt fill once the gate/review event types
+  // (cli#1354) arrive. Absent on legacy rows and when no events file exists.
+  dispatchedAt?: string;
+  firstCommitAt?: string;
+  endedAt?: string;
+  gatedAt?: string;
+  prOpenedAt?: string;
+  verdictAt?: string;
   // Typed provider failure (#1298): why a run died on the provider's side —
   // plan_expired / quota_exhausted / auth_invalid / rate_limited / … Additive:
   // `error` keeps the human string; this is what consoles and the inbox switch

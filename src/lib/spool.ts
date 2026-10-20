@@ -28,7 +28,8 @@ import {
 import { updateExecutionStatus } from './execution-log.js';
 import { parseStreamJson, parseOpencodeJson } from './stream-json.js';
 import { parseKimiJson, extractKimiSessionId, readKimiSessionUsage, detectKimiAuthError } from './kimi-code.js';
-import { normalizeDetachedLog } from './exec-events.js';
+import { normalizeDetachedLog, deriveLifecycleTimingsForRun, execEventsFile } from './exec-events.js';
+import { computeBilling } from './billing.js';
 import { reportExecutionComplete } from './api-client.js';
 
 /** Tail cap when parsing executor logs — matches the #826 live-stream buffer. */
@@ -393,6 +394,23 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     } catch { /* events are best-effort; the obs record below is the source of truth */ }
   }
 
+  // ── (3b) Billing + lifecycle timings (#1355) ───────────────────────────────
+  // billing is provider-correct and data-driven (provider-prices.json); the
+  // lifecycle timestamps come from the run's events file (already normalized
+  // above). Both are best-effort — a missing events file yields no timings.
+  const billing = computeBilling({
+    provider: spool.provider || 'anthropic',
+    model,
+    harness,
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
+  });
+  const lifecycle = spool.execId
+    ? deriveLifecycleTimingsForRun(execEventsFile(obsRoot, spool.execId))
+    : {};
+
   const record: ObservabilityRecord = {
     ts: new Date(spool.endEpoch > 0 ? spool.endEpoch * 1000 : Date.now()).toISOString(),
     id: spool.execId,
@@ -410,7 +428,8 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     cache_write_tokens: cacheWrite,
     cost_usd: cost,
     context_tokens: 0,
-    ...(harness === 'kimi-code' ? { billing: 'subscription' as const } : {}),
+    billing,
+    ...lifecycle,
     ...(failureCause ? { failure_cause: failureCause } : {}),
     ...(outcomes ? {
       actions: outcomes.actions,

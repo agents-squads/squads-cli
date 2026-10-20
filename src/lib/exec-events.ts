@@ -951,3 +951,62 @@ export async function replayEventsFile(file: string, executionId: string): Promi
     }
   } catch { /* offline-first: the file remains the source of truth */ }
 }
+
+// ── Run lifecycle timings (#1355) ─────────────────────────────────────
+//
+// A run's lifecycle does not end at `run_end`: its commit is gated, a PR
+// opened, and a reviewer verdict returned (cli#1354). The ledger row carries
+// the whole timeline. `dispatchedAt`/`firstCommitAt`/`endedAt` come from
+// events the runtime already writes; `gatedAt`/`prOpenedAt`/`verdictAt` fill
+// once the gate/review event types (cli#1354) land. Everything is best-effort:
+// an unreadable or missing events file yields an empty timeline, never a throw.
+
+export interface RunLifecycleTimings {
+  dispatchedAt?: string;
+  firstCommitAt?: string;
+  endedAt?: string;
+  gatedAt?: string;
+  prOpenedAt?: string;
+  verdictAt?: string;
+}
+
+/** First-seen timestamps for each lifecycle milestone, in event order. */
+export function deriveLifecycleTimings(events: PersistedExecEvent[]): RunLifecycleTimings {
+  const t: RunLifecycleTimings = {};
+  for (const e of events) {
+    // `gate_result` / `review_verdict` are added by cli#1354; read the raw type
+    // string so this stays forward-compatible before those types exist.
+    const type: string = e.event.type;
+    if (type === 'run_start') {
+      if (!t.dispatchedAt) t.dispatchedAt = e.ts;
+    } else if (type === 'run_end') {
+      if (!t.endedAt) t.endedAt = e.ts;
+    } else if (type === 'artifact') {
+      const kind = (e.event as { kind?: string }).kind;
+      if (kind === 'commit' && !t.firstCommitAt) t.firstCommitAt = e.ts;
+      else if (kind === 'pr' && !t.prOpenedAt) t.prOpenedAt = e.ts;
+    } else if (type === 'gate_result') {
+      if (!t.gatedAt) t.gatedAt = e.ts;
+    } else if (type === 'review_verdict') {
+      if (!t.verdictAt) t.verdictAt = e.ts;
+    }
+  }
+  return t;
+}
+
+/** Read + parse a run's persisted events file; [] on any read/parse failure. */
+export function readRunEventsFile(file: string): PersistedExecEvent[] {
+  try {
+    if (!existsSync(file)) return [];
+    return readFileSync(file, 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as PersistedExecEvent; } catch { return null; } })
+      .filter((e): e is PersistedExecEvent => e !== null);
+  } catch {
+    return [];
+  }
+}
+
+/** Lifecycle timings for a run, straight from its events file. */
+export function deriveLifecycleTimingsForRun(file: string): RunLifecycleTimings {
+  return deriveLifecycleTimings(readRunEventsFile(file));
+}

@@ -23,8 +23,8 @@ function isAlive(pid: number): boolean {
   }
 }
 import { reconcileDetachedRuns } from '../lib/spool.js';
-import { reconcileOrphanedRuns } from '../lib/observability.js';
-import { execEventsFile, type PersistedExecEvent } from '../lib/exec-events.js';
+import { reconcileOrphanedRuns, queryExecutions, foldExecutions, type ObservabilityRecord } from '../lib/observability.js';
+import { execEventsFile, deriveLifecycleTimingsForRun, type PersistedExecEvent } from '../lib/exec-events.js';
 import { renderPersistedEvent, parsePersistedLine } from '../lib/event-render.js';
 import { buildContextReport, renderContextReport } from '../lib/context-report.js';
 import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
@@ -395,7 +395,14 @@ export async function runsCommand(options: { json?: boolean; clean?: boolean; re
   }
 
   if (options.json) {
-    writeLine(JSON.stringify({ live, stale: options.clean ? [] : stale, cleaned }, null, 2));
+    // #1355: expose the folded ledger rows — billing + lifecycle timings.
+    // Timings are (re)derived from each run's events file so post-run
+    // gate/review events (cli#1354, appended after the run ended) surface here.
+    const records: ObservabilityRecord[] = foldExecutions(queryExecutions({})).map((r) => ({
+      ...r,
+      ...deriveLifecycleTimingsForRun(execEventsFile(projectRoot, r.id)),
+    }));
+    writeLine(JSON.stringify({ live, stale: options.clean ? [] : stale, cleaned, records }, null, 2));
     return;
   }
 

@@ -1,0 +1,126 @@
+{
+  "table": "provider-prices.json",
+  "updated": "2026-10-20",
+  "providers": {
+    "anthropic": {
+      "default": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 },
+      "models": {
+        "claude-opus-4-8": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75 },
+        "claude-opus-4-7": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75 },
+        "claude-opus-4-6": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75 },
+        "claude-opus-4-5-20251101": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75 },
+        "claude-sonnet-4-6": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 },
+        "claude-sonnet-4-5-20250514": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 },
+        "claude-sonnet-4-20250514": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 },
+        "claude-sonnet-4": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 },
+        "claude-haiku-4-5-20251001": { "input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0 },
+        "claude-3-5-sonnet": { "input": 3.0, "output": 15.0 },
+        "claude-3-5-sonnet-20241022": { "input": 3.0, "output": 15.0 },
+        "claude-3-5-sonnet-20240620": { "input": 3.0, "output": 15.0 },
+        "claude-3-5-haiku": { "input": 0.8, "output": 4.0 },
+        "claude-3-5-haiku-20241022": { "input": 0.8, "output": 4.0 },
+        "claude-3-opus": { "input": 15.0, "output": 75.0 },
+        "claude-3-sonnet": { "input": 3.0, "output": 15.0 },
+        "claude-3-haiku": { "input": 0.25, "output": 1.25 }
+      }
+    },
+    "openai": {
+      "default": { "input": 2.5, "output": 10.0 },
+      "models": {
+        "gpt-4o": { "input": 2.5, "output": 10.0 },
+        "gpt-4o-2024-11-20": { "input": 2.5, "output": 10.0 },
+        "gpt-4o-2024-08-06": { "input": 2.5, "output": 10.0 },
+        "gpt-4o-mini": { "input": 0.15, "output": 0.6 },
+        "gpt-4o-mini-2024-07-18": { "input": 0.15, "output": 0.6 },
+        "gpt-4-turbo": { "input": 10.0, "output": 30.0 },
+        "gpt-4-turbo-2024-04-09": { "input": 10.0, "output": 30.0 },
+        "gpt-4": { "input": 30.0, "output": 60.0 },
+        "gpt-4-32k": { "input": 60.0, "output": 120.0 },
+        "gpt-3.5-turbo": { "input": 0.5, "output": 1.5 },
+        "gpt-3.5-turbo-0125": { "input": 0.5, "output": 1.5 },
+        "o1": { "input": 15.0, "output": 60.0 },
+        "o1-2024-12-17": { "input": 15.0, "output": 60.0 },
+        "o1-preview": { "input": 15.0, "output": 60.0 },
+        "o1-mini": { "input": 3.0, "output": 12.0 },
+        "o1-mini-2024-09-12": { "input": 3.0, "output": 12.0 },
+        "o3-mini": { "input": 1.1, "output": 4.4 }
+      }
+    },
+    "google": {
+      "default": { "input": 0.1, "output": 0.4 },
+      "models": {
+        "gemini-2.0-flash": { "input": 0.1, "output": 0.4 },
+        "gemini-2.0-flash-exp": { "input": 0.1, "output": 0.4 },
+        "gemini-1.5-pro": { "input": 1.25, "output": 5.0 },
+        "gemini-1.5-pro-002": { "input": 1.25, "output": 5.0 },
+        "gemini-1.5-flash": { "input": 0.075, "output": 0.3 },
+        "gemini-1.5-flash-002": { "input": 0.075, "output": 0.3 },
+        "gemini-1.0-pro": { "input": 0.5, "output": 1.5 }
+      }
+    },
+    "deepseek": {
+      "default": { "input": 0.27, "output": 1.10 },
+      "models": {
+        "deepseek-chat": { "input": 0.27, "output": 1.10 },
+        "deepseek-v4-flash": { "input": 0.27, "output": 1.10 },
+        "deepseek-v4-pro": { "input": 0.55, "output": 2.19 },
+        "deepseek-reasoner": { "input": 0.55, "output": 2.19 }
+      }
+    },
+    "mistral": {
+      "default": { "input": 2.0, "output": 6.0 },
+      "models": {
+        "mistral-large": { "input": 2.0, "output": 6.0 },
+        "mistral-large-2411": { "input": 2.0, "output": 6.0 },
+        "mistral-medium": { "input": 2.7, "output": 8.1 },
+        "mistral-small": { "input": 0.2, "output": 0.6 },
+        "mistral-small-2409": { "input": 0.2, "output": 0.6 },
+        "mixtral-8x7b": { "input": 0.7, "output": 0.7 },
+        "mixtral-8x22b": { "input": 2.0, "output": 6.0 },
+        "codestral": { "input": 0.2, "output": 0.6 },
+        "codestral-2405": { "input": 0.2, "output": 0.6 }
+      }
+    },
+    "groq": {
+      "default": { "input": 0.59, "output": 0.79 },
+      "models": {
+        "llama-3.3-70b-versatile": { "input": 0.59, "output": 0.79 },
+        "llama-3.3-70b-specdec": { "input": 0.59, "output": 0.99 },
+        "llama-3.1-70b-versatile": { "input": 0.59, "output": 0.79 },
+        "llama-3.1-8b-instant": { "input": 0.05, "output": 0.08 },
+        "llama-3-70b-8192": { "input": 0.59, "output": 0.79 },
+        "llama-3-8b-8192": { "input": 0.05, "output": 0.08 },
+        "mixtral-8x7b-32768": { "input": 0.24, "output": 0.24 },
+        "gemma2-9b-it": { "input": 0.2, "output": 0.2 }
+      }
+    },
+    "aws_bedrock": {
+      "default": { "input": 3.0, "output": 15.0 },
+      "models": {
+        "anthropic.claude-3-5-sonnet-20241022-v2:0": { "input": 3.0, "output": 15.0 },
+        "anthropic.claude-3-5-sonnet-20240620-v1:0": { "input": 3.0, "output": 15.0 },
+        "anthropic.claude-3-5-haiku-20241022-v1:0": { "input": 0.8, "output": 4.0 },
+        "anthropic.claude-3-opus-20240229-v1:0": { "input": 15.0, "output": 75.0 },
+        "anthropic.claude-3-sonnet-20240229-v1:0": { "input": 3.0, "output": 15.0 },
+        "anthropic.claude-3-haiku-20240307-v1:0": { "input": 0.25, "output": 1.25 },
+        "amazon.titan-text-premier-v1:0": { "input": 0.5, "output": 1.5 },
+        "amazon.titan-text-express-v1": { "input": 0.2, "output": 0.6 },
+        "amazon.titan-text-lite-v1": { "input": 0.15, "output": 0.2 },
+        "meta.llama3-70b-instruct-v1:0": { "input": 2.65, "output": 3.5 },
+        "meta.llama3-8b-instruct-v1:0": { "input": 0.3, "output": 0.6 },
+        "meta.llama3-1-405b-instruct-v1:0": { "input": 5.32, "output": 16.0 },
+        "mistral.mistral-large-2407-v1:0": { "input": 4.0, "output": 12.0 }
+      }
+    },
+    "azure": {
+      "default": { "input": 2.5, "output": 10.0 },
+      "models": {
+        "gpt-4o": { "input": 2.5, "output": 10.0 },
+        "gpt-4o-mini": { "input": 0.15, "output": 0.6 },
+        "gpt-4-turbo": { "input": 10.0, "output": 30.0 },
+        "gpt-4": { "input": 30.0, "output": 60.0 },
+        "gpt-35-turbo": { "input": 0.5, "output": 1.5 }
+      }
+    }
+  }
+}
