@@ -16,6 +16,7 @@ import { writeLine } from '../lib/terminal.js';
 // instead of `any` to honor strict mode.
 interface CommandInternals {
   _hidden?: boolean;
+  _actionHandler?: unknown;
 }
 
 export interface CommandOptionInfo {
@@ -31,12 +32,19 @@ export interface CommandInfo {
   aliases: string[];
   description: string;
   hidden: boolean;
+  hasAction: boolean;
   options: CommandOptionInfo[];
   subcommands: CommandInfo[];
 }
 
 function isHidden(cmd: Command): boolean {
   return (cmd as unknown as CommandInternals)._hidden === true;
+}
+
+/** A command has its own action when `.action()` registered a handler on it
+ *  (Commander leaves `_actionHandler` null for subcommand-only groups). */
+function hasOwnAction(cmd: Command): boolean {
+  return (cmd as unknown as CommandInternals)._actionHandler != null;
 }
 
 function describeOption(opt: Option): CommandOptionInfo {
@@ -65,6 +73,7 @@ export function describeCommand(cmd: Command, includeHidden: boolean): CommandIn
     aliases: cmd.aliases(),
     description: cmd.description() || '',
     hidden: isHidden(cmd),
+    hasAction: hasOwnAction(cmd),
     options: cmd.options.filter((o) => includeHidden || !o.hidden).map(describeOption),
     subcommands: cmd.commands
       .filter((sub) => includeHidden || !isHidden(sub))

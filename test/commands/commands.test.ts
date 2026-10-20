@@ -64,6 +64,17 @@ describe('describeCommand', () => {
   it('handles a command with no options or args', () => {
     const cmd = new Command().command('plain').description('nothing fancy');
     const info = describeCommand(cmd, false);
-    expect(info).toMatchObject({ name: 'plain', usage: 'plain', options: [], subcommands: [] });
+    expect(info).toMatchObject({ name: 'plain', usage: 'plain', options: [], subcommands: [], hasAction: false });
+  });
+
+  it('flags a command with its own action, but not a subcommand-only group', () => {
+    const program = new Command();
+    const withAction = program.command('with-action').description('does work').action(() => {});
+    const group = program.command('group').description('namespace');
+    const child = group.command('child').description('child work').action(() => {});
+
+    expect(describeCommand(withAction, false).hasAction).toBe(true);
+    expect(describeCommand(group, false).hasAction).toBe(false);
+    expect(describeCommand(child, false).hasAction).toBe(true);
   });
 });

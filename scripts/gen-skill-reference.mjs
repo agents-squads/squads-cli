@@ -44,12 +44,15 @@ const lines = [
 ];
 
 for (const cmd of tree.commands) {
-  if (cmd.subcommands.length === 0) {
+  // A command with its own action and subcommands is both a command and a
+  // namespace (e.g. `squads runs` lists runs AND hosts `squads runs annotate`):
+  // list the command itself, then its subcommands. A subcommand-only group
+  // (no action of its own) lists just its subcommands.
+  if (cmd.subcommands.length === 0 || cmd.hasAction) {
     lines.push(row(cmd.usage, cmd.description));
-  } else {
-    for (const sub of cmd.subcommands) {
-      lines.push(row(`${cmd.name} ${sub.usage}`, sub.description));
-    }
+  }
+  for (const sub of cmd.subcommands) {
+    lines.push(row(`${cmd.name} ${sub.usage}`, sub.description));
   }
 }
 
