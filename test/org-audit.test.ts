@@ -461,3 +461,67 @@ describe('review #1331 — fresh squads init tree (Check bullet 2)', () => {
     expect(u.hints.length).toBeGreaterThan(0);
   });
 });
+
+describe('duplicate docs — one file per kind of text', () => {
+  const BASE = [
+    '# Release plan',
+    '',
+    'This document describes the release process for the platform.',
+    'Cut a branch from develop, run the full test suite, and verify the',
+    'changelog. Tag the release, publish the package, then announce it to',
+    'the team so everyone knows what changed and when. After release, watch',
+    'the dashboards for errors and roll back if the error rate rises above',
+    'the agreed threshold.',
+  ].join('\n');
+
+  function docsUnit(name: string): string {
+    return plainUnit(name, { kind: 'domain', lifecycle: 'active', version: '1.0.0' }, metricBody("printf '2026-10-18 1\\n'"));
+  }
+
+  function duplicateFindings(name: string) {
+    return auditUnitOnly(name, { runMetrics: true }).findings.filter((f) => f.code === 'duplicate-doc');
+  }
+
+  it('flags a dated pair in the same directory', () => {
+    const dir = docsUnit('dated');
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'plan-2026-10-14.md'), '# Plan A\n\nfirst take\n');
+    writeFileSync(join(dir, 'docs', 'plan-2026-10-19.md'), '# Plan B\n\nsecond take\n');
+
+    const found = duplicateFindings('dated');
+    expect(found).toHaveLength(1);
+    expect(found[0].check).toBe('docs-facts');
+    expect(found[0].message).toContain('docs/plan-2026-10-14.md');
+    expect(found[0].message).toContain('docs/plan-2026-10-19.md');
+    expect(found[0].message).toMatch(/similarity \d+\.\d{2}/);
+  });
+
+  it('does not flag two unrelated docs', () => {
+    const dir = docsUnit('unrelated');
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'release.md'), BASE);
+    writeFileSync(join(dir, 'docs', 'security.md'), [
+      '# Security policy',
+      '',
+      'Report vulnerabilities privately to the maintainers. Do not open a',
+      'public issue. We acknowledge reports within two business days and',
+      'coordinate disclosure after a fix is available to users.',
+    ].join('\n'));
+
+    expect(duplicateFindings('unrelated')).toEqual([]);
+  });
+
+  it('flags a near-copy with a few edits at similarity >= 0.6', () => {
+    const dir = docsUnit('nearcopy');
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'release.md'), BASE);
+    writeFileSync(join(dir, 'docs', 'release-copy.md'), BASE.replace('platform', 'product').replace('publish', 'ship'));
+
+    const found = duplicateFindings('nearcopy');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('docs/release.md');
+    expect(found[0].message).toContain('docs/release-copy.md');
+    const similarity = Number(/similarity ([\d.]+)/.exec(found[0].message)![1]);
+    expect(similarity).toBeGreaterThanOrEqual(0.6);
+  });
+});
