@@ -49,7 +49,11 @@ const MESSAGE_MAX_CHARS = 500;
 export function redactSecrets(text: string): string {
   return text
     .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, '[redacted-key]')
+    .replace(/\b[sr]k_(?:live|test)_[A-Za-z0-9]{8,}/g, '[redacted-key]') // Stripe
     .replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, '[redacted-key]')
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[redacted-key]') // AWS
+    .replace(/\bAIza[A-Za-z0-9_-]{30,}/g, '[redacted-key]') // Google
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{8,}/g, '[redacted-key]') // Slack
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted-key]')
     .replace(/\b(api[-_ ]?key|x-api-key|authorization)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]{12,}/gi, '$1$2[redacted-key]');
 }
@@ -198,14 +202,24 @@ const STATUS_PATTERNS = [
 ];
 
 /**
+ * What makes free text look like a provider's error rather than someone's
+ * prose: an `API Error:` prefix, a JSON error envelope, or a line that opens
+ * with `error`/`fatal`.
+ */
+const PROVIDER_ERROR_ANCHOR = /API Error|"(?:error|code)"\s*:|^\s*(?:error|fatal)\b/im;
+
+/**
  * Find a provider failure inside free text — a `result` event's text, a log
  * tail, a turn's response. Returns null when the text carries no recognisable
  * provider error (type `unknown` is treated as "nothing here"), so a healthy
- * log never gains an error. Call it only on runs already known to have failed:
- * agent prose that merely discusses rate limits must not become a finding.
+ * log never gains an error. Call it only on runs already known to have failed,
+ * and only on text that is structurally an error (see `classifyFailedRun`):
+ * agent prose that merely discusses `HTTP 401` must not become a finding.
+ * `anchored` additionally demands a provider-error anchor in the text.
  */
-export function extractProviderError(provider: string | undefined, text: string): ProviderError | null {
+export function extractProviderError(provider: string | undefined, text: string, opts: { anchored?: boolean } = {}): ProviderError | null {
   if (!text) return null;
+  if (opts.anchored && !PROVIDER_ERROR_ANCHOR.test(text)) return null;
   let status: number | undefined;
   for (const re of STATUS_PATTERNS) {
     const m = text.match(re);
@@ -215,6 +229,59 @@ export function extractProviderError(provider: string | undefined, text: string)
   return result.type === 'unknown' ? null : result;
 }
 
+export interface FailedRunEvidence {
+  provider?: string;
+  /** The log is a structured stream (stream-json / opencode / kimi): its raw tail is agent prose. */
+  structured: boolean;
+  /** Terminal `result` text — an error only when `resultIsError`. */
+  resultText?: string;
+  resultIsError?: boolean;
+  /** A detected fatal-signature line. */
+  fatal?: string | null;
+  stderr?: string;
+  /** Raw log tail; read only for non-structured logs, and only when anchored. */
+  rawTail?: string;
+}
+
+/**
+ * The one place a failed run's evidence becomes a typed provider error. Every
+ * harness boundary (foreground close, detached reconcile, conversation turn)
+ * calls this, so they cannot drift on what counts as evidence. Sources, strongest
+ * first: an `is_error` result's text, the fatal line, stderr, and — for logs
+ * that are not a stream — the raw tail, which must carry a provider-error anchor.
+ * A non-error result's text is the agent's answer and is NEVER read.
+ */
+export function classifyFailedRun(e: FailedRunEvidence): ProviderError | null {
+  const attempts: Array<[string, boolean]> = [
+    [e.resultIsError ? (e.resultText ?? '') : '', false],
+    [e.fatal ?? '', false],
+    [e.stderr ?? '', false],
+    [e.structured ? '' : (e.rawTail ?? '').slice(-4000), true],
+  ];
+  for (const [text, anchored] of attempts) {
+    const found = extractProviderError(e.provider, text, { anchored });
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The vendor actually serving a Claude-harness lane: `claude --model glm-4.7`
+ * routes z.ai through the claude CLI, so the harness name is not the account.
+ */
+export function providerForModel(model: string | undefined): string {
+  const m = (model ?? '').toLowerCase();
+  if (m.includes('glm')) return 'glm';
+  if (m.includes('deepseek')) return 'deepseek';
+  if (m.includes('kimi') || m.includes('moonshot')) return 'kimi';
+  if (m.includes('qwen')) return 'qwen';
+  return 'anthropic';
+}
+
+export const PROVIDER_ERROR_TYPES: readonly ProviderErrorType[] = [
+  'plan_expired', 'quota_exhausted', 'auth_invalid', 'rate_limited', 'overloaded', 'bad_request', 'network', 'unknown',
+];
+
 /** Sentinel the conversation loop uses to carry a non-retryable class through turn text. */
 const SENTINEL = /^\[PROVIDER_ERROR:([a-z_]+)\]/;
 
@@ -222,9 +289,11 @@ export function providerErrorSentinel(err: ProviderError, agentName: string): st
   return `[PROVIDER_ERROR:${err.type}] ${agentName}: ${err.message}`;
 }
 
+/** The class a sentinel carries, or null when the text has no sentinel or names an unknown class. */
 export function parseProviderErrorSentinel(text: string): ProviderErrorType | null {
   const m = text.match(SENTINEL);
-  return m ? (m[1] as ProviderErrorType) : null;
+  const type = m?.[1] as ProviderErrorType | undefined;
+  return type && PROVIDER_ERROR_TYPES.includes(type) ? type : null;
 }
 
 /** Operator-facing one-liner: what happened and what to do. */

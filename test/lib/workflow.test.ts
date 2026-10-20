@@ -424,6 +424,51 @@ describe('runConversation', () => {
     }
   });
 
+  it('agent prose that documents HTTP 401 is not a provider error, even on a nonzero exit with is_error:false (review of #1333)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockSpawn.mockImplementation(() => createMockChild(
+      'Documented HTTP 401 handling: HTTP 401 means the request was unauthorized. All tests pass.\n## STATUS: DONE', 1) as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+      expect(result.reason).not.toContain('credentials rejected');
+      expect(process.exitCode).not.toBe(1);
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      expect(rows.some((r) => r.provider_error)).toBe(false);
+      expect(errorEvents()).toEqual([]);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it('attributes the error to the vendor behind the model, not the claude harness, and persists attempts (review of #1333)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockSpawn.mockImplementation(() => createMockChild(GLM_1309_RESULT, 1, { is_error: true }) as any);
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(squad, { model: 'glm-4.7', maxTurns: 100, costCeiling: 999, verbose: false });
+      expect(result.reason).toContain('glm: plan expired');
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      const row = rows[rows.length - 1];
+      expect(row.provider).toBe('glm');
+      expect(row.provider_error).toMatchObject({ type: 'plan_expired', provider: 'glm', status: 429, providerCode: '1309', attempts: 1 });
+      expect(errorEvents()[0]).toMatchObject({ provider: 'glm' });
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('deliver-and-stop gate: stops when a PR already addresses the --task issue, even though turn/cost ceilings alone would not', async () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);
@@ -525,6 +570,49 @@ describe('remediation cycle (#994)', () => {
     const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
     expect(calls()).toBe(7); // no third verification round
     expect(result.converged).toBe(false);
+  });
+
+  // Review of #1333: a balance that runs out AFTER review must not be recorded
+  // as a completed cycle. Spawn order: 0 plan, 1 worker, 2 review, 3 verify,
+  // 4 remediation lead, 5 fix worker, 6 re-verify.
+  it.each([
+    ['verify', 3],
+    ['remediation lead', 4],
+    ['fix worker', 5],
+    ['re-verify', 6],
+  ])('a provider failure at the %s turn fails the run instead of recording completed', async (_turn, failAt) => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    const outputs = [
+      'plan\n```plan\nTASKS:\n- worker: builder | task: build\n```\n## STATUS: CONTINUE',
+      'built\n## STATUS: DONE',
+      'reviewed\n## STATUS: DONE',
+      'checked\n## VERDICT: REJECTED (assertion 1 fails)',
+      'fixes\n```plan\nTASKS:\n- worker: builder | task: fix assertion 1\n```',
+      'fixed\n## STATUS: DONE',
+      'rechecked\n## VERDICT: APPROVED (all checks pass)',
+    ];
+    let call = 0;
+    mockSpawn.mockImplementation(() => {
+      const i = call++;
+      return (i === failAt
+        ? createMockChild('API Error: 402 {"error":{"type":"billing_error","message":"insufficient balance"}}', 1, { is_error: true })
+        : createMockChild(outputs[i])) as any;
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const result = await runConversation(remediationSquad(), { verbose: false, maxTurns: 50, costCeiling: 999 });
+      expect(result.converged).toBe(false);
+      expect(process.exitCode).toBe(1);
+      expect(call).toBe(failAt + 1); // nothing runs after the dead turn
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      const row = rows[rows.length - 1];
+      expect(row.status).toBe('failed');
+      expect(row.provider_error).toMatchObject({ type: 'quota_exhausted', retryable: false });
+    } finally {
+      process.exitCode = originalExitCode;
+    }
   });
 
   it('lead answering BLOCKED to remediation dispatches no fix workers', async () => {

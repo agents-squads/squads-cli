@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync, renameSync } from 'fs';
 import { join } from 'path';
 import { getCLIConfig, detectProviderFatalError } from './llm-clis.js';
-import { extractProviderError, type ProviderError } from './provider-errors.js';
+import { classifyFailedRun, type ProviderError } from './provider-errors.js';
 import {
   logObservability,
   captureSessionUsage,
@@ -322,23 +322,19 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
   }
 
   // ── (2b) Typed provider failure (#1298) ───────────────────────────────────
-  // Only a run already known failed is searched: agent prose that merely
-  // discusses rate limits must never become a finding. Sources, strongest first:
-  // the terminal result's error text, the fatal-signature line, and — only when
-  // the log is NOT a stream (so it holds no agent prose) — the raw log tail.
-  let providerError: ProviderError | null = null;
-  if (status === 'failed') {
-    const providerId = spool.provider || 'anthropic';
-    const sources = [
-      stream?.sawResult && stream.isError ? stream.text : '',
-      fatalError ?? '',
-      hasStreamEvidence ? '' : rawLog.slice(-4000),
-    ];
-    for (const src of sources) {
-      providerError = extractProviderError(providerId, src);
-      if (providerError) break;
-    }
-  }
+  // Only a run already known failed is searched, and only structural evidence
+  // (see classifyFailedRun): agent prose that merely discusses rate limits or
+  // HTTP 401 must never become a finding.
+  const providerError: ProviderError | null = status === 'failed'
+    ? classifyFailedRun({
+      provider: spool.provider || 'anthropic',
+      structured: hasStreamEvidence,
+      resultText: stream?.sawResult ? stream.text : undefined,
+      resultIsError: !!(stream?.sawResult && stream.isError),
+      fatal: fatalError,
+      rawTail: rawLog,
+    })
+    : null;
 
   // ── (3) Event normalization — any provider whose log is stream-json ───────
   // The provider travels with the events (cli#1175) so the app badges them.

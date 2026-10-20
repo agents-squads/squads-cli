@@ -51,7 +51,9 @@ import {
   resolveGuardrailSettings,
 } from './execution-engine.js';
 import {
-  extractProviderError,
+  classifyFailedRun,
+  providerForModel,
+  isRetryableErrorType,
   providerErrorSentinel,
   parseProviderErrorSentinel,
   describeProviderError,
@@ -463,10 +465,20 @@ procedures: [followed | deviated: reason]
       // Typed provider failure (#1298): classify at the harness boundary. A
       // non-retryable class ends the turn NOW with a sentinel the conversation
       // loop aborts on — the old path read an expired plan as a rate limit.
+      // Evidence is structural only: an is_error result's text and stderr — never
+      // the answer of a run that reported success. The vendor is the model's, not
+      // the harness's (`claude --model glm-4.7` is z.ai).
       const providerError = (isError || code !== 0)
-        ? extractProviderError('anthropic', text || stderr)
+        ? classifyFailedRun({
+          provider: providerForModel(claudeModel),
+          structured: true,
+          resultText: text,
+          resultIsError: isError,
+          stderr,
+        })
         : null;
-      if (providerError && !providerError.retryable) {
+      // An auth failure keeps the existing #956 path (journey instrumentation).
+      if (providerError && !providerError.retryable && !isAuthFailureMessage(text)) {
         resolve({ text: providerErrorSentinel(providerError, agentName), usage, outcomes, providerError });
         return;
       }
@@ -805,18 +817,20 @@ export async function runConversation(
   // Non-retryable provider failure (#1298): plan expired / no balance / bad key
   // fails every turn identically, so the run ends the moment one is classified —
   // status failed, the typed error on the ledger row, the process exit nonzero.
-  const abortOnProviderError = (text: string, agentName: string): ConversationResult | null => {
+  const abortOnProviderError = (text: string, agentName: string, classified?: AgentRunResult['providerError']): ConversationResult | null => {
     const errorType = parseProviderErrorSentinel(text);
     if (!errorType) return null;
     const message = text.replace(/^\[PROVIDER_ERROR:[a-z_]+\]\s*/, '');
-    const described = describeProviderError({ type: errorType, retryable: false, message, provider: 'anthropic' });
+    const errProvider = classified?.provider ?? providerForModel(options.model || modelForRole('lead'));
+    const retryable = isRetryableErrorType(errorType);
+    const described = describeProviderError({ type: errorType, retryable, message, provider: errProvider });
     writeLine(`  ${colors.red}${squad.name}: ${agentName} — ${described}${RESET}`);
     logObservability({
       ts: new Date().toISOString(),
       id: executionId,
       squad: squad.name,
       agent: agentName,
-      provider: 'anthropic',
+      provider: errProvider,
       model: options.model || modelForRole('lead'),
       trigger: 'scheduled',
       status: 'failed',
@@ -829,13 +843,24 @@ export async function runConversation(
       context_tokens: 0,
       ...outcomeFields(cycleOutcomes),
       error: `${errorType}: ${message}`.slice(0, 500),
-      provider_error: { type: errorType, retryable: false, message: message.slice(0, 500), provider: 'anthropic' },
+      provider_error: {
+        type: errorType, retryable, message: message.slice(0, 500), provider: errProvider,
+        ...(classified?.status !== undefined ? { status: classified.status } : {}),
+        ...(classified?.providerCode ? { providerCode: classified.providerCode } : {}),
+        ...(classified?.attempts !== undefined ? { attempts: classified.attempts } : {}),
+      },
       task: options.task,
     });
     finishEvents(false);
     process.exitCode = 1;
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: described };
   };
+
+  // Applied to every turn after review as well, so a balance that runs out
+  // between review and verify is a failed run, not a "completed" one. Provider
+  // sentinel only: the loose auth-text check would trip on a verifier's prose.
+  const abortOnFatalTurn = (r: AgentRunResult, agentName: string): ConversationResult | null =>
+    abortOnProviderError(r.text, agentName, r.providerError);
 
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
@@ -923,7 +948,7 @@ export async function runConversation(
 
   const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
   if (planAuthAbort) return planAuthAbort;
-  const planProviderAbort = abortOnProviderError(planOutput, lead.name);
+  const planProviderAbort = abortOnProviderError(planOutput, lead.name, planResult.providerError);
   if (planProviderAbort) return planProviderAbort;
 
   // Quota detection — if plan hit the API limit, stop immediately
@@ -1033,7 +1058,7 @@ ${planOutput.slice(0, 3000)}`;
         agentName: agent.name, agentPath: agent.path, role: agent.role,
         squadName: squad.name, model: options.model || modelForRole(agent.role),
         task, squadContext, cwd: squadCwd, verbose: options.verbose, timeout: options.timeout, events,
-      }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes }));
+      }).then(result => ({ agent, output: result.text, usage: result.usage, outcomes: result.outcomes, providerError: result.providerError }));
     });
 
     const workerResults = await Promise.all(workerPromises);
@@ -1058,7 +1083,7 @@ ${planOutput.slice(0, 3000)}`;
 
     const workerProviderFailure = workerResults.find(r => parseProviderErrorSentinel(r.output));
     if (workerProviderFailure) {
-      const workerProviderAbort = abortOnProviderError(workerProviderFailure.output, workerProviderFailure.agent.name);
+      const workerProviderAbort = abortOnProviderError(workerProviderFailure.output, workerProviderFailure.agent.name, workerProviderFailure.providerError);
       if (workerProviderAbort) return workerProviderAbort;
     }
 
@@ -1130,7 +1155,7 @@ Summary: [what was achieved]`;
 
   const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
   if (reviewAuthAbort) return reviewAuthAbort;
-  const reviewProviderAbort = abortOnProviderError(reviewOutput, lead.name);
+  const reviewProviderAbort = abortOnProviderError(reviewOutput, lead.name, reviewResult.providerError);
   if (reviewProviderAbort) return reviewProviderAbort;
 
   // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
@@ -1206,6 +1231,8 @@ or
     cycleUsage = addUsage(cycleUsage, verifyResult.usage);
     cycleOutcomes = addOutcomes(cycleOutcomes, verifyResult.outcomes);
     addTurn(transcript, verifier.name, 'verifier', verifyOutput, estimateTurnCost(options.model || 'haiku'));
+    const verifyAbort = abortOnFatalTurn(verifyResult, verifier.name);
+    if (verifyAbort) return verifyAbort;
 
     // ── #994: bounded remediation — ONE fix round when the verifier rejects.
     // Missions production data: every milestone needed 2-4 validation rounds;
@@ -1235,6 +1262,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
       cycleUsage = addUsage(cycleUsage, remediationResult.usage);
       cycleOutcomes = addOutcomes(cycleOutcomes, remediationResult.outcomes);
       addTurn(transcript, lead.name, 'lead', remediationResult.text, estimateTurnCost(options.model || 'sonnet'));
+      const remediationAbort = abortOnFatalTurn(remediationResult, lead.name);
+      if (remediationAbort) return remediationAbort;
 
       const fixAssignments = parseTaskAssignments(remediationResult.text, workers).slice(0, 2);
       if (fixAssignments.length > 0 && !isQuotaMessage(remediationResult.text)) {
@@ -1249,6 +1278,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
           cycleUsage = addUsage(cycleUsage, fixResult.usage);
           cycleOutcomes = addOutcomes(cycleOutcomes, fixResult.outcomes);
           addTurn(transcript, agent.name, agent.role, fixResult.text, estimateTurnCost(options.model || 'sonnet'));
+          const fixAbort = abortOnFatalTurn(fixResult, agent.name);
+          if (fixAbort) return fixAbort;
         }
 
         log(`  re-verify: ${verifier.name}...`);
@@ -1261,6 +1292,8 @@ Max 2 tasks. If the rejection is not actionable by a worker (needs a human decis
         cycleUsage = addUsage(cycleUsage, reverifyResult.usage);
         cycleOutcomes = addOutcomes(cycleOutcomes, reverifyResult.outcomes);
         addTurn(transcript, verifier.name, 'verifier', reverifyResult.text, estimateTurnCost(options.model || 'haiku'));
+        const reverifyAbort = abortOnFatalTurn(reverifyResult, verifier.name);
+        if (reverifyAbort) return reverifyAbort;
       }
     }
   }

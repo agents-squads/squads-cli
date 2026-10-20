@@ -14,6 +14,8 @@ import {
   redactSecrets,
   providerErrorSentinel,
   parseProviderErrorSentinel,
+  classifyFailedRun,
+  providerForModel,
   type ProviderErrorType,
 } from '../../src/lib/provider-errors.js';
 
@@ -220,5 +222,60 @@ describe('sentinel', () => {
     const text = providerErrorSentinel(err, 'cli-lead');
     expect(parseProviderErrorSentinel(text)).toBe('plan_expired');
     expect(parseProviderErrorSentinel('plain text')).toBeNull();
+  });
+});
+
+// ── Review of #1333 ──────────────────────────────────────────────────────────
+const PROSE = 'Documented HTTP 401 handling: HTTP 401 means the request was unauthorized. All tests pass.';
+const GLM_BODY = 'API Error: 429 {"error":{"code":"1309","message":"Your Coding Plan package has expired, please renew."}}';
+
+describe('classifyFailedRun — structural evidence only', () => {
+  it('never reads the result text of a run that did not report is_error', () => {
+    expect(classifyFailedRun({ provider: 'anthropic', structured: true, resultText: PROSE, resultIsError: false })).toBeNull();
+  });
+
+  it('reads an is_error result, the fatal line and stderr', () => {
+    expect(classifyFailedRun({ provider: 'glm', structured: true, resultText: GLM_BODY, resultIsError: true })?.type).toBe('plan_expired');
+    expect(classifyFailedRun({ provider: 'glm', structured: true, fatal: GLM_BODY })?.type).toBe('plan_expired');
+    expect(classifyFailedRun({ provider: 'glm', structured: true, stderr: GLM_BODY })?.type).toBe('plan_expired');
+  });
+
+  it('ignores the raw tail of a structured log (it is agent prose)', () => {
+    expect(classifyFailedRun({ provider: 'glm', structured: true, rawTail: GLM_BODY })).toBeNull();
+  });
+
+  it('reads a plain-text tail only when it carries a provider-error anchor', () => {
+    expect(classifyFailedRun({ provider: 'aider', structured: false, rawTail: PROSE })).toBeNull();
+    expect(classifyFailedRun({ provider: 'aider', structured: false, rawTail: GLM_BODY })?.type).toBe('plan_expired');
+  });
+});
+
+describe('providerForModel', () => {
+  it('names the vendor serving a claude-harness lane, not the harness', () => {
+    expect(providerForModel('glm-4.7')).toBe('glm');
+    expect(providerForModel('deepseek-v4-flash')).toBe('deepseek');
+    expect(providerForModel('kimi-k3')).toBe('kimi');
+    expect(providerForModel('sonnet')).toBe('anthropic');
+    expect(providerForModel(undefined)).toBe('anthropic');
+  });
+});
+
+describe('parseProviderErrorSentinel — validated', () => {
+  it('rejects a class that is not a ProviderErrorType', () => {
+    expect(parseProviderErrorSentinel('[PROVIDER_ERROR:whatever] agent output')).toBeNull();
+    expect(parseProviderErrorSentinel('[PROVIDER_ERROR:quota_exhausted] x')).toBe('quota_exhausted');
+  });
+});
+
+describe('redactSecrets — more key formats', () => {
+  it.each([
+    ['stripe', 'key sk_live_abcdefgh12345678 here'],
+    ['stripe restricted', 'key rk_test_abcdefgh12345678 here'],
+    ['aws', 'key AKIAIOSFODNN7EXAMPLE here'],
+    ['google', 'key AIzaSyA1234567890abcdefghijklmnopqrstuv here'],
+    ['slack', 'token xoxb-1234567890-abcdefghij here'],
+  ])('masks %s keys', (_name, text) => {
+    expect(redactSecrets(text)).toContain('[redacted-key]');
+    expect(redactSecrets(text)).not.toMatch(/abcdefgh1234|AKIAIOSFODNN7|AIzaSy|xoxb-1234/);
   });
 });

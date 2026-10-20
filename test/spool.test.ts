@@ -965,6 +965,15 @@ describe('typed provider errors on detached runs (#1298)', () => {
     expect(rec.error).toBe('detached run exited with code 1');
   });
 
+  it('does not classify a failed non-stream log whose prose merely mentions HTTP 401 (review of #1333)', () => {
+    writeFileSync(join(root, 'run.log'), 'Documented HTTP 401 handling: the request was unauthorized. Then it died.\n');
+    writeSpoolFile({ execId: 'exec_prose_401', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toBeUndefined();
+  });
+
   it('never classifies a completed run, even when its prose mentions rate limits', () => {
     const lines = [
       JSON.stringify({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2,
