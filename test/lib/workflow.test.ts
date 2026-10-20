@@ -199,6 +199,32 @@ describe('runConversation', () => {
     expect(result.turnCount).toBeGreaterThan(0);
   });
 
+  it('#1337: conversation agents get --settings with gh excluded from the sandbox and no unsandboxed retry', async () => {
+    delete process.env.SQUADS_SANDBOX;
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockRunCommitCount.mockReturnValue(3);
+    mockSpawn.mockImplementation(() => createMockChild('## STATUS: DONE') as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+    await runConversation(squad, { verbose: false });
+
+    const claudeCall = mockSpawn.mock.calls.find((c) => c[0] === 'claude');
+    expect(claudeCall).toBeDefined();
+    const args = claudeCall![1] as string[];
+    const settingsPath = args[args.indexOf('--settings') + 1];
+    expect(settingsPath).toMatch(/squads-sandbox-settings\.json$/);
+
+    const written = mockWriteFileSync.mock.calls.find((c) => String(c[0]) === settingsPath);
+    expect(written).toBeDefined();
+    const sandbox = JSON.parse(String(written![1])).sandbox;
+    expect(sandbox.enabled).toBe(true);
+    expect(sandbox.excludedCommands).toContain('gh *');
+    expect(sandbox.allowUnsandboxedCommands).toBe(false);
+  });
+
   it('does NOT converge on a DONE claim the run produced no commits for (cli#873)', async () => {
     mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
     mockExistsSync.mockReturnValue(true);

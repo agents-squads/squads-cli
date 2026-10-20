@@ -34,10 +34,11 @@ describe('buildSandboxSettings', () => {
     expect(sb.filesystem.allowWrite).toEqual(['/w', '/w/.agents/memory']);
   });
 
-  it('non-strict keeps the escape hatch; strict removes it', () => {
+  it('#1337: the dangerouslyDisableSandbox escape hatch is closed in every posture; strict only adds failIfUnavailable', () => {
     const lax = buildSandboxSettings({ cwd: '/w' }).sandbox as unknown as SB;
     expect(lax.failIfUnavailable).toBe(false);
-    expect(lax.allowUnsandboxedCommands).toBe(true);
+    expect(lax.allowUnsandboxedCommands).toBe(false);
+    expect(lax.excludedCommands).toContain('gh *'); // the sanctioned exit stays
     const strict = buildSandboxSettings({ cwd: '/w', strict: true }).sandbox as unknown as SB;
     expect(strict.failIfUnavailable).toBe(true);
     expect(strict.allowUnsandboxedCommands).toBe(false);
