@@ -606,6 +606,35 @@ describe('duplicate docs — one file per kind of text', () => {
     expect(duplicateFindings('loose')).toEqual([]);
   });
 
+  it('skips tracked vendored trees, not only the untracked walk path', () => {
+    const dir = docsUnit('tracked-vendor');
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'plan-a.md'), BASE);
+    for (const tree of ['vendor/lib', 'node_modules/pkg', '.venv/site-packages', 'dist', 'build']) {
+      mkdirSync(join(dir, tree), { recursive: true });
+      writeFileSync(join(dir, tree, 'manual-a.md'), BASE);
+    }
+    commitDocs(dir);
+
+    expect(duplicateFindings('tracked-vendor')).toEqual([]);
+  });
+
+  it('bounds pairwise work per unit and reports that later pairs were not compared', () => {
+    const dir = docsUnit('quadratic');
+    mkdirSync(join(dir, 'docs'));
+    // 120 disjoint docs = 7140 pairs, above the per-unit comparison bound.
+    for (let i = 0; i < 120; i++) {
+      const words = Array.from({ length: 20 }, (_, k) => `term${i}x${k}`).join(' ');
+      writeFileSync(join(dir, 'docs', `note-${i}.md`), `# Note ${i}\n\n${words}\n`);
+    }
+    commitDocs(dir);
+
+    const found = duplicateFindings('quadratic');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('pairwise comparisons');
+    expect(found[0].message).toContain('not compared');
+  });
+
   it('caps at 10 pair findings and notes how many were suppressed', () => {
     const dir = docsUnit('capped');
     mkdirSync(join(dir, 'docs'));

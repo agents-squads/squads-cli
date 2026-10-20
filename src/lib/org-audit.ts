@@ -354,6 +354,8 @@ const DOC_DATED_COPY_SIMILARITY = 0.3;
 /** 3+ files with the same basename in sibling directories (NN/prompt.md) are data, not docs. */
 const DOC_TEMPLATE_FAMILY_MIN = 3;
 const DOC_FINDINGS_CAP = 10;
+/** Hard bound on pairs considered per unit: the audit must never go quadratic unannounced. */
+const DOC_MAX_PAIRWISE_COMPARISONS = 5000;
 const DATE_STAMP_RE = /\d{4}[-_]\d{2}[-_]\d{2}/;
 
 interface MarkdownDoc {
@@ -366,6 +368,11 @@ function isSkippedDocFile(name: string): boolean {
   return !/\.md$/i.test(name) || DOC_SKIP_FILE_RE.test(name);
 }
 
+/** A tracked path inside node_modules/vendor/venv/... is generated, not the unit's own docs. */
+function isInSkippedDir(relPath: string): boolean {
+  return relPath.split(/[\\/]/).some((part) => DOC_SKIP_DIRS.has(part));
+}
+
 /** Tracked markdown only: an untracked scratch copy is not part of the unit's docs. */
 function collectTrackedMarkdownDocs(dir: string, hardened: string[]): MarkdownDoc[] {
   const listed = runGit(dir, ['ls-files', '-z', '--', '*.md'], hardened);
@@ -374,6 +381,8 @@ function collectTrackedMarkdownDocs(dir: string, hardened: string[]): MarkdownDo
   for (const relPath of listed.stdout.split('\0')) {
     if (!relPath) continue;
     if (isSkippedDocFile(basename(relPath))) continue;
+    // Tracked vendored/generated trees are boilerplate too: skip by path component.
+    if (isInSkippedDir(relPath)) continue;
     const p = join(dir, relPath);
     let st;
     try {
@@ -483,6 +492,33 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return intersection / (a.size + b.size - intersection);
 }
 
+/**
+ * Jaccard can never exceed min(|A|,|B|)/max(|A|,|B|) (the intersection is at
+ * most the smaller set and the union at least the larger one), so pairs whose
+ * shingle-set sizes are too different cannot reach `floor` and need no compare.
+ */
+function canReachSimilarity(a: Set<string>, b: Set<string>, floor: number): boolean {
+  const small = Math.min(a.size, b.size);
+  const large = Math.max(a.size, b.size);
+  if (large === 0) return false;
+  return small / large >= floor;
+}
+
+interface PairwiseBudget {
+  remaining: number;
+  exhausted: boolean;
+}
+
+/** Counts every pair the analysis considers; returns false once the per-unit bound is hit. */
+function takeComparison(budget: PairwiseBudget): boolean {
+  if (budget.remaining <= 0) {
+    budget.exhausted = true;
+    return false;
+  }
+  budget.remaining--;
+  return true;
+}
+
 /** True when two files sit in the same directory and differ only by a YYYY-MM-DD (or YYYY_MM_DD) stamp. */
 function isDatedCopy(a: string, b: string): boolean {
   if (dirname(a) !== dirname(b)) return false;
@@ -510,7 +546,7 @@ interface ShingledDoc {
  * reports), not copies of one document: only members that overlap at or above
  * DOC_DATED_COPY_SIMILARITY are reported.
  */
-function datedCopyFindings(docs: ShingledDoc[]): Finding[] {
+function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding[] {
   const families = new Map<string, ShingledDoc[]>();
   for (const doc of docs) {
     const key = datedFamilyKey(doc.path);
@@ -526,12 +562,15 @@ function datedCopyFindings(docs: ShingledDoc[]): Finding[] {
     let maxSimilarity = 0;
     for (let i = 0; i < family.length; i++) {
       for (let j = i + 1; j < family.length; j++) {
+        if (!takeComparison(budget)) break;
+        if (!canReachSimilarity(family[i].shingles, family[j].shingles, DOC_DATED_COPY_SIMILARITY)) continue;
         const similarity = jaccard(family[i].shingles, family[j].shingles);
         if (similarity < DOC_DATED_COPY_SIMILARITY) continue;
         overlapping.add(family[i].path);
         overlapping.add(family[j].path);
         maxSimilarity = Math.max(maxSimilarity, similarity);
       }
+      if (budget.exhausted) break;
     }
     if (overlapping.size < 2) continue;
     const members = family.filter((doc) => overlapping.has(doc.path)).map((doc) => `"${doc.path}"`);
@@ -540,6 +579,7 @@ function datedCopyFindings(docs: ShingledDoc[]): Finding[] {
       code: 'duplicate-doc',
       message: `dated copies: family "${key}" has ${family.length} file(s), ${members.length} overlapping: ${members.join(', ')} (similarity ${maxSimilarity.toFixed(2)}) — one file per kind of text`,
     });
+    if (budget.exhausted) break;
   }
   return findings;
 }
@@ -549,12 +589,15 @@ function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[]
   const collected = collectMarkdownDocs(dir, hardened);
   const templated = templatedFamilyPaths(collected);
   const docs = collected.map((doc) => ({ path: doc.path, shingles: docShingles(doc.text) }));
-  const findings = datedCopyFindings(docs);
+  const budget: PairwiseBudget = { remaining: DOC_MAX_PAIRWISE_COMPARISONS, exhausted: false };
+  const findings = datedCopyFindings(docs, budget);
   for (let i = 0; i < docs.length; i++) {
     for (let j = i + 1; j < docs.length; j++) {
+      if (!takeComparison(budget)) break;
       // Dated pairs are handled per family above; non-dated pairs are reported one by one.
       if (isDatedCopy(docs[i].path, docs[j].path)) continue;
       if (templated.has(docs[i].path) || templated.has(docs[j].path)) continue;
+      if (!canReachSimilarity(docs[i].shingles, docs[j].shingles, DOC_DUPLICATE_SIMILARITY)) continue;
       const similarity = jaccard(docs[i].shingles, docs[j].shingles);
       if (similarity < DOC_DUPLICATE_SIMILARITY) continue;
       findings.push({
@@ -563,6 +606,14 @@ function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[]
         message: `near-duplicate docs: "${docs[i].path}" and "${docs[j].path}" (similarity ${similarity.toFixed(2)}) — one file per kind of text`,
       });
     }
+    if (budget.exhausted) break;
+  }
+  if (budget.exhausted) {
+    findings.push({
+      check: 'docs-facts',
+      code: 'duplicate-doc',
+      message: `duplicate-doc analysis stopped after ${DOC_MAX_PAIRWISE_COMPARISONS} pairwise comparisons — later pairs were not compared`,
+    });
   }
   if (findings.length > DOC_FINDINGS_CAP) {
     const suppressed = findings.length - DOC_FINDINGS_CAP;
