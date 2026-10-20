@@ -10,11 +10,16 @@
  *   - ids are unique per file;
  *   - `status: passing` needs a verification whose `model` differs from
  *     `builder_model` and whose `sha` exists in the repo;
- *   - every roadmap `<repo>:<id>` reference names an item that exists.
+ *   - every roadmap `<repo>:<id>` reference names an item that exists, in exactly
+ *     one repo (a label two files claim is ambiguous, never first-wins);
+ *   - a roadmap has one file and unique outcome ids.
+ *
+ * A verification `sha` only proves some commit exists in the item's own repo;
+ * the guarantee that matters (`model` ≠ `builder_model`) is self-reported.
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 
 export const FEATURES_FILE = join('.agents', 'features.json');
@@ -62,7 +67,10 @@ export type ProblemCode =
   | 'invalid-schema'
   | 'duplicate-id'
   | 'passing-without-verification'
-  | 'missing-roadmap-item';
+  | 'missing-roadmap-item'
+  | 'ambiguous-repo-label'
+  | 'duplicate-outcome-id'
+  | 'multiple-roadmaps';
 
 export interface FeatureProblem {
   code: ProblemCode;
@@ -85,11 +93,29 @@ export interface LoadedFeatureFile {
 
 export type ShaExists = (repoDir: string, sha: string) => boolean;
 
-/** `git cat-file -e <sha>^{commit}` — argument vector only, never a shell. */
+/** Git env that would redirect `git -C <dir>` to another repo. */
+const AMBIENT_GIT_ENV = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+];
+
+/**
+ * `git cat-file -e <sha>^{commit}` in `repoDir` itself — argument vector only,
+ * never a shell. `git -C` walks up to an enclosing repo, so the repo's own
+ * toplevel must equal `repoDir`; ambient GIT_* env is scrubbed.
+ */
 export const gitShaExists: ShaExists = (repoDir, sha) => {
   if (!/^[0-9a-fA-F]{4,64}$/.test(sha)) return false;
+  const env = { ...process.env };
+  for (const k of AMBIENT_GIT_ENV) delete env[k];
   try {
-    execFileSync('git', ['-C', repoDir, 'cat-file', '-e', `${sha}^{commit}`], { stdio: 'ignore' });
+    const top = execFileSync('git', ['-C', repoDir, 'rev-parse', '--show-toplevel'], { env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (realpathSync(top) !== realpathSync(repoDir)) return false;
+    execFileSync('git', ['-C', repoDir, 'cat-file', '-e', `${sha}^{commit}`], { env, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -223,12 +249,15 @@ export function findFeatureFiles(root: string): string[] {
     .filter(f => existsSync(f));
 }
 
+export function findRoadmapFiles(root: string): string[] {
+  return candidateDirs(root)
+    .map(d => join(d, ROADMAP_FILE))
+    .filter(f => existsSync(f));
+}
+
+/** The first roadmap in scan order (extra ones are reported by `analyzeFeatures`). */
 export function findRoadmapFile(root: string): string | null {
-  for (const dir of candidateDirs(root)) {
-    const f = join(dir, ROADMAP_FILE);
-    if (existsSync(f)) return f;
-  }
-  return null;
+  return findRoadmapFiles(root)[0] ?? null;
 }
 
 interface LoadedRoadmap {
@@ -252,10 +281,16 @@ function loadRoadmap(path: string, display: string): LoadedRoadmap {
   const raw = Array.isArray(data) ? data : isRecord(data) ? data.outcomes : undefined;
   if (!Array.isArray(raw)) return bad('invalid-schema', 'roadmap needs an "outcomes" array');
   const outcomes: RoadmapOutcome[] = [];
+  const problems: FeatureProblem[] = [];
+  const seenIds = new Set<string>();
   for (const [i, o] of raw.entries()) {
     if (!isRecord(o) || !isNonEmpty(o.id) || !Array.isArray(o.items) || !o.items.every(isStr)) {
       return bad('invalid-schema', `outcomes[${i}] needs id and an items array of "<repo>:<id>" strings`);
     }
+    if (seenIds.has(o.id)) {
+      problems.push({ code: 'duplicate-outcome-id', file: display, item: o.id, message: `duplicate outcome id "${o.id}"` });
+    }
+    seenIds.add(o.id);
     outcomes.push({
       id: o.id,
       name: isStr(o.name) ? o.name : o.id,
@@ -263,7 +298,7 @@ function loadRoadmap(path: string, display: string): LoadedRoadmap {
       items: o.items as string[],
     });
   }
-  return { path, outcomes, problems: [] };
+  return { path, outcomes, problems };
 }
 
 // ── Aggregation ──────────────────────────────────────────────────────
@@ -333,22 +368,43 @@ export function resolveOrgRoot(explicit: string | undefined, projectRoot: string
 export function analyzeFeatures(root: string, opts: AnalyzeOptions = {}): FeaturesView {
   const shaExists = opts.shaExists ?? gitShaExists;
   const loaded = findFeatureFiles(root).map(f => loadFeatureFile(f, rel(root, f), shaExists));
-  const roadmapPath = findRoadmapFile(root);
+  const roadmapFiles = findRoadmapFiles(root);
+  const roadmapPath = roadmapFiles[0] ?? null;
 
   const problems: FeatureProblem[] = loaded.flatMap(l => l.problems);
   const valid = loaded.filter(l => l.list !== null && l.problems.length === 0);
 
   // Items addressed by roadmap refs: any parseable list, so a duplicate-id file
   // doesn't also cascade into "missing item" noise.
-  const known = new Map<string, Map<string, { file: LoadedFeatureFile; item: FeatureItem }>>();
+  type Hit = { file: LoadedFeatureFile; item: FeatureItem };
+  const claims = new Map<string, { byId: Map<string, Hit>; files: LoadedFeatureFile[] }>();
   for (const l of loaded) {
     if (!l.list) continue;
-    const byId = new Map<string, { file: LoadedFeatureFile; item: FeatureItem }>();
+    const byId = new Map<string, Hit>();
     for (const item of l.list.items) if (!byId.has(item.id)) byId.set(item.id, { file: l, item });
     for (const key of new Set([l.list.repo, l.list.repo.split('/').pop() ?? l.list.repo, basename(l.repoDir)])) {
-      if (!known.has(key)) known.set(key, byId);
+      const claim = claims.get(key) ?? { byId, files: [] };
+      if (!claim.files.includes(l)) claim.files.push(l);
+      claims.set(key, claim);
     }
   }
+  // A label claimed by two files resolves to neither: refs through it are
+  // ambiguous, and two files declaring the same full `repo` is always a problem.
+  const ambiguous = new Map<string, string[]>();
+  for (const [key, c] of claims) if (c.files.length > 1) ambiguous.set(key, c.files.map(f => rel(root, f.path)));
+  for (const l of loaded) {
+    const label = l.list?.repo;
+    const files = label ? ambiguous.get(label) : undefined;
+    if (label && files && l === claims.get(label)?.files[0]) {
+      problems.push({
+        code: 'ambiguous-repo-label',
+        file: rel(root, l.path),
+        message: `repo label "${label}" is declared by more than one file: ${files.join(', ')}`,
+      });
+    }
+  }
+  const known = (key: string): Map<string, Hit> | undefined =>
+    ambiguous.has(key) ? undefined : claims.get(key)?.byId;
 
   const toPlanItem = (l: LoadedFeatureFile, item: FeatureItem): PlanItem => ({
     ref: `${l.list?.repo ?? basename(l.repoDir)}:${item.id}`,
@@ -374,20 +430,31 @@ export function analyzeFeatures(root: string, opts: AnalyzeOptions = {}): Featur
   if (roadmapPath) {
     const roadmap = loadRoadmap(roadmapPath, rel(root, roadmapPath));
     problems.push(...roadmap.problems);
+    for (const extra of roadmapFiles.slice(1)) {
+      problems.push({
+        code: 'multiple-roadmaps',
+        file: rel(root, extra),
+        message: `ignored: only ${rel(root, roadmapPath)} is used as the roadmap`,
+      });
+    }
     const referenced = new Set<FeatureItem>();
     outcomes = roadmap.outcomes.map(o => {
       const items: PlanItem[] = [];
       const missing: string[] = [];
       for (const ref of o.items) {
         const sep = ref.lastIndexOf(':');
-        const hit = sep > 0 ? known.get(ref.slice(0, sep))?.get(ref.slice(sep + 1)) : undefined;
+        const label = sep > 0 ? ref.slice(0, sep) : '';
+        const hit = sep > 0 ? known(label)?.get(ref.slice(sep + 1)) : undefined;
         if (!hit) {
           missing.push(ref);
+          const files = ambiguous.get(label);
           problems.push({
-            code: 'missing-roadmap-item',
+            code: files ? 'ambiguous-repo-label' : 'missing-roadmap-item',
             file: rel(root, roadmapPath),
             item: ref,
-            message: `outcome ${o.id} references "${ref}", which is not in any features.json`,
+            message: files
+              ? `outcome ${o.id} references "${ref}", but repo label "${label}" is claimed by ${files.join(', ')}`
+              : `outcome ${o.id} references "${ref}", which is not in any features.json`,
           });
           continue;
         }

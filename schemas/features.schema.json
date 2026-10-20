@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/agents-squads/squads-cli/blob/main/schemas/features.schema.json",
   "title": ".agents/features.json",
-  "description": "A repo's feature list as data. Same format for every repo kind. Beyond this schema, `squads contract validate` enforces: ids unique per file; `status: passing` needs a verification whose model differs from builder_model and whose sha exists in the repo.",
+  "description": "A repo's feature list as data. Same format for every repo kind. Beyond this schema, `squads contract validate` enforces: ids unique per file; `status: passing` needs a verification whose model differs from builder_model and whose sha exists in the repo itself. Documentation-only: the validator enforces just the required fields, types and the rules above — `at` format, `check`, `consumers` and the `<owner>/<repo>` form of `repo` are NOT checked. A sha proves only that some commit exists in that repo; `model` ≠ `builder_model` is self-reported, so do not over-trust a passing item.",
   "type": "object",
   "required": ["schema", "repo", "items"],
   "properties": {

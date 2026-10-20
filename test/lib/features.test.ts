@@ -9,6 +9,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
+import { Command } from 'commander';
+import { registerContractCommand } from '../../src/commands/contract.js';
 import { analyzeFeatures, gitShaExists, resolveOrgRoot, type ShaExists } from '../../src/lib/features.js';
 import { featuresCommand } from '../../src/commands/plan.js';
 import { stripAnsi } from '../../src/lib/terminal.js';
@@ -102,6 +105,100 @@ describe('validator', () => {
     expect(gitShaExists(join(root, 'real'), sha)).toBe(true);
     expect(gitShaExists(join(root, 'real'), 'f'.repeat(40))).toBe(false);
     expect(gitShaExists(join(root, 'real'), '--output=x')).toBe(false);
+  });
+});
+
+describe('review findings (#1332)', () => {
+  // Message is the repo name so two repos never share a sha.
+  const commit = (dir: string): string => {
+    mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', dir], { cwd: dir });
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+  };
+
+  it('F1: two files claiming one repo label are ambiguous, not first-wins', () => {
+    repo('first', [item('X')], 'acme/prod');
+    repo('second', [item('X')], 'acme/prod');
+    writeJson(join(root, 'hq', '.agents', 'roadmap.json'), { outcomes: [{ id: 'O1', name: 'n', items: ['acme/prod:X'] }] });
+    const view = analyzeFeatures(root, { shaExists });
+    expect(view.problems.map(p => p.code)).toContain('ambiguous-repo-label');
+    expect(view.outcomes[0].items).toEqual([]);
+    expect(view.outcomes[0].missing).toEqual(['acme/prod:X']);
+  });
+
+  it('F1: an alias two repos share is a problem when a roadmap ref uses it', () => {
+    repo('a', [item('X')], 'one/api');
+    repo('b', [item('X')], 'two/api');
+    writeJson(join(root, 'hq', '.agents', 'roadmap.json'), { outcomes: [{ id: 'O1', name: 'n', items: ['api:X', 'one/api:X'] }] });
+    const view = analyzeFeatures(root, { shaExists });
+    expect(view.problems.map(p => [p.code, p.item])).toEqual([['ambiguous-repo-label', 'api:X']]);
+    expect(view.outcomes[0].items.map(i => i.ref)).toEqual(['one/api:X']);
+  });
+
+  it('F2: gitShaExists does not climb into an enclosing repo', () => {
+    const sha = commit(join(root, 'outer'));
+    mkdirSync(join(root, 'outer', 'inner'));
+    expect(gitShaExists(join(root, 'outer'), sha)).toBe(true);
+    expect(gitShaExists(join(root, 'outer', 'inner'), sha)).toBe(false);
+  });
+
+  it('F2: gitShaExists ignores ambient GIT_DIR', () => {
+    commit(join(root, 'decoy'));
+    const sha = commit(join(root, 'real'));
+    vi.stubEnv('GIT_DIR', join(root, 'decoy', '.git'));
+    try {
+      expect(gitShaExists(join(root, 'real'), sha)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('F3: both schemas say they are documentation-only', () => {
+    for (const f of ['features', 'roadmap']) {
+      const schema = JSON.parse(readFileSync(join(__dirname, '../../schemas', `${f}.schema.json`), 'utf-8'));
+      expect(schema.description).toContain('Documentation-only');
+    }
+  });
+
+  it('F5: duplicate outcome ids and a second roadmap are reported, not ignored', () => {
+    repo('alpha', [item('A1')]);
+    writeJson(join(root, 'hq', '.agents', 'roadmap.json'), {
+      outcomes: [{ id: 'O1', name: 'a', items: ['alpha:A1'] }, { id: 'O1', name: 'b', items: [] }],
+    });
+    writeJson(join(root, 'zed', '.agents', 'roadmap.json'), { outcomes: [] });
+    const codes = analyzeFeatures(root, { shaExists }).problems.map(p => p.code).sort();
+    expect(codes).toEqual(['duplicate-outcome-id', 'multiple-roadmaps']);
+  });
+});
+
+describe('contract validate --features (F4, in-process)', () => {
+  const runContract = async (args: string[]) => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')));
+    const program = new Command();
+    registerContractCommand(program);
+    process.exitCode = undefined;
+    await program.parseAsync(['node', 'squads', 'contract', 'validate', ...args]);
+    const code = process.exitCode;
+    process.exitCode = undefined;
+    return { code, out: lines.join('\n') };
+  };
+  afterEach(() => vi.restoreAllMocks());
+
+  it('exits 1 with {root, files, problems} JSON when a list has problems', async () => {
+    repo('dupe', [item('D1'), item('D1')]);
+    const { code, out } = await runContract(['--features', root, '--json']);
+    expect(code).toBe(1);
+    const parsed = JSON.parse(out);
+    expect(Object.keys(parsed).sort()).toEqual(['files', 'problems', 'root']);
+    expect(parsed.problems[0].code).toBe('duplicate-id');
+  });
+
+  it('exits 0 and prints the hint when nothing is configured', async () => {
+    const { code, out } = await runContract(['--features', root]);
+    expect(code).toBe(0);
+    expect(out).toContain('No feature lists yet');
   });
 });
 
