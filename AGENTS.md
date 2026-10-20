@@ -1,3 +1,9 @@
+---
+kind: product
+lifecycle: active
+owner: maintainers
+---
+
 # Agent Instructions
 
 Guidance for AI coding agents working on this repository. This is the single
