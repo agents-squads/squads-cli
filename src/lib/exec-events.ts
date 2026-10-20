@@ -72,7 +72,9 @@ export type ExecEvent =
    *  plan_expired · quota_exhausted · auth_invalid · rate_limited · overloaded · bad_request · network · unknown.
    *  `attempt` is set when a retryable class was backed off and re-tried. Additive. */
   | { type: 'error'; errorType: string; retryable: boolean; message: string; provider?: string; status?: number; providerCode?: string; attempt?: number }
-  | { type: 'truncated'; droppedCount: number; reason: string };
+  | { type: 'truncated'; droppedCount: number; reason: string }
+  | { type: 'gate_result'; ok: boolean; newFailures: string[]; tests: string; prUrl?: string; sha: string }
+  | { type: 'review_verdict'; pr: string; verdict: 'PASS' | 'FAIL'; findings: number; severity?: string; reviewerRunId?: string; sha: string };
 
 /** Version of the event contract (docs/exec-events.md "Versioning", schemas/exec-event.v1.schema.json).
  *  Additive changes keep it; removing or renaming a field, or changing a type, bumps it with a changelog
@@ -84,7 +86,7 @@ export const EXEC_EVENT_SCHEMA_VERSION = 1;
 export const EXEC_EVENT_TYPES = [
   'run_start', 'message', 'reasoning', 'usage_running', 'context_assembled', 'tool_call', 'tool_result',
   'file_read', 'file_write', 'web_fetch', 'subagent_spawn', 'subagent_done', 'token_usage', 'artifact',
-  'run_end', 'error', 'truncated',
+  'run_end', 'error', 'truncated', 'gate_result', 'review_verdict',
 ] as const;
 type MissingFromEventTypes = Exclude<ExecEvent['type'], (typeof EXEC_EVENT_TYPES)[number]>;
 const eventTypesCoverUnion: [MissingFromEventTypes] extends [never] ? true : never = true;
@@ -588,7 +590,7 @@ const DEFAULT_MAX_EVENTS = 5000;
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Terminal/aggregate events are never dropped by the cap. */
-const UNCAPPED_TYPES = new Set<ExecEvent['type']>(['run_start', 'run_end', 'token_usage', 'truncated', 'context_assembled']);
+const UNCAPPED_TYPES = new Set<ExecEvent['type']>(['run_start', 'run_end', 'token_usage', 'truncated', 'context_assembled', 'gate_result', 'review_verdict']);
 
 /** Canonical events file for a run, under the dispatch root's observability dir. */
 export function execEventsFile(obsRoot: string, executionId: string): string {

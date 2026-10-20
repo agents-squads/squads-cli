@@ -109,6 +109,8 @@ const runnerEvents: ExecEvent[] = [
   { type: 'run_start', squad: 'eng', agent: 'builder', mode: 'background', model: 'sonnet', role: 'worker', startedAt: '2026-07-01T00:00:00Z', title: 't', task: 'do it' },
   { type: 'context_assembled', layers: [{ layer: 1, name: 'company', chars: 10, tokensEst: 3, evicted: false }], totalTokensEst: 3, budgetTokens: 1000 },
   { type: 'artifact', kind: 'commit', ref: 'abc123' },
+  { type: 'gate_result', ok: true, newFailures: [], tests: '3104/3109', sha: 'abc123' },
+  { type: 'review_verdict', pr: 'https://github.com/o/r/pull/7', verdict: 'PASS', findings: 3, sha: 'abc123' },
   { type: 'error', errorType: 'rate_limited', retryable: true, message: 'slow down', provider: 'anthropic', status: 429, attempt: 1 },
   { type: 'run_end', ok: true, durationMs: 1200, totalUsage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, costEst: 0.5 }, outcomes: { actions: 1, files_edited: 1, commits: 1, prs_created: 0, issues_created: 0 } },
 ];

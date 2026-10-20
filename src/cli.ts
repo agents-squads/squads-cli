@@ -1368,7 +1368,7 @@ program
 // Detached-run inventory + control (containment D4): list live background
 // runs from pid files, stop one gracefully (executor first, wrapper survives
 // to harvest + report), clean stale/orphaned leftovers.
-program
+const runs = program
   .command('runs')
   .description('List live background agent runs (pid-file inventory)')
   .option('--json', 'Output as JSON')
@@ -1380,6 +1380,31 @@ program
   .action(async (options) => {
     const { runsCommand } = await import('./commands/runs.js');
     return runsCommand(options);
+  });
+
+runs
+  .command('annotate')
+  .description('Attach gate result or review verdict to the run that produced a commit')
+  .requiredOption('--commit <sha>', 'Commit SHA to find the run for')
+  .option('--gate <result>', 'Gate result: pass or fail')
+  .option('--tests <count>', 'Test count as passed/total (e.g. 3104/3109)')
+  .option('--new-failures <list>', 'Comma-separated list of new failure names')
+  .option('--pr <url>', 'PR URL (for gate result)')
+  .option('--verdict <result>', 'Review verdict: PASS or FAIL')
+  .option('--findings <n>', 'Number of findings (for review verdict)')
+  .option('--severity <level>', 'Severity level (for review verdict)')
+  .option('--reviewer-run-id <id>', 'Reviewer run ID (for review verdict)')
+  .option('-j, --json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ squads runs annotate --commit abc123 --gate pass --tests 3104/3109
+  $ squads runs annotate --commit abc123 --gate fail --tests 3104/3109 --new-failures "test1,test2" --pr https://github.com/owner/repo/pull/42
+  $ squads runs annotate --commit abc123 --verdict PASS --findings 3 --severity HIGH
+  $ squads runs annotate --commit abc123 --verdict FAIL --findings 5 --reviewer-run-id run_abc123
+`)
+  .action(async (options) => {
+    const { annotateRunCommand } = await import('./commands/runs.js');
+    return annotateRunCommand(options);
   });
 
 // Review queue (#924 list, #933 decision verbs): everything waiting on a
