@@ -354,8 +354,6 @@ const DOC_DATED_COPY_SIMILARITY = 0.3;
 /** 3+ files with the same basename in sibling directories (NN/prompt.md) are data, not docs. */
 const DOC_TEMPLATE_FAMILY_MIN = 3;
 const DOC_FINDINGS_CAP = 10;
-/** Hard bound on pairs considered per unit: the audit must never go quadratic unannounced. */
-const DOC_MAX_PAIRWISE_COMPARISONS = 5000;
 const DATE_STAMP_RE = /\d{4}[-_]\d{2}[-_]\d{2}/;
 
 interface MarkdownDoc {
@@ -373,6 +371,11 @@ function isInSkippedDir(relPath: string): boolean {
   return relPath.split(/[\\/]/).some((part) => DOC_SKIP_DIRS.has(part));
 }
 
+/** A path under an `archive/` directory is history, not live docs (matches context-policy's archive rule). */
+function isArchivedPath(relPath: string): boolean {
+  return relPath.split(/[\\/]/).some((part) => part === 'archive');
+}
+
 /** Tracked markdown only: an untracked scratch copy is not part of the unit's docs. */
 function collectTrackedMarkdownDocs(dir: string, hardened: string[]): MarkdownDoc[] {
   const listed = runGit(dir, ['ls-files', '-z', '--', '*.md'], hardened);
@@ -383,6 +386,8 @@ function collectTrackedMarkdownDocs(dir: string, hardened: string[]): MarkdownDo
     if (isSkippedDocFile(basename(relPath))) continue;
     // Tracked vendored/generated trees are boilerplate too: skip by path component.
     if (isInSkippedDir(relPath)) continue;
+    // Archived layers are history, not live docs.
+    if (isArchivedPath(relPath)) continue;
     const p = join(dir, relPath);
     let st;
     try {
@@ -418,7 +423,7 @@ function collectWalkedMarkdownDocs(dir: string): MarkdownDoc[] {
       }
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
-        if (!DOC_SKIP_DIRS.has(entry)) walk(p);
+        if (!DOC_SKIP_DIRS.has(entry) && entry !== 'archive') walk(p);
         continue;
       }
       if (!st.isFile() || isSkippedDocFile(entry) || st.size > DOC_MAX_BYTES) continue;
@@ -504,21 +509,6 @@ function canReachSimilarity(a: Set<string>, b: Set<string>, floor: number): bool
   return small / large >= floor;
 }
 
-interface PairwiseBudget {
-  remaining: number;
-  exhausted: boolean;
-}
-
-/** Counts every pair the analysis considers; returns false once the per-unit bound is hit. */
-function takeComparison(budget: PairwiseBudget): boolean {
-  if (budget.remaining <= 0) {
-    budget.exhausted = true;
-    return false;
-  }
-  budget.remaining--;
-  return true;
-}
-
 /** True when two files sit in the same directory and differ only by a YYYY-MM-DD (or YYYY_MM_DD) stamp. */
 function isDatedCopy(a: string, b: string): boolean {
   if (dirname(a) !== dirname(b)) return false;
@@ -546,7 +536,7 @@ interface ShingledDoc {
  * reports), not copies of one document: only members that overlap at or above
  * DOC_DATED_COPY_SIMILARITY are reported.
  */
-function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding[] {
+function datedCopyFindings(docs: ShingledDoc[]): Finding[] {
   const families = new Map<string, ShingledDoc[]>();
   for (const doc of docs) {
     const key = datedFamilyKey(doc.path);
@@ -562,7 +552,6 @@ function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding
     let maxSimilarity = 0;
     for (let i = 0; i < family.length; i++) {
       for (let j = i + 1; j < family.length; j++) {
-        if (!takeComparison(budget)) break;
         if (!canReachSimilarity(family[i].shingles, family[j].shingles, DOC_DATED_COPY_SIMILARITY)) continue;
         const similarity = jaccard(family[i].shingles, family[j].shingles);
         if (similarity < DOC_DATED_COPY_SIMILARITY) continue;
@@ -570,7 +559,6 @@ function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding
         overlapping.add(family[j].path);
         maxSimilarity = Math.max(maxSimilarity, similarity);
       }
-      if (budget.exhausted) break;
     }
     if (overlapping.size < 2) continue;
     const members = family.filter((doc) => overlapping.has(doc.path)).map((doc) => `"${doc.path}"`);
@@ -579,21 +567,37 @@ function datedCopyFindings(docs: ShingledDoc[], budget: PairwiseBudget): Finding
       code: 'duplicate-doc',
       message: `dated copies: family "${key}" has ${family.length} file(s), ${members.length} overlapping: ${members.join(', ')} (similarity ${maxSimilarity.toFixed(2)}) — one file per kind of text`,
     });
-    if (budget.exhausted) break;
   }
   return findings;
 }
 
-/** Findings for dated-copy families and near-duplicate markdown pairs, with paths and similarity. */
-function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[] {
-  const collected = collectMarkdownDocs(dir, hardened);
-  const templated = templatedFamilyPaths(collected);
-  const docs = collected.map((doc) => ({ path: doc.path, shingles: docShingles(doc.text) }));
-  const budget: PairwiseBudget = { remaining: DOC_MAX_PAIRWISE_COMPARISONS, exhausted: false };
-  const findings = datedCopyFindings(docs, budget);
+/**
+ * Near-duplicate pairs via an exhaustive inverted index (`shingle → doc`): a
+ * pair is a candidate only when it shares at least one shingle, so the scan is
+ * no longer O(n²) over every doc pair. Dated and templated skips and the size
+ * bound still apply before any Jaccard computation, and candidate order is
+ * preserved (i ascending, j ascending) so findings match the old pairwise scan.
+ */
+function nearDuplicateFindings(docs: ShingledDoc[], templated: Set<string>): Finding[] {
+  const index = new Map<string, number[]>();
   for (let i = 0; i < docs.length; i++) {
-    for (let j = i + 1; j < docs.length; j++) {
-      if (!takeComparison(budget)) break;
+    for (const shingle of docs[i].shingles) {
+      const list = index.get(shingle);
+      if (list) list.push(i);
+      else index.set(shingle, [i]);
+    }
+  }
+
+  const findings: Finding[] = [];
+  for (let i = 0; i < docs.length; i++) {
+    const candidates = new Set<number>();
+    for (const shingle of docs[i].shingles) {
+      const list = index.get(shingle);
+      if (!list) continue;
+      for (const j of list) if (j > i) candidates.add(j);
+    }
+    const sorted = [...candidates].sort((a, b) => a - b);
+    for (const j of sorted) {
       // Dated pairs are handled per family above; non-dated pairs are reported one by one.
       if (isDatedCopy(docs[i].path, docs[j].path)) continue;
       if (templated.has(docs[i].path) || templated.has(docs[j].path)) continue;
@@ -606,15 +610,16 @@ function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[]
         message: `near-duplicate docs: "${docs[i].path}" and "${docs[j].path}" (similarity ${similarity.toFixed(2)}) — one file per kind of text`,
       });
     }
-    if (budget.exhausted) break;
   }
-  if (budget.exhausted) {
-    findings.push({
-      check: 'docs-facts',
-      code: 'duplicate-doc',
-      message: `duplicate-doc analysis stopped after ${DOC_MAX_PAIRWISE_COMPARISONS} pairwise comparisons — later pairs were not compared`,
-    });
-  }
+  return findings;
+}
+
+/** Findings for dated-copy families and near-duplicate markdown pairs, with paths and similarity. */
+function duplicateDocFindings(dir: string, hardened: string[] | null): Finding[] {
+  const collected = collectMarkdownDocs(dir, hardened);
+  const templated = templatedFamilyPaths(collected);
+  const docs = collected.map((doc) => ({ path: doc.path, shingles: docShingles(doc.text) }));
+  const findings = [...datedCopyFindings(docs), ...nearDuplicateFindings(docs, templated)];
   if (findings.length > DOC_FINDINGS_CAP) {
     const suppressed = findings.length - DOC_FINDINGS_CAP;
     findings.length = DOC_FINDINGS_CAP;

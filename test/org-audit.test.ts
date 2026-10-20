@@ -619,20 +619,17 @@ describe('duplicate docs — one file per kind of text', () => {
     expect(duplicateFindings('tracked-vendor')).toEqual([]);
   });
 
-  it('bounds pairwise work per unit and reports that later pairs were not compared', () => {
+  it('scans a large disjoint set without an O(n²) blowup or a "stopped after" finding', () => {
     const dir = docsUnit('quadratic');
     mkdirSync(join(dir, 'docs'));
-    // 120 disjoint docs = 7140 pairs, above the per-unit comparison bound.
+    // 120 disjoint docs = 7140 pairs; the shingle index yields no candidates.
     for (let i = 0; i < 120; i++) {
       const words = Array.from({ length: 20 }, (_, k) => `term${i}x${k}`).join(' ');
       writeFileSync(join(dir, 'docs', `note-${i}.md`), `# Note ${i}\n\n${words}\n`);
     }
     commitDocs(dir);
 
-    const found = duplicateFindings('quadratic');
-    expect(found).toHaveLength(1);
-    expect(found[0].message).toContain('pairwise comparisons');
-    expect(found[0].message).toContain('not compared');
+    expect(duplicateFindings('quadratic')).toEqual([]);
   });
 
   it('caps at 10 pair findings and notes how many were suppressed', () => {
@@ -649,4 +646,52 @@ describe('duplicate docs — one file per kind of text', () => {
     expect(notes[0].message).toContain('5 duplicate-doc finding(s) suppressed');
     expect(found.filter((f) => /near-duplicate docs/.test(f.message))).toHaveLength(10);
   });
+
+  it('does not report a near-duplicate pair under archive/', () => {
+    const dir = docsUnit('archived');
+    mkdirSync(join(dir, 'archive'));
+    writeFileSync(join(dir, 'archive', 'release.md'), BASE);
+    writeFileSync(join(dir, 'archive', 'release-copy.md'), BASE.replace('platform', 'product').replace('publish', 'ship'));
+    commitDocs(dir);
+
+    expect(duplicateFindings('archived')).toEqual([]);
+  });
+
+  it('finds 2 planted near-duplicate pairs among 2,000 docs in < 5 s, with no "stopped after" note', () => {
+    const dir = docsUnit('large');
+    mkdirSync(join(dir, 'docs'));
+
+    const TEXT_B = [
+      '# Onboarding guide',
+      '',
+      'This guide walks a new developer through setting up their local machine.',
+      'Install the toolchain, clone the repository, and run the bootstrap script.',
+      'The script verifies dependencies, writes configuration, and prints the',
+      'next steps to the terminal. Report any failure to the maintainers with',
+      'the exact command and its output so the fix can be applied quickly.',
+    ].join('\n');
+
+    // 1,996 disjoint docs plus two near-duplicate pairs (4 docs) = 2,000 total.
+    const disjoint = 1996;
+    for (let i = 0; i < disjoint; i++) {
+      const words = Array.from({ length: 20 }, (_, k) => `term${i}x${k}`).join(' ');
+      writeFileSync(join(dir, 'docs', `note-${i}.md`), `# Note ${i}\n\n${words}\n`);
+    }
+    writeFileSync(join(dir, 'docs', 'pair-a.md'), BASE);
+    writeFileSync(join(dir, 'docs', 'pair-a-copy.md'), BASE.replace('platform', 'product').replace('publish', 'ship'));
+    writeFileSync(join(dir, 'docs', 'pair-b.md'), TEXT_B);
+    writeFileSync(join(dir, 'docs', 'pair-b-copy.md'), TEXT_B.replace('toolchain', 'toolkit').replace('bootstrap', 'setup'));
+    commitDocs(dir);
+
+    const start = Date.now();
+    const found = duplicateFindings('large');
+    const elapsed = Date.now() - start;
+
+    expect(found).toHaveLength(2);
+    expect(found.every((f) => /near-duplicate docs/.test(f.message))).toBe(true);
+    expect(found.every((f) => !/stopped after/.test(f.message))).toBe(true);
+    expect(found.some((f) => f.message.includes('pair-a.md') && f.message.includes('pair-a-copy.md'))).toBe(true);
+    expect(found.some((f) => f.message.includes('pair-b.md') && f.message.includes('pair-b-copy.md'))).toBe(true);
+    expect(elapsed).toBeLessThan(5000);
+  }, 20000);
 });
