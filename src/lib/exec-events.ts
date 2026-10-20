@@ -887,6 +887,29 @@ export class ExecEventWriter {
 
 // ── Detached-run normalization ────────────────────────────────────────
 
+/** Event types a live follower (#1353) writes to the events file as the harness
+ *  emits them. If any are already present at reconcile, the stream was
+ *  normalized live and must not be replayed (that would duplicate every tool
+ *  event and the terminal token_usage). */
+const STREAM_DERIVED_TYPES = new Set<ExecEvent['type']>([
+  'tool_call', 'tool_result', 'message', 'reasoning', 'usage_running',
+  'file_read', 'file_write', 'web_fetch', 'subagent_spawn', 'subagent_done', 'artifact', 'token_usage',
+]);
+
+/** True when the run's events file already holds events streamed live by a follower. */
+function hasLiveStreamedEvents(file: string): boolean {
+  try {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const ev = JSON.parse(line) as PersistedExecEvent;
+        if (ev.event && STREAM_DERIVED_TYPES.has(ev.event.type)) return true;
+      } catch { /* malformed line — ignore */ }
+    }
+  } catch { /* file missing — nothing streamed yet */ }
+  return false;
+}
+
 /**
  * Normalize a detached run's raw stream-json log into the run's events file.
  * Called at reconcile time (the CLI that spawned the run is long gone). The
@@ -921,8 +944,14 @@ export function normalizeDetachedLog(
   // (glm/deepseek/anthropic/…) travels with the normalized events so the app
   // can badge them per-provider — same as live-flushed events carry it.
   const writer = new ExecEventWriter(file, executionId, { source: 'squads-cli', provider });
-  for (const line of rawLog.split('\n')) {
-    writer.ingestProviderLine(adapter, line, agent);
+  // Live-streamed runs (#1353): a follower already normalized the harness log
+  // line-by-line into the events file. Replaying it here would duplicate every
+  // tool event and the terminal token_usage, so only the terminal summary
+  // (run_end / error) lands on top of what the follower wrote.
+  if (!hasLiveStreamedEvents(file)) {
+    for (const line of rawLog.split('\n')) {
+      writer.ingestProviderLine(adapter, line, agent);
+    }
   }
   // Only close a stream that actually opened: a legacy plain-text log yields
   // zero events, and a run_end there would fabricate an event file.

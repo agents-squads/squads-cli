@@ -11,8 +11,8 @@
  * when the pid file is gone and no bytes remain unread, the run is over.
  */
 
-import { existsSync, statSync, openSync, readSync, closeSync } from 'fs';
-import { createClaudeStreamJsonAdapter } from './exec-events.js';
+import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'fs';
+import { createClaudeStreamJsonAdapter, createKimiStreamJsonAdapter, createOpencodeStreamJsonAdapter, ExecEventWriter } from './exec-events.js';
 import { renderEvent } from './event-render.js';
 import { writeLine } from './terminal.js';
 
@@ -118,4 +118,118 @@ export function followProviderLog(
   timer = setTimeout(tick, 0);
 
   return { stop: finish, done };
+}
+
+// ── Live event streaming for detached lanes (#1353) ─────────────────────
+
+export type StreamEventsHarness = 'opencode' | 'kimi-code' | 'claude';
+
+export interface StreamEventsOptions {
+  harness: StreamEventsHarness;
+  /** Canonical events file (already holds run_start); events append after it. */
+  eventsFile: string;
+  runId: string;
+  provider?: string;
+  agent?: string;
+  /** The detached lane's raw JSONL log — grows as the harness emits. */
+  logFile: string;
+  /** Sentinel: once it exists and the log is drained, the follower exits. */
+  doneFile: string;
+  /** Touched after the events file is fully flushed (the detached wrapper
+   *  waits on this with a bounded poll, then resumes — see buildLiveStreamShell). */
+  finishFile?: string;
+  pollMs?: number;
+}
+
+/**
+ * Follow a detached lane's raw harness log as it grows and normalize each
+ * complete line through the harness adapter, appending the events to the run's
+ * events file immediately (not buffered until exit — #1353). The terminal
+ * `run_end`/`token_usage` summary is NOT this follower's job: reconcile still
+ * appends those from the spool facts, so the end-of-run event order is
+ * unchanged.
+ *
+ * Exits when `doneFile` appears AND the log is fully drained (the wrapper
+ * touches it once the executor has exited, then polls `finishFile` with a
+ * bounded wait so a wedged follower can never hold back the spool).
+ */
+export function streamEventsFromLog(opts: StreamEventsOptions): Promise<void> {
+  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+  const adapter = opts.harness === 'opencode'
+    ? createOpencodeStreamJsonAdapter()
+    : opts.harness === 'kimi-code'
+      ? createKimiStreamJsonAdapter()
+      : createClaudeStreamJsonAdapter();
+  const writer = new ExecEventWriter(opts.eventsFile, opts.runId, {
+    source: 'squads-cli',
+    ...(opts.provider ? { provider: opts.provider } : {}),
+  });
+
+  return new Promise((resolve) => {
+    let offset = 0;
+    let buf = '';
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const feed = (line: string): void => {
+      if (!line.trim()) return;
+      writer.ingestProviderLine(adapter, line, opts.agent);
+    };
+
+    const readAppended = (): boolean => {
+      let size: number;
+      try {
+        size = statSync(opts.logFile).size;
+      } catch {
+        return false; // log not created yet — keep waiting
+      }
+      if (size < offset) offset = 0; // truncated/rotated — start over
+      if (size === offset) return false;
+      try {
+        const fd = openSync(opts.logFile, 'r');
+        try {
+          const chunk = Buffer.alloc(size - offset);
+          const read = readSync(fd, chunk, 0, chunk.length, offset);
+          offset += read;
+          buf += chunk.toString('utf8', 0, read);
+        } finally {
+          closeSync(fd);
+        }
+      } catch {
+        return false;
+      }
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) feed(line);
+      return true;
+    };
+
+    const finish = (): void => {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      readAppended();
+      if (buf) {
+        const line = buf;
+        buf = '';
+        feed(line);
+      }
+      writer.close();
+      if (opts.finishFile) {
+        try { writeFileSync(opts.finishFile, ''); } catch { /* best effort — wrapper's bounded poll covers this */ }
+      }
+      resolve();
+    };
+
+    const tick = (): void => {
+      if (stopped) return;
+      const gotBytes = readAppended();
+      if (!gotBytes && existsSync(opts.doneFile)) {
+        finish();
+        return;
+      }
+      timer = setTimeout(tick, pollMs);
+    };
+    timer = setTimeout(tick, 0);
+  });
 }

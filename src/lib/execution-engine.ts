@@ -900,6 +900,57 @@ export function buildDetachedHarvestShell(config: {
 }
 
 /**
+ * Detached-lane live exec-event stream (#1353): shell snippet that spawns a
+ * follower which tails the lane's raw JSONL log and normalizes each line into
+ * the run's events file as it lands, then a finish snippet that signals the
+ * follower and waits for it to drain before the spool is written.
+ *
+ * The follower is re-invoked from this same CLI (`node <cli> _stream-events`)
+ * because the adapter is TypeScript — the wrapper shell cannot run it inline.
+ * `<cli>` must be the compiled CLI entrypath resolved BY THE CALLER from
+ * import.meta.url; the caller only builds this snippet when it is actually
+ * running inside the dist/cli.js bundle (otherwise the re-invocation would
+ * spawn a phantom process in whatever host imported the engine — under vitest
+ * that phantom waits on a worker channel forever, wedging everything after
+ * it). The events file path, run id, provider and agent are baked in at build
+ * time; only paths are interpolated, each single-quoted against shell
+ * splitting.
+ *
+ * The finish snippet waits on a drain sentinel (`<done>.flushed`, touched by
+ * the follower after flush) with a bounded poll instead of a bare `wait`, so a
+ * follower that dies before flushing or wedges can never hold the lane before
+ * the spool — reconcile dedupes either way.
+ */
+export function buildLiveStreamShell(fields: {
+  cli: string;
+  harness: string;
+  eventsFile: string;
+  runId: string;
+  provider: string;
+  agent: string;
+  logFile: string;
+  doneFile: string;
+}): { spawn: string; finish: string } {
+  const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+  const finishFile = `${fields.doneFile}.flushed`;
+  const argv = [
+    '_stream-events',
+    '--harness', fields.harness,
+    '--file', fields.eventsFile,
+    '--run-id', fields.runId,
+    '--provider', fields.provider,
+    '--agent', fields.agent,
+    '--log', fields.logFile,
+    '--done', fields.doneFile,
+    '--finish', finishFile,
+  ].map(q).join(' ');
+  const spawn = `${q(process.execPath)} ${q(fields.cli)} ${argv} >/dev/null 2>&1 & STREAM_PID=$!;`;
+  // Bounded drain: resolve when the follower flushed, cap at 5 s otherwise.
+  const finish = `FIN=${q(finishFile)}; touch ${q(fields.doneFile)}; n=0; while [ ! -f "$FIN" ] && [ "$n" -lt 20 ]; do sleep 0.25; n=$((n+1)); done; rm -f ${q(fields.doneFile)} "$FIN";`;
+  return { spawn, finish };
+}
+
+/**
  * Shell snippet writing a detached wrapper's pid file. Line 1 is always the
  * wrapper's pid (unchanged format — `squads runs`/liveness checks read only
  * this line). Line 2, when an executionId is known, is this run's API
@@ -2442,7 +2493,33 @@ export async function executeWithProvider(
   const envTimeout = Number(process.env.SQUADS_AGENT_TIMEOUT_MINUTES);
   const watchdogMinutes = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : (options.timeoutMinutes ?? defaultTimeoutForRole());
   const executorCmd = `${shq(spawnCommand)} ${wrapperPrefix ? `${wrapperPrefix} ` : ''}${providerArgs}${cliConfig.stdinIgnore ? ' < /dev/null' : ''} > '${logFile}' 2>&1`;
-  const shellScript = `cd '${workDir}' || exit 1; ${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${cleanupCmd}${spoolCmd}`;
+  // Live exec-event stream (#1353): opencode and kimi-code lanes stream their
+  // harness stdout into the events file as it happens — a detached lane used to
+  // show only run_start until the spool reconcile fired at exit. The follower
+  // tails the raw log and normalizes each line through the harness adapter.
+  // It is re-invoked as `node <cli> _stream-events ...`, so <cli> must be the
+  // compiled CLI entry. tsup bundles this engine into dist chunks, and the
+  // entries sit beside them — resolving cli.js as a sibling of the module file
+  // is true for every real bundle (dist/chunk-*.js, dist/cli.js, dist/index.js)
+  // and false for non-bundle hosts (tests exercising executeWithProvider
+  // directly import src/lib/execution-engine.ts, where src/cli.js does not
+  // exist). A phantom `node <argv[1]>` sibling would otherwise wedge the
+  // wrapper's finish wait before the spool ever runs; when the sibling is
+  // missing we degrade gracefully to the exit-reconcile path, which dedupes.
+  const cliEntry = join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
+  const liveStream = (cliConfig.opencodeJson || cliConfig.kimiCodeJson) && existsSync(cliEntry)
+    ? buildLiveStreamShell({
+        cli: cliEntry,
+        harness: cliConfig.opencodeJson ? 'opencode' : 'kimi-code',
+        eventsFile: execEventsFile(dispatchRoot, executionId),
+        runId: executionId,
+        provider,
+        agent: agentName,
+        logFile,
+        doneFile: `${logFile}.live-done`,
+      })
+    : { spawn: '', finish: '' };
+  const shellScript = `cd '${workDir}' || exit 1; ${liveStream.spawn}${buildWatchdogShell(executorCmd, Math.round(watchdogMinutes * 60), timeoutFlag)}${liveStream.finish}${cleanupCmd}${spoolCmd}`;
   // pid file's second line (when known) is this run's API execution id
   // (#1131) — see buildPidFileWriteCmd.
   const wrapperScript = `${buildPidFileWriteCmd(pidFile, options.executionId)}; START=$(date +%s); ${shellScript}; rm -f '${pidFile}'`;
