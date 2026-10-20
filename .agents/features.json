@@ -11,8 +11,17 @@
         "ci": "fixture org root → exactly the expected finding classes",
         "live": "fresh squads init project → no crash; every unit unclassified with a hint"
       },
-      "status": "failing",
-      "verifications": []
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/deepseek-v4.1-flash-free",
+          "builder_model": "kimi-code/k3 + claude-opus-5.5 + claude-sonnet-5.5",
+          "sha": "2cc0fec1634d447928bc41c9d819bc3478df69db",
+          "at": "2026-10-20T04:12:36Z",
+          "run_id": "exec_mvg5p1x2_g7b3ef",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1331#issuecomment-6283198750"
+        }
+      ]
     },
     {
       "id": "Z5",
@@ -25,8 +34,17 @@
       "consumers": [
         "interactive mode"
       ],
-      "status": "failing",
-      "verifications": []
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/glm-5.3-flash-free",
+          "builder_model": "claude-sonnet-5.5",
+          "sha": "3fa4e46543e0dc75c0e97fea20ec386baad6bb56",
+          "at": "2026-10-20T04:44:50Z",
+          "run_id": "exec_mvg5kb1v_zty3m3",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1332#issuecomment-6283579357"
+        }
+      ]
     },
     {
       "id": "R1",
