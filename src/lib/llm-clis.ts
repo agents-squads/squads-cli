@@ -239,6 +239,18 @@ function aiderMapTokensArgs(): string[] {
   return ['--map-tokens', String(n)];
 }
 
+/**
+ * Fail fast on account-state 429s from foreign endpoints (#1298). The Claude
+ * Code harness retries a provider 429 internally up to 10 times (~213 s)
+ * before emitting its result, so an expired GLM plan took 213 s to fail
+ * instead of < 10 s. CLAUDE_CODE_MAX_RETRIES caps those retries (verified
+ * live: 0 → 3 s, 2 → 6 s, 3 → 8 s). Default 2 for every claude-harness lane
+ * pointing at a non-Anthropic endpoint; an operator-set value always wins.
+ */
+export function harnessRetryEnv(): Record<string, string> {
+  return { CLAUDE_CODE_MAX_RETRIES: process.env.CLAUDE_CODE_MAX_RETRIES ?? '2' };
+}
+
 export const LLM_CLIS: Record<string, CLIConfig> = {
   anthropic: {
     provider: 'anthropic',
@@ -304,6 +316,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       ANTHROPIC_AUTH_TOKEN: process.env.DEEPSEEK_API_KEY,
       ANTHROPIC_API_KEY: undefined,
       ANTHROPIC_MODEL: undefined,
+      ...harnessRetryEnv(),
     }),
   },
 
@@ -336,6 +349,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       ANTHROPIC_AUTH_TOKEN: process.env.GLM_API_KEY,
       ANTHROPIC_API_KEY: undefined,
       ANTHROPIC_MODEL: undefined,
+      ...harnessRetryEnv(),
     }),
   },
 
@@ -372,6 +386,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       ANTHROPIC_AUTH_TOKEN: process.env.KIMI_API_KEY,
       ANTHROPIC_API_KEY: undefined,
       ANTHROPIC_MODEL: undefined,
+      ...harnessRetryEnv(),
     }),
   },
 
@@ -553,7 +568,7 @@ function configFromRegistry(name: string): CLIConfig | undefined {
     stdinPrompt: true,
     streamJson: true,
     parseUsage: makeClaudeHarnessStreamUsage(entry.name.toUpperCase()),
-    env: () => anthropicCompatEnv(entry),
+    env: () => ({ ...anthropicCompatEnv(entry), ...harnessRetryEnv() }),
   };
 }
 
