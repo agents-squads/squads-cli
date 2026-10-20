@@ -199,6 +199,8 @@ const STATUS_PATTERNS = [
   /API Error:?\s*(\d{3})\b/i,
   /\b(?:HTTP|status(?: code)?)[ :=]+(\d{3})\b/i,
   /\b(?:error|Error) (\d{3})\b/,
+  // Kimi harness line: `provider.api_error: 429 …` (#1321).
+  /\b(?:provider\.)?api[_-]?error\b\s*[:=]?\s*(\d{3})\b/i,
 ];
 
 /**

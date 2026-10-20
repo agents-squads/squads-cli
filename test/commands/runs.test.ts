@@ -13,8 +13,16 @@ vi.mock('../../src/lib/execution-engine.js', () => ({
   harvestProviderWork: vi.fn(async () => ({ outcome: 'merged' })),
 }));
 
+// Wrap the real sweep so one test can make it throw without losing the
+// behaviour every other test relies on.
+vi.mock('../../src/lib/spool.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/spool.js')>();
+  return { ...actual, reconcileDetachedRuns: vi.fn(actual.reconcileDetachedRuns) };
+});
+
 import { runsCommand } from '../../src/commands/runs.js';
 import { listDetachedRuns } from '../../src/lib/runs-inventory.js';
+import { reconcileDetachedRuns } from '../../src/lib/spool.js';
 
 let root: string;
 
@@ -57,6 +65,53 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
+});
+
+describe('runsCommand reconcile failures (#1321 F4)', () => {
+  function withDebug(value: string | undefined): () => void {
+    const prev = process.env.DEBUG;
+    if (value === undefined) delete process.env.DEBUG;
+    else process.env.DEBUG = value;
+    return () => {
+      if (prev === undefined) delete process.env.DEBUG;
+      else process.env.DEBUG = prev;
+    };
+  }
+
+  it('reports a throwing reconcile on stderr when DEBUG is set', async () => {
+    vi.mocked(reconcileDetachedRuns).mockImplementationOnce(() => { throw new Error('spool unreadable'); });
+    const restoreEnv = withDebug('1');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let logged = '';
+    try {
+      await runsCommand({ json: true });
+      logged = errSpy.mock.calls.flat().join(' ');
+    } finally {
+      restoreEnv();
+      errSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+    expect(logged).toContain('spool reconcile');
+    expect(logged).toContain('spool unreadable');
+  });
+
+  it('stays silent when DEBUG is not set (stdout stays parseable)', async () => {
+    vi.mocked(reconcileDetachedRuns).mockImplementationOnce(() => { throw new Error('spool unreadable'); });
+    const restoreEnv = withDebug(undefined);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let calls = -1;
+    try {
+      await runsCommand({ json: true });
+      calls = errSpy.mock.calls.length;
+    } finally {
+      restoreEnv();
+      errSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+    expect(calls).toBe(0);
+  });
 });
 
 describe('runsCommand --wait', () => {

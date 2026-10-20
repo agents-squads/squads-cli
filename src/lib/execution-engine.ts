@@ -1671,6 +1671,7 @@ export async function executeWithClaude(
     trigger: trigger as ObservabilityRecord['trigger'],
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
     brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+    logFile,
   });
 
   if (runInWatch) {
@@ -2485,6 +2486,7 @@ export async function executeWithProvider(
     pid: child.pid,
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
     brief: options.task?.slice(0, BRIEF_MAX_CHARS),
+    logFile,
   });
 
   if (options.verbose) {
