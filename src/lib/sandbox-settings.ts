@@ -52,6 +52,10 @@ export const DEFAULT_ALLOWED_DOMAINS = [
 ];
 
 // Go-TLS tools fail under Seatbelt; docker is incompatible. Run them unsandboxed.
+// Matching (Claude Code sandboxing docs): entries use Bash(...) rule syntax, so
+// `gh *` matches `gh api rate_limit`; but EVERY command in a call must match —
+// `gh pr view 1 | jq .`, `cd x && gh ...`, `gh ... > f`, `$(...)` stay sandboxed.
+// Lanes must issue gh as a standalone call.
 export const DEFAULT_EXCLUDED_COMMANDS = ['gh *', 'gcloud *', 'terraform *', 'docker *'];
 
 // Default read is the whole machine minus these — credential dirs must be denied.
@@ -68,10 +72,15 @@ export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<strin
   settings.sandbox = {
     enabled: true,
     failIfUnavailable: opts.strict ?? false,
-    // Non-strict keeps Claude Code's escape hatch (retry unsandboxed → permission
-    // flow) so a sandbox-incompatible command degrades gracefully instead of
-    // failing the agent. Strict mode (no escape) is the eventual posture.
-    allowUnsandboxedCommands: opts.strict ? false : true,
+    // Never let a lane retry a command with `dangerouslyDisableSandbox` (#1337).
+    // With the hatch open, a lane whose `gh ... | jq` call stayed sandboxed
+    // (every command in a call must match excludedCommands) retried unsandboxed,
+    // and a matching allow rule such as Bash(gh:*) approved it with no prompt —
+    // the sandbox stopped containing exactly the lanes that touch the network.
+    // excludedCommands is unaffected: it is the sanctioned, narrow way out. A
+    // sandbox-incompatible command now fails loudly in the lane instead.
+    // `strict` governs only failIfUnavailable (CI images without Seatbelt).
+    allowUnsandboxedCommands: false,
     filesystem: {
       allowWrite: [opts.cwd, ...(opts.writeScope ?? [])],
       denyRead: opts.denyRead ?? DEFAULT_DENY_READ,
