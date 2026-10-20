@@ -11,7 +11,7 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions,
+  buildSandboxSettings, buildLanePermissions, readGuardrailHooks, readGuardrailPermissions,
   trustedLaneDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 import { findMemoryDir } from './memory.js';
@@ -51,17 +51,17 @@ export function writeLaneSettings(cwd: string, extraHooks?: Record<string, unkno
   const guardrail = resolveLaneGuardrail(cwd);
   const hooks = mergeHooks(guardrail.hooks, extraHooks);
   const dir = trustedLaneDir();
+  const permissions = buildLanePermissions(guardrail.permissions);
   if (sandboxEnabled()) {
     const memDir = findMemoryDir();
     return writeSandboxSettingsFile(buildSandboxSettings({
       cwd,
       writeScope: memDir ? [memDir] : [],
       guardrailHooks: hooks,
-      guardrailPermissions: guardrail.permissions,
+      guardrailPermissions: permissions,
       strict: sandboxStrict(),
     }), dir);
   }
-  const settings: Record<string, unknown> = { hooks };
-  if (guardrail.permissions) settings.permissions = guardrail.permissions;
+  const settings: Record<string, unknown> = { hooks, permissions };
   return writeSandboxSettingsFile(settings, dir);
 }

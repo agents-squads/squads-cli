@@ -23,6 +23,7 @@ import { existsSync, realpathSync, writeFileSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import { CREDENTIAL_DENY_PATHS, bwrapDenyReadArgs } from './sandbox-settings.js';
 
 export class OpencodeGovernanceError extends Error {
   constructor(message: string) {
@@ -54,10 +55,8 @@ export interface OpencodePermissionInput {
   denyRead?: string[];
 }
 
-/** Credential dirs denied for read. Superset of the Claude sandbox's DEFAULT_DENY_READ. */
-export const OPENCODE_DENY_READ = [
-  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.gnupg', '~/.config/gh', '~/.squads/secrets',
-];
+/** Credential dirs denied for read. Same shared list as Claude and kimi (cli#1337). */
+export const OPENCODE_DENY_READ = CREDENTIAL_DENY_PATHS;
 
 /**
  * Destructive-command denies — the opencode form of the guardrail PreToolUse
@@ -332,9 +331,7 @@ export function buildBwrapArgs(opts: OpencodeSandboxOptions): string[] {
   for (const p of opts.denyWritePaths ?? []) {
     if (existsSync(p)) args.push('--ro-bind', p, p);
   }
-  for (const d of (opts.denyRead ?? OPENCODE_DENY_READ).map(expandHome)) {
-    if (existsSync(d)) args.push('--tmpfs', d);
-  }
+  args.push(...bwrapDenyReadArgs((opts.denyRead ?? OPENCODE_DENY_READ).map(expandHome)));
   args.push('--chdir', opts.workDir, '--');
   return args;
 }

@@ -185,3 +185,89 @@ describe('role classifier spawn', () => {
     expect(args[args.indexOf('--model') + 1]).toBe('claude-haiku-4-5');
   });
 });
+
+describe('file tools are denied the credential stores', () => {
+  async function laneDenyRules(): Promise<string[]> {
+    const { writeLaneSettings } = await import('../src/lib/lane-settings.js');
+    const path = writeLaneSettings(root);
+    const settings = JSON.parse(readFileSync(path, 'utf-8')) as { permissions: { deny: string[] } };
+    return settings.permissions.deny;
+  }
+
+  it('denies Read/Grep/Glob/Edit/Write on every credential path', async () => {
+    const deny = await laneDenyRules();
+    for (const tool of ['Read', 'Grep', 'Glob', 'Edit', 'Write']) {
+      expect(deny).toContain(`${tool}(~/.ssh/**)`);
+      expect(deny).toContain(`${tool}(~/.config/gh/**)`);
+      expect(deny).toContain(`${tool}(~/.squads/secrets/**)`);
+      expect(deny).toContain(`${tool}(~/.aws/**)`);
+      expect(deny).toContain(`${tool}(~/.config/gcloud/**)`);
+      expect(deny).toContain(`${tool}(~/.gnupg/**)`);
+      expect(deny).toContain(`${tool}(~/.git-credentials)`);
+      expect(deny).toContain(`${tool}(~/.netrc)`);
+    }
+  });
+});
+
+describe('native Claude settings/hook files are not lane-editable', () => {
+  async function laneDenyRules(): Promise<string[]> {
+    const { writeLaneSettings } = await import('../src/lib/lane-settings.js');
+    const settings = JSON.parse(readFileSync(writeLaneSettings(root), 'utf-8')) as { permissions: { deny: string[] } };
+    return settings.permissions.deny;
+  }
+
+  it('permissions deny Edit/Write of the native settings files and hooks dir', async () => {
+    const deny = await laneDenyRules();
+    for (const p of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) {
+      expect(deny).toContain(`Edit(${p})`);
+      expect(deny).toContain(`Write(${p})`);
+    }
+    expect(deny).toContain('Edit(.claude/hooks/**)');
+    expect(deny).toContain('Write(.claude/hooks/**)');
+  });
+
+  it('sandbox denyWrite covers the native settings files under the lane cwd', () => {
+    const cwd = join(root, 'repo');
+    mkdirSync(cwd);
+    const fs = (buildSandboxSettings({ cwd }).sandbox as { filesystem: { denyWrite: string[] } }).filesystem;
+    expect(fs.denyWrite).toContain(join(cwd, '.claude', 'settings.json'));
+    expect(fs.denyWrite).toContain(join(cwd, '.claude', 'settings.local.json'));
+    expect(fs.denyWrite).toContain(join(cwd, '.claude', 'hooks'));
+    expect(fs.denyWrite).toContain(join(cwd, '.mcp.json'));
+  });
+});
+
+describe('trusted runtime dir is resolved in the host, not the lane', () => {
+  it('sandbox denyWrite uses the resolved runtime dir, not just the literal spec', () => {
+    const cwd = join(root, 'repo');
+    mkdirSync(cwd);
+    const fs = (buildSandboxSettings({ cwd }).sandbox as { filesystem: { denyWrite: string[] } }).filesystem;
+    expect(fs.denyWrite).toContain(runtime);
+  });
+
+  it('buildAgentEnv strips SQUADS_RUNTIME_DIR from the lane env', async () => {
+    const { buildAgentEnv } = await import('../src/lib/execution-engine.js');
+    const env = buildAgentEnv(
+      { PATH: '/bin', SQUADS_RUNTIME_DIR: '/tmp/lane-chosen', KEEP: 'yes' },
+      { squad: 's', agent: 'a', taskType: 'execution', trigger: 'manual', executionId: 'e' },
+    );
+    expect(env.SQUADS_RUNTIME_DIR).toBeUndefined();
+    expect(env.KEEP).toBe('yes');
+  });
+});
+
+describe('one shared credential deny list across harnesses', () => {
+  it('Claude, opencode and kimi deny the same credential stores', async () => {
+    const { OPENCODE_DENY_READ } = await import('../src/lib/opencode-governance.js');
+    const { KIMI_DENY_READ } = await import('../src/lib/kimi-code-governance.js');
+    expect(OPENCODE_DENY_READ).toEqual(DEFAULT_DENY_READ);
+    expect(KIMI_DENY_READ).toEqual(DEFAULT_DENY_READ);
+    for (const p of [
+      '~/.git-credentials', '~/.netrc', '~/.gnupg', '~/.claude.json',
+      '~/.claude/.credentials.json', '~/.config/opencode/auth.json',
+      '~/.npmrc', '~/.docker/config.json', '~/.kube/config',
+    ]) {
+      expect(DEFAULT_DENY_READ).toContain(p);
+    }
+  });
+});

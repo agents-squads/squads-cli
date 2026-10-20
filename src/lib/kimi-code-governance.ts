@@ -30,6 +30,7 @@ import { existsSync, realpathSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import { CREDENTIAL_DENY_PATHS, bwrapDenyReadArgs } from './sandbox-settings.js';
 
 export class KimiGovernanceError extends Error {
   constructor(message: string) {
@@ -38,10 +39,8 @@ export class KimiGovernanceError extends Error {
   }
 }
 
-/** Credential dirs denied for read — same set as the opencode harness. */
-export const KIMI_DENY_READ = [
-  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.gnupg', '~/.config/gh', '~/.squads/secrets',
-];
+/** Credential dirs denied for read — same shared list as Claude and opencode (cli#1337). */
+export const KIMI_DENY_READ = CREDENTIAL_DENY_PATHS;
 
 const expandHome = (p: string): string => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
 
@@ -278,9 +277,7 @@ export function buildKimiBwrapArgs(opts: KimiSandboxOptions): string[] {
   for (const p of opts.denyWritePaths ?? []) {
     if (existsSync(p)) args.push('--ro-bind', p, p);
   }
-  for (const d of (opts.denyRead ?? KIMI_DENY_READ).map(expandHome)) {
-    if (existsSync(d)) args.push('--tmpfs', d);
-  }
+  args.push(...bwrapDenyReadArgs((opts.denyRead ?? KIMI_DENY_READ).map(expandHome)));
   args.push('--chdir', opts.workDir, '--');
   return args;
 }

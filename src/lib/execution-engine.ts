@@ -54,7 +54,7 @@ import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan
 import { detectProviderFatalError } from './llm-clis.js';
 import { classifyFailedRun, type ProviderError } from './provider-errors.js';
 import {
-  buildSandboxSettings, trustedLaneDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
+  buildSandboxSettings, buildLanePermissions, trustedLaneDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 import { resolveLaneGuardrail } from './lane-settings.js';
 import { buildWorktreeGuardHooks, mergeHooks, writeWorktreeGuardScript } from './worktree-guard.js';
@@ -473,8 +473,10 @@ export function buildAgentEnv(
     gitCredentialEnv?: Record<string, string>;
   }
 ): Record<string, string> {
-  // Strip CLAUDECODE to allow spawning claude from within a Claude Code session
-  const { CLAUDECODE: _, ...cleanEnv } = baseEnv;
+  // Strip CLAUDECODE to allow spawning claude from within a Claude Code session,
+  // and SQUADS_RUNTIME_DIR so a lane cannot re-point the host's trusted runtime
+  // dir into its own write root (cli#1337).
+  const { CLAUDECODE: _, SQUADS_RUNTIME_DIR: __, ...cleanEnv } = baseEnv;
   const env: Record<string, string> = {
     ...cleanEnv,
     SQUADS_SQUAD: execContext.squad,
@@ -1561,7 +1563,7 @@ export async function executeWithClaude(
         cwd: targetRepoRoot,
         writeScope: memDir ? [memDir] : [],
         guardrailHooks: mergeHooks(guardrail.hooks, guardHooks),
-        guardrailPermissions: guardrail.permissions,
+        guardrailPermissions: buildLanePermissions(guardrail.permissions),
         strict: sandboxStrict(),
       });
       const settingsPath = writeSandboxSettingsFile(settings, trustedLaneDir());
@@ -1569,8 +1571,8 @@ export async function executeWithClaude(
     } else {
       const settings: Record<string, unknown> = {
         hooks: mergeHooks(guardrail.hooks, guardHooks),
+        permissions: buildLanePermissions(guardrail.permissions),
       };
-      if (guardrail.permissions) settings.permissions = guardrail.permissions;
       claudeArgs.push('--settings', writeSandboxSettingsFile(settings, trustedLaneDir()));
     }
     if (claudeModelAlias) claudeArgs.push('--model', claudeModelAlias);
@@ -1618,7 +1620,7 @@ export async function executeWithClaude(
       cwd: targetRepoRoot,
       writeScope: memDirDetached ? [memDirDetached] : [],
       guardrailHooks: mergeHooks(detachedGuardrail.hooks, detachedGuardHooks),
-      guardrailPermissions: detachedGuardrail.permissions,
+      guardrailPermissions: buildLanePermissions(detachedGuardrail.permissions),
       strict: sandboxStrict(),
     });
     detachedSettingsFile = writeSandboxSettingsFile(settings, trustedLaneDir());
@@ -1626,8 +1628,8 @@ export async function executeWithClaude(
   } else {
     const settings: Record<string, unknown> = {
       hooks: mergeHooks(detachedGuardrail.hooks, detachedGuardHooks),
+      permissions: buildLanePermissions(detachedGuardrail.permissions),
     };
-    if (detachedGuardrail.permissions) settings.permissions = detachedGuardrail.permissions;
     detachedSettingsFile = writeSandboxSettingsFile(settings, trustedLaneDir());
   }
 
@@ -1958,9 +1960,11 @@ export async function executeWithProvider(
   const timestamp = Date.now();
 
   // Build clean env: remove CLAUDECODE to allow nesting, pass squad context.
+  // SQUADS_RUNTIME_DIR is the host's trusted-dir override — a lane must not
+  // inherit it (it could re-point the trusted dir into its own write root).
   // Provider env hooks (cliConfig.env) inject endpoint/auth overrides; a key
   // set to undefined removes the inherited variable from the child env.
-  const { CLAUDECODE: _claudeCode, ...cleanEnv } = process.env;
+  const { CLAUDECODE: _claudeCode, SQUADS_RUNTIME_DIR: _runtimeDir, ...cleanEnv } = process.env;
   const providerEnv: NodeJS.ProcessEnv = {
     ...cleanEnv,
     ...(cliConfig.env?.() ?? {}),

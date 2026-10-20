@@ -96,7 +96,7 @@ import {
 import { compileAllowedTools } from './agent-contract.js';
 import { findMemoryDir } from './memory.js';
 import {
-  buildSandboxSettings, trustedLaneDir,
+  buildSandboxSettings, buildLanePermissions, trustedLaneDir,
   writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 
@@ -360,7 +360,7 @@ procedures: [followed | deviated: reason]
       cwd: spawnCwd,
       writeScope: memDir ? [memDir] : [],
       guardrailHooks: guardrail.hooks,
-      guardrailPermissions: guardrail.permissions,
+      guardrailPermissions: buildLanePermissions(guardrail.permissions),
       strict: sandboxStrict(),
     });
     claudeArgs.push('--settings', writeSandboxSettingsFile(settings, trustedLaneDir()));
@@ -368,7 +368,7 @@ procedures: [followed | deviated: reason]
   } else if (guardrail.hooks || guardrail.permissions) {
     const unsandboxed: Record<string, unknown> = {};
     if (guardrail.hooks) unsandboxed.hooks = guardrail.hooks;
-    if (guardrail.permissions) unsandboxed.permissions = guardrail.permissions;
+    unsandboxed.permissions = buildLanePermissions(guardrail.permissions);
     claudeArgs.push('--settings', writeSandboxSettingsFile(unsandboxed, trustedLaneDir()));
   }
   if (claudeModel) claudeArgs.push('--model', claudeModel);

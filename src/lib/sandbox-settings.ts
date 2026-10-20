@@ -64,11 +64,71 @@ export const DEFAULT_ALLOWED_DOMAINS = [
 // user-supplied programs (container runs, terraform local-exec) are not listed.
 export const DEFAULT_EXCLUDED_COMMANDS = ['gh *', 'gcloud *'];
 
-// Default read is the whole machine minus these — credential stores must be denied.
-export const DEFAULT_DENY_READ = [
+// Credential stores denied for READ across every harness (cli#1337). One shared
+// list so a credential path never differs between Claude, opencode and kimi-code.
+// Directories are denied recursively; files are denied exactly.
+export const CREDENTIAL_DENY_DIRS = [
   '~/.ssh', '~/.aws', '~/.config/gcloud',
-  '~/.config/gh', '~/.config/ghc', '~/.squads/secrets', '~/.git-credentials', '~/.netrc',
+  '~/.config/gh', '~/.config/ghc', '~/.squads/secrets', '~/.gnupg',
 ];
+export const CREDENTIAL_DENY_FILES = [
+  '~/.git-credentials', '~/.netrc',
+  '~/.claude.json', '~/.claude/.credentials.json',
+  '~/.config/opencode/auth.json', '~/.npmrc', '~/.docker/config.json', '~/.kube/config',
+];
+export const CREDENTIAL_DENY_PATHS = [...CREDENTIAL_DENY_DIRS, ...CREDENTIAL_DENY_FILES];
+
+// Default read is the whole machine minus these — credential stores must be denied.
+export const DEFAULT_DENY_READ = CREDENTIAL_DENY_PATHS;
+
+// Native Claude settings/hook files a lane must not edit: Claude Code reloads
+// settings (including hooks) mid-session and runs those hooks on the host,
+// outside the sandbox — a bypassPermissions lane could otherwise plant one.
+export const LANE_PROTECTED_SETTING_FILES = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'];
+export const LANE_PROTECTED_SETTING_DIRS = ['.claude/hooks'];
+
+/** File tools whose permission denies must beat the bare Read grant (cli#1337). */
+const CREDENTIAL_DENY_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
+
+/**
+ * Permission deny rules merged into every generated lane settings file: file
+ * tools (Read/Grep/Glob/Edit/Write) are denied the credential stores — deny
+ * rules beat allow rules in every permission mode, so the bare Read grant a
+ * lane starts with cannot read ~/.ssh and friends — and Edit/Write are denied
+ * the native settings/hook files.
+ */
+export function buildLaneDenyRules(): string[] {
+  const rules: string[] = [];
+  for (const tool of CREDENTIAL_DENY_TOOLS) {
+    for (const dir of CREDENTIAL_DENY_DIRS) rules.push(`${tool}(${dir}/**)`);
+    for (const file of CREDENTIAL_DENY_FILES) rules.push(`${tool}(${file})`);
+  }
+  for (const p of LANE_PROTECTED_SETTING_FILES) rules.push(`Edit(${p})`, `Write(${p})`);
+  for (const d of LANE_PROTECTED_SETTING_DIRS) rules.push(`Edit(${d}/**)`, `Write(${d}/**)`);
+  return rules;
+}
+
+/** Merge the hardcoded lane denies with the guardrail deny rules (deduplicated). */
+export function buildLanePermissions(guardrailPermissions?: unknown): { deny: string[] } {
+  const deny = buildLaneDenyRules();
+  const g = guardrailPermissions as { deny?: unknown } | undefined;
+  if (g && Array.isArray(g.deny)) {
+    deny.push(...g.deny.filter((d): d is string => typeof d === 'string'));
+  }
+  return { deny: [...new Set(deny)] };
+}
+
+/** bwrap args making a denyRead path unreadable (dirs: tmpfs, files: /dev/null). */
+export function bwrapDenyReadArgs(paths: string[]): string[] {
+  const args: string[] = [];
+  for (const p of paths) {
+    try {
+      if (statSync(p).isDirectory()) args.push('--tmpfs', p);
+      else if (existsSync(p)) args.push('--bind', '/dev/null', p);
+    } catch { /* path missing or unstatable — nothing to mask */ }
+  }
+  return args;
+}
 
 /**
  * Directory for files the host executes or trusts on behalf of a lane (hook
@@ -115,8 +175,15 @@ export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<strin
       denyRead: opts.denyRead ?? DEFAULT_DENY_READ,
       denyWrite: [
         ...(opts.denyWrite ?? DEFAULT_DENY_WRITE),
+        // The resolved trusted dir (cli#1337): denyWrite must cover the real
+        // path, not just the literal spec, so a lane cannot write the host-
+        // trusted hook/settings files even if the dir falls under a write root.
+        trustedLaneDir(),
         // Project guardrail overrides are read at spawn; a lane must not edit them.
         join(opts.cwd, '.claude', 'guardrail.json'),
+        // Native settings/hook files: the same host-executed-hook vector.
+        ...LANE_PROTECTED_SETTING_FILES.map((p) => join(opts.cwd, p)),
+        ...LANE_PROTECTED_SETTING_DIRS.map((p) => join(opts.cwd, p)),
       ],
     },
     network: { allowedDomains: opts.allowedDomains ?? DEFAULT_ALLOWED_DOMAINS },
