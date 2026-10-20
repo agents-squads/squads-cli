@@ -50,6 +50,13 @@ import {
   buildAgentEnv,
   resolveGuardrailSettings,
 } from './execution-engine.js';
+import {
+  extractProviderError,
+  providerErrorSentinel,
+  parseProviderErrorSentinel,
+  describeProviderError,
+  type ProviderError,
+} from './provider-errors.js';
 import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
@@ -162,6 +169,8 @@ export interface AgentRunResult {
   text: string;
   usage: StreamUsage;
   outcomes: RunOutcomes;
+  /** Provider failure classified at this turn's boundary (#1298). `attempts` counts spawns when retried. */
+  providerError?: ProviderError & { attempts?: number };
 }
 
 /** Spread the accumulated outcomes into an ObservabilityRecord. */
@@ -205,11 +214,28 @@ async function runIndependentAgent(config: AgentRunConfig): Promise<AgentRunResu
   const maxRetries = process.env.SQUADS_TURN_RETRIES === '0' ? 0 : 1;
   const backoffMs = parseInt(process.env.SQUADS_TURN_RETRY_BACKOFF_MS ?? '5000', 10);
   let result = await runIndependentAgentOnce(config);
-  for (let attempt = 1; attempt <= maxRetries && isTransientTurnError(result.text); attempt++) {
+  let attempts = 1;
+  const emitError = () => {
+    const e = result.providerError;
+    if (!e) return;
+    config.events?.emit({
+      type: 'error', errorType: e.type, retryable: e.retryable, message: e.message,
+      provider: e.provider, ...(e.status !== undefined ? { status: e.status } : {}),
+      ...(e.providerCode ? { providerCode: e.providerCode } : {}), attempt: attempts,
+    }, config.agentName);
+  };
+  emitError();
+  // A classified non-retryable error (expired plan, no balance, bad key) is
+  // never re-spawned: it fails the same way every time (#1298).
+  const worthRetry = (r: AgentRunResult) => r.providerError ? r.providerError.retryable : isTransientTurnError(r.text);
+  for (let attempt = 1; attempt <= maxRetries && worthRetry(result); attempt++) {
     writeLine(`  ${colors.yellow}${config.agentName}: transient API error — retrying turn (${attempt}/${maxRetries})${RESET}`);
     await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    attempts++;
     result = await runIndependentAgentOnce(config);
+    emitError();
   }
+  if (result.providerError) result = { ...result, providerError: { ...result.providerError, attempts } };
   return result;
 }
 
@@ -434,14 +460,26 @@ procedures: [followed | deviated: reason]
         return;
       }
 
+      // Typed provider failure (#1298): classify at the harness boundary. A
+      // non-retryable class ends the turn NOW with a sentinel the conversation
+      // loop aborts on — the old path read an expired plan as a rate limit.
+      const providerError = (isError || code !== 0)
+        ? extractProviderError('anthropic', text || stderr)
+        : null;
+      if (providerError && !providerError.retryable) {
+        resolve({ text: providerErrorSentinel(providerError, agentName), usage, outcomes, providerError });
+        return;
+      }
+      const withErr = providerError ? { providerError } : {};
+
       // Preserve the contract: still RETURN the agent's response text (now from
       // the result event), and keep the [QUOTA]/[ERROR]/no-output sentinels the
       // downstream plan/convergence parsing depends on.
       if (isQuotaMessage(text)) {
-        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes });
+        resolve({ text: `[QUOTA] ${agentName}: API limit reached`, usage, outcomes, ...withErr });
       } else if (isError && text.length > 0) {
         // is_error:true — return the error text as before, but keep real usage.
-        resolve({ text, usage, outcomes });
+        resolve({ text, usage, outcomes, ...withErr });
       } else if (text.length > 0) {
         resolve({ text: text.trim(), usage, outcomes });
       } else if (code !== 0) {
@@ -764,6 +802,41 @@ export async function runConversation(
     return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: 'Claude is not authenticated — run: claude /login' };
   };
 
+  // Non-retryable provider failure (#1298): plan expired / no balance / bad key
+  // fails every turn identically, so the run ends the moment one is classified —
+  // status failed, the typed error on the ledger row, the process exit nonzero.
+  const abortOnProviderError = (text: string, agentName: string): ConversationResult | null => {
+    const errorType = parseProviderErrorSentinel(text);
+    if (!errorType) return null;
+    const message = text.replace(/^\[PROVIDER_ERROR:[a-z_]+\]\s*/, '');
+    const described = describeProviderError({ type: errorType, retryable: false, message, provider: 'anthropic' });
+    writeLine(`  ${colors.red}${squad.name}: ${agentName} — ${described}${RESET}`);
+    logObservability({
+      ts: new Date().toISOString(),
+      id: executionId,
+      squad: squad.name,
+      agent: agentName,
+      provider: 'anthropic',
+      model: options.model || modelForRole('lead'),
+      trigger: 'scheduled',
+      status: 'failed',
+      duration_ms: Date.now() - cycleStartMs,
+      input_tokens: cycleUsage.input_tokens,
+      output_tokens: cycleUsage.output_tokens,
+      cache_read_tokens: cycleUsage.cache_read_tokens,
+      cache_write_tokens: cycleUsage.cache_write_tokens,
+      cost_usd: cycleUsage.cost_usd,
+      context_tokens: 0,
+      ...outcomeFields(cycleOutcomes),
+      error: `${errorType}: ${message}`.slice(0, 500),
+      provider_error: { type: errorType, retryable: false, message: message.slice(0, 500), provider: 'anthropic' },
+      task: options.task,
+    });
+    finishEvents(false);
+    process.exitCode = 1;
+    return { transcript, turnCount: transcript.turns.length, totalCost: cycleUsage.cost_usd, converged: false, reason: described };
+  };
+
   // Build squad context once (shared by all agents)
   // Resolve context role from frontmatter; leads default to 'lead', COO agents have role: coo
   const contextRole: ContextRole = resolveContextRoleFromAgent(lead.path, lead.name);
@@ -850,6 +923,8 @@ export async function runConversation(
 
   const planAuthAbort = abortOnAuthFailure(planOutput, lead.name);
   if (planAuthAbort) return planAuthAbort;
+  const planProviderAbort = abortOnProviderError(planOutput, lead.name);
+  if (planProviderAbort) return planProviderAbort;
 
   // Quota detection — if plan hit the API limit, stop immediately
   if (isQuotaMessage(planOutput)) {
@@ -981,6 +1056,12 @@ ${planOutput.slice(0, 3000)}`;
       }
     }
 
+    const workerProviderFailure = workerResults.find(r => parseProviderErrorSentinel(r.output));
+    if (workerProviderFailure) {
+      const workerProviderAbort = abortOnProviderError(workerProviderFailure.output, workerProviderFailure.agent.name);
+      if (workerProviderAbort) return workerProviderAbort;
+    }
+
     const workerAuthFailure = workerResults.find(r => isAuthFailureMessage(r.output));
     if (workerAuthFailure) {
       const workerAuthAbort = abortOnAuthFailure(workerAuthFailure.output, workerAuthFailure.agent.name);
@@ -1049,6 +1130,8 @@ Summary: [what was achieved]`;
 
   const reviewAuthAbort = abortOnAuthFailure(reviewOutput, lead.name);
   if (reviewAuthAbort) return reviewAuthAbort;
+  const reviewProviderAbort = abortOnProviderError(reviewOutput, lead.name);
+  if (reviewProviderAbort) return reviewProviderAbort;
 
   // Fail-fast (#856): review turn capped — don't spend verifier turns on a dead window
   if (isQuotaMessage(reviewOutput)) {

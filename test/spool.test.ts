@@ -895,3 +895,87 @@ describe('kimi-code harness reconcile (#1309)', () => {
     expect(String(rec.error)).toContain('without a terminal result');
   });
 });
+
+// ── #1298: typed provider errors on runs ────────────────────────────────────
+// A GLM lane that died on an expired coding plan used to be recorded as
+// `detached run exited with code 1`. The class now rides the ledger row and the
+// events file so consoles and the inbox can switch on it.
+describe('typed provider errors on detached runs (#1298)', () => {
+  let home: string;
+  let oldHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'squads-home-'));
+    oldHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const GLM_1309 = 'API Error: 429 {"error":{"code":"1309","message":"Your Coding Plan package has expired, please renew."}}';
+
+  function writeErrorStreamLog(resultText: string): void {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'starting' }], model: 'glm-4.7' } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: resultText, is_error: true, total_cost_usd: 0,
+        num_turns: 1, model: 'glm-4.7', usage: { input_tokens: 0, output_tokens: 0 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+  }
+
+  it('records plan_expired in the ledger and an error event, not just exit 1', () => {
+    writeErrorStreamLog(GLM_1309);
+    writeSpoolFile({ execId: 'exec_glm_1309', provider: 'glm', model: 'glm-4.7', exitCode: 1 });
+    reconcileDetachedRuns(root);
+
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toMatchObject({
+      type: 'plan_expired', retryable: false, provider: 'glm', status: 429, providerCode: '1309',
+    });
+    expect(String(rec.error)).toContain('plan_expired');
+    expect(String(rec.error)).not.toBe('detached run exited with code 1');
+
+    const eventsPath = join(root, '.agents', 'observability', 'events', 'exec_glm_1309.jsonl');
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const err = events.find((e) => e.event.type === 'error');
+    expect(err?.event).toMatchObject({ errorType: 'plan_expired', retryable: false, provider: 'glm' });
+    expect(events[events.length - 1].event.type).toBe('run_end');
+  });
+
+  it('classifies a plain-text provider log (non-stream) that exits 1', () => {
+    writeFileSync(join(root, 'run.log'),
+      'litellm.AuthenticationError: {"error":{"message":"Authentication Fails","type":"authentication_error"}} status 401\n');
+    writeSpoolFile({ execId: 'exec_plain_401', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.provider_error).toMatchObject({ type: 'auth_invalid', retryable: false });
+  });
+
+  it('adds no provider_error to a failed run with no provider evidence', () => {
+    writeFileSync(join(root, 'run.log'), 'plain output, then it just died\n');
+    writeSpoolFile({ execId: 'exec_no_evidence', provider: 'deepseek', model: 'deepseek-chat', exitCode: 1 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('failed');
+    expect(rec.provider_error).toBeUndefined();
+    expect(rec.error).toBe('detached run exited with code 1');
+  });
+
+  it('never classifies a completed run, even when its prose mentions rate limits', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2,
+        result: 'Documented the 429 rate limit handling and the plan expiry runbook.',
+        model: 'glm-4.7', usage: { input_tokens: 10, output_tokens: 5 } }),
+    ];
+    writeFileSync(join(root, 'run.log'), lines.join('\n') + '\n');
+    writeSpoolFile({ execId: 'exec_prose', provider: 'glm', model: 'glm-4.7', exitCode: 0 });
+    reconcileDetachedRuns(root);
+    const [rec] = readExecutionsJsonl();
+    expect(rec.status).toBe('completed');
+    expect(rec.provider_error).toBeUndefined();
+  });
+});

@@ -52,6 +52,7 @@ import { getBridgeUrl } from './env-config.js';
 import { getBotGitEnv, getCoAuthorTrailer, getBotGhEnv, buildBotGitCredentialEnv } from './github.js';
 import { scanDiff, loadForbiddenStrings, summarizeFindings } from './secret-scan.js';
 import { detectProviderFatalError } from './llm-clis.js';
+import { extractProviderError, type ProviderError } from './provider-errors.js';
 import {
   buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions, resolveSettingsDir, writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
@@ -2226,6 +2227,24 @@ export async function executeWithProvider(
         if (fatal) {
           writeLine(`  ${colors.red}provider API failure (run marked failed): ${fatal}${RESET}`);
         }
+        // Typed provider failure (#1298) — only for a run already failed, and the
+        // raw tail only when it isn't a JSON stream (a stream's tail is agent prose).
+        let providerError: ProviderError | null = null;
+        if (code !== 0 || fatal) {
+          const streamErr = outputTail && cliConfig.streamJson ? parseStreamJson(outputTail) : null;
+          const structured = cliConfig.streamJson || cliConfig.opencodeJson || cliConfig.kimiCodeJson;
+          for (const src of [
+            streamErr?.sawResult && streamErr.isError ? streamErr.text : '',
+            fatal ?? '',
+            structured ? '' : outputTail.slice(-4000),
+          ]) {
+            providerError = extractProviderError(provider, src);
+            if (providerError) break;
+          }
+          if (providerError) {
+            writeLine(`  ${colors.red}${providerError.type}${providerError.retryable ? ' (retryable)' : ''}: ${providerError.message}${RESET}`);
+          }
+        }
         // Harvest BEFORE the ledger write so a suspect harvest (#1076) can mark
         // the run failed — and regardless of exit code: partial work from a
         // failed run must not evaporate either.
@@ -2274,13 +2293,33 @@ export async function executeWithProvider(
           } : {}),
           error: fatal
             ?? (suspect ? `${harvest.outcome} harvest: ${suspect}` : undefined)
+            ?? (providerError ? `${providerError.type}: ${providerError.message}` : undefined)
             ?? (code !== 0 ? `${cliConfig.command} exited with code ${code}` : undefined),
+          ...(providerError ? { provider_error: {
+            type: providerError.type,
+            retryable: providerError.retryable,
+            message: providerError.message,
+            provider: providerError.provider,
+            ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+            ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+          } } : {}),
         });
         if (usage && options.verbose) {
           writeLine(`  ${colors.dim}Usage: ${usage.input_tokens} in / ${usage.output_tokens} out, $${usage.cost_usd.toFixed(4)}${RESET}`);
         }
         if (events) {
           if (lineBuf.trim() && adapter) events.ingestProviderLine(adapter, lineBuf, agentName);
+          if (providerError) {
+            events.emit({
+              type: 'error',
+              errorType: providerError.type,
+              retryable: providerError.retryable,
+              message: providerError.message,
+              provider: providerError.provider,
+              ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+              ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+            }, agentName);
+          }
           events.emit({
             type: 'run_end',
             ok: code === 0 && !fatal && !suspect,

@@ -111,9 +111,10 @@ vi.mock('../../src/lib/worktree.js', async () => {
   };
 });
 
-import { existsSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import { findSquadsDir } from '../../src/lib/squad-parser.js';
+import { logObservability } from '../../src/lib/observability.js';
 import { runConversation, saveTranscript, buildAgentRoster } from '../../src/lib/workflow.js';
 import { createTranscript, addTurn } from '../../src/lib/conversation.js';
 import type { Squad } from '../../src/lib/squad-parser.js';
@@ -349,6 +350,77 @@ describe('runConversation', () => {
       expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = originalExitCode;
+    }
+  });
+
+  // ── #1298: typed provider errors ──────────────────────────────────────────
+  // The fake harness is a claude child whose terminal result carries
+  // is_error:true and the provider's API body — what a GLM lane really returns.
+  const GLM_1309_RESULT = 'API Error: 429 {"error":{"code":"1309","message":"Your Coding Plan package has expired, please renew."}}';
+
+  function errorEvents(): Array<Record<string, unknown>> {
+    return vi.mocked(appendFileSync).mock.calls
+      .flatMap((c) => String(c[1]).split('\n'))
+      .filter((l) => l.includes('"type":"error"'))
+      .map((l) => JSON.parse(l).event);
+  }
+
+  it('a non-retryable provider error ends the run fast: failed ledger row with the typed error, one spawn, exit 1 (#1298)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockSpawn.mockImplementation(() => createMockChild(GLM_1309_RESULT, 1, { is_error: true, subtype: 'error_during_execution' }) as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    const originalExitCode = process.exitCode;
+    const t0 = Date.now();
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+
+      expect(Date.now() - t0).toBeLessThan(10_000);
+      expect(result.converged).toBe(false);
+      expect(result.reason).toContain('plan expired');
+      expect(process.exitCode).toBe(1);
+      // never re-spawned: an expired plan fails identically every time
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+      const rows = vi.mocked(logObservability).mock.calls.map((c) => c[0]);
+      const row = rows[rows.length - 1];
+      expect(row.status).toBe('failed');
+      expect(row.provider_error).toMatchObject({ type: 'plan_expired', retryable: false });
+      expect(String(row.error)).toContain('plan_expired');
+
+      expect(errorEvents()).toEqual([
+        expect.objectContaining({ errorType: 'plan_expired', retryable: false, attempt: 1, status: 429, providerCode: '1309' }),
+      ]);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it('a retryable provider error backs off, re-spawns once, and records the attempt count (#1298)', async () => {
+    mockFindSquadsDir.mockReturnValue('/fake/.agents/squads');
+    mockExistsSync.mockReturnValue(true);
+    mockRunCommitCount.mockReturnValue(3);
+    process.env.SQUADS_TURN_RETRY_BACKOFF_MS = '1';
+    let call = 0;
+    mockSpawn.mockImplementation(() => (call++ === 0
+      ? createMockChild('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', 1, { is_error: true })
+      : createMockChild('## STATUS: DONE')) as any);
+
+    const squad = makeSquad({
+      agents: [{ name: 'squad-lead', role: 'orchestrates the team', model: undefined }],
+    });
+
+    try {
+      const result = await runConversation(squad, { maxTurns: 100, costCeiling: 999, verbose: false });
+      expect(result.converged).toBe(true);
+      expect(mockSpawn.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(errorEvents()[0]).toMatchObject({ errorType: 'overloaded', retryable: true, attempt: 1 });
+    } finally {
+      delete process.env.SQUADS_TURN_RETRY_BACKOFF_MS;
     }
   });
 

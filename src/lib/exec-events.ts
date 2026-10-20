@@ -68,6 +68,10 @@ export type ExecEvent =
   | { type: 'token_usage'; input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number; model: string }
   | { type: 'artifact'; kind: 'commit' | 'pr' | 'issue' | 'file'; ref: string }
   | { type: 'run_end'; ok: boolean; durationMs: number; totalUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; costEst: number }; outcomes?: { actions: number; files_edited: number; commits: number; prs_created: number; issues_created: number } }
+  /** A provider failure, classified at the harness boundary (#1298). `errorType` is one of
+   *  plan_expired · quota_exhausted · auth_invalid · rate_limited · overloaded · bad_request · network · unknown.
+   *  `attempt` is set when a retryable class was backed off and re-tried. Additive. */
+  | { type: 'error'; errorType: string; retryable: boolean; message: string; provider?: string; status?: number; providerCode?: string; attempt?: number }
   | { type: 'truncated'; droppedCount: number; reason: string };
 
 /** Envelope stamped on every persisted line. */
@@ -883,6 +887,7 @@ export function normalizeDetachedLog(
   runEnd?: Extract<ExecEvent, { type: 'run_end' }>,
   provider?: string,
   harness?: string,
+  errorEvent?: Extract<ExecEvent, { type: 'error' }>,
 ): number {
   // Adapter selection by HARNESS, not provider (#1177): the same provider can
   // run through either harness (e.g. deepseek via `claude --model` OR via
@@ -902,6 +907,7 @@ export function normalizeDetachedLog(
   }
   // Only close a stream that actually opened: a legacy plain-text log yields
   // zero events, and a run_end there would fabricate an event file.
+  if (errorEvent && writer.writtenCount > 0) writer.emit(errorEvent, agent);
   if (runEnd && writer.writtenCount > 0) writer.emit(runEnd, agent);
   writer.close();
   // Reconcile doubles as API replay (#1158/#1159): the run's live flushes

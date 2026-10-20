@@ -17,6 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, openSync, readSync, closeSync, renameSync } from 'fs';
 import { join } from 'path';
 import { getCLIConfig, detectProviderFatalError } from './llm-clis.js';
+import { extractProviderError, type ProviderError } from './provider-errors.js';
 import {
   logObservability,
   captureSessionUsage,
@@ -320,6 +321,25 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     }
   }
 
+  // ── (2b) Typed provider failure (#1298) ───────────────────────────────────
+  // Only a run already known failed is searched: agent prose that merely
+  // discusses rate limits must never become a finding. Sources, strongest first:
+  // the terminal result's error text, the fatal-signature line, and — only when
+  // the log is NOT a stream (so it holds no agent prose) — the raw log tail.
+  let providerError: ProviderError | null = null;
+  if (status === 'failed') {
+    const providerId = spool.provider || 'anthropic';
+    const sources = [
+      stream?.sawResult && stream.isError ? stream.text : '',
+      fatalError ?? '',
+      hasStreamEvidence ? '' : rawLog.slice(-4000),
+    ];
+    for (const src of sources) {
+      providerError = extractProviderError(providerId, src);
+      if (providerError) break;
+    }
+  }
+
   // ── (3) Event normalization — any provider whose log is stream-json ───────
   // The provider travels with the events (cli#1175) so the app badges them.
   if (hasStreamEvidence && stream && rawLog) {
@@ -330,7 +350,15 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
         durationMs,
         totalUsage: { input, output, cacheRead, cacheWrite, costEst: cost },
         outcomes,
-      }, spool.provider, harness);
+      }, spool.provider, harness, providerError ? {
+        type: 'error',
+        errorType: providerError.type,
+        retryable: providerError.retryable,
+        message: providerError.message,
+        provider: providerError.provider,
+        ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+        ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+      } : undefined);
     } catch { /* events are best-effort; the obs record below is the source of truth */ }
   }
 
@@ -361,7 +389,17 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     } : {}),
     error: spool.timedOut
       ? `detached run reaped by watchdog after ${Math.round(durationMs / 60000)} min`
-      : fatalError ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
+      : fatalError
+        ?? (providerError ? `${providerError.type}: ${providerError.message}` : undefined)
+        ?? (spool.exitCode !== 0 ? `detached run exited with code ${spool.exitCode}` : undefined),
+    ...(providerError ? { provider_error: {
+      type: providerError.type,
+      retryable: providerError.retryable,
+      message: providerError.message,
+      provider: providerError.provider,
+      ...(providerError.status !== undefined ? { status: providerError.status } : {}),
+      ...(providerError.providerCode ? { providerCode: providerError.providerCode } : {}),
+    } } : {}),
   };
   return { record, resultSummary };
 }
