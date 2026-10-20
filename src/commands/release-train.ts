@@ -18,20 +18,41 @@ import { colors, RESET, bold, writeLine } from '../lib/terminal.js';
 import {
   CHANGELOG_PATH,
   buildChangelog,
+  buildOutcomeChangelog,
+  changelogPullRequests,
+  evaluateOutcomeGate,
+  evaluatePatchGate,
   evaluateReleaseChecks,
   insertChangelogEntry,
   isReleaseHousekeeping,
   latestVersionTag,
+  parseRoadmapOutcomes,
+  proposeOutcomeVersion,
   proposeVersion,
   pullRequestsFromCommitSubjects,
   readPackageLockVersion,
   readPackageVersion,
+  readRoadmapOutcome,
   readSkillReferenceVersion,
   renderReleaseBody,
+  type OutcomeBlocker,
+  type OutcomeGate,
+  type OutcomeItem,
+  type PatchBlocker,
   type PreparedReleaseFacts,
   type PullRequest,
   type ReleaseCheck,
+  type ReleaseOutcome,
 } from '../lib/release-train.js';
+import {
+  FEATURES_FILE,
+  ROADMAP_FILE,
+  gitShaExists,
+  loadFeatureFile,
+  type FeatureList,
+  type ShaExists,
+} from '../lib/features.js';
+import { findOrgRoot } from '../lib/org-root.js';
 
 const GIT_TIMEOUT_MS = 120_000;
 const NPM_TIMEOUT_MS = 30 * 60 * 1000;
@@ -43,12 +64,22 @@ export interface ReleaseTrainOptions {
   tag?: string;
   json?: boolean;
   fetch?: boolean;
+  /** Roadmap outcome that defines this release. */
+  outcome?: string;
+  /** Security-patch path: skips the outcome gate, accepts only security/fix. */
+  patch?: boolean;
 }
 
 export interface ReleaseTrainDeps {
   runner?: Runner;
   root?: string;
   today?: string;
+  /** Org root holding the control (HQ) repo; discovered when unset. */
+  orgRoot?: string;
+  /** Override the features.json sha-existence check in fixtures. */
+  shaExists?: ShaExists;
+  /** Override the ancestry check in fixtures without real history. */
+  isAncestor?: (sha: string, source: string) => Promise<boolean>;
 }
 
 export type Runner = (
@@ -90,6 +121,142 @@ async function resolveRoot(runner: Runner, deps: ReleaseTrainDeps): Promise<stri
     timeout: GIT_TIMEOUT_MS,
   });
   return top.trim();
+}
+
+/** `<org root>/<control repo>/.agents/roadmap.json`, else directly under the root. */
+export function roadmapPathFor(orgRoot: string, controlRepo = 'hq'): string {
+  const direct = join(orgRoot, ROADMAP_FILE);
+  return existsSync(direct) ? direct : join(orgRoot, controlRepo, ROADMAP_FILE);
+}
+
+async function shaIsAncestor(
+  runner: Runner,
+  root: string,
+  sha: string,
+  source: string,
+): Promise<boolean> {
+  try {
+    await runner('git', ['merge-base', '--is-ancestor', sha, source], {
+      cwd: root,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve an outcome against the HQ roadmap and this repo's feature list, and
+ * check every item's verification ancestry. Throws for configuration errors
+ * (no org root, no roadmap, unknown outcome, invalid features file); item-level
+ * failures come back as blockers so the refusal can name each one.
+ */
+async function resolveOutcomeGate(input: {
+  runner: Runner;
+  root: string;
+  source: string;
+  outcomeId: string;
+  deps: ReleaseTrainDeps;
+}): Promise<OutcomeGate> {
+  const { runner, root, source, outcomeId, deps } = input;
+  // The project may itself hold the roadmap (features.resolveOrgRoot does the
+  // same); otherwise find the org root that contains the HQ repo.
+  const ownRoadmap = join(root, ROADMAP_FILE);
+  let roadmap = ownRoadmap;
+  if (!existsSync(ownRoadmap)) {
+    const org = deps.orgRoot
+      ? { root: deps.orgRoot, controlRepo: 'hq' }
+      : findOrgRoot(root);
+    if (!org) {
+      throw new Error(
+        'Could not find the org root (set SQUADS_ORG_ROOT, or keep the repos under one parent directory).',
+      );
+    }
+    roadmap = roadmapPathFor(org.root, org.controlRepo);
+  }
+  if (!existsSync(roadmap)) {
+    throw new Error(`No roadmap found at ${roadmap}.`);
+  }
+
+  const outcomes = parseRoadmapOutcomes(readFileSync(roadmap, 'utf8'));
+  const outcome = readRoadmapOutcome(roadmap, outcomeId);
+  if (!outcome) {
+    throw new Error(
+      `Outcome "${outcomeId}" not found in ${roadmap} (known: ${outcomes.map((o) => o.id).join(', ') || 'none'}).`,
+    );
+  }
+
+  const featuresPath = join(root, FEATURES_FILE);
+  if (!existsSync(featuresPath)) {
+    throw new Error(`No ${FEATURES_FILE} in ${root}; the outcome gate has nothing to verify.`);
+  }
+  const loaded = loadFeatureFile(
+    featuresPath,
+    FEATURES_FILE,
+    deps.shaExists ?? gitShaExists,
+  );
+  // `passing-without-verification` is re-evaluated below with the stricter
+  // ancestry rule; every other validator problem makes the file untrustworthy.
+  const fatal = loaded.problems.filter((p) => p.code !== 'passing-without-verification');
+  if (!loaded.list || fatal.length > 0) {
+    throw new Error(
+      `Invalid ${FEATURES_FILE}: ${(fatal.length > 0 ? fatal : loaded.problems)
+        .map((p) => p.message)
+        .join('; ')}`,
+    );
+  }
+
+  const list: FeatureList = loaded.list;
+  const candidateShas = [
+    ...new Set(
+      list.items
+        .flatMap((item) => item.verifications ?? [])
+        .filter((v) => v.model !== v.builder_model)
+        .map((v) => v.sha),
+    ),
+  ];
+  const ancestor = new Map<string, boolean>();
+  for (const sha of candidateShas) {
+    ancestor.set(
+      sha,
+      deps.isAncestor ? await deps.isAncestor(sha, source) : await shaIsAncestor(runner, root, sha, source),
+    );
+  }
+
+  return evaluateOutcomeGate({
+    outcome,
+    list,
+    repoDir: root,
+    source,
+    isAncestor: (sha) => ancestor.get(sha) === true,
+  });
+}
+
+function printOutcomeRefusal(outcome: ReleaseOutcome, blockers: OutcomeBlocker[]): number {
+  writeLine();
+  writeLine(
+    `  ${colors.red}Release train refused${RESET} — outcome ${outcome.id} (${outcome.name}) is not shipped.`,
+  );
+  for (const blocker of blockers) {
+    writeLine(`    ${colors.red}blocked${RESET}  ${blocker.ref} — ${blocker.title}: ${blocker.reason}`);
+  }
+  writeLine();
+  writeLine(`  ${colors.dim}No branch, commit, push, or PR was created.${RESET}`);
+  writeLine();
+  return 1;
+}
+
+function printPatchRefusal(blockers: PatchBlocker[]): number {
+  writeLine();
+  writeLine(`  ${colors.red}Release train refused${RESET} — --patch accepts only security or fix PRs.`);
+  for (const blocker of blockers) {
+    writeLine(`    ${colors.red}blocked${RESET}  #${blocker.number} — ${blocker.title}: ${blocker.reason}`);
+  }
+  writeLine();
+  writeLine(`  ${colors.dim}No branch, commit, push, or PR was created.${RESET}`);
+  writeLine();
+  return 1;
 }
 
 async function readVersionAtRef(
@@ -325,6 +492,7 @@ function readPreparedFacts(
   version: string,
   prs: PullRequest[],
   changelogEntry: string,
+  changelogExpectation?: PreparedReleaseFacts['changelogExpectation'],
 ): PreparedReleaseFacts {
   return {
     version,
@@ -334,6 +502,7 @@ function readPreparedFacts(
     packageVersion: readPackageVersion(worktree),
     packageLockVersion: readPackageLockVersion(worktree),
     skillReferenceVersion: readSkillReferenceVersion(worktree),
+    ...(changelogExpectation ? { changelogExpectation } : {}),
   };
 }
 
@@ -363,6 +532,20 @@ export async function releaseTrainCommand(
   const target = options.target ?? 'main';
   const dryRun = options.dryRun === true;
   const today = deps.today ?? localDate(new Date());
+  const mode: 'outcome' | 'patch' | null = options.outcome
+    ? 'outcome'
+    : options.patch
+      ? 'patch'
+      : null;
+
+  if (options.outcome && options.patch) {
+    throw new Error('Use either --outcome <id> or --patch, not both.');
+  }
+  if (!mode) {
+    throw new Error(
+      'A release is defined by an outcome: pass --outcome <id> (or --patch for a security patch).',
+    );
+  }
 
   if (options.fetch) {
     await runner('git', ['fetch', 'origin', '--tags', '--quiet'], {
@@ -391,7 +574,52 @@ export async function releaseTrainCommand(
     await runner('git', ['rev-parse', source], { cwd: root, timeout: GIT_TIMEOUT_MS })
   ).trim();
 
-  if (prs.length === 0) {
+  let outcome: ReleaseOutcome | null = null;
+  let items: OutcomeItem[] = [];
+  let otherPrs: PullRequest[] = prs;
+
+  if (mode === 'outcome' && options.outcome) {
+    const gate = await resolveOutcomeGate({
+      runner,
+      root,
+      source,
+      outcomeId: options.outcome,
+      deps,
+    });
+    if (!gate.ok) {
+      if (options.json) {
+        writeLine(
+          JSON.stringify(
+            {
+              refused: true,
+              outcome: { id: gate.outcome.id, name: gate.outcome.name },
+              blockers: gate.blockers,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        printOutcomeRefusal(gate.outcome, gate.blockers);
+      }
+      return 1;
+    }
+    outcome = gate.outcome;
+    items = gate.items;
+    otherPrs = changelogPullRequests(prs);
+  } else {
+    const gate = evaluatePatchGate(prs);
+    if (!gate.ok) {
+      if (options.json) {
+        writeLine(JSON.stringify({ refused: true, patch: true, blockers: gate.blockers }, null, 2));
+      } else {
+        printPatchRefusal(gate.blockers);
+      }
+      return 1;
+    }
+  }
+
+  if (prs.length === 0 && items.length === 0) {
     if (options.json) {
       writeLine(
         JSON.stringify(
@@ -408,10 +636,24 @@ export async function releaseTrainCommand(
     return 0;
   }
 
-  const proposal = proposeVersion(prs, current.version);
+  const proposal =
+    mode === 'outcome'
+      ? proposeVersion(prs, current.version) ??
+        proposeOutcomeVersion(current.version, outcome?.id ?? 'outcome')
+      : proposeVersion(prs, current.version);
   if (!proposal) return 0;
 
-  const changelog = buildChangelog(prs, { version: proposal.version, date: today });
+  const changelog =
+    mode === 'outcome' && outcome
+      ? buildOutcomeChangelog(
+          {
+            outcome: { id: outcome.id, name: outcome.name },
+            items,
+            otherPrs,
+          },
+          { version: proposal.version, date: today },
+        )
+      : buildChangelog(prs, { version: proposal.version, date: today });
 
   if (dryRun) {
     if (options.json) {
@@ -429,6 +671,19 @@ export async function releaseTrainCommand(
             source,
             source_sha: sourceSha,
             prs,
+            other_prs: otherPrs,
+            ...(outcome
+              ? {
+                  outcome: { id: outcome.id, name: outcome.name },
+                  outcome_items: items.map((item) => ({
+                    ref: item.ref,
+                    id: item.id,
+                    title: item.title,
+                    issue: item.issue ?? null,
+                    status: item.status,
+                  })),
+                }
+              : { patch: true }),
             changelog,
           },
           null,
@@ -443,7 +698,7 @@ export async function releaseTrainCommand(
         version: proposal.version,
         bump: proposal.bump,
         reason: proposal.reason,
-        prs,
+        prs: otherPrs,
         changelog,
         dryRun: true,
       });
@@ -467,8 +722,16 @@ export async function releaseTrainCommand(
     );
     worktree = prepared.worktree;
 
+    const changelogExpectation =
+      mode === 'outcome'
+        ? {
+            bullets: items.length + otherPrs.length,
+            prNumbers: otherPrs.map((pr) => pr.number),
+            itemBullets: items.length,
+          }
+        : undefined;
     const fileChecks = evaluateReleaseChecks(
-      readPreparedFacts(worktree, proposal.version, prs, changelog),
+      readPreparedFacts(worktree, proposal.version, prs, changelog, changelogExpectation),
     );
     const checks = [...fileChecks, ...prepared.gates];
 
@@ -486,6 +749,9 @@ export async function releaseTrainCommand(
       checks,
       source,
       sourceSha,
+      ...(outcome
+        ? { outcome: { id: outcome.id, name: outcome.name, items: items.length } }
+        : { patch: true }),
     });
 
     await runner('git', ['add', '-A'], { cwd: worktree, timeout: GIT_TIMEOUT_MS });
@@ -535,6 +801,7 @@ export async function releaseTrainCommand(
             bump: proposal.bump,
             branch,
             url,
+            ...(outcome ? { outcome: { id: outcome.id, name: outcome.name }, items: items.length } : { patch: true }),
             checks,
           },
           null,

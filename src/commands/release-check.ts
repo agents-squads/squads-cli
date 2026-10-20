@@ -26,7 +26,9 @@ export function registerReleaseCommands(program: Command): void {
 
   release
     .command('train')
-    .description('Prepare the weekly release PR from PRs merged to develop')
+    .description('Prepare the release PR for a roadmap outcome')
+    .option('--outcome <id>', 'Roadmap outcome that defines this release (required unless --patch)')
+    .option('--patch', 'Security-patch path: skip the outcome gate, accept only security/fix PRs')
     .option('--dry-run', 'Print the release plan; change nothing')
     .option('--source <ref>', 'Source ref for merged work', 'origin/develop')
     .option('--target <branch>', 'PR base branch', 'main')

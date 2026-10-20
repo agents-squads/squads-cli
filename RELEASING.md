@@ -5,10 +5,10 @@ versions, tags, or workflows.
 
 ## TL;DR
 
-1. **Prepare the release**: run `squads release train` (see
-   [Weekly release train](#weekly-release-train)). It bumps
+1. **Prepare the release**: run `squads release train --outcome <id>` (see
+   [Release train](#release-train)). It checks the outcome's items, bumps
    `package.json` + `package-lock.json`, builds the `CHANGELOG.md` entry from
-   merged PRs, regenerates the seed skill reference, runs release-check, and
+   the outcome, regenerates the seed skill reference, runs release-check, and
    opens the release PR. Doing it by hand means the same edits on a
    `release/vX.Y.Z` branch.
 2. **Release PR to `main`**: branch `release/vX.Y.Z` cut **from `main`**,
@@ -23,19 +23,29 @@ versions, tags, or workflows.
 5. **Verify**: `npm view squads-cli dist-tags.latest` shows the new version.
 6. **Back-merge `main` → `develop`** to re-converge after the squash merge.
 
-## Weekly release train
+## Release train
 
-The routine release path is one command, run against a clean checkout:
+A release is defined by an **outcome**, not by a count of merged PRs. The
+routine path is one command, run against a clean checkout:
 
 ```bash
-squads release train --dry-run   # print the plan; changes nothing
-squads release train             # prepare the branch and open the release PR
+squads release train --outcome O1 --dry-run   # print the plan; changes nothing
+squads release train --outcome O1             # prepare the branch and open the PR
 ```
 
-From the last `vX.Y.Z` tag it lists the PRs merged to `develop`, writes one
-changelog line per PR with its number, and proposes the semver bump from the
-PR titles (`feat` → minor; breaking → minor on 0.x, major after 1.0; otherwise
-patch). It then:
+It reads the HQ repo's `.agents/roadmap.json` (found through the org root) for
+the outcome's items that belong to this repo, and this repo's
+`.agents/features.json` for their state. It **refuses** — naming each blocking
+item and why — unless every item is `passing` with a verification whose
+`model` differs from `builder_model` and whose `sha` is an ancestor of the
+release source. The changelog lists one line per item (title + issue), then
+**Also included** for the other merged PRs, dropping `chore` / `deps` lines.
+
+Security patches take a separate path. `--patch` skips the outcome gate but
+accepts only PR titles that start with `security` or `fix`; anything else
+refuses the release.
+
+The train then:
 
 - creates `release/vX.Y.Z` from `origin/main` and sets its tree to
   `origin/develop`, avoiding the [squash divergence](#trap-squash-merge-divergence);
@@ -46,12 +56,10 @@ patch). It then:
   checks — and does not open the PR if any check fails;
 - opens the PR to `main` with the changelog and the check output.
 
-PRs are taken from GitHub's merged-PR list for `develop`, filtered to those
-merged after the tag's commit date; without `gh` it falls back to squash
-subjects in `git log --since`. It refuses to open the PR when release-check
-fails, and reports "nothing to release" when the tag has no newer work. It
-never tags, publishes, or dispatches a workflow — steps 3–6 above stay with
-the maintainer.
+Other merged PRs are taken from GitHub's merged-PR list for `develop`,
+filtered to those merged after the tag's commit date; without `gh` it falls
+back to squash subjects in `git log --since`. It never tags, publishes, or
+dispatches a workflow — steps 3–6 above stay with the maintainer.
 
 ## Who publishes what
 

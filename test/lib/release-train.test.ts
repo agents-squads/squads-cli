@@ -13,10 +13,15 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildChangelog,
+  buildOutcomeChangelog,
+  changelogPullRequests,
   conventionalType,
+  evaluateOutcomeGate,
+  evaluatePatchGate,
   evaluateReleaseChecks,
   insertChangelogEntry,
   isBreakingChange,
+  isChoreOrDeps,
   isReleaseHousekeeping,
   latestVersionTag,
   parseCommitSubject,
@@ -27,7 +32,9 @@ import {
   renderReleaseBody,
   type PreparedReleaseFacts,
   type PullRequest,
+  type ReleaseOutcome,
 } from '../../src/lib/release-train.js';
+import type { FeatureList } from '../../src/lib/features.js';
 import {
   bumpPackageFiles,
   defaultRunner,
@@ -172,6 +179,159 @@ describe('changelog builder', () => {
   });
 });
 
+describe('outcome gate', () => {
+  const OUTCOME: ReleaseOutcome = {
+    id: 'O0',
+    name: 'The org is organized as code',
+    items: ['squads-cli:R1', 'squads-cli:Z5', 'other-repo:X'],
+  };
+
+  function features(items: FeatureList['items']): FeatureList {
+    return { schema: 1, repo: 'agents-squads/squads-cli', items };
+  }
+
+  const PASSING = {
+    id: 'Z5',
+    outcome: 'O0',
+    title: 'Feature lists as code',
+    issue: '#1332',
+    status: 'passing' as const,
+    verifications: [
+      {
+        model: 'verifier-model',
+        builder_model: 'builder-model',
+        sha: 'abc1234',
+        at: '2026-10-20T00:00:00Z',
+      },
+    ],
+  };
+
+  it('refuses and names a failing item', () => {
+    const gate = evaluateOutcomeGate({
+      outcome: OUTCOME,
+      list: features([
+        {
+          id: 'R1',
+          outcome: 'O0',
+          title: 'Release train ships an outcome',
+          issue: '#1320',
+          status: 'failing',
+        },
+        PASSING,
+      ]),
+      repoDir: '/repos/squads-cli',
+      isAncestor: () => true,
+    });
+
+    expect(gate.ok).toBe(false);
+    expect(gate.blockers).toHaveLength(1);
+    expect(gate.blockers[0].id).toBe('R1');
+    expect(gate.blockers[0].title).toBe('Release train ships an outcome');
+    expect(gate.blockers[0].reason).toContain('failing');
+    // Other repos' items are not this release's problem.
+    expect(gate.items.map((item) => item.id)).toEqual(['R1', 'Z5']);
+  });
+
+  it('passes only when the verification model differs and its sha is an ancestor', () => {
+    const list = features([PASSING]);
+    const outcome = { ...OUTCOME, items: ['squads-cli:Z5', 'other-repo:X'] };
+
+    expect(
+      evaluateOutcomeGate({ outcome, list, repoDir: '/repos/squads-cli', isAncestor: () => true }).ok,
+    ).toBe(true);
+
+    const notAncestor = evaluateOutcomeGate({
+      outcome,
+      list,
+      repoDir: '/repos/squads-cli',
+      isAncestor: () => false,
+    });
+    expect(notAncestor.ok).toBe(false);
+    expect(notAncestor.blockers[0].reason).toContain('ancestor');
+
+    const sameModel = features([
+      {
+        ...PASSING,
+        verifications: [{ ...PASSING.verifications[0], model: 'builder-model' }],
+      },
+    ]);
+    const selfVerified = evaluateOutcomeGate({
+      outcome,
+      list: sameModel,
+      repoDir: '/repos/squads-cli',
+      isAncestor: () => true,
+    });
+    expect(selfVerified.ok).toBe(false);
+    expect(selfVerified.blockers[0].reason).toContain('builder_model');
+  });
+
+  it('refuses an outcome with no items for this repo', () => {
+    const gate = evaluateOutcomeGate({
+      outcome: { ...OUTCOME, items: ['other-repo:X'] },
+      list: features([PASSING]),
+      repoDir: '/repos/squads-cli',
+      isAncestor: () => true,
+    });
+    expect(gate.ok).toBe(false);
+    expect(gate.blockers[0].reason).toContain('no items');
+  });
+});
+
+describe('patch gate', () => {
+  it('accepts only security and fix PRs', () => {
+    expect(evaluatePatchGate([{ number: 1, title: 'fix(run): a fix' }]).ok).toBe(true);
+    expect(evaluatePatchGate([{ number: 2, title: 'security(events): redact' }]).ok).toBe(true);
+
+    const gate = evaluatePatchGate([
+      { number: 3, title: 'feat(plan): new command' },
+      { number: 4, title: 'chore(deps): bump x' },
+    ]);
+    expect(gate.ok).toBe(false);
+    expect(gate.blockers.map((b) => b.number)).toEqual([3, 4]);
+  });
+});
+
+describe('outcome changelog', () => {
+  it('lists the outcome items, then other PRs, dropping chores and dependency bumps', () => {
+    const changelog = buildOutcomeChangelog(
+      {
+        outcome: { id: 'O0', name: 'The org is organized as code' },
+        items: [
+          { id: 'Z5', title: 'Feature lists as code', issue: '#1332' },
+          { id: 'R1', title: 'Release train ships an outcome', issue: '#1320' },
+        ],
+        otherPrs: [
+          { number: 1294, title: 'chore(deps): bump actions/checkout' },
+          { number: 1304, title: 'feat(events): message events' },
+          { number: 1261, title: 'fix(portability): drop probes' },
+        ],
+      },
+      { version: '0.11.0', date: DATE },
+    );
+
+    expect(changelog).toContain('## [0.11.0] — 2026-10-19');
+    expect(changelog).toContain('### The org is organized as code (O0)');
+    expect(changelog).toContain('- Feature lists as code (#1332)');
+    expect(changelog).toContain('- Release train ships an outcome (#1320)');
+    expect(changelog.indexOf('Feature lists as code')).toBeLessThan(changelog.indexOf('### Also included'));
+    expect(changelog).toContain('- feat(events): message events (#1304)');
+    expect(changelog).toContain('- fix(portability): drop probes (#1261)');
+    expect(changelog).not.toContain('bump actions/checkout');
+  });
+
+  it('drops chores and deps from the PR list (but keeps release housekeeping out too)', () => {
+    expect(isChoreOrDeps('chore(deps): bump x')).toBe(true);
+    expect(isChoreOrDeps('deps: bump y')).toBe(true);
+    expect(isChoreOrDeps('fix(x): y')).toBe(false);
+    expect(
+      changelogPullRequests([
+        { number: 1, title: 'chore(deps): bump' },
+        { number: 2, title: 'feat: real work' },
+      ]).map((pr) => pr.number),
+    ).toEqual([2]);
+  });
+});
+
 describe('release-check', () => {
   function facts(overrides: Partial<PreparedReleaseFacts> = {}): PreparedReleaseFacts {
     const entry = buildChangelog(PRS, { version: '0.11.0', date: DATE });
@@ -252,6 +412,45 @@ describe('release body', () => {
     expect(body).toContain('FAIL — npm test: one failure');
     expect(body).toContain('does not tag, publish, or dispatch any workflow');
   });
+
+  it('names the outcome and marks the security-patch path', () => {
+    const outcomeBody = renderReleaseBody({
+      tag: 'v0.10.0',
+      previousVersion: '0.10.0',
+      proposal: { version: '0.11.0', bump: 'minor', reason: 'outcome O0' },
+      prs: [],
+      changelog: buildOutcomeChangelog(
+        {
+          outcome: { id: 'O0', name: 'The org is organized as code' },
+          items: [{ id: 'R1', title: 'Release train ships an outcome', issue: '#1320' }],
+          otherPrs: [],
+        },
+        { version: '0.11.0', date: DATE },
+      ),
+      checks: [],
+      source: 'origin/develop',
+      sourceSha: 'abcdef1234567890',
+      outcome: { id: 'O0', name: 'The org is organized as code', items: 1 },
+    });
+    expect(outcomeBody).toContain('- **Outcome:** `O0` — The org is organized as code (1 item)');
+    expect(outcomeBody).toContain('- Release train ships an outcome (#1320)');
+
+    const patchBody = renderReleaseBody({
+      tag: 'v0.10.0',
+      previousVersion: '0.10.0',
+      proposal: { version: '0.10.1', bump: 'patch', reason: '1 PR, no new features' },
+      prs: [{ number: 9, title: 'security(events): redact' }],
+      changelog: buildChangelog([{ number: 9, title: 'security(events): redact' }], {
+        version: '0.10.1',
+        date: DATE,
+      }),
+      checks: [],
+      source: 'origin/develop',
+      sourceSha: 'abcdef1234567890',
+      patch: true,
+    });
+    expect(patchBody).toContain('## Security patch release');
+  });
 });
 
 describe('latest version tag', () => {
@@ -313,12 +512,14 @@ describe('releaseTrainCommand --dry-run', () => {
   let out: string[];
   let outSpy: ReturnType<typeof vi.spyOn>;
 
+  const PATCH_PRS: PullRequest[] = PRS.filter((pr) => /^(security|fix)\b/i.test(pr.title));
+
   afterEach(() => {
     outSpy?.mockRestore();
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  function fixtureRunner(): Runner {
+  function fixtureRunner(prs: PullRequest[] = PATCH_PRS): Runner {
     return async (file, args) => {
       const key = `${file} ${args.join(' ')}`;
       if (key === 'git tag --sort=-v:refname --list v[0-9]*') {
@@ -332,44 +533,83 @@ describe('releaseTrainCommand --dry-run', () => {
         key ===
         'git log --since 2026-10-14T18:23:28-03:00 --format=%s origin/develop'
       ) {
-        return PRS.map((pr) => `${pr.title} (#${pr.number})`).join('\n');
+        return prs.map((pr) => `${pr.title} (#${pr.number})`).join('\n');
       }
       if (key === 'git rev-parse origin/develop') return 'abcdef1234567890\n';
       throw new Error(`unexpected command: ${key}`);
     };
   }
 
-  it('prints the proposed release and changes nothing', async () => {
-    root = mkdtempSync(join(tmpdir(), 'release-train-dry-'));
+  function captureStdout(): void {
     out = [];
     outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
       out.push(String(chunk));
       return true;
     });
+  }
+
+  function writeOutcomeFixture(
+    items: FeatureList['items'],
+    outcomeItems: string[],
+  ): { repoRoot: string; orgRoot: string } {
+    const orgRoot = mkdtempSync(join(tmpdir(), 'release-train-org-'));
+    const repoRoot = join(orgRoot, 'squads-cli');
+    mkdirSync(join(repoRoot, '.agents'), { recursive: true });
+    mkdirSync(join(orgRoot, 'hq', '.agents'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.agents', 'features.json'),
+      JSON.stringify({ schema: 1, repo: 'agents-squads/squads-cli', items }, null, 2),
+    );
+    writeFileSync(
+      join(orgRoot, 'hq', '.agents', 'roadmap.json'),
+      JSON.stringify(
+        { schema: 1, outcomes: [{ id: 'O0', name: 'The org is organized as code', items: outcomeItems }] },
+        null,
+        2,
+      ),
+    );
+    return { repoRoot, orgRoot };
+  }
+
+  it('prints the patch plan and changes nothing', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-dry-'));
+    captureStdout();
 
     const code = await releaseTrainCommand(
-      { dryRun: true, json: true },
+      { dryRun: true, json: true, patch: true },
       { runner: fixtureRunner(), root, today: DATE },
     );
 
     expect(code).toBe(0);
     const payload = JSON.parse(out.join(''));
     expect(payload.dry_run).toBe(true);
+    expect(payload.patch).toBe(true);
     expect(payload.from_tag).toBe('v0.10.0');
-    expect(payload.proposed_version).toBe('0.11.0');
-    expect(payload.bump).toBe('minor');
-    expect(payload.prs).toHaveLength(PRS.length);
-    expect(payload.changelog).toContain(`- feat(providers): opencode selects the opencode harness (#1315)`);
-    expect(payload.changelog.match(/^- /gm)).toHaveLength(PRS.length);
+    expect(payload.proposed_version).toBe('0.10.1');
+    expect(payload.bump).toBe('patch');
+    expect(payload.prs).toHaveLength(PATCH_PRS.length);
+    expect(payload.changelog).toContain('- fix(portability): drop probes');
+    expect(payload.changelog).not.toContain('feat(providers)');
+  });
+
+  it('refuses --patch when a feature PR is in the batch', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-patch-'));
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, patch: true },
+      { runner: fixtureRunner(PRS), root, today: DATE },
+    );
+
+    expect(code).toBe(1);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.refused).toBe(true);
+    expect(payload.blockers.map((b: { number: number }) => b.number)).toEqual([1304, 1315]);
   });
 
   it('prefers gh merged-PR data and keeps only PRs merged after the tag', async () => {
     root = mkdtempSync(join(tmpdir(), 'release-train-gh-'));
-    out = [];
-    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
-      out.push(String(chunk));
-      return true;
-    });
+    captureStdout();
 
     const runner: Runner = async (file, args) => {
       const key = `${file} ${args.join(' ')}`;
@@ -380,8 +620,8 @@ describe('releaseTrainCommand --dry-run', () => {
       }
       if (key === 'gh pr list --state merged --base develop --limit 1000 --json number,title,mergedAt,url') {
         return JSON.stringify([
-          { number: 1200, title: 'feat(old): already released', mergedAt: '2026-10-01T00:00:00Z' },
-          { number: 1304, title: 'feat(events): new work', mergedAt: '2026-10-15T00:00:00Z' },
+          { number: 1200, title: 'fix(old): already released', mergedAt: '2026-10-01T00:00:00Z' },
+          { number: 1304, title: 'fix(events): new work', mergedAt: '2026-10-15T00:00:00Z' },
         ]);
       }
       if (key === 'git rev-parse origin/develop') return 'abcdef1234567890\n';
@@ -389,24 +629,20 @@ describe('releaseTrainCommand --dry-run', () => {
     };
 
     const code = await releaseTrainCommand(
-      { dryRun: true, json: true },
+      { dryRun: true, json: true, patch: true },
       { runner, root, today: DATE },
     );
 
     expect(code).toBe(0);
     const payload = JSON.parse(out.join(''));
     expect(payload.prs.map((pr: PullRequest) => pr.number)).toEqual([1304]);
-    expect(payload.changelog).toContain('- feat(events): new work (#1304)');
+    expect(payload.changelog).toContain('- fix(events): new work (#1304)');
     expect(payload.changelog).not.toContain('#1200');
   });
 
   it('reports nothing to release when the branch has no new PRs', async () => {
     root = mkdtempSync(join(tmpdir(), 'release-train-empty-'));
-    out = [];
-    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
-      out.push(String(chunk));
-      return true;
-    });
+    captureStdout();
 
     const runner: Runner = async (file, args) => {
       const key = `${file} ${args.join(' ')}`;
@@ -426,12 +662,99 @@ describe('releaseTrainCommand --dry-run', () => {
     };
 
     const code = await releaseTrainCommand(
-      { dryRun: true, json: true },
+      { dryRun: true, json: true, patch: true },
       { runner, root, today: DATE },
     );
 
     expect(code).toBe(0);
     expect(JSON.parse(out.join('')).proposed_version).toBeNull();
+  });
+
+  it('requires an outcome (or --patch) — a PR count is not a release', async () => {
+    root = mkdtempSync(join(tmpdir(), 'release-train-mode-'));
+    await expect(
+      releaseTrainCommand({ dryRun: true, json: true }, { runner: fixtureRunner(), root, today: DATE }),
+    ).rejects.toThrow(/outcome/i);
+  });
+
+  it('refuses an outcome with a failing item and names it', async () => {
+    const fixture = writeOutcomeFixture(
+      [
+        {
+          id: 'R1',
+          outcome: 'O0',
+          title: 'Release train ships an outcome',
+          issue: '#1320',
+          status: 'failing',
+        },
+      ],
+      ['squads-cli:R1'],
+    );
+    root = fixture.orgRoot;
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, outcome: 'O0' },
+      {
+        runner: fixtureRunner(PRS),
+        root: fixture.repoRoot,
+        orgRoot: fixture.orgRoot,
+        today: DATE,
+        shaExists: () => true,
+        isAncestor: async () => true,
+      },
+    );
+
+    expect(code).toBe(1);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.refused).toBe(true);
+    expect(payload.blockers[0].id).toBe('R1');
+    expect(payload.blockers[0].reason).toContain('failing');
+  });
+
+  it('releases an outcome whose items pass with independent verifications', async () => {
+    const fixture = writeOutcomeFixture(
+      [
+        {
+          id: 'Z5',
+          outcome: 'O0',
+          title: 'Feature lists as code',
+          issue: '#1332',
+          status: 'passing',
+          verifications: [
+            {
+              model: 'verifier-model',
+              builder_model: 'builder-model',
+              sha: 'abc1234',
+              at: '2026-10-20T00:00:00Z',
+            },
+          ],
+        },
+      ],
+      ['squads-cli:Z5'],
+    );
+    root = fixture.orgRoot;
+    captureStdout();
+
+    const code = await releaseTrainCommand(
+      { dryRun: true, json: true, outcome: 'O0' },
+      {
+        runner: fixtureRunner([{ number: 1304, title: 'feat(events): message events' }]),
+        root: fixture.repoRoot,
+        orgRoot: fixture.orgRoot,
+        today: DATE,
+        shaExists: () => true,
+        isAncestor: async () => true,
+      },
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(out.join(''));
+    expect(payload.outcome).toEqual({ id: 'O0', name: 'The org is organized as code' });
+    expect(payload.outcome_items.map((item: { id: string }) => item.id)).toEqual(['Z5']);
+    expect(payload.changelog).toContain('- Feature lists as code (#1332)');
+    expect(payload.changelog).toContain('### Also included');
+    expect(payload.changelog).toContain('- feat(events): message events (#1304)');
   });
 });
 
@@ -494,7 +817,7 @@ describe('releaseTrainCommand (full run)', () => {
     git(root, ['rm', '-q', 'main-only.txt']);
     write(root, 'feature.txt', 'new\n');
     git(root, ['add', '-A']);
-    git(root, ['commit', '-q', '-m', 'feat(x): new thing (#5)'], '2026-10-16T12:00:00Z');
+    git(root, ['commit', '-q', '-m', 'fix(x): new thing (#5)'], '2026-10-16T12:00:00Z');
 
     git(root, ['remote', 'add', 'origin', origin]);
     git(root, ['push', '-q', 'origin', 'main', 'develop', '--tags']);
@@ -517,19 +840,19 @@ describe('releaseTrainCommand (full run)', () => {
       throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
     };
 
-    const code = await releaseTrainCommand({ json: true }, { runner, root, today: DATE });
+    const code = await releaseTrainCommand({ json: true, patch: true }, { runner, root, today: DATE });
 
     expect(code).toBe(0);
-    const branch = 'release/v0.11.0';
+    const branch = 'release/v0.10.1';
     const files = git(origin, ['ls-tree', '-r', '--name-only', branch]).split('\n');
     expect(files).toContain('feature.txt');
     expect(files).not.toContain('main-only.txt');
     expect(files.some((f) => f.startsWith('node_modules'))).toBe(false);
-    expect(JSON.parse(git(origin, ['show', `${branch}:package.json`])).version).toBe('0.11.0');
+    expect(JSON.parse(git(origin, ['show', `${branch}:package.json`])).version).toBe('0.10.1');
     const changelog = git(origin, ['show', `${branch}:CHANGELOG.md`]);
-    expect(changelog).toContain(`## [0.11.0] — ${DATE}\n\n- feat(x): new thing (#5)\n\n## [0.10.0]`);
+    expect(changelog).toContain(`## [0.10.1] — ${DATE}\n\n- fix(x): new thing (#5)\n\n## [0.10.0]`);
     expect(git(origin, ['rev-parse', `${branch}^`]).trim()).toBe(git(origin, ['rev-parse', 'main']).trim());
-    expect(git(origin, ['log', '-1', '--format=%s', branch]).trim()).toBe('release: v0.11.0');
+    expect(git(origin, ['log', '-1', '--format=%s', branch]).trim()).toBe('release: v0.10.1');
     expect(calls.find((c) => c.startsWith('gh pr create'))).toContain('--base main');
     expect(
       calls.filter(
@@ -541,5 +864,121 @@ describe('releaseTrainCommand (full run)', () => {
       ),
     ).toEqual([]);
     expect(git(root, ['worktree', 'list']).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('opens an outcome release PR whose body lists the outcome items', async () => {
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'test');
+    vi.stubEnv('GIT_AUTHOR_EMAIL', 'test@example.invalid');
+    vi.stubEnv('GIT_COMMITTER_NAME', 'test');
+    vi.stubEnv('GIT_COMMITTER_EMAIL', 'test@example.invalid');
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    base = mkdtempSync(join(tmpdir(), 'release-train-outcome-'));
+    const origin = join(base, 'origin.git');
+    const root = join(base, 'repo');
+    git(base, ['init', '-q', '--bare', '-b', 'main', origin]);
+    git(base, ['init', '-q', '-b', 'main', root]);
+
+    write(root, '.gitignore', 'node_modules/\n');
+    write(root, 'package.json', `${JSON.stringify({ name: 'x', version: '0.10.0' }, null, 2)}\n`);
+    write(
+      root,
+      'package-lock.json',
+      `${JSON.stringify({ name: 'x', version: '0.10.0', packages: { '': { version: '0.10.0' } } }, null, 2)}\n`,
+    );
+    write(root, 'CHANGELOG.md', '# Changelog\n\n## [0.10.0] — 2026-10-14\n\n- old work (#1)\n');
+    write(root, 'templates/seed/skills/squads-cli/references/commands.md', 'squads-cli v0.10.0\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'release: v0.10.0'], '2026-10-14T12:00:00Z');
+    git(root, ['tag', 'v0.10.0']);
+    const mainSha = git(root, ['rev-parse', 'HEAD']).trim();
+
+    git(root, ['checkout', '-q', '-b', 'develop']);
+    write(
+      root,
+      '.agents/features.json',
+      JSON.stringify(
+        {
+          schema: 1,
+          repo: 'agents-squads/squads-cli',
+          items: [
+            {
+              id: 'Z5',
+              outcome: 'O0',
+              title: 'Feature lists as code',
+              issue: '#1332',
+              status: 'passing',
+              verifications: [
+                {
+                  model: 'verifier-model',
+                  builder_model: 'builder-model',
+                  sha: mainSha,
+                  at: '2026-10-20T00:00:00Z',
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    write(root, 'feature.txt', 'new\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'feat(x): outcome work (#5)'], '2026-10-16T12:00:00Z');
+
+    git(root, ['remote', 'add', 'origin', origin]);
+    git(root, ['push', '-q', 'origin', 'main', 'develop', '--tags']);
+    git(root, ['fetch', '-q', 'origin']);
+    mkdirSync(join(root, 'node_modules'));
+
+    write(
+      base,
+      'hq/.agents/roadmap.json',
+      JSON.stringify(
+        {
+          schema: 1,
+          outcomes: [
+            { id: 'O0', name: 'The org is organized as code', items: ['squads-cli:Z5'] },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    let createBody = '';
+    const runner: Runner = async (file, args, options) => {
+      if (file === 'git') return defaultRunner(file, args, options);
+      if (file === 'npm' && args.join(' ') === 'run gen:skill') {
+        const cwd = options?.cwd ?? root;
+        const { version } = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
+        write(cwd, 'templates/seed/skills/squads-cli/references/commands.md', `squads-cli v${version}\n`);
+        return '';
+      }
+      if (file === 'npm') return '';
+      if (file === 'gh' && args[1] === 'list') throw new Error('gh unavailable');
+      if (file === 'gh' && args[1] === 'create') {
+        createBody = args[args.indexOf('--body') + 1] ?? '';
+        return 'https://example.invalid/pull/2\n';
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
+    };
+
+    const code = await releaseTrainCommand(
+      { json: true, outcome: 'O0' },
+      { runner, root, orgRoot: base, today: DATE },
+    );
+
+    expect(code).toBe(0);
+    expect(createBody).toContain('- **Outcome:** `O0` — The org is organized as code (1 item)');
+    expect(createBody).toContain('- Feature lists as code (#1332)');
+    expect(createBody).toContain('### Also included');
+    expect(createBody).toContain('- feat(x): outcome work (#5)');
+
+    const changelog = git(origin, ['show', 'release/v0.11.0:CHANGELOG.md']);
+    expect(changelog).toContain('- Feature lists as code (#1332)');
   });
 });

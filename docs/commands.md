@@ -363,7 +363,8 @@ squads catalog list                  # List all services in the catalog
 squads catalog show <service>        # Service details
 squads catalog check <service>       # Validate against scorecard
 squads release pre-check <service>   # Validate dependencies before deploying
-squads release train [--dry-run]     # Prepare the weekly release PR to main
+squads release train --outcome <id>  # Prepare the outcome's release PR to main
+squads release train --patch         # Security patch: security/fix PRs only
 ```
 
 ### Platform
