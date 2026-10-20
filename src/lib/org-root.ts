@@ -13,7 +13,7 @@
  * No absolute paths are ever assumed; everything is discovered at runtime.
  */
 
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 
 export type OrgRootSource = 'env' | 'control-repo' | 'squads-project';
@@ -47,18 +47,27 @@ function controlRepoName(): string {
  * Discover the org root. Returns null when no workspace structure is found
  * (no env override, no control repo above, no squads project above).
  */
+/** Canonical path (resolves symlinks such as macOS /var → /private/var) so callers compare like with like. */
+function canonical(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 export function findOrgRoot(startDir: string = process.cwd()): OrgRoot | null {
   const envRoot = process.env.SQUADS_ORG_ROOT?.trim();
   const control = controlRepoName();
   if (envRoot && isDir(envRoot)) {
-    return { root: resolve(envRoot), source: 'env', controlRepo: control };
+    return { root: canonical(envRoot), source: 'env', controlRepo: control };
   }
 
   let dir = resolve(startDir);
   let squadsProjectRoot: string | null = null;
   for (let i = 0; i < MAX_WALK_UP; i++) {
     if (isDir(join(dir, control))) {
-      return { root: dir, source: 'control-repo', controlRepo: control };
+      return { root: canonical(dir), source: 'control-repo', controlRepo: control };
     }
     if (!squadsProjectRoot && isDir(join(dir, '.agents'))) {
       squadsProjectRoot = dir;
@@ -70,7 +79,7 @@ export function findOrgRoot(startDir: string = process.cwd()): OrgRoot | null {
 
   if (squadsProjectRoot) {
     // Repos are siblings under the same parent directory.
-    return { root: dirname(squadsProjectRoot), source: 'squads-project', controlRepo: control };
+    return { root: canonical(dirname(squadsProjectRoot)), source: 'squads-project', controlRepo: control };
   }
   return null;
 }

@@ -15,6 +15,7 @@ interface AuditCommandOptions {
   json?: boolean;
   propose?: boolean;
   staleDays?: string;
+  runMetrics?: boolean;
   idleDays?: string;
 }
 
@@ -113,6 +114,7 @@ export async function auditCommand(options: AuditCommandOptions = {}): Promise<v
     staleDays: parseDays(options.staleDays, 14),
     idleDays: parseDays(options.idleDays, 30),
     propose: options.propose,
+    runMetrics: options.runMetrics === true,
     controlRepo: org.controlRepo,
   });
 

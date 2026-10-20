@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, statSync, readFileSync,
+  mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, statSync, readFileSync, existsSync, chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -17,6 +17,7 @@ const OLD = '2026-08-01T00:00:00Z';
 let root: string;
 
 beforeEach(() => {
+  cached = null;
   root = mkdtempSync(join(tmpdir(), 'squads-audit-'));
 });
 
@@ -50,8 +51,12 @@ function metricBody(command: string): string {
   return ['## Metric', '', '```sh', command, '```'].join('\n');
 }
 
+// One audit per test: unit()/codes() are called many times per test, and each
+// audit spawns git and metric commands for every unit.
+let cached: { root: string; report: ReturnType<typeof auditOrg> } | null = null;
 function unit(name: string) {
-  const report = auditOrg(root, { now: NOW });
+  if (!cached || cached.root !== root) cached = { root, report: auditOrg(root, { now: NOW, runMetrics: true }) };
+  const report = cached.report;
   const u = report.units.find((x) => x.name === name);
   if (!u) throw new Error(`unit ${name} not audited`);
   return u;
@@ -95,7 +100,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
   });
 
   it('reports exactly the expected classes per unit', () => {
-    const report = auditOrg(root, { now: NOW });
+    const report = auditOrg(root, { now: NOW, runMetrics: true });
     expect(report.units.map((u) => u.name)).toEqual(['app', 'docs-repo', 'lib', 'old', 'scratch']);
 
     expect(codes('app')).toEqual([]);
@@ -116,7 +121,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
   });
 
   it('counts gaps excluding parked/archived units', () => {
-    const report = auditOrg(root, { now: NOW });
+    const report = auditOrg(root, { now: NOW, runMetrics: true });
     // lib no-remote (1) + scratch not-in-git & unclassified (2) + docs-repo stale-doc-fact (1)
     expect(report.summary.gaps).toBe(4);
     expect(report.summary.parkedOrArchived).toBe(1);
@@ -138,7 +143,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
       return map;
     };
     const before = snapshot(root);
-    auditOrg(root, { now: NOW, propose: true });
+    auditOrg(root, { now: NOW, propose: true, runMetrics: true });
     const after = snapshot(root);
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     for (const [p, mtime] of before) {
@@ -147,7 +152,7 @@ describe('auditOrg — Check bullet 1: fixture org root classifies exactly', () 
   });
 
   it('--propose drafts one issue per gap, parked excluded, nothing filed', () => {
-    const report = auditOrg(root, { now: NOW, propose: true });
+    const report = auditOrg(root, { now: NOW, propose: true, runMetrics: true });
     const proposals = report.proposals!;
     expect(proposals).toHaveLength(4);
     expect(proposals.every((p) => p.repo !== 'old')).toBe(true);
@@ -227,7 +232,7 @@ describe('auditOrg — activity vs lifecycle', () => {
     const u = unit('zombie');
     expect(u.findings.map((f) => f.code)).toEqual(['archived-but-active']);
     expect(u.countsAsGap).toBe(false);
-    const report = auditOrg(root, { now: NOW });
+    const report = auditOrg(root, { now: NOW, runMetrics: true });
     expect(report.summary.gaps).toBe(0);
   });
 
@@ -255,9 +260,48 @@ describe('auditOrg — names table and org-level docs facts', () => {
 
   it('flags repos listed in org docs that no longer exist', () => {
     writeFileSync(join(root, 'README.md'), '# Org\n\n## Repos\n\n- `ghost` — retired last quarter\n');
-    const report = auditOrg(root, { now: NOW });
+    const report = auditOrg(root, { now: NOW, runMetrics: true });
     expect(report.orgFindings).toHaveLength(1);
     expect(report.orgFindings[0].code).toBe('stale-doc-fact');
     expect(report.orgFindings[0].message).toContain('ghost');
   });
 });
+
+describe('auditOrg — safety', () => {
+  it('does not execute declared metric commands unless runMetrics is set', () => {
+    const marker = join(root, 'metric-ran.marker');
+    const dir = join(root, 'm-optin');
+    mkdirSync(dir, { recursive: true });
+    agentsMd(dir, { kind: 'domain', lifecycle: 'active' }, metricBody(`touch '${marker}'; printf '2026-10-18 1\\n'`));
+    const off = auditOrg(root, { now: NOW }).units.find((u) => u.name === 'm-optin')!;
+    expect(off.metric).toBe('declared');
+    expect(existsSync(marker)).toBe(false);
+    const on = auditOrg(root, { now: NOW, runMetrics: true }).units.find((u) => u.name === 'm-optin')!;
+    expect(on.metric).toBe('ok');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('reports the retired kind "internal" with its replacement', () => {
+    const dir = join(root, 'k-internal');
+    mkdirSync(dir, { recursive: true });
+    agentsMd(dir, { kind: 'internal', lifecycle: 'active' }, '# x\n');
+    const u = auditOrg(root, { now: NOW }).units.find((x) => x.name === 'k-internal')!;
+    expect(u.findings.map((f) => f.code)).toContain('retired-kind');
+    expect(u.findings.find((f) => f.code === 'retired-kind')!.message).toContain('"lab"');
+  });
+
+  it('runs git hardened: a unit\'s own fsmonitor hook never executes', () => {
+    const dir = join(root, 'g-fsmonitor');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'README.md'), 'x\n');
+    initRepo(dir, { remote: 'https://example.invalid/x.git' });
+    const marker = join(root, 'fsmonitor-ran.marker');
+    const hook = join(root, 'fsmonitor-hook.sh');
+    writeFileSync(hook, `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(hook, 0o755);
+    git(dir, ['config', 'core.fsmonitor', hook]);
+    auditOrg(root, { now: NOW });
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+

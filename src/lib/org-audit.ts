@@ -3,12 +3,13 @@
  *
  * Walks an org root (see org-root.ts) and classifies every unit — git repo or
  * not — against the "company as code" contract: in git with a remote,
- * self-describing (AGENTS.md frontmatter), measured (a runnable ## Metric),
+ * self-describing (AGENTS.md frontmatter), measured (a declared ## Metric),
  * delivery basics for products, activity matching lifecycle, docs facts that
  * match derivable truth, and no retired names.
  *
  * Read-only: the audit never writes to the org root. Metric commands declared
- * by the org in AGENTS.md `## Metric` code blocks are executed to read data.
+ * in AGENTS.md `## Metric` blocks are executed only with `runMetrics` (opt-in):
+ * an org root can hold repos the operator doesn't control.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
@@ -17,11 +18,15 @@ import { spawnSync } from 'child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { listOrgUnits } from './org-root.js';
+import { hardenedGitArgs } from './harvest-guard.js';
 
-export const VALID_KINDS = ['product', 'domain', 'client', 'prospect', 'lab', 'internal'] as const;
+export const VALID_KINDS = ['product', 'domain', 'client', 'prospect', 'lab'] as const;
+/** Kinds the org retired, mapped to their replacement. */
+export const RETIRED_KINDS: Record<string, string> = { internal: 'lab' };
 export const VALID_LIFECYCLES = ['active', 'parked', 'archived'] as const;
 
-export type MetricStatus = 'undeclared' | 'no-data' | 'stale' | 'flat' | 'ok';
+/** `declared`: a command is declared but was not run (metric commands run only with runMetrics). */
+export type MetricStatus = 'undeclared' | 'declared' | 'no-data' | 'stale' | 'flat' | 'ok';
 
 export interface Finding {
   /** Check group: git | self-description | metric | delivery | activity | docs-facts | names */
@@ -79,6 +84,12 @@ export interface AuditOptions {
   propose?: boolean;
   /** Control repo directory name (for locating the org's names table). */
   controlRepo?: string;
+  /**
+   * Execute each unit's declared `## Metric` command. Off by default: an org
+   * root can hold repos the operator doesn't control, and running their
+   * commands would run their code.
+   */
+  runMetrics?: boolean;
 }
 
 const METRIC_TIMEOUT_MS = 10_000;
@@ -93,8 +104,11 @@ function isDir(p: string): boolean {
   }
 }
 
-function runGit(dir: string, args: string[]): string | null {
-  const r = spawnSync('git', args, {
+function runGit(dir: string, args: string[], hardened: string[]): string | null {
+  // Same hardening as harvest: a unit's own git config must not get hooks,
+  // fsmonitor or filter drivers executed by an audit. `hardened` is computed
+  // once per unit (it reads the unit's config).
+  const r = spawnSync('git', [...hardened, ...args], {
     cwd: dir,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
@@ -171,11 +185,12 @@ function parseMetricOutput(stdout: string): MetricPoint[] {
   return points;
 }
 
-function runMetric(dir: string, body: string, staleDays: number, now: Date): MetricStatus {
+function runMetric(dir: string, body: string, staleDays: number, now: Date, execute: boolean): MetricStatus {
   const section = extractSection(body, 'Metric');
   if (!section) return 'undeclared';
   const command = extractCommand(section);
   if (!command) return 'undeclared';
+  if (!execute) return 'declared';
 
   const r = spawnSync(command, {
     cwd: dir,
@@ -274,7 +289,7 @@ function daysBetween(a: Date, b: Date): number {
   return Math.floor((b.getTime() - a.getTime()) / MS_PER_DAY);
 }
 
-function auditUnit(orgRoot: string, name: string, retired: string[], opts: Required<Pick<AuditOptions, 'staleDays' | 'idleDays'>> & { now: Date }): UnitAudit {
+function auditUnit(orgRoot: string, name: string, retired: string[], opts: Required<Pick<AuditOptions, 'staleDays' | 'idleDays' | 'runMetrics'>> & { now: Date }): UnitAudit {
   const dir = join(orgRoot, name);
   const findings: Finding[] = [];
   const hints: string[] = [];
@@ -285,15 +300,16 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   let remoteUrl: string | null = null;
   let lastCommitAt: string | null = null;
   if (inGit) {
-    const remotes = runGit(dir, ['remote']);
+    const hardened = hardenedGitArgs(dir);
+    const remotes = runGit(dir, ['remote'], hardened);
     hasRemote = !!remotes;
     if (hasRemote) {
       const first = remotes!.split('\n')[0].trim();
-      remoteUrl = runGit(dir, ['remote', 'get-url', first]);
+      remoteUrl = runGit(dir, ['remote', 'get-url', first], hardened);
     } else {
       findings.push({ check: 'git', code: 'no-remote', message: 'git repo without a remote — work is not backed up or visible' });
     }
-    lastCommitAt = runGit(dir, ['log', '-1', '--format=%cI']);
+    lastCommitAt = runGit(dir, ['log', '-1', '--format=%cI'], hardened);
   } else {
     const hasFiles = readdirSync(dir).some((f) => !f.startsWith('.'));
     if (hasFiles) {
@@ -312,6 +328,8 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   if (unclassified) {
     findings.push({ check: 'self-description', code: 'unclassified', message: 'no AGENTS.md self-description (kind/lifecycle)' });
     hints.push(`declare this unit: add AGENTS.md with frontmatter — kind: ${VALID_KINDS.join('|')}, lifecycle: ${VALID_LIFECYCLES.join('|')}`);
+  } else if (RETIRED_KINDS[kind]) {
+    findings.push({ check: 'self-description', code: 'retired-kind', message: `AGENTS.md kind "${kind}" is retired — use "${RETIRED_KINDS[kind]}"` });
   } else if (!VALID_KINDS.includes(kind as (typeof VALID_KINDS)[number])) {
     findings.push({ check: 'self-description', code: 'unknown-kind', message: `AGENTS.md kind "${kind}" is not one of ${VALID_KINDS.join(', ')}` });
   }
@@ -327,7 +345,7 @@ function auditUnit(orgRoot: string, name: string, retired: string[], opts: Requi
   }
 
   // --- metric ---------------------------------------------------------------
-  const metric = agents ? runMetric(dir, body, opts.staleDays, opts.now) : 'undeclared';
+  const metric = agents ? runMetric(dir, body, opts.staleDays, opts.now, opts.runMetrics) : 'undeclared';
   if (!unclassified && lifecycle !== 'parked' && lifecycle !== 'archived') {
     if (metric === 'undeclared') {
       findings.push({ check: 'metric', code: 'metric-undeclared', message: 'no runnable ## Metric section in AGENTS.md' });
@@ -455,7 +473,7 @@ function buildProposals(units: UnitAudit[], date: string): Proposal[] {
 }
 
 /**
- * Audit an org root. Pure read + declared-metric execution; writes nothing.
+ * Audit an org root. Read-only; declared metric commands run only with `runMetrics`.
  */
 export function auditOrg(orgRoot: string, options: AuditOptions = {}): OrgAuditReport {
   const now = options.now ?? new Date();
@@ -465,7 +483,8 @@ export function auditOrg(orgRoot: string, options: AuditOptions = {}): OrgAuditR
 
   const unitNames = listOrgUnits(orgRoot);
   const retired = loadRetiredNames(orgRoot, controlRepo);
-  const units = unitNames.map((name) => auditUnit(orgRoot, name, retired, { staleDays, idleDays, now }));
+  const runMetrics = options.runMetrics === true;
+  const units = unitNames.map((name) => auditUnit(orgRoot, name, retired, { staleDays, idleDays, now, runMetrics }));
   const orgFindings = auditOrgDocs(orgRoot, unitNames);
 
   const gaps =
