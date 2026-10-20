@@ -8,9 +8,8 @@
  *
  * 1. `develop` → `main` is squash-merged, so `git log <tag>..develop` surfaces
  *    the previous release again after every back-merge (see RELEASING.md,
- *    "Trap: squash-merge divergence"). `--ancestry-path` keeps only commits
- *    that descend from the tag, which is precisely the work merged since the
- *    release entered develop.
+ *    "Trap: squash-merge divergence"). PRs are therefore selected by merge
+ *    time after the tag's commit, not by ancestry.
  * 2. The train never publishes. It prepares a branch and opens a PR; the
  *    maintainer merges, tags and dispatches `publish.yml`.
  *

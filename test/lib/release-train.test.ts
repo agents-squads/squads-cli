@@ -1,10 +1,13 @@
 /**
  * Tests for the weekly release train (#1320).
  *
- * The changelog/version rules run against fixture PR lists; the command test
- * injects a git runner so the dry run never touches the real repository.
+ * The changelog/version rules run against fixture PR lists; the dry-run tests
+ * inject a git runner so they never touch the real repository. The full-run
+ * test drives real git against a throwaway repo and bare origin, with npm and
+ * gh stubbed.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -27,6 +30,7 @@ import {
 } from '../../src/lib/release-train.js';
 import {
   bumpPackageFiles,
+  defaultRunner,
   releaseTrainCommand,
   type Runner,
 } from '../../src/commands/release-train.js';
@@ -428,5 +432,114 @@ describe('releaseTrainCommand --dry-run', () => {
 
     expect(code).toBe(0);
     expect(JSON.parse(out.join('')).proposed_version).toBeNull();
+  });
+});
+
+describe('releaseTrainCommand (full run)', () => {
+  let base: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+
+  afterEach(() => {
+    outSpy?.mockRestore();
+    vi.unstubAllEnvs();
+    if (base) rmSync(base, { recursive: true, force: true });
+  });
+
+  function git(cwd: string, args: string[], date?: string): string {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...(date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : {}),
+      },
+    });
+  }
+
+  function write(root: string, path: string, contents: string): void {
+    mkdirSync(join(root, path, '..'), { recursive: true });
+    writeFileSync(join(root, path), contents);
+  }
+
+  it('pushes a release branch with develop\'s tree, the bump and the changelog — never node_modules', async () => {
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'test');
+    vi.stubEnv('GIT_AUTHOR_EMAIL', 'test@example.invalid');
+    vi.stubEnv('GIT_COMMITTER_NAME', 'test');
+    vi.stubEnv('GIT_COMMITTER_EMAIL', 'test@example.invalid');
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    base = mkdtempSync(join(tmpdir(), 'release-train-full-'));
+    const origin = join(base, 'origin.git');
+    const root = join(base, 'repo');
+    git(base, ['init', '-q', '--bare', '-b', 'main', origin]);
+    git(base, ['init', '-q', '-b', 'main', root]);
+
+    write(root, '.gitignore', 'node_modules/\n');
+    write(root, 'package.json', `${JSON.stringify({ name: 'x', version: '0.10.0' }, null, 2)}\n`);
+    write(
+      root,
+      'package-lock.json',
+      `${JSON.stringify({ name: 'x', version: '0.10.0', packages: { '': { version: '0.10.0' } } }, null, 2)}\n`,
+    );
+    write(root, 'CHANGELOG.md', '# Changelog\n\n## [0.10.0] — 2026-10-14\n\n- old work (#1)\n');
+    write(root, 'templates/seed/skills/squads-cli/references/commands.md', 'squads-cli v0.10.0\n');
+    write(root, 'main-only.txt', 'removed on develop\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'release: v0.10.0'], '2026-10-14T12:00:00Z');
+    git(root, ['tag', 'v0.10.0']);
+
+    git(root, ['checkout', '-q', '-b', 'develop']);
+    git(root, ['rm', '-q', 'main-only.txt']);
+    write(root, 'feature.txt', 'new\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'feat(x): new thing (#5)'], '2026-10-16T12:00:00Z');
+
+    git(root, ['remote', 'add', 'origin', origin]);
+    git(root, ['push', '-q', 'origin', 'main', 'develop', '--tags']);
+    git(root, ['fetch', '-q', 'origin']);
+    mkdirSync(join(root, 'node_modules'));
+
+    const calls: string[] = [];
+    const runner: Runner = async (file, args, options) => {
+      calls.push(`${file} ${args.join(' ')}`);
+      if (file === 'git') return defaultRunner(file, args, options);
+      if (file === 'npm' && args.join(' ') === 'run gen:skill') {
+        const cwd = options?.cwd ?? root;
+        const { version } = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
+        write(cwd, 'templates/seed/skills/squads-cli/references/commands.md', `squads-cli v${version}\n`);
+        return '';
+      }
+      if (file === 'npm') return '';
+      if (file === 'gh' && args[1] === 'list') throw new Error('gh unavailable');
+      if (file === 'gh' && args[1] === 'create') return 'https://example.invalid/pull/1\n';
+      throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
+    };
+
+    const code = await releaseTrainCommand({ json: true }, { runner, root, today: DATE });
+
+    expect(code).toBe(0);
+    const branch = 'release/v0.11.0';
+    const files = git(origin, ['ls-tree', '-r', '--name-only', branch]).split('\n');
+    expect(files).toContain('feature.txt');
+    expect(files).not.toContain('main-only.txt');
+    expect(files.some((f) => f.startsWith('node_modules'))).toBe(false);
+    expect(JSON.parse(git(origin, ['show', `${branch}:package.json`])).version).toBe('0.11.0');
+    const changelog = git(origin, ['show', `${branch}:CHANGELOG.md`]);
+    expect(changelog).toContain(`## [0.11.0] — ${DATE}\n\n- feat(x): new thing (#5)\n\n## [0.10.0]`);
+    expect(git(origin, ['rev-parse', `${branch}^`]).trim()).toBe(git(origin, ['rev-parse', 'main']).trim());
+    expect(git(origin, ['log', '-1', '--format=%s', branch]).trim()).toBe('release: v0.11.0');
+    expect(calls.find((c) => c.startsWith('gh pr create'))).toContain('--base main');
+    expect(
+      calls.filter(
+        (c) =>
+          (c.startsWith('git tag') && !c.startsWith('git tag --sort')) ||
+          (c.startsWith('git push') && c.includes('--tags')) ||
+          c.startsWith('gh workflow') ||
+          c.startsWith('npm publish'),
+      ),
+    ).toEqual([]);
+    expect(git(root, ['worktree', 'list']).trim().split('\n')).toHaveLength(1);
   });
 });

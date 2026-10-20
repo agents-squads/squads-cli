@@ -347,6 +347,12 @@ function printChecks(checks: ReleaseCheck[]): void {
   writeLine();
 }
 
+/** The maintainer's calendar date; `toISOString` would give UTC's. */
+function localDate(now: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 export async function releaseTrainCommand(
   options: ReleaseTrainOptions = {},
   deps: ReleaseTrainDeps = {},
@@ -356,7 +362,7 @@ export async function releaseTrainCommand(
   const source = options.source ?? 'origin/develop';
   const target = options.target ?? 'main';
   const dryRun = options.dryRun === true;
-  const today = deps.today ?? new Date().toISOString().slice(0, 10);
+  const today = deps.today ?? localDate(new Date());
 
   if (options.fetch) {
     await runner('git', ['fetch', 'origin', '--tags', '--quiet'], {
@@ -483,6 +489,13 @@ export async function releaseTrainCommand(
     });
 
     await runner('git', ['add', '-A'], { cwd: worktree, timeout: GIT_TIMEOUT_MS });
+    // `node_modules` is a symlink here, and `.gitignore`'s `node_modules/`
+    // only matches directories, so `add -A` stages the link. Unstage it; an
+    // exclude pathspec instead errors when a global ignore already hides it.
+    await runner('git', ['rm', '--cached', '--ignore-unmatch', '-q', 'node_modules'], {
+      cwd: worktree,
+      timeout: GIT_TIMEOUT_MS,
+    });
     await runner('git', ['commit', '-m', `release: v${proposal.version}`], {
       cwd: worktree,
       timeout: GIT_TIMEOUT_MS,
