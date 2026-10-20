@@ -671,6 +671,35 @@ program
     return reportCommand(options);
   });
 
+// Audit command — inventory the org root: what isn't in git, declared, measured, or true (#1327)
+program
+  .command('audit')
+  .description('Audit the org root: classify every unit (git, self-description, metric, delivery, activity, docs facts, names). Read-only.')
+  .option('--json', 'Output the full report as JSON')
+  .option('--propose', 'Draft one issue per gap (draft only, never filed)')
+  .option('--stale-days <n>', 'Days before metric data counts as stale (default 14)')
+  .option('--idle-days <n>', 'Days before an active unit counts as idle (default 30)')
+  .addHelpText('after', `
+Org root discovery:
+  1. SQUADS_ORG_ROOT env override
+  2. walk up to the directory containing the control repo (SQUADS_ORG_CONTROL_REPO, default: hq)
+  3. parent of the nearest squads project (a directory holding .agents/)
+
+Self-description contract (per-unit AGENTS.md frontmatter):
+  kind: product | domain | client | prospect | lab | internal
+  lifecycle: active | parked | archived   (parked needs parked_reason + revisit)
+  ## Metric section with a fenced code block whose command prints
+  "YYYY-MM-DD <value>" lines (or a single current value).
+
+Notes:
+  Read-only: writes nothing. Declared metric commands are executed to read data.
+  Parked and archived units are listed but don't count as gaps.
+`)
+  .action(async (options) => {
+    const { auditCommand } = await import('./commands/audit.js');
+    return auditCommand(options);
+  });
+
 // Health command - quick infrastructure check
 program
   .command('health')
