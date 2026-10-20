@@ -478,15 +478,21 @@ describe('duplicate docs — one file per kind of text', () => {
     return plainUnit(name, { kind: 'domain', lifecycle: 'active', version: '1.0.0' }, metricBody("printf '2026-10-18 1\\n'"));
   }
 
+  function commitDocs(dir: string, paths: string[] = ['.']): void {
+    git(dir, ['add', '--', ...paths]);
+    git(dir, ['-c', 'user.email=audit@example.com', '-c', 'user.name=audit', 'commit', '-qm', 'docs']);
+  }
+
   function duplicateFindings(name: string) {
     return auditUnitOnly(name, { runMetrics: true }).findings.filter((f) => f.code === 'duplicate-doc');
   }
 
-  it('flags a dated pair in the same directory', () => {
+  it('flags a tracked dated pair in the same directory', () => {
     const dir = docsUnit('dated');
     mkdirSync(join(dir, 'docs'));
     writeFileSync(join(dir, 'docs', 'plan-2026-10-14.md'), '# Plan A\n\nfirst take\n');
     writeFileSync(join(dir, 'docs', 'plan-2026-10-19.md'), '# Plan B\n\nsecond take\n');
+    commitDocs(dir);
 
     const found = duplicateFindings('dated');
     expect(found).toHaveLength(1);
@@ -507,15 +513,17 @@ describe('duplicate docs — one file per kind of text', () => {
       'public issue. We acknowledge reports within two business days and',
       'coordinate disclosure after a fix is available to users.',
     ].join('\n'));
+    commitDocs(dir);
 
     expect(duplicateFindings('unrelated')).toEqual([]);
   });
 
-  it('flags a near-copy with a few edits at similarity >= 0.6', () => {
+  it('flags a tracked near-copy with a few edits at similarity >= 0.6', () => {
     const dir = docsUnit('nearcopy');
     mkdirSync(join(dir, 'docs'));
     writeFileSync(join(dir, 'docs', 'release.md'), BASE);
     writeFileSync(join(dir, 'docs', 'release-copy.md'), BASE.replace('platform', 'product').replace('publish', 'ship'));
+    commitDocs(dir);
 
     const found = duplicateFindings('nearcopy');
     expect(found).toHaveLength(1);
@@ -523,5 +531,58 @@ describe('duplicate docs — one file per kind of text', () => {
     expect(found[0].message).toContain('docs/release-copy.md');
     const similarity = Number(/similarity ([\d.]+)/.exec(found[0].message)![1]);
     expect(similarity).toBeGreaterThanOrEqual(0.6);
+  });
+
+  it('does not flag an untracked near-copy in a git repo', () => {
+    const dir = docsUnit('untracked');
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'release.md'), BASE);
+    writeFileSync(join(dir, 'docs', 'release-copy.md'), BASE);
+    commitDocs(dir, ['docs/release.md']);
+
+    expect(duplicateFindings('untracked')).toEqual([]);
+  });
+
+  it('treats 3+ same-basename files in sibling directories as data, not docs', () => {
+    const dir = docsUnit('templated');
+    for (let i = 1; i <= 5; i++) {
+      const taskDir = join(dir, 'tasks', 'tier1', String(i).padStart(2, '0'));
+      mkdirSync(taskDir, { recursive: true });
+      writeFileSync(join(taskDir, 'prompt.md'), `${BASE}\n\nvariant ${i}\n`);
+    }
+    commitDocs(dir);
+
+    expect(duplicateFindings('templated')).toEqual([]);
+  });
+
+  it('skips licenses, changelogs, conduct files and vendored trees', () => {
+    const dir = join(root, 'loose');
+    mkdirSync(dir);
+    agentsMd(dir, { kind: 'domain', lifecycle: 'active' }, metricBody("printf '2026-10-18 1\\n'"));
+    for (const name of ['LICENSE-2026-10-14.md', 'LICENSE-2026-10-19.md', 'CHANGELOG.md', 'CODE_OF_CONDUCT.md']) {
+      writeFileSync(join(dir, name), BASE);
+    }
+    for (const tree of ['.venv/site-packages', 'node_modules/pkg', 'vendor', 'dist', 'build', 'venv']) {
+      mkdirSync(join(dir, tree), { recursive: true });
+      writeFileSync(join(dir, tree, 'a.md'), BASE);
+      writeFileSync(join(dir, tree, 'b.md'), BASE);
+    }
+
+    expect(duplicateFindings('loose')).toEqual([]);
+  });
+
+  it('caps at 10 pair findings and notes how many were suppressed', () => {
+    const dir = docsUnit('capped');
+    mkdirSync(join(dir, 'docs'));
+    // 6 identical docs = C(6,2) = 15 near-duplicate pairs.
+    for (let i = 1; i <= 6; i++) writeFileSync(join(dir, 'docs', `release-${i}.md`), BASE);
+    commitDocs(dir);
+
+    const found = duplicateFindings('capped');
+    expect(found).toHaveLength(11);
+    const notes = found.filter((f) => /suppressed/.test(f.message));
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain('5 duplicate-doc finding(s) suppressed');
+    expect(found.filter((f) => /near-duplicate docs/.test(f.message))).toHaveLength(10);
   });
 });
