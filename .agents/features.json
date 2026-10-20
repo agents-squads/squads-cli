@@ -67,7 +67,8 @@
         "live": "an invalid credential ends the run in < 10 s with the typed reason in the run record"
       },
       "status": "failing",
-      "verifications": []
+      "verifications": [],
+      "note": "merged 550636c (3 review rounds, DeepSeek). Live: typed + recorded OK, but 213 s vs < 10 s (harness-internal retries) — failing until fixed; see #1298 comment"
     },
     {
       "id": "T2",
@@ -78,8 +79,17 @@
         "ci": "fixture results → correct terminal status",
         "live": "reconcile the last 7 days of runs → 0 status mismatches"
       },
-      "status": "failing",
-      "verifications": []
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/glm-5.3-flash-free",
+          "builder_model": "opencode/deepseek-v4.1-flash-free",
+          "sha": "fc9e17bf9a275dd1d3d2285980b84375dad90e69",
+          "at": "2026-10-20T08:41:34Z",
+          "run_id": "exec_mvg9bdyh_5s2m14",
+          "evidence": "https://github.com/agents-squads/squads-cli/pull/1339#issuecomment-6287015349; live: squads runs reconcile on the real ledger → 0 rows running without a live pid (was 1), 626 runs all terminal"
+        }
+      ]
     },
     {
       "id": "T3",
