@@ -75,9 +75,17 @@
         "ci": "recorded real provider error bodies → type + retry decision",
         "live": "an invalid credential ends the run in < 10 s with the typed reason in the run record"
       },
-      "status": "failing",
-      "verifications": [],
-      "note": "merged 550636c (3 review rounds, DeepSeek). Live: typed + recorded OK, but 213 s vs < 10 s (harness-internal retries) — failing until fixed; see #1298 comment"
+      "status": "passing",
+      "verifications": [
+        {
+          "model": "opencode/deepseek-v4.1-flash-free",
+          "builder_model": "claude-opus-5-5 (founder-reported, unconfirmed)",
+          "sha": "e4a25f9edf9a",
+          "at": "2026-10-21T00:40:00Z",
+          "evidence": "hq .agents/memory/engineering/pr-reviewer/verify-T1-1350.md: expired GLM plan, 5.85 s wall, plan_expired named; diff matches #1298. Orchestrator ran the same build: 9.5 s"
+        }
+      ],
+      "note": "#1350 (af0aa87) caps CLAUDE_CODE_MAX_RETRIES for claude-harness lanes on foreign endpoints. Live: expired GLM plan ends in 5.85 s (was 213 s) with plan_expired named. Open: same check for the opencode and kimi-code harnesses (#1357)"
     },
     {
       "id": "T2",
