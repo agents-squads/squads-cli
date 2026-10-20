@@ -17,6 +17,10 @@ vi.mock('../../src/lib/orchestration/lead-orchestrator.js', () => ({
   watchForEvents: vi.fn(),
 }));
 
+vi.mock('../../src/lib/lane-settings.js', () => ({
+  writeLaneSettings: vi.fn(() => '/runtime/lane-settings.json'),
+}));
+
 vi.mock('../../src/lib/mcp-config.js', () => ({
   resolveMcpConfigPath: vi.fn(),
 }));
@@ -255,9 +259,18 @@ describe('registerOrchestrateCommand', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'claude',
-      expect.arrayContaining(['--permission-mode', 'bypassPermissions']),
+      expect.arrayContaining(['--permission-mode', 'bypassPermissions', '--settings', '/runtime/lane-settings.json']),
       expect.objectContaining({ stdio: 'inherit' })
     );
+  });
+
+  it('passes the sandbox settings file to the lead in tmux mode too', async () => {
+    mockSpawn.mockReturnValue({ unref: vi.fn(), on: vi.fn() } as never);
+    const program = buildProgram();
+    await program.parseAsync(['orchestrate', 'cli'], { from: 'user' });
+
+    const tmuxArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(tmuxArgs[tmuxArgs.length - 1]).toContain("--settings '/runtime/lane-settings.json'");
   });
 
   it('passes squad env vars to spawned process', async () => {

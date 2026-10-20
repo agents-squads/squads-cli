@@ -22,8 +22,9 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { randomBytes } from 'crypto';
 import { dirname, isAbsolute, join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 export interface SandboxSettingsOptions {
   /** Worktree/project root — the agent's write root. */
@@ -36,6 +37,8 @@ export interface SandboxSettingsOptions {
   excludedCommands?: string[];
   /** Paths whose READ is denied even though default read is broad. */
   denyRead?: string[];
+  /** Paths whose WRITE is denied even when inside an allowed write root. */
+  denyWrite?: string[];
   /** Existing guardrail PreToolUse hooks to merge in (the denylist). */
   guardrailHooks?: unknown;
   /** Existing guardrail permissions (governance deny rules) to carry through. */
@@ -51,15 +54,41 @@ export const DEFAULT_ALLOWED_DOMAINS = [
   '*.googleapis.com',
 ];
 
-// Go-TLS tools fail under Seatbelt; docker is incompatible. Run them unsandboxed.
+// Go-TLS tools fail under Seatbelt. Run them unsandboxed.
 // Matching (Claude Code sandboxing docs): entries use Bash(...) rule syntax, so
 // `gh *` matches `gh api rate_limit`; but EVERY command in a call must match —
 // `gh pr view 1 | jq .`, `cd x && gh ...`, `gh ... > f`, `$(...)` stay sandboxed.
 // Lanes must issue gh as a standalone call.
-export const DEFAULT_EXCLUDED_COMMANDS = ['gh *', 'gcloud *', 'terraform *', 'docker *'];
+// Every entry is a TRUSTED ESCAPE (a matching call has full host access), so the
+// list is limited to what lanes need standalone. Tools that run arbitrary
+// user-supplied programs (container runs, terraform local-exec) are not listed.
+export const DEFAULT_EXCLUDED_COMMANDS = ['gh *', 'gcloud *'];
 
-// Default read is the whole machine minus these — credential dirs must be denied.
-export const DEFAULT_DENY_READ = ['~/.ssh', '~/.aws', '~/.config/gcloud'];
+// Default read is the whole machine minus these — credential stores must be denied.
+export const DEFAULT_DENY_READ = [
+  '~/.ssh', '~/.aws', '~/.config/gcloud',
+  '~/.config/gh', '~/.config/ghc', '~/.squads/secrets', '~/.git-credentials', '~/.netrc',
+];
+
+/**
+ * Directory for files the host executes or trusts on behalf of a lane (hook
+ * scripts, the generated settings file). It is deliberately outside every lane
+ * write root, and denied for write in the sandbox settings as well.
+ */
+export const TRUSTED_LANE_DIR_SPEC = '~/.squads/runtime';
+
+// Paths that stay read-only even when they fall inside a write root.
+export const DEFAULT_DENY_WRITE = [TRUSTED_LANE_DIR_SPEC];
+
+export function trustedLaneDir(): string {
+  const base = process.env.SQUADS_RUNTIME_DIR || join(homedir(), '.squads', 'runtime');
+  try {
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    return base;
+  } catch {
+    return mkdtempSync(join(tmpdir(), 'squads-runtime-'));
+  }
+}
 
 /** Build the Claude Code settings object (sandbox + merged guardrail hooks). */
 export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<string, unknown> {
@@ -84,6 +113,11 @@ export function buildSandboxSettings(opts: SandboxSettingsOptions): Record<strin
     filesystem: {
       allowWrite: [opts.cwd, ...(opts.writeScope ?? [])],
       denyRead: opts.denyRead ?? DEFAULT_DENY_READ,
+      denyWrite: [
+        ...(opts.denyWrite ?? DEFAULT_DENY_WRITE),
+        // Project guardrail overrides are read at spawn; a lane must not edit them.
+        join(opts.cwd, '.claude', 'guardrail.json'),
+      ],
     },
     network: { allowedDomains: opts.allowedDomains ?? DEFAULT_ALLOWED_DOMAINS },
     // Block (not prompt) non-allowed domains for headless agents. NOTE: only
@@ -107,12 +141,18 @@ export function readGuardrailHooks(guardrailPath: string | undefined): unknown {
 }
 
 /** Read the permissions (governance deny rules) out of a guardrail settings file, if any. */
-export function readGuardrailPermissions(guardrailPath: string | undefined): unknown {
+export function readGuardrailPermissions(
+  guardrailPath: string | undefined,
+  opts: { denyOnly?: boolean } = {},
+): unknown {
   if (!guardrailPath) return undefined;
   try {
     if (!existsSync(guardrailPath)) return undefined;
-    const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { permissions?: unknown };
-    return json.permissions;
+    const json = JSON.parse(readFileSync(guardrailPath, 'utf-8')) as { permissions?: { deny?: unknown } };
+    if (!opts.denyOnly) return json.permissions;
+    // Untrusted source: keep string deny rules only (can restrict, never widen).
+    const deny = json.permissions?.deny;
+    return Array.isArray(deny) ? { deny: deny.filter((r) => typeof r === 'string') } : undefined;
   } catch {
     return undefined;
   }
@@ -145,7 +185,7 @@ export function resolveSettingsDir(dir: string): string {
 
 export function writeSandboxSettingsFile(settings: Record<string, unknown>, dir: string): string {
   const target = resolveSettingsDir(dir);
-  const path = join(target, 'squads-sandbox-settings.json');
+  const path = join(target, `squads-sandbox-settings-${process.pid}-${randomBytes(4).toString('hex')}.json`);
   writeFileSync(path, JSON.stringify(settings, null, 2));
   return path;
 }

@@ -24,7 +24,7 @@ describe('buildSandboxSettings', () => {
     expect(sb.filesystem.denyRead).toContain('~/.ssh');
     expect(sb.network.allowedDomains).toEqual(DEFAULT_ALLOWED_DOMAINS);
     expect(sb.allowManagedDomainsOnly).toBe(true);
-    // gh/gcloud/docker fail under Seatbelt → excluded
+    // gh/gcloud fail under Seatbelt → excluded
     expect(sb.excludedCommands).toEqual(DEFAULT_EXCLUDED_COMMANDS);
     expect(sb.excludedCommands).toContain('gh *');
   });

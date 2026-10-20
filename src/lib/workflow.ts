@@ -48,7 +48,6 @@ import {
 } from './run-context.js';
 import {
   buildAgentEnv,
-  resolveGuardrailSettings,
 } from './execution-engine.js';
 import {
   classifyFailedRun,
@@ -60,6 +59,7 @@ import {
   describeProviderError,
   type ProviderError,
 } from './provider-errors.js';
+import { resolveLaneGuardrail } from './lane-settings.js';
 import { defaultTimeoutForRole } from './run-types.js';
 import { type ExecutionContext } from './run-types.js';
 import { loadProjectConfig } from './config.js';
@@ -96,7 +96,7 @@ import {
 import { compileAllowedTools } from './agent-contract.js';
 import { findMemoryDir } from './memory.js';
 import {
-  buildSandboxSettings, readGuardrailHooks, readGuardrailPermissions,
+  buildSandboxSettings, trustedLaneDir,
   writeSandboxSettingsFile, sandboxEnabled, sandboxStrict,
 } from './sandbox-settings.js';
 
@@ -351,7 +351,7 @@ procedures: [followed | deviated: reason]
     );
   }
 
-  const guardrailPath = resolveGuardrailSettings(spawnCwd);
+  const guardrail = resolveLaneGuardrail(spawnCwd);
   if (sandboxEnabled()) {
     // P2 default-on (#780): conversation agents run inside the OS sandbox too —
     // same settings shape as the single-agent paths, guardrail hooks merged in.
@@ -359,14 +359,17 @@ procedures: [followed | deviated: reason]
     const settings = buildSandboxSettings({
       cwd: spawnCwd,
       writeScope: memDir ? [memDir] : [],
-      guardrailHooks: readGuardrailHooks(guardrailPath),
-      guardrailPermissions: readGuardrailPermissions(guardrailPath),
+      guardrailHooks: guardrail.hooks,
+      guardrailPermissions: guardrail.permissions,
       strict: sandboxStrict(),
     });
-    claudeArgs.push('--settings', writeSandboxSettingsFile(settings, join(spawnCwd, '.git')));
+    claudeArgs.push('--settings', writeSandboxSettingsFile(settings, trustedLaneDir()));
     agentEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
-  } else if (guardrailPath) {
-    claudeArgs.push('--settings', guardrailPath);
+  } else if (guardrail.hooks || guardrail.permissions) {
+    const unsandboxed: Record<string, unknown> = {};
+    if (guardrail.hooks) unsandboxed.hooks = guardrail.hooks;
+    if (guardrail.permissions) unsandboxed.permissions = guardrail.permissions;
+    claudeArgs.push('--settings', writeSandboxSettingsFile(unsandboxed, trustedLaneDir()));
   }
   if (claudeModel) claudeArgs.push('--model', claudeModel);
 

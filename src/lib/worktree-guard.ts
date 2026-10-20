@@ -15,6 +15,7 @@
  * watching — blocking there would brick the run).
  */
 
+import { randomBytes } from 'crypto';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -92,10 +93,14 @@ export function buildWorktreeGuardHooks(scriptPath: string): Record<string, unkn
   };
 }
 
-/** Write the guard script next to the settings file; returns its path. */
+/**
+ * Write the guard script; returns its path. `dir` must be outside every lane
+ * write root (see trustedLaneDir) — the host executes this file as a hook.
+ * Owner read/exec only; unique per spawn.
+ */
 export function writeWorktreeGuardScript(primaryRoot: string, dir: string): string {
-  const path = join(dir, `worktree-guard-${Date.now()}.cjs`);
-  writeFileSync(path, buildWorktreeGuardScript(primaryRoot), { mode: 0o755 });
+  const path = join(dir, `worktree-guard-${Date.now()}-${randomBytes(4).toString('hex')}.cjs`);
+  writeFileSync(path, buildWorktreeGuardScript(primaryRoot), { mode: 0o500 });
   return path;
 }
 

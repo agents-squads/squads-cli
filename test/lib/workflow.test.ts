@@ -215,7 +215,7 @@ describe('runConversation', () => {
     expect(claudeCall).toBeDefined();
     const args = claudeCall![1] as string[];
     const settingsPath = args[args.indexOf('--settings') + 1];
-    expect(settingsPath).toMatch(/squads-sandbox-settings\.json$/);
+    expect(settingsPath).toMatch(/squads-sandbox-settings[^/]*\.json$/);
 
     const written = mockWriteFileSync.mock.calls.find((c) => String(c[0]) === settingsPath);
     expect(written).toBeDefined();

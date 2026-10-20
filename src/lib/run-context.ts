@@ -24,7 +24,8 @@
 
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, statSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { writeLaneSettings } from './lane-settings.js';
 import { findSquadsDir } from './squad-parser.js';
 import { findMemoryDir } from './memory.js';
 import { colors, RESET, writeLine } from './terminal.js';
@@ -445,10 +446,17 @@ export function resolveContextRoleFromAgent(agentPath: string, agentName: string
       excerpt,
     ].join('\n');
 
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
-    const model = process.env.SQUADS_CONTEXT_ROLE_LLM_MODEL || 'claude-haiku-4-5';
-    const out = execSync(
-      `claude --print --dangerously-skip-permissions --disable-slash-commands --model ${model} -- '${escapedPrompt}'`,
+    // The excerpt is untrusted data: no shell, validated model id, sandbox
+    // settings, and no permission bypass (headless --print denies unlisted tools).
+    const requested = process.env.SQUADS_CONTEXT_ROLE_LLM_MODEL;
+    const model = requested && /^[A-Za-z0-9._-]+$/.test(requested) ? requested : 'claude-haiku-4-5';
+    const out = execFileSync(
+      'claude',
+      [
+        '--print', '--disable-slash-commands',
+        '--settings', writeLaneSettings(process.cwd()),
+        '--model', model, '--', prompt,
+      ],
       { encoding: 'utf-8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }
     ).trim().toLowerCase();
 

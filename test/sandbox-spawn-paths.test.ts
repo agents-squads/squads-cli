@@ -27,13 +27,13 @@ function walk(dir: string): string[] {
 }
 
 describe('sandbox settings reach every Claude spawn path (#1337)', () => {
-  it('exactly three spawn sites build sandbox settings: foreground, detached, conversation', () => {
+  it('exactly these sites build sandbox settings: foreground, detached, conversation, lane-settings helper', () => {
     const sites = walk(SRC)
       .map((p) => ({ p, n: (readFileSync(p, 'utf-8').match(/buildSandboxSettings\(/g) ?? []).length }))
       .filter((s) => s.n > 0 && !s.p.endsWith('sandbox-settings.ts'))
       .map((s) => [s.p.slice(SRC.length + 1), s.n]);
-    expect(sites).toEqual(expect.arrayContaining([['lib/execution-engine.ts', 2], ['lib/workflow.ts', 1]]));
-    expect(sites).toHaveLength(2);
+    expect(sites).toEqual(expect.arrayContaining([['lib/execution-engine.ts', 2], ['lib/lane-settings.ts', 1], ['lib/workflow.ts', 1]]));
+    expect(sites).toHaveLength(3);
   });
 
   it('foreground: the written settings file is pushed as --settings in both sandbox and non-sandbox branches', () => {

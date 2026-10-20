@@ -22,6 +22,7 @@ import {
 } from '../lib/orchestration/lead-orchestrator.js';
 import { resolveMcpConfigPath } from '../lib/mcp-config.js';
 import { commandExists } from '../lib/llm-clis.js';
+import { writeLaneSettings } from '../lib/lane-settings.js';
 import { findSquadsDir, loadSquad } from '../lib/squad-parser.js';
 import { findMemoryDir } from '../lib/memory.js';
 import {
@@ -200,6 +201,9 @@ TOOL PREFERENCE: Always prefer CLI tools over MCP servers:
 IMPORTANT: When updating state.md, use ISO timestamps (e.g., 2026-01-23T02:45:00Z) not just dates.
 This allows tracking multiple executions per day.`;
 
+  // The lead runs under the same OS sandbox + guardrail settings as every other lane.
+  const settingsPath = writeLaneSettings(projectRoot);
+
   // Session name
   const sessionName = `squads-lead-${squadName}-${Date.now()}`;
 
@@ -211,6 +215,7 @@ This allows tracking multiple executions per day.`;
     const { CLAUDECODE: _cc, ...cleanOrcEnv } = process.env;
     const claude = spawn('claude', [
       '--permission-mode', 'bypassPermissions',
+      '--settings', settingsPath,
       '--mcp-config', mcpConfigPath,
       '--', leadPrompt,
     ], {
@@ -240,7 +245,7 @@ This allows tracking multiple executions per day.`;
 
     const escapedPrompt = leadPrompt.replace(/'/g, "'\\''");
 
-    const claudeCmd = `cd '${projectRoot}' && unset CLAUDECODE && claude --print --permission-mode bypassPermissions --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
+    const claudeCmd = `cd '${projectRoot}' && unset CLAUDECODE && claude --print --permission-mode bypassPermissions --settings '${settingsPath}' --mcp-config '${mcpConfigPath}' -- '${escapedPrompt}'; tmux kill-session -t ${sessionName} 2>/dev/null`;
 
     const tmux = spawn('tmux', [
       'new-session',
