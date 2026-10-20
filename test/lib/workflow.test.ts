@@ -5,7 +5,7 @@
  * - runConversation: no squads dir, no lead agent, single lead, max cycle safety
  * - saveTranscript: creates file, returns path, handles no squads dir
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 // Helper: create a mock child process that emits stream-json output then closes.
