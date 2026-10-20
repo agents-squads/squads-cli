@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { Command } from 'commander';
 
 vi.mock('../../src/lib/run-utils.js', () => ({
   getProjectRoot: vi.fn(() => process.cwd()),
@@ -21,6 +22,7 @@ vi.mock('../../src/lib/spool.js', async (importOriginal) => {
 });
 
 import { runsCommand, annotateRunCommand } from '../../src/commands/runs.js';
+import { registerRunsCommand } from '../../src/commands/runs-register.js';
 import { listDetachedRuns } from '../../src/lib/runs-inventory.js';
 import { reconcileDetachedRuns } from '../../src/lib/spool.js';
 
@@ -349,5 +351,61 @@ describe('annotateRunCommand --verdict validation (cli#1354 review F1)', () => {
       exitSpy.mockRestore();
       outSpy.mockRestore();
     }
+  });
+});
+
+describe('runs annotate --json through the Commander program (cli#1354 review F2)', () => {
+  const COMMIT = 'abc123def456';
+
+  function writeArtifactCommitEvent(runId: string): void {
+    const dir = join(root, '.agents', 'observability', 'events');
+    mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({
+      schema_version: 1,
+      v: 2,
+      runId,
+      seq: 0,
+      ts: '2026-10-20T00:00:00.000Z',
+      event: { type: 'artifact', kind: 'commit', ref: `commit ${COMMIT}` },
+    });
+    writeFileSync(join(dir, `${runId}.jsonl`), `${line}\n`);
+  }
+
+  function capturedStdout(spy: ReturnType<typeof vi.spyOn>): string {
+    return spy.mock.calls.map((c) => String(c[0])).join('');
+  }
+
+  function makeProgram(): Command {
+    const program = new Command('squads');
+    program.exitOverride();
+    registerRunsCommand(program);
+    return program;
+  }
+
+  async function runAnnotate(argv: string[]): Promise<string> {
+    writeArtifactCommitEvent('run1');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await makeProgram().parseAsync(['node', 'squads', 'runs', 'annotate', '--commit', COMMIT, ...argv]);
+      return capturedStdout(outSpy);
+    } finally {
+      exitSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+  }
+
+  it('honours the long --json flag, not just -j', async () => {
+    const out = await runAnnotate(['--json', '--verdict', 'PASS', '--findings', '2']);
+    expect(out).toContain('"ok": true');
+    expect(out).toContain('review_verdict');
+  });
+
+  it('still honours -j', async () => {
+    const out = await runAnnotate(['-j', '--verdict', 'FAIL', '--findings', '3']);
+    expect(out).toContain('"ok": true');
+    expect(out).toContain('review_verdict');
   });
 });

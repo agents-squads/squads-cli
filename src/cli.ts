@@ -69,6 +69,7 @@ import { registerGoalsCommand } from './commands/goals.js';
 import { registerCredentialsCommand } from './commands/credentials.js';
 import { registerReviewCommand } from './commands/review.js';
 import { registerBriefCommand } from './commands/brief.js';
+import { registerRunsCommand } from './commands/runs-register.js';
 
 // All other command handlers are lazy-loaded via dynamic import() inside
 // action handlers. Only the invoked command's dependencies are loaded,
@@ -1368,44 +1369,7 @@ program
 // Detached-run inventory + control (containment D4): list live background
 // runs from pid files, stop one gracefully (executor first, wrapper survives
 // to harvest + report), clean stale/orphaned leftovers.
-const runs = program
-  .command('runs')
-  .description('List live background agent runs (pid-file inventory)')
-  .option('--json', 'Output as JSON')
-  .option('--clean', 'Remove stale pid files; salvage crashed runs (harvest + record)')
-  .option('--replay <execId>', 'Re-render a finished run\'s activity feed from its recorded events')
-  .option('--report <execId>', 'Context-economy report for a finished run (per-agent cost, cache hits, per-layer)')
-  .option('--outcome <execId>', 'Did the run\'s output land? Resolve its PRs/issues live: merged/open/closed')
-  .option('--wait [runId]', 'Block until a background run ends, then print a summary (default: newest live run)')
-  .action(async (options) => {
-    const { runsCommand } = await import('./commands/runs.js');
-    return runsCommand(options);
-  });
-
-runs
-  .command('annotate')
-  .description('Attach gate result or review verdict to the run that produced a commit')
-  .requiredOption('--commit <sha>', 'Commit SHA to find the run for')
-  .option('--gate <result>', 'Gate result: pass or fail')
-  .option('--tests <count>', 'Test count as passed/total (e.g. 3104/3109)')
-  .option('--new-failures <list>', 'Comma-separated list of new failure names')
-  .option('--pr <url>', 'PR URL (for gate result)')
-  .option('--verdict <result>', 'Review verdict: PASS or FAIL')
-  .option('--findings <n>', 'Number of findings (for review verdict)')
-  .option('--severity <level>', 'Severity level (for review verdict)')
-  .option('--reviewer-run-id <id>', 'Reviewer run ID (for review verdict)')
-  .option('-j, --json', 'Output as JSON')
-  .addHelpText('after', `
-Examples:
-  $ squads runs annotate --commit abc123 --gate pass --tests 3104/3109
-  $ squads runs annotate --commit abc123 --gate fail --tests 3104/3109 --new-failures "test1,test2" --pr https://github.com/owner/repo/pull/42
-  $ squads runs annotate --commit abc123 --verdict PASS --findings 3 --severity HIGH
-  $ squads runs annotate --commit abc123 --verdict FAIL --findings 5 --reviewer-run-id run_abc123
-`)
-  .action(async (options) => {
-    const { annotateRunCommand } = await import('./commands/runs.js');
-    return annotateRunCommand(options);
-  });
+registerRunsCommand(program);
 
 // Review queue (#924 list, #933 decision verbs): everything waiting on a
 // human, one screen — and the three things a human can say to each item.
