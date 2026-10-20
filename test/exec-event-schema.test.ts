@@ -100,6 +100,10 @@ const claudeRun = [
 
 const fixture = (...p: string[]) => readFileSync(join(__dirname, 'fixtures', ...p), 'utf8');
 
+/** A native-harness lane (squads-engine) writes its own events file, so its fixture is the
+ *  persisted lines themselves rather than output from one of our stream adapters. */
+const nativeRun = fixture('native', 'events.jsonl').trim().split('\n').map((l) => JSON.parse(l) as PersistedExecEvent);
+
 /** Lifecycle events no provider stream produces: our own runner emits them. */
 const runnerEvents: ExecEvent[] = [
   { type: 'run_start', squad: 'eng', agent: 'builder', mode: 'background', model: 'sonnet', role: 'worker', startedAt: '2026-07-01T00:00:00Z', title: 't', task: 'do it' },
@@ -131,12 +135,23 @@ const harnesses: Record<string, () => PersistedExecEvent[]> = {
   'claude (stream-json)': () => runThrough('exec_claude', createClaudeStreamJsonAdapter(), claudeRun, { source: 'squads-cli', provider: 'anthropic' }),
   'opencode': () => runThrough('exec_opencode', createOpencodeStreamJsonAdapter(), fixture('opencode', 'thinking-run.jsonl')),
   'kimi-code': () => runThrough('exec_kimi', createKimiStreamJsonAdapter(), fixture('kimi-code', 'tool-run.jsonl')),
+  'native (squads-engine)': () => nativeRun,
 };
 
 describe('exec event contract (#1341)', () => {
   it('the schema describes exactly the event types the CLI has', () => {
     const described = (SCHEMA.properties!.event!.oneOf ?? []).map((s) => s.$ref!.replace('#/$defs/', ''));
     expect([...described].sort()).toEqual([...EXEC_EVENT_TYPES].sort());
+  });
+
+  it('the published package exposes the schema at its stable subpath (#1343)', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as {
+      exports: Record<string, unknown>;
+      files: string[];
+    };
+    expect(pkg.exports['./schemas/exec-event.v1.schema.json']).toBe('./schemas/exec-event.v1.schema.json');
+    expect(pkg.exports['.']).toBeDefined();
+    expect(pkg.files).toContain('schemas');
   });
 
   for (const [name, produce] of Object.entries(harnesses)) {

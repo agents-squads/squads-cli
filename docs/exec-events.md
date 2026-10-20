@@ -106,10 +106,10 @@ Rules:
   `schema_version: 1`; the file on disk is left as written.
 
 `test/exec-event-schema.test.ts` is the contract test: fixtures for the Claude, opencode and kimi-code harnesses
-plus the runner's own events go through the real writer, and every line must carry `schema_version: 1` and
-validate. It also fails if an event type exists in the CLI but not in the schema, and if a fixture event with a
-removed required field or a changed type still validates. Changing `ExecEvent` without touching the schema fails
-here.
+plus the runner's own events go through the real writer, and the native harness's engine-written fixture is
+validated directly. Every line must carry `schema_version: 1` and validate. It also fails if an event type exists
+in the CLI but not in the schema, and if a fixture event with a removed required field or a changed type still
+validates. Changing `ExecEvent` without touching the schema fails here.
 
-Not covered: a native-harness lane (`nativeEvents`) writes its own events file outside this CLI; its lines are
-held to the same contract by that harness, not by this test.
+A native-harness lane (`nativeEvents`) writes its own events file outside this CLI; `test/fixtures/native/events.jsonl`
+is the contract fixture for those engine-written lines, so they are held to the same schema here as well.

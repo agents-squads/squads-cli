@@ -12,7 +12,8 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./schemas/exec-event.v1.schema.json": "./schemas/exec-event.v1.schema.json"
   },
   "files": [
     "dist",

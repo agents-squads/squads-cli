@@ -93,7 +93,7 @@ void eventTypesCoverUnion;
 /** Envelope stamped on every persisted line. */
 export interface PersistedExecEvent {
   /** Contract version of the line (see EXEC_EVENT_SCHEMA_VERSION). Consumers check it first. */
-  schema_version: number;
+  schema_version: typeof EXEC_EVENT_SCHEMA_VERSION;
   /** v2 (#1158) adds the optional source/provider/session_id fields below;
    *  v1 lines remain valid — readers treat every v2 field as optional. */
   v: 1 | 2;
