@@ -233,6 +233,18 @@ export function parseCodexUsage(output: string, model?: string): ProviderUsage |
   return { input_tokens: input, output_tokens: output_, cost_usd: cost };
 }
 
+/**
+ * Codex sandbox for a lane's compiled tool grants. Codex cannot scope shell
+ * commands the way --allowedTools does, so workspace-write is granted only to
+ * an agent whose contract grants a file-write tool; anything else — including
+ * no allowlist at all — stays read-only, the same fail-closed default as a
+ * claude-harness lane without --allowedTools (#1073).
+ */
+export function codexSandboxMode(allowedTools?: string[]): 'workspace-write' | 'read-only' {
+  const writes = allowedTools?.some((t) => /^(write|edit|multiedit|notebookedit)\b/i.test(t.trim()));
+  return writes ? 'workspace-write' : 'read-only';
+}
+
 /** Live text for a `codex exec --json` line: agent messages only. */
 export function renderCodexLine(line: string): string | null {
   if (!line.includes('"agent_message"')) return null;
@@ -361,8 +373,10 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
   },
 
   // codex exec defaults to a read-only sandbox, so the lane could not write
-  // files: workspace-write confines writes to the lane's worktree (-C) and
-  // approval_policy=never because nobody can answer a prompt in exec mode.
+  // files: an agent granted file writes gets workspace-write, which confines
+  // writes to the lane's worktree (-C); others stay read-only
+  // (codexSandboxMode). approval_policy=never because nobody can answer a
+  // prompt in exec mode.
   // --json gives a parseable event stream for usage; agent messages render
   // live via renderLine.
   openai: {
@@ -375,7 +389,7 @@ export const LLM_CLIS: Record<string, CLIConfig> = {
       return [
         'exec',
         '--json',
-        '--sandbox', 'workspace-write',
+        '--sandbox', codexSandboxMode(opts?.allowedTools),
         '-c', 'approval_policy="never"',
         '--skip-git-repo-check',
         ...(model ? ['-m', model] : []),

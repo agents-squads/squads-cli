@@ -8,7 +8,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
 import {
-  LLM_CLIS, parseCodexUsage, renderCodexLine, resolveCodexModel, codexConfigModel,
+  LLM_CLIS, parseCodexUsage, renderCodexLine, resolveCodexModel, codexConfigModel, codexSandboxMode,
 } from '../src/lib/llm-clis.js';
 
 vi.mock('../src/lib/api-client.js', () => ({
@@ -32,7 +32,7 @@ afterEach(() => { process.env = prevEnv; });
 describe('openai lane args', () => {
   it('runs codex exec with a workspace-write sandbox, no approvals, JSON events, in the worktree', () => {
     delete process.env.OPENAI_MODEL;
-    const args = LLM_CLIS.openai.buildArgs('do it', { cwd: '/work/tree' });
+    const args = LLM_CLIS.openai.buildArgs('do it', { cwd: '/work/tree', allowedTools: ['Read', 'Write', 'Bash(git:*)'] });
     expect(args[0]).toBe('exec');
     expect(args).toContain('--json');
     expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write');
@@ -41,6 +41,16 @@ describe('openai lane args', () => {
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(args.slice(-2)).toEqual(['--', 'do it']);
     expect(LLM_CLIS.openai.stdinIgnore).toBe(true);
+  });
+
+  it('stays read-only unless the agent is granted a file-write tool', () => {
+    expect(codexSandboxMode(undefined)).toBe('read-only');
+    expect(codexSandboxMode([])).toBe('read-only');
+    expect(codexSandboxMode(['Read', 'Grep', 'Bash(git:*)'])).toBe('read-only');
+    expect(codexSandboxMode(['Read', 'Edit'])).toBe('workspace-write');
+    expect(codexSandboxMode(['Write(src/**)'])).toBe('workspace-write');
+    const args = LLM_CLIS.openai.buildArgs('x', { allowedTools: ['Read', 'Glob'] });
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('read-only');
   });
 
   it('passes an OpenAI model with -m', () => {
@@ -164,6 +174,7 @@ describe('executeWithProvider openai foreground (stub codex)', () => {
   it('records the requested OpenAI model, tokens and cost', async () => {
     const { done, argv } = await run('gpt-4o');
     expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-4o');
+    expect(argv[argv.indexOf('--sandbox') + 1]).toBe('read-only'); // no grants passed
     expect(done).toMatchObject({ status: 'completed', provider: 'openai', model: 'gpt-4o', input_tokens: 37570, output_tokens: 62 });
     expect(done.cost_usd as number).toBeGreaterThan(0);
   });
