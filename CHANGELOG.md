@@ -10,6 +10,9 @@ Releases are also published as [GitHub Releases](https://github.com/agents-squad
 ### Added
 - **Run events carry `schema_version`** (#1341). Every line in `.agents/observability/events/<run>.jsonl` and in API event batches has `schema_version: 1`, and the v1 shape is exported as `schemas/exec-event.v1.schema.json`. Additive changes keep the version; removing or renaming a field or changing a type bumps it, with a changelog entry. See `docs/exec-events.md` → "Versioning and the exported schema".
 
+### Fixed
+- **The OpenAI lane (`codex`) can write files and records what it ran.** `codex exec` now runs with `--sandbox workspace-write` in the lane's worktree and `approval_policy="never"`; before, codex's read-only default meant the lane could not write. `--model` is passed as `-m` when it is an OpenAI model name; an Anthropic name inherited from frontmatter (`sonnet`) is dropped, as on the deepseek lane. Runs use `codex exec --json`, so `executions.jsonl` gets input/output tokens and `cost_usd`, and its `model` is the one codex ran (the requested one, `OPENAI_MODEL`, or the default in `~/.codex/config.toml`), not the frontmatter `model:`.
+
 ## [0.10.1] — 2026-10-19
 
 Security patch. No new features.

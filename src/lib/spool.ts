@@ -320,7 +320,7 @@ function toRecord(spool: SpoolRecord, obsRoot: string): { record: ObservabilityR
     if (fatal && status === 'completed') { status = 'failed'; fatalError = fatal; }
     const parse = getCLIConfig(spool.provider)?.parseUsage;
     if (parse && tail) {
-      const usage = parse(tail);
+      const usage = parse(tail, model);
       if (usage) { input = usage.input_tokens; output = usage.output_tokens; cost = usage.cost_usd; }
     }
   }

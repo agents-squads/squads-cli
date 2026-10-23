@@ -2084,6 +2084,10 @@ export async function executeWithProvider(
     cwd: workDir,
   };
   const args = cliConfig.buildArgs(effectivePrompt, buildOpts);
+  // The model the lane actually runs with: a lane that resolves its own model
+  // (codex) ignores a leaked frontmatter name, so recording options.model
+  // would attribute the run to a model that never ran.
+  const laneModel = cliConfig.resolveModel ? cliConfig.resolveModel(buildOpts) : options.model;
 
   // Governed harnesses (cli#1306 opencode, cli#1309 kimi-code): permission
   // config and/or OS sandbox. Fail closed — a refused run drops the worktree
@@ -2164,7 +2168,7 @@ export async function executeWithProvider(
     squad: squadName,
     agent: agentName,
     mode: options.foreground ? 'foreground' : 'background',
-    model: options.model || '',
+    model: laneModel || '',
     role: '',
     startedAt: new Date(timestamp).toISOString(),
     ...runStartFields(options.task),
@@ -2191,7 +2195,7 @@ export async function executeWithProvider(
         squad: squadName,
         agent: agentName,
         provider,
-        model: options.model || undefined,
+        model: laneModel || undefined,
         trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
         pid: proc.pid,
         task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
@@ -2244,6 +2248,20 @@ export async function executeWithProvider(
             }
           });
           proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
+        } else if (cliConfig.renderLine) {
+          // JSONL lane without an exec-event adapter (codex): show its text, not raw events.
+          const render = cliConfig.renderLine;
+          proc.stdout?.on('data', (c: Buffer) => {
+            append(c);
+            lineBuf += c.toString('utf-8');
+            const lines = lineBuf.split('\n');
+            lineBuf = lines.pop() ?? '';
+            for (const l of lines) {
+              const text = render(l);
+              if (text) process.stdout.write(text + '\n');
+            }
+          });
+          proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
         } else {
           proc.stdout?.on('data', (c: Buffer) => { process.stdout.write(c); append(c); });
           proc.stderr?.on('data', (c: Buffer) => { process.stderr.write(c); append(c); });
@@ -2260,7 +2278,7 @@ export async function executeWithProvider(
         // Observability: every run gets a record, whatever the provider (#824).
         // Token/cost figures come from the provider's own output when parseable.
         const startMs = options.startMs || timestamp;
-        const usage = captureUsage ? cliConfig.parseUsage!(outputTail) : null;
+        const usage = captureUsage ? cliConfig.parseUsage!(outputTail, laneModel) : null;
         // Model attribution for stream-json providers (#937): the provider's
         // own output carries the real model name (e.g. deepseek-v4-flash).
         // options.model may carry a leaked Claude model from frontmatter when
@@ -2329,7 +2347,7 @@ export async function executeWithProvider(
         // terminal row.
         const billing = computeBilling({
           provider,
-          model: streamModel || kimiWire?.model || options.model || undefined,
+          model: streamModel || kimiWire?.model || laneModel || undefined,
           harness: cliConfig.kimiCodeJson ? 'kimi-code' : cliConfig.opencodeJson ? 'opencode' : 'claude',
           input_tokens: usage?.input_tokens || 0,
           output_tokens: usage?.output_tokens || 0,
@@ -2344,7 +2362,7 @@ export async function executeWithProvider(
           squad: squadName,
           agent: agentName,
           provider,
-          model: streamModel || kimiWire?.model || options.model || undefined,
+          model: streamModel || kimiWire?.model || laneModel || undefined,
           trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
           status: code === 0 && !fatal && !suspect ? 'completed' : 'failed',
           duration_ms: Date.now() - startMs,
@@ -2477,7 +2495,7 @@ export async function executeWithProvider(
         squad: squadName,
         agent: agentName,
         provider,
-        model: options.model || '',
+        model: laneModel || '',
         trigger: options.trigger || 'manual',
         logFile,
         timeoutFlag,
@@ -2545,7 +2563,7 @@ export async function executeWithProvider(
       squad: squadName,
       agent: agentName,
       provider,
-      model: options.model || undefined,
+      model: laneModel || undefined,
       trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
       status: 'failed',
       duration_ms: durationMs,
@@ -2572,7 +2590,7 @@ export async function executeWithProvider(
   // API reachability), same id as the spool's terminal report.
   void reportExecutionStart(squadName, agentName, executionId, {
     trigger: options.trigger || 'manual',
-    model: options.model,
+    model: laneModel,
     brief: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
     pid: child.pid,
   });
@@ -2581,7 +2599,7 @@ export async function executeWithProvider(
     squad: squadName,
     agent: agentName,
     provider,
-    model: options.model || undefined,
+    model: laneModel || undefined,
     trigger: (options.trigger || 'manual') as ObservabilityRecord['trigger'],
     pid: child.pid,
     task: options.task?.slice(0, TASK_BRIEF_MAX_CHARS),
