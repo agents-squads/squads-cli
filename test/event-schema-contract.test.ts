@@ -61,8 +61,10 @@ function contractFiles(): string[] {
     }
   };
   walk(join(__dirname, '..', 'schemas', 'exec-events'), ['schemas', 'exec-events']);
-  // SOURCE.json is the pin itself — the ledger cannot hash its own contents.
-  const copies = files.filter((f) => f !== 'schemas/exec-events/SOURCE.json');
+  // SOURCE.json is the pin itself — the ledger cannot hash its own contents;
+  // .npmignore is this repo's packaging (fixtures and the pin stay out of npm).
+  const local = new Set(['schemas/exec-events/SOURCE.json', 'schemas/exec-events/.npmignore']);
+  const copies = files.filter((f) => !local.has(f));
   copies.push('src/lib/event-schema-validate.ts');
   return copies;
 }

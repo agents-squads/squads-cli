@@ -19,8 +19,7 @@
   "files": [
     "dist",
     "templates",
-    "schemas/*.json",
-    "schemas/exec-events/exec-events.v2.json"
+    "schemas"
   ],
   "scripts": {
     "build": "tsup && cp -r templates dist/",
