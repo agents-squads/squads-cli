@@ -1,5 +1,5 @@
 /**
- * The event contract as data, cross-repo (issue #130): the schema, its
+ * The event contract as data, cross-repo: the schema, its
  * fixtures and the validator are copied VERBATIM from the engine — so both
  * producers are checked against one schema text, and nothing the CLI does can
  * drift it silently. Copied files are pinned by sha256 in schema/SOURCE.json
@@ -142,7 +142,7 @@ function expectIds(line: PersistedExecEvent): void {
   expect(line.ts).toBeTruthy();
 }
 
-describe('event schema v2 contract (#130) — copied files', () => {
+describe('event schema v2 contract — copied files', () => {
   it('(a) every copied file matches its sha256 in SOURCE.json, so a local edit fails', () => {
     const source = JSON.parse(readFileSync(SOURCE_PATH, 'utf8')) as { engine_commit: string; files: Record<string, string> };
     expect(source.engine_commit).toMatch(/^[0-9a-f]{40}$/);
@@ -154,7 +154,7 @@ describe('event schema v2 contract (#130) — copied files', () => {
   });
 });
 
-describe('event schema v2 contract (#130) — fixtures', () => {
+describe('event schema v2 contract — fixtures', () => {
   const valid = (p: string) => readLines(join(__dirname, '..', 'schema', 'fixtures', ...p));
   const raw = (p: string) => readFileSync(join(__dirname, '..', 'schema', 'fixtures', ...p), 'utf8');
 
@@ -191,7 +191,7 @@ describe('event schema v2 contract (#130) — fixtures', () => {
   }
 });
 
-describe('event schema v2 contract (#130) — the CLI runs against it', () => {
+describe('event schema v2 contract — the CLI runs against it', () => {
   it('(c) every line the real writer persists validates', () => {
     const all = Object.entries(harnesses).flatMap(([name, produceLines]) => expectLines(name, produceLines()));
     expect(all.length).toBeGreaterThan(15);
@@ -224,11 +224,11 @@ describe('event schema v2 contract (#130) — the CLI runs against it', () => {
     expect(issues.length).toBeGreaterThan(0);
   });
 
-  it("(d) deleting `schema_version` from a persisted CLI line still validates — it is optional because the engine's lines do not carry it", () => {
+  it('(d) deleting `schema_version` from a persisted CLI line fails: both producers stamp it, so the contract requires it', () => {
     const line = harnesses['claude (stream-json)']()[0] as unknown;
     const copy = JSON.parse(JSON.stringify(line)) as { schema_version?: number; event: { type: string } };
     expect(copy.schema_version).toBeDefined();
     delete copy.schema_version;
-    expect(validate(SCHEMA, copy, DEFS), JSON.stringify(copy)).toEqual([]);
+    expect(validate(SCHEMA, copy, DEFS).map(i => i.message).join(' ')).toContain('schema_version');
   });
 });

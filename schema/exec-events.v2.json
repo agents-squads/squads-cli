@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/agents-squads/squads-engine/schema/exec-events.v2.json",
   "title": "Execution event — v2 envelope",
-  "description": "The one event contract across both producers (framework §10.7, §12.2 drift guard). SOURCE OF TRUTH: squads-cli's writer, src/lib/exec-events.ts (the ExecEvent union and PersistedExecEvent envelope, origin/develop). The engine's src/events/exec-events.ts is a subset mirror of the same shape. This schema covers the UNION of the two producers and invents nothing. `schema_version` is the contract version squads-cli stamps on every persisted line (EXEC_EVENT_SCHEMA_VERSION = 1; the engine does not yet stamp it, so it is optional here) and is distinct from `v`, the envelope revision (1 | 2: v2 adds the optional source/provider/session_id fields). `ts` is the event time; `sensitivity` is the optional sensitivity stamp (low = lifecycle/usage, moderate = text and excerpts, high = redaction fired). The conversation `turn` record (src/chat/conversation.ts, Entry t:'turn') is defined under #/definitions/turn.",
+  "description": "The one event contract across both producers. SOURCE OF TRUTH: squads-cli's writer, src/lib/exec-events.ts (the ExecEvent union and PersistedExecEvent envelope, origin/develop). The engine's src/events/exec-events.ts is a subset mirror of the same shape. This schema covers the UNION of the two producers and invents nothing. `schema_version` is the contract version both producers stamp on every persisted line (the shared EXEC_EVENT_SCHEMA_VERSION constant = 1, required; legacy lines that predate the stamp are defaulted by readers, the way squads-cli's own replay reader does) and is distinct from `v`, the envelope revision (1 | 2: v2 adds the optional source/provider/session_id fields). `ts` is the event time; `sensitivity` is the optional sensitivity stamp (low = lifecycle/usage, moderate = text and excerpts, high = redaction fired). The conversation `turn` record (src/chat/conversation.ts, Entry t:'turn') is defined under #/definitions/turn.",
   "type": "object",
-  "required": ["v", "runId", "seq", "ts", "event"],
+  "required": ["schema_version", "v", "runId", "seq", "ts", "event"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": 1, "description": "contract version of the line, as written by squads-cli (engine lines do not carry it yet)." },
+    "schema_version": { "const": 1, "description": "contract version of the line, as written by both producers: the shared EXEC_EVENT_SCHEMA_VERSION constant (1). Required — readers may still default legacy lines that predate the stamp, the way squads-cli's own replay reader does." },
     "v": { "enum": [1, 2], "description": "envelope revision: v2 adds source/provider/session_id; v1 lines remain valid." },
     "runId": { "type": "string", "minLength": 1, "description": "run id; monotonic sequence numbers are scoped to it." },
     "root": { "type": "string", "description": "root of the dispatch chain (squads-cli), when the nested run root differs from runId." },
@@ -334,6 +334,17 @@
             "type": { "const": "convergence_blocked" },
             "outstanding": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "the task store's open records, `id:status`." }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "tool"],
+          "properties": {
+            "type": { "const": "ask" },
+            "id": { "type": "string", "description": "the ask's id; a headless caller answers it with --answer <id>=yes|no[:reason]." },
+            "tool": { "type": "string", "description": "the tool the engine wants to run." },
+            "reason": { "type": "string", "description": "why it had to ask." }
+          }
         }
       ]
     },
@@ -352,9 +363,9 @@
         "output": { "type": "number", "minimum": 0 },
         "cost": { "type": ["number", "null"], "description": "USD, or null when the model has no known price (or it ran on a subscription)." },
         "billing": { "enum": ["subscription"], "description": "ran on the person's subscription (Claude Code login): no per-token bill." },
-        "ms": { "type": "number", "minimum": 0, "description": "the wall time the person waited, from send to result (#124)." },
-        "firstTokenMs": { "type": "number", "minimum": 0, "description": "ms from the person's message to the first text, when known (#122)." },
-        "apiMs": { "type": "number", "minimum": 0, "description": "the provider's own API time, when reported (#124)." },
+        "ms": { "type": "number", "minimum": 0, "description": "the wall time the person waited, from send to result." },
+        "firstTokenMs": { "type": "number", "minimum": 0, "description": "ms from the person's message to the first text, when known." },
+        "apiMs": { "type": "number", "minimum": 0, "description": "the provider's own API time, when reported." },
         "retries": { "type": "number", "minimum": 0, "description": "provider retries during the turn, when any." },
         "compactions": { "type": "number", "minimum": 0, "description": "context compactions during the turn (Claude lane), when any." },
         "steers": { "type": "number", "minimum": 0, "description": "steers delivered into this turn, when any (both lanes)." },

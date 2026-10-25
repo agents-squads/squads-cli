@@ -4,7 +4,7 @@
  * squads-engine checkout into this repo, and rewrite schema/SOURCE.json with
  * the engine commit and each copied file's sha256.
  *
- * The contract is engine-owned data (issue #130): the schema files and the
+ * The contract is engine-owned data: the schema files and the
  * validator under src/lib/event-schema-validate.ts are copied VERBATIM — a
  * local edit makes the contract test (test/event-schema-contract.test.ts)
  * fail on the hash check. Re-copy after an engine update; never hand-edit.

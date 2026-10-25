@@ -1,7 +1,7 @@
 /**
- * Minimal JSON Schema validator for the subset `schema/*.json` uses (issue #130).
+ * Minimal JSON Schema validator for the subset `schema/*.json` uses.
  *
- * The on-disk event format is the source of truth (§12.2), so it must be DATA:
+ * The on-disk event format is the source of truth, so it must be DATA:
  * a JSON Schema checked by a validator that lives in this tree — zero runtime
  * dependencies — instead of one hand-kept TypeScript copy of the same contract.
  *
@@ -21,12 +21,24 @@ export interface ValidationIssue {
 }
 
 /**
- * RFC 3339 date-time, shape-checked with gregorian ranges. `Date.parse`
- * is deliberately NOT used here: it accepts across-the-map junk, and the
- * format keyword exists so a mangled `ts`/`startedAt` stamp fails loudly
- * instead of validating clean.
+ * RFC 3339 date-time, shape-checked against the gregorian calendar: the date
+ * part is captured so the day is checked against the month's own length —
+ * February 30th, April 31st or a non-leap February 29th do not exist.
+ * `Date.parse` is deliberately NOT used here: it accepts
+ * across-the-map junk, and the format keyword exists so a mangled
+ * `ts`/`startedAt` stamp fails loudly instead of validating clean.
  */
-const DATE_TIME = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const DATE_TIME = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
+
+/** That month really has that day. */
+function gregorianDateValid(s: string): boolean {
+  const m = DATE_TIME.exec(s);
+  if (!m) return false;
+  const year = Number(m[1]!), month = Number(m[2]!), day = Number(m[3]!);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const days = month === 2 ? (leap ? 29 : 28) : month <= 7 ? (month % 2 === 1 ? 31 : 30) : (month % 2 === 1 ? 30 : 31);
+  return day <= days;
+}
 
 export type JsonSchema = Record<string, unknown>;
 export type Definitions = Record<string, JsonSchema>;
@@ -150,7 +162,7 @@ function check(schema: unknown, data: unknown, path: string, defs: Definitions, 
   if (schema.format === 'date-time') {
     if (typeof data !== 'string') {
       issues.push({ path, message: `expected a date-time string, got ${jsonType(data)}` });
-    } else if (!DATE_TIME.test(data)) {
+    } else if (!gregorianDateValid(data)) {
       issues.push({ path, message: `not a valid RFC 3339 date-time: ${JSON.stringify(data.slice(0, 40))}` });
     }
   }
