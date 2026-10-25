@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/agents-squads/squads-engine/schema/exec-events.v2.json",
+  "$id": "urn:squads:exec-events:v2",
   "title": "Execution event — v2 envelope",
   "description": "The one event contract across both producers. SOURCE OF TRUTH: squads-cli's writer, src/lib/exec-events.ts (the ExecEvent union and PersistedExecEvent envelope, origin/develop). The engine's src/events/exec-events.ts is a subset mirror of the same shape. This schema covers the UNION of the two producers and invents nothing. `schema_version` is the contract version both producers stamp on every persisted line (the shared EXEC_EVENT_SCHEMA_VERSION constant = 1, required; legacy lines that predate the stamp are defaulted by readers, the way squads-cli's own replay reader does) and is distinct from `v`, the envelope revision (1 | 2: v2 adds the optional source/provider/session_id fields). `ts` is the event time; `sensitivity` is the optional sensitivity stamp (low = lifecycle/usage, moderate = text and excerpts, high = redaction fired). The conversation `turn` record (src/chat/conversation.ts, Entry t:'turn') is defined under #/definitions/turn.",
   "type": "object",
