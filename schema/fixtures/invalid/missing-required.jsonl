@@ -1,0 +1,3 @@
+{"v":2,"runId":"run_fixture","seq":0,"source":"squads-engine","event":{"type":"run_start","squad":"engine","mode":"native","model":"glm-4.7","role":"worker","startedAt":"2026-10-25T00:00:00.000Z"}}
+{"v":2,"runId":"run_fixture","seq":1,"ts":"2026-10-25T00:00:01.000Z","source":"squads-engine","event":{"type":"message","role":"assistant"}}
+{"v":2,"runId":"run_fixture","seq":2,"ts":"2026-10-25T00:00:02.000Z","source":"squads-engine","event":{"type":"token_usage","input":1200,"output":80,"cacheRead":300,"cacheWrite":0,"costEst":0.00042}}

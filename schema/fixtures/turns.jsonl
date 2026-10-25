@@ -1,0 +1,2 @@
+{"t":"turn","provider":"glm","model":"glm-4.7","input":1200,"cacheRead":300,"output":80,"cost":0.00042,"ms":2310,"firstTokenMs":410,"apiMs":1800,"retries":1,"compactions":0,"steers":2,"mode":"work","at":1767000000000}
+{"t":"turn","provider":"claude","model":"claude-opus-5-5","input":900,"output":40,"cost":null,"billing":"subscription","ms":5000,"at":1767000000000}

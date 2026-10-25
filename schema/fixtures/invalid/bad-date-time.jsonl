@@ -1,0 +1,2 @@
+{"v":2,"runId":"run_fixture","seq":0,"ts":"2026-10-25 00:00:00.000Z","source":"squads-engine","event":{"type":"message","role":"assistant","text":"a ts with a space instead of T is not RFC 3339"}}
+{"v":2,"runId":"run_fixture","seq":1,"ts":"2026-10-25T00:00:01.000Z","source":"squads-engine","event":{"type":"run_start","squad":"engine","mode":"native","model":"m","role":"worker","startedAt":"nope"}}
