@@ -23,15 +23,15 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const engineDir = resolve(root, process.argv[2] ?? '../squads-engine');
 
-/** Engine path → repo path. Identical names except the validator's new home. */
+/** Engine path → repo path. Under schemas/exec-events/ (the package's exported schemas dir); the validator in src/lib. */
 const FILES = [
-  ['schema/exec-events.v2.json', 'schema/exec-events.v2.json'],
-  ['schema/fixtures/events.jsonl', 'schema/fixtures/events.jsonl'],
-  ['schema/fixtures/turns.jsonl', 'schema/fixtures/turns.jsonl'],
-  ['schema/fixtures/invalid/bad-date-time.jsonl', 'schema/fixtures/invalid/bad-date-time.jsonl'],
-  ['schema/fixtures/invalid/missing-required.jsonl', 'schema/fixtures/invalid/missing-required.jsonl'],
-  ['schema/fixtures/invalid/unknown-event-type.jsonl', 'schema/fixtures/invalid/unknown-event-type.jsonl'],
-  ['schema/fixtures/invalid/unknown-schema-version.jsonl', 'schema/fixtures/invalid/unknown-schema-version.jsonl'],
+  ['schema/exec-events.v2.json', 'schemas/exec-events/exec-events.v2.json'],
+  ['schema/fixtures/events.jsonl', 'schemas/exec-events/fixtures/events.jsonl'],
+  ['schema/fixtures/turns.jsonl', 'schemas/exec-events/fixtures/turns.jsonl'],
+  ['schema/fixtures/invalid/bad-date-time.jsonl', 'schemas/exec-events/fixtures/invalid/bad-date-time.jsonl'],
+  ['schema/fixtures/invalid/missing-required.jsonl', 'schemas/exec-events/fixtures/invalid/missing-required.jsonl'],
+  ['schema/fixtures/invalid/unknown-event-type.jsonl', 'schemas/exec-events/fixtures/invalid/unknown-event-type.jsonl'],
+  ['schema/fixtures/invalid/unknown-schema-version.jsonl', 'schemas/exec-events/fixtures/invalid/unknown-schema-version.jsonl'],
   ['src/schema/validate.ts', 'src/lib/event-schema-validate.ts'],
 ];
 
@@ -62,9 +62,9 @@ for (const [, dst] of FILES) {
   files[dst] = createHash('sha256').update(readFileSync(join(root, dst))).digest('hex');
 }
 
-rmSync(join(root, 'schema', 'SOURCE.json'), { force: true });
+rmSync(join(root, 'schemas', 'exec-events', 'SOURCE.json'), { force: true });
 writeFileSync(
-  join(root, 'schema', 'SOURCE.json'),
+  join(root, 'schemas', 'exec-events', 'SOURCE.json'),
   JSON.stringify({ engine_commit: engineCommit, files }, null, 2) + '\n',
 );
-console.log(`synced ${FILES.length} files from squads-engine ${engineCommit} → schema/SOURCE.json rewritten`);
+console.log(`synced ${FILES.length} files from squads-engine ${engineCommit} → schemas/exec-events/SOURCE.json rewritten`);

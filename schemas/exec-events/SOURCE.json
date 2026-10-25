@@ -1,0 +1,13 @@
+{
+  "engine_commit": "2fbdbc8a1aee0020a2aef5dca7c82a083108ffa0",
+  "files": {
+    "schemas/exec-events/exec-events.v2.json": "2c5c91d26c03b5c4a1de1528950af05126749dd4e531323cfabffdbb5663c4a9",
+    "schemas/exec-events/fixtures/events.jsonl": "fb8e7cc25a9944bcf2d335786b0632163b4936e0e457965bf1646da2aefd723c",
+    "schemas/exec-events/fixtures/turns.jsonl": "c56fe7d1c16c60479e7c10841295a0ad0a5df2ff0f8cfa0fa94ded30899e3b1f",
+    "schemas/exec-events/fixtures/invalid/bad-date-time.jsonl": "9ef63416f8b843d291f4e2d4aec0b9f52b37c0825bef6b954ad344da70e2168b",
+    "schemas/exec-events/fixtures/invalid/missing-required.jsonl": "cc1c87ce996a5eb14030966d572e52a55a4e699574c2b328e76a32b275e49cb2",
+    "schemas/exec-events/fixtures/invalid/unknown-event-type.jsonl": "200d547ee4b644a942e0b1146066d1d417454a31f172462d726b52dc3d297911",
+    "schemas/exec-events/fixtures/invalid/unknown-schema-version.jsonl": "a5f75036938e75db409b7227cc52e154e1ba52bf1fd6c96795afb5e3544b23bf",
+    "src/lib/event-schema-validate.ts": "3cb16d0484fbac0ba79f7410ea01205d91f4b4b133dba4df3de5de222fe1f889"
+  }
+}

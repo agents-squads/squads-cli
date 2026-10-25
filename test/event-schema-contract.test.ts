@@ -2,7 +2,7 @@
  * The event contract as data, cross-repo: the schema, its
  * fixtures and the validator are copied VERBATIM from the engine — so both
  * producers are checked against one schema text, and nothing the CLI does can
- * drift it silently. Copied files are pinned by sha256 in schema/SOURCE.json
+ * drift it silently. Copied files are pinned by sha256 in schemas/exec-events/SOURCE.json
  * (a local edit here fails the hash check; re-copy with
  * `node scripts/sync-event-schema.mjs [engineDir]`).
  *
@@ -35,8 +35,8 @@ import {
   type ProviderEventAdapter,
 } from '../src/lib/exec-events.js';
 
-const SCHEMA_PATH = join(__dirname, '..', 'schema', 'exec-events.v2.json');
-const SOURCE_PATH = join(__dirname, '..', 'schema', 'SOURCE.json');
+const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'exec-events', 'exec-events.v2.json');
+const SOURCE_PATH = join(__dirname, '..', 'schemas', 'exec-events', 'SOURCE.json');
 
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8')) as Schema;
 
@@ -60,9 +60,9 @@ function contractFiles(): string[] {
       else files.push([...prefix, name].join('/'));
     }
   };
-  walk(join(__dirname, '..', 'schema'), ['schema']);
+  walk(join(__dirname, '..', 'schemas', 'exec-events'), ['schemas', 'exec-events']);
   // SOURCE.json is the pin itself — the ledger cannot hash its own contents.
-  const copies = files.filter((f) => f !== 'schema/SOURCE.json');
+  const copies = files.filter((f) => f !== 'schemas/exec-events/SOURCE.json');
   copies.push('src/lib/event-schema-validate.ts');
   return copies;
 }
@@ -155,8 +155,8 @@ describe('event schema v2 contract — copied files', () => {
 });
 
 describe('event schema v2 contract — fixtures', () => {
-  const valid = (p: string) => readLines(join(__dirname, '..', 'schema', 'fixtures', ...p));
-  const raw = (p: string) => readFileSync(join(__dirname, '..', 'schema', 'fixtures', ...p), 'utf8');
+  const valid = (p: string) => readLines(join(__dirname, '..', 'schemas', 'exec-events', 'fixtures', ...p));
+  const raw = (p: string) => readFileSync(join(__dirname, '..', 'schemas', 'exec-events', 'fixtures', ...p), 'utf8');
 
   it('(b) every event fixture line validates', () => {
     const lines = valid(['events.jsonl']);

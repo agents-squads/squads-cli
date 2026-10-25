@@ -13,7 +13,8 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./schemas/exec-event.v1.schema.json": "./schemas/exec-event.v1.schema.json"
+    "./schemas/exec-event.v1.schema.json": "./schemas/exec-event.v1.schema.json",
+    "./schemas/exec-events.v2.json": "./schemas/exec-events/exec-events.v2.json"
   },
   "files": [
     "dist",
