@@ -1,0 +1,3 @@
+{"v":2,"runId":"run_fixture","seq":0,"ts":"2026-10-25 00:00:00.000Z","source":"squads-engine","event":{"type":"message","role":"assistant","text":"a ts with a space instead of T is not RFC 3339"}}
+{"v":2,"runId":"run_fixture","seq":1,"ts":"2026-10-25T00:00:01.000Z","source":"squads-engine","event":{"type":"run_start","squad":"engine","mode":"native","model":"m","role":"worker","startedAt":"nope"}}
+{"schema_version":1,"v":2,"runId":"run_fixture","seq":2,"ts":"2026-02-30T00:00:00.000Z","source":"squads-engine","event":{"type":"message","role":"assistant","text":"an impossible date: February 30th does not exist"}}

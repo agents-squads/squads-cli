@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "urn:squads:exec-events:v2",
+  "title": "Execution event — v2 envelope",
+  "description": "The one event contract across both producers. SOURCE OF TRUTH: squads-cli's writer, src/lib/exec-events.ts (the ExecEvent union and PersistedExecEvent envelope, origin/develop). The engine's src/events/exec-events.ts is a subset mirror of the same shape. This schema covers the UNION of the two producers and invents nothing. `schema_version` is the contract version both producers stamp on every persisted line (the shared EXEC_EVENT_SCHEMA_VERSION constant = 1, required; legacy lines that predate the stamp are defaulted by readers, the way squads-cli's own replay reader does) and is distinct from `v`, the envelope revision (1 | 2: v2 adds the optional source/provider/session_id fields). `ts` is the event time; `sensitivity` is the optional sensitivity stamp (low = lifecycle/usage, moderate = text and excerpts, high = redaction fired). The conversation `turn` record (src/chat/conversation.ts, Entry t:'turn') is defined under #/definitions/turn.",
+  "type": "object",
+  "required": ["schema_version", "v", "runId", "seq", "ts", "event"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1, "description": "contract version of the line, as written by both producers: the shared EXEC_EVENT_SCHEMA_VERSION constant (1). Required — readers may still default legacy lines that predate the stamp, the way squads-cli's own replay reader does." },
+    "v": { "enum": [1, 2], "description": "envelope revision: v2 adds source/provider/session_id; v1 lines remain valid." },
+    "runId": { "type": "string", "minLength": 1, "description": "run id; monotonic sequence numbers are scoped to it." },
+    "root": { "type": "string", "description": "root of the dispatch chain (squads-cli), when the nested run root differs from runId." },
+    "seq": { "type": "integer", "minimum": 0, "description": "sequence number, monotonic and unique per run." },
+    "ts": { "type": "string", "format": "date-time", "description": "RFC 3339, when the event was emitted." },
+    "agent": { "type": "string", "description": "which agent in the run produced this event, when known." },
+    "source": { "type": "string", "description": "emitting runtime (v2): squads-cli | squads-engine | claude-code | claude-code-headless | opencode." },
+    "provider": { "type": "string", "description": "LLM provider serving the run (v2): anthropic | deepseek | glm | ..." },
+    "session_id": { "type": "string", "description": "Claude Code session uuid backing the run, when known (v2)." },
+    "sensitivity": { "enum": ["low", "moderate", "high"], "description": "how sensitive the event is (squads-cli#1275, additive): a run_start that carries a task holds free text no pattern can fully redact." },
+    "event": { "$ref": "#/definitions/event" }
+  },
+  "definitions": {
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "squad", "mode", "model", "role", "startedAt"],
+          "properties": {
+            "type": { "const": "run_start" },
+            "squad": { "type": "string" },
+            "agent": { "type": "string" },
+            "mode": { "type": "string" },
+            "model": { "type": "string" },
+            "role": { "type": "string" },
+            "startedAt": { "type": "string", "format": "date-time" },
+            "title": { "type": "string", "description": "one-line run title: the task's first line, at most 100 characters (squads-cli#1275 part 2)." },
+            "task": { "type": "string", "description": "the full (redacted) task." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "role", "text"],
+          "properties": {
+            "type": { "const": "message" },
+            "role": { "enum": ["assistant", "user"] },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "text"],
+          "properties": {
+            "type": { "const": "reasoning" },
+            "text": { "type": "string" },
+            "step": { "type": "number", "description": "the session step (kimi wire log): the step-th assistant turn." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "input", "output", "cacheRead", "cacheWrite", "costEst", "model"],
+          "properties": {
+            "type": { "const": "usage_running" },
+            "input": { "type": "number", "minimum": 0 },
+            "output": { "type": "number", "minimum": 0 },
+            "cacheRead": { "type": "number", "minimum": 0 },
+            "cacheWrite": { "type": "number", "minimum": 0 },
+            "costEst": { "type": "number", "minimum": 0 },
+            "model": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "layers", "totalTokensEst", "budgetTokens"],
+          "properties": {
+            "type": { "const": "context_assembled" },
+            "layers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["layer", "name", "chars", "tokensEst", "evicted"],
+                "description": "the producer's shape (squads-cli src/lib/exec-events.ts ContextLayerStat — the engine's mirror type never had a producer, so the CLI's is the contract).",
+                "properties": {
+                  "layer": { "type": "integer", "description": "layer id in the Squad Context System (1=company … 9/10=founder)." },
+                  "name": { "type": "string" },
+                  "chars": { "type": "integer", "minimum": 0, "description": "chars actually injected (post-truncation); 0 when evicted." },
+                  "tokensEst": { "type": "number", "minimum": 0 },
+                  "evicted": { "type": "boolean", "description": "true when the layer had content but the budget refused it entirely." }
+                }
+              }
+            },
+            "totalTokensEst": { "type": "number", "minimum": 0 },
+            "budgetTokens": { "type": "number", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "tool", "inputSummary"],
+          "properties": {
+            "type": { "const": "tool_call" },
+            "tool": { "type": "string" },
+            "inputSummary": { "type": "string", "description": "one kept value, for feeds; must never include secret values." },
+            "args": { "type": "string", "description": "the whole arguments as JSON, when there are any (squads-cli#1318)." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "tool", "ok", "summary"],
+          "properties": {
+            "type": { "const": "tool_result" },
+            "tool": { "type": "string" },
+            "ok": { "type": "boolean" },
+            "summary": { "type": "string", "description": "a short excerpt for feeds (empty for file-reading and secret-file tools)." },
+            "text": { "type": "string", "description": "the whole result, when kept (squads-cli#1318; a secret file keeps none)." },
+            "chars": { "type": "integer", "minimum": 0, "description": "the result's chars before redaction." },
+            "sha256": { "type": "string", "description": "the result's hash before redaction." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path"],
+          "properties": {
+            "type": { "const": "file_read" },
+            "path": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path", "bytes"],
+          "properties": {
+            "type": { "const": "file_write" },
+            "path": { "type": "string" },
+            "bytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "url"],
+          "properties": {
+            "type": { "const": "web_fetch" },
+            "url": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "childRunId", "squad", "agent", "task"],
+          "properties": {
+            "type": { "const": "subagent_spawn" },
+            "childRunId": { "type": "string" },
+            "squad": { "type": "string" },
+            "agent": { "type": "string" },
+            "task": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "childRunId", "agent", "ok"],
+          "properties": {
+            "type": { "const": "subagent_done" },
+            "childRunId": { "type": "string" },
+            "agent": { "type": "string" },
+            "ok": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "input", "output", "cacheRead", "cacheWrite", "costEst", "model"],
+          "properties": {
+            "type": { "const": "token_usage" },
+            "input": { "type": "number", "minimum": 0 },
+            "output": { "type": "number", "minimum": 0 },
+            "cacheRead": { "type": "number", "minimum": 0 },
+            "cacheWrite": { "type": "number", "minimum": 0 },
+            "costEst": { "type": "number", "minimum": 0 },
+            "model": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "kind", "ref"],
+          "properties": {
+            "type": { "const": "artifact" },
+            "kind": { "enum": ["commit", "pr", "issue", "file"] },
+            "ref": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "ok", "durationMs", "totalUsage"],
+          "properties": {
+            "type": { "const": "run_end" },
+            "ok": { "type": "boolean" },
+            "durationMs": { "type": "number", "minimum": 0 },
+            "totalUsage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["input", "output", "cacheRead", "cacheWrite", "costEst"],
+              "properties": {
+                "input": { "type": "number", "minimum": 0 },
+                "output": { "type": "number", "minimum": 0 },
+                "cacheRead": { "type": "number", "minimum": 0 },
+                "cacheWrite": { "type": "number", "minimum": 0 },
+                "costEst": { "type": "number", "minimum": 0 },
+                "model": { "type": "string", "description": "which model produced the totals, when the writer knows it (real CLI runs stamp it; cli#1355 lineage)." }
+              }
+            },
+            "outcomes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["actions", "files_edited", "commits", "prs_created", "issues_created"],
+              "properties": {
+                "actions": { "type": "integer", "minimum": 0 },
+                "files_edited": { "type": "integer", "minimum": 0 },
+                "commits": { "type": "integer", "minimum": 0 },
+                "prs_created": { "type": "integer", "minimum": 0 },
+                "issues_created": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "errorType", "retryable", "message"],
+          "properties": {
+            "type": { "const": "error" },
+            "errorType": { "type": "string", "description": "one of plan_expired · quota_exhausted · auth_invalid · rate_limited · overloaded · bad_request · network · unknown (squads-cli#1298)." },
+            "retryable": { "type": "boolean" },
+            "message": { "type": "string" },
+            "provider": { "type": "string" },
+            "status": { "type": "number", "description": "the HTTP status, when the provider reported one." },
+            "providerCode": { "type": "string" },
+            "attempt": { "type": "integer", "description": "set when a retryable class was backed off and re-tried." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "droppedCount", "reason"],
+          "properties": {
+            "type": { "const": "truncated" },
+            "droppedCount": { "type": "integer", "minimum": 0 },
+            "reason": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "ok", "newFailures", "tests", "sha"],
+          "properties": {
+            "type": { "const": "gate_result" },
+            "ok": { "type": "boolean" },
+            "newFailures": { "type": "array", "items": { "type": "string" } },
+            "tests": { "type": "string" },
+            "prUrl": { "type": "string" },
+            "sha": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "pr", "verdict", "findings", "sha"],
+          "properties": {
+            "type": { "const": "review_verdict" },
+            "pr": { "type": "string" },
+            "verdict": { "enum": ["PASS", "FAIL"] },
+            "findings": { "type": "number" },
+            "severity": { "type": "string" },
+            "reviewerRunId": { "type": "string" },
+            "sha": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "taskId", "subject"],
+          "properties": {
+            "type": { "const": "task_created" },
+            "taskId": { "type": "string" },
+            "subject": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "taskId", "owner"],
+          "properties": {
+            "type": { "const": "task_claimed" },
+            "taskId": { "type": "string" },
+            "owner": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "taskId"],
+          "properties": {
+            "type": { "const": "task_completed" },
+            "taskId": { "type": "string" },
+            "owner": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "taskId", "reason"],
+          "properties": {
+            "type": { "const": "task_blocked" },
+            "taskId": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "outstanding"],
+          "properties": {
+            "type": { "const": "convergence_blocked" },
+            "outstanding": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "the task store's open records, `id:status`." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "tool"],
+          "properties": {
+            "type": { "const": "ask" },
+            "id": { "type": "string", "description": "the ask's id; a headless caller answers it with --answer <id>=yes|no[:reason]." },
+            "tool": { "type": "string", "description": "the tool the engine wants to run." },
+            "reason": { "type": "string", "description": "why it had to ask." }
+          }
+        }
+      ]
+    },
+    "turn": {
+      "title": "Conversation turn record (src/chat/conversation.ts Entry t:'turn')",
+      "description": "One per conversation turn, last: who answered and what it cost — so a reader never has to guess.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "provider", "model", "input", "output", "cost", "ms", "at"],
+      "properties": {
+        "t": { "const": "turn" },
+        "provider": { "type": "string", "description": "the lane the turn ran on." },
+        "model": { "type": "string" },
+        "input": { "type": "number", "minimum": 0 },
+        "cacheRead": { "type": "number", "minimum": 0, "description": "of `input`, read from the prompt cache. Both lanes, when any." },
+        "output": { "type": "number", "minimum": 0 },
+        "cost": { "type": ["number", "null"], "description": "USD, or null when the model has no known price (or it ran on a subscription)." },
+        "billing": { "enum": ["subscription"], "description": "ran on the person's subscription (Claude Code login): no per-token bill." },
+        "ms": { "type": "number", "minimum": 0, "description": "the wall time the person waited, from send to result." },
+        "firstTokenMs": { "type": "number", "minimum": 0, "description": "ms from the person's message to the first text, when known." },
+        "apiMs": { "type": "number", "minimum": 0, "description": "the provider's own API time, when reported." },
+        "retries": { "type": "number", "minimum": 0, "description": "provider retries during the turn, when any." },
+        "compactions": { "type": "number", "minimum": 0, "description": "context compactions during the turn (Claude lane), when any." },
+        "steers": { "type": "number", "minimum": 0, "description": "steers delivered into this turn, when any (both lanes)." },
+        "mode": { "type": "string", "description": "the console mode the turn started in (work mode only)." },
+        "at": { "type": "number", "description": "when the turn ended (ms epoch)." }
+      }
+    }
+  }
+}
