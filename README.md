@@ -13,6 +13,8 @@ You make the decisions. They do the work.
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![GitHub stars](https://img.shields.io/github/stars/agents-squads/squads-cli?style=social)](https://github.com/agents-squads/squads-cli)
 
+[Website](https://agents-squads.com) · [Docs](https://agents-squads.com/docs)
+
 </div>
 
 A **squad** is a team of AI agents — different models, different roles —
