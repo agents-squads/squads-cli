@@ -69,7 +69,7 @@ jobs:
       - run: npm ci
 
       - name: Create version PR
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v1
         with:
           title: 'chore: version packages'
           commit: 'chore: version packages'
